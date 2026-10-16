@@ -1,6 +1,6 @@
 # Project Arena privacy policy
 
-_Last updated: 16 October 2026. Contact: [contact email]._
+_Last updated: 16 October 2026. Contact: vrsportsfan@gmail.com._
 
 Project Arena is a free, open-source VR game. This policy explains what the game and the community servers do with
 information about you.

@@ -25,11 +25,12 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 cp "$APK" "$OUT/ProjectArena-$VER.apk"
 cp "$ROOT/docs/INSTALL.md" "$OUT/INSTALL.md"
 [ -f "$ROOT/docs/RELEASE_NOTES_v$VER.md" ] && cp "$ROOT/docs/RELEASE_NOTES_v$VER.md" "$OUT/RELEASE_NOTES.md"
-cp "$ROOT/server/projectarena_relay.py" "$OUT/"
+cp "$ROOT/docs/PC_README.txt" "$OUT/README-PC.txt"
+sed "s/<version>/$VER/g" "$ROOT/docs/QUEST_README.txt" > "$OUT/README-Quest.txt"
 # PC VR build (Windows): ProjectArena-<ver>-PC.zip
 cmd.exe //c "$(cygpath -w "$ROOT/tools/build_pc.bat")" | tail -1
 (cd "$ROOT/build/pc" && rm -f "$OUT/ProjectArena-$VER-PC.zip" && powershell.exe -NoProfile -Command   "Compress-Archive -Path ProjectArena -DestinationPath '$(cygpath -w "$OUT")\ProjectArena-$VER-PC.zip'")
-(cd "$OUT" && sha256sum ProjectArena-$VER.apk ProjectArena-$VER-PC.zip projectarena_relay.py > SHA256SUMS.txt)
+(cd "$OUT" && sha256sum ProjectArena-$VER.apk ProjectArena-$VER-PC.zip README-PC.txt README-Quest.txt > SHA256SUMS.txt)
 BT="${ANDROID_HOME:-/c/Android/sdk}/build-tools/34.0.0"
 "$BT/apksigner.bat" verify --print-certs "$OUT/ProjectArena-$VER.apk" | grep -i "certificate DN" || true
 echo "release folder: $OUT"
