@@ -73,7 +73,8 @@ public:
     void drawRibbon(const Vec3* pts, int n, float width, const float rgba[4]);
     GLuint texture(const char* name, bool srgb) { return loadTexture(name, srgb); }   // tex/<name>.tex, cached
     void drawScreenTexture(GLuint tex, float alpha);   // full-view overlay (cross-fades), bottom-up texture
-    void drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4]);   // a quad showing a render target
+    // a quad showing a texture: flipV for render targets (bottom-up), false for loaded images
+    void drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4], bool flipV = true);
 
     Model sphere, box, quad;
 

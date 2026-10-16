@@ -81,6 +81,9 @@ if [ ! -f "$KS" ]; then
 fi
 APK="$ROOT/build/ProjectArena-$MODE-$ASSET_SET.apk"
 # release builds are signed with the same local key unless PROJECTARENA_KEYSTORE/PROJECTARENA_KEY_ALIAS/PROJECTARENA_KEY_PASS are set
+if [ "$MODE" = release ] && { [ -z "$PROJECTARENA_KEYSTORE" ] || [ -z "$PROJECTARENA_KEY_PASS" ]; }; then
+  echo "release builds need your release key: set PROJECTARENA_KEYSTORE, PROJECTARENA_KEY_ALIAS and PROJECTARENA_KEY_PASS" >&2; exit 1
+fi
 KSUSE="${PROJECTARENA_KEYSTORE:-$KS}"; ALIAS="${PROJECTARENA_KEY_ALIAS:-androiddebugkey}"; PASS="${PROJECTARENA_KEY_PASS:-android}"
 JAVA_HOME="$JAVA_HOME" PATH="$JAVA_HOME/bin:$PATH" "$BT/apksigner.bat" sign --ks "$KSUSE" --ks-pass "pass:$PASS" \
   --ks-key-alias "$ALIAS" --out "$APK" "$OUT/aligned.apk" 2>/dev/null || \

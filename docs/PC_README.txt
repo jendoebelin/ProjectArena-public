@@ -12,8 +12,10 @@ Install
   3. Double-click ProjectArena.exe. A window on the desktop shows what the headset sees.
 
 Play together
-  - Same home network: MENU > MULTIPLAYER, then HOST GAME on one, PLAY on the other.
-  - Over the internet: SETTINGS > SERVER, type the community server address (host:port), then ONLINE: ON.
+  - Online (the default): MENU > MULTIPLAYER shows the rooms on the community server; Quest and PC players meet there.
+    HOST A ROOM to open one, or JOIN someone's; in the waiting area press JOIN QUEUE (the red button) to play.
+  - Same home network instead: MULTIPLAYER > ONLINE: OFF (LAN), then host and join the same way.
+  - Hold the left grip to talk. MENU > REPORT BUG sends us a note and the game's recent log.
     Quest and PC players meet in the same arenas.
 
 Controls (Valve Index)

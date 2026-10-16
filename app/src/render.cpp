@@ -749,14 +749,15 @@ void Renderer::drawScreenTexture(GLuint tex, float alpha) {
     glDepthMask(GL_TRUE);
 }
 
-void Renderer::drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4]) {
+void Renderer::drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4], bool flipV) {
     setColor(quad, rgba, false);
     quad.mats[0].flags = MAT_TWOSIDED;
     quad.mats[0].diffuse = tex;
     DrawParams dp;
     dp.forceShader = SH_UNLIT;
     dp.alphaMul = 0.998f;
-    glUniform4f(g_uUVRect, 1, -1, 0, 1);   // render targets are bottom-up
+    if (flipV) glUniform4f(g_uUVRect, 1, -1, 0, 1);   // render targets are bottom-up
+    else glUniform4f(g_uUVRect, 1, 1, 0, 0);
     draw(quad, model, dp, 1);
     glUniform4f(g_uUVRect, 1, 1, 0, 0);
     quad.mats[0].diffuse = 0;

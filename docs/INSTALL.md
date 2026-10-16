@@ -1,48 +1,43 @@
-# Installing Project Arena on a Meta Quest
+# Installing Project Arena
 
-About 10 minutes the first time. You need a Quest 3 (Quest 2, Pro and 3S should work but are not tested yet),
-a USB-C cable, and a Windows, Mac or Linux computer.
+## Meta Quest (Quest 2, 3, 3S, Pro)
 
-## 1. Turn on developer mode (once)
-1. On your phone, open the **Meta Horizon** app and sign in with the account your headset uses.
-2. If asked, create a developer organization at https://developer.oculus.com/manage/organizations/create/
-   (free, any name).
-3. In the app: **Devices** → your headset → **Headset settings** → **Developer mode** → turn it on.
-4. Restart the headset.
+**From the Meta Horizon Store (testers):** accept the invite email for the Project Arena test channel (or accept it
+in the Meta Horizon phone app), then find **Project Arena** in the Store on your headset and install it like any
+other app. Updates arrive automatically. No developer mode needed.
 
-## 2. Install the game
-**Easiest: SideQuest**
-1. Install SideQuest (Advanced installer) from https://sidequestvr.com/setup-howto on your computer.
-2. Plug the headset in. Put it on and choose **Allow USB debugging** (tick "Always allow from this computer").
-3. In SideQuest, the dot at the top left turns green. Click the **install APK** icon (box with a down arrow)
-   and pick `ProjectArena-release-open.apk`.
+**Sideloading the APK (developer mode):**
+1. Turn on developer mode once: Meta Horizon phone app → **Devices** → your headset → **Headset settings** →
+   **Developer mode** (you may be asked to create a free developer organization first). Restart the headset.
+2. Install with SideQuest (https://sidequestvr.com/setup-howto: plug the headset in, allow USB debugging, click the
+   install-APK icon and pick `ProjectArena-<version>.apk`), or with adb: `adb install -r ProjectArena-<version>.apk`.
+3. In the headset: **Library** → **Unknown Sources** → **Project Arena**.
 
-**Or with adb** (if you already have Android platform-tools):
+## PC VR (SteamVR: Valve Index, Vive, Windows Mixed Reality; or Meta Quest Link)
 
-    adb install -r ProjectArena-release-open.apk
+1. Download `ProjectArena-<version>-PC.zip` from the GitHub release and unzip it anywhere (keep the `assets` folder
+   next to the exe).
+2. Start SteamVR (or Quest Link) and put your headset on.
+3. Run `ProjectArena.exe`. Settings, avatar and log live in `%APPDATA%\ProjectArena`.
 
-## 3. Play
-1. In the headset: **Library** → the drop-down at the top right → **Unknown Sources** → **Project Arena**.
-2. Stand in a clear space about 2 x 2 m. The first launch shows **HOW TO PLAY**.
-3. **B** or a thumbstick click re-centres you. **MENU** (left controller) opens the lobby, CUSTOMIZE AVATAR and
-   CHANGE NAME.
+Quest and PC players meet in the same rooms online.
 
-## Playing with a friend on the same Wi-Fi
-1. Both headsets on the same network, both with the same version of the game.
-2. One player: **MENU → HOST GAME**. The other: **MENU** → pick the host's name under GAMES ON YOUR NETWORK.
-3. Anyone else on the network can **SPECTATE GAMES**.
+## Playing
 
-If the game does not appear: check both are on the same Wi-Fi (guest networks often block players from seeing each
-other), and that both have the same game version.
+- Stand in a clear space of about 2 x 2 m. The first launch shows **HOW TO PLAY**.
+- **MENU** (left controller) opens the menus. **B** or a thumbstick click re-centres you; holding the Meta button
+  does too.
+- **PLAY PRACTICE**: you against the bot. **CUSTOMIZE AVATAR**: your look, which other players see.
+- **MULTIPLAYER**:
+  - **ONLINE: ON** shows rooms on the community server (the game connects to it by default); **ONLINE: OFF**
+    shows rooms on your home Wi-Fi.
+  - **HOST A ROOM** opens a room. You start in its waiting area: press **JOIN QUEUE** (the red button in front of
+    you) to play. Others pick your room and press **JOIN**, then **JOIN QUEUE**.
+  - **FORFEIT MATCH** takes you back to the waiting area. **SPECTATE GAMES** shows every live match.
+- Voice chat in a room: hold the **left grip** to talk (SETTINGS → VOICE AND MUTES for open mic and mutes).
+- Something wrong? **MENU → REPORT BUG** sends a short note and the game's recent log to us.
 
-## Playing online (community server)
-1. **MENU → SETTINGS → SERVER**: type the server address you were given (for example `PLAY.EXAMPLE.NET:47780`), then
-   **DONE**. The game connects right away.
-2. In the **MENU**, **ONLINE: ON** shows games hosted on that server. Host, join and spectate as on Wi-Fi.
-3. **ONLINE: ON** again switches back to your home network.
+## Updating and uninstalling
 
-## Updating
-Install the new APK the same way; your avatar, name and settings are kept.
-
-## Uninstalling
-Settings → Apps → Installed apps → Project Arena → Uninstall (or remove it in SideQuest).
+Store installs update themselves; sideloaded APKs update by installing the new APK the same way (your avatar, name
+and settings are kept). Uninstall: Settings → Apps → Installed apps → Project Arena.

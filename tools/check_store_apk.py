@@ -34,6 +34,10 @@ def main():
          re.search(r'android\.hardware\.vr\.headtracking[\s\S]{0,200}required\(0x0101028e\)=true', tree) is not None,
          'uses-feature android.hardware.vr.headtracking required=true version=1')
     need('com.oculus.supportedDevices' in tree, 'meta-data com.oculus.supportedDevices')
+    # the store's upload checker: features that need a matching permission (rejected otherwise)
+    for feature, perm in (('oculus.software.handtracking', 'com.oculus.permission.HAND_TRACKING'),):
+        if feature in tree:
+            need(perm in tree, 'uses-feature %s needs uses-permission %s' % (feature, perm))
     need('com.oculus.intent.category.VR' in tree and 'android.intent.action.MAIN' in tree, 'launcher intent: MAIN + com.oculus.intent.category.VR')
     need(re.search(r'excludeFromRecents\(0x01010017\)=true', tree) is not None, 'excludeFromRecents true')
     debuggable = re.search(r'debuggable\(0x0101000f\)=true', tree) is not None

@@ -28,7 +28,7 @@ cp "$ROOT/docs/INSTALL.md" "$OUT/INSTALL.md"
 cp "$ROOT/server/projectarena_relay.py" "$OUT/"
 # PC VR build (Windows): ProjectArena-<ver>-PC.zip
 cmd.exe //c "$(cygpath -w "$ROOT/tools/build_pc.bat")" | tail -1
-(cd "$ROOT/build/pc" && rm -f "$OUT/ProjectArena-$VER-PC.zip" && powershell.exe -NoProfile -Command   "Compress-Archive -Path Project Arena -DestinationPath '$(cygpath -w "$OUT")\ProjectArena-$VER-PC.zip'")
+(cd "$ROOT/build/pc" && rm -f "$OUT/ProjectArena-$VER-PC.zip" && powershell.exe -NoProfile -Command   "Compress-Archive -Path ProjectArena -DestinationPath '$(cygpath -w "$OUT")\ProjectArena-$VER-PC.zip'")
 (cd "$OUT" && sha256sum ProjectArena-$VER.apk ProjectArena-$VER-PC.zip projectarena_relay.py > SHA256SUMS.txt)
 BT="${ANDROID_HOME:-/c/Android/sdk}/build-tools/34.0.0"
 "$BT/apksigner.bat" verify --print-certs "$OUT/ProjectArena-$VER.apk" | grep -i "certificate DN" || true

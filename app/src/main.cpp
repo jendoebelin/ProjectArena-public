@@ -194,6 +194,7 @@ struct App {
     int editTarget = 0;            // keyboard edits: 0 the lobby name, 1 the community server address, 2 team, 3 Sparc server
     // EXPERIMENTAL SOFTWARE (title menu): cross-play test with the Sparc Reviver server (app/src/xcompat.h)
     bool xpOpen = false;
+    GLuint emblemTex = 0;           // the logo above the main menu (open_emblem)
     // REPORT A BUG page: a category, an optional note; the report is saved and sent to the community server
     bool bugOpen = false, bugReturnTitle = false;
     int bugCat = -1;
@@ -750,7 +751,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.2.0";
+static const char* kAppVersion = "0.3.0";
 
 static std::string bugReportText(App& a) {
     std::string r;
@@ -1282,7 +1283,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 }
 
 // ------------------------------------------------------------------ lobby menu
-enum class MenuAct { None, Bug, BugCat, BugNote, BugSend, BugCancel, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill };
+enum class MenuAct { None, MainMenu, Bug, BugCat, BugNote, BugSend, BugCancel, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill };
 struct MenuItem {
     std::string label;
     float x, y, w, h;
@@ -1296,8 +1297,12 @@ static void haptic(App& a, int hand, float amp, float seconds);
 static std::vector<MenuItem> menuItemsBase(App& a);
 static std::vector<MenuItem> menuItems(App& a) {
     std::vector<MenuItem> v = menuItemsBase(a);
-    if (!a.helpOpen && !a.nameEdit && !a.bugOpen && !a.titleOpen && !a.xpOpen)
+    if (!a.helpOpen && !a.nameEdit && !a.bugOpen && !a.titleOpen && !a.xpOpen) {
         v.push_back({"REPORT BUG", 0.37f, 0.34f, 0.20f, 0.045f, MenuAct::Bug, 0, true});
+        const Net::Mode m = a.net.mode();
+        if (!a.settingsOpen && !a.builderOpen && (m == Net::Mode::Offline || m == Net::Mode::Searching))
+            v.push_back({"< MAIN MENU", -0.37f, 0.34f, 0.20f, 0.045f, MenuAct::MainMenu, 0, true});
+    }
     return v;
 }
 
@@ -1443,6 +1448,7 @@ static void menuActivate(App& a, const MenuItem& it) {
     LOGI("menu: %s", it.label.c_str());
     switch (it.act) {
     case MenuAct::Experimental: a.xpOpen = true; break;
+    case MenuAct::MainMenu: a.titleOpen = true; a.settingsOpen = false; break;
     case MenuAct::Bug:
         a.bugReturnTitle = a.titleOpen; a.titleOpen = false; a.settingsOpen = false; a.xpOpen = false;
         a.bugOpen = true; a.bugCat = -1; a.bugNote.clear();
@@ -1620,6 +1626,14 @@ static void drawMenu(App& a) {
         text("THIS TEST ONLY CONNECTS AND STAYS IN AS A SPECTATOR.", 0, -0.25f, 0.020f, grey);
         text("SEEING THE MATCH AND PLAYING ARE NOT BUILT YET.", 0, -0.285f, 0.020f, grey);
     } else if (a.titleOpen && !a.helpOpen && !a.nameEdit && !a.settingsOpen) {
+        if (!a.emblemTex) a.emblemTex = a.gfx.texture("open_emblem", true);
+        if (a.emblemTex) {   // the emblem floats above the panel, a soft glow behind it
+            const float glow[4] = {0.10f, 0.45f, 0.75f, 0.35f}, white[4] = {1, 1, 1, 1};
+            quad(0, 0.585f, 0.36f, 0.36f, -0.004f, edge);   // a badge like the panel (hides the scoreboard behind)
+            quad(0, 0.585f, 0.33f, 0.33f, -0.002f, bg);
+            a.gfx.drawSprite(at(0, 0.585f, 0.0f), 0.42f, glow, a.viewHead.p, 1);
+            a.gfx.drawTexturedPanel(Mat4::fromPose({a.menuPose.q, at(0, 0.585f, 0.004f)}, {0.29f, 0.29f, 1}), a.emblemTex, white, false);
+        }
         text("PROJECT ARENA", 0, 0.27f, 0.085f, cyan);
         snprintf(buf, sizeof buf, "WELCOME, %s", a.net.name());
         text(buf, 0, 0.185f, 0.03f, white);
@@ -2064,6 +2078,43 @@ static void drawLancerAt(App& a, const Mat4& grip, int h, const AvatarLook& L, i
     applyLook(dp, L);
     dp.mirrored = (h == 0) != preMirror;
     a.gfx.draw(gauntletOf(a, d), pre * grip * mirror * g_lancerLocal, dp, pass);
+}
+
+// main menu: your avatar on a slowly turning pedestal to the right of the menu, your name above it
+static void drawTitleShowcase(App& a, int pass) {
+    if (!a.menuOpen || !a.titleOpen || a.builderOpen || a.helpOpen || a.avModels.empty()) return;
+    const Vec3 right = a.menuPose.q.rotate({1, 0, 0}), away = a.menuPose.q.rotate({0, 0, -1});
+    Vec3 base = a.menuPose.p + right * 1.9f + away * 1.4f;   // clear of the panel (about 40 degrees to the right)
+    base.y = 0;
+    Vec3 toUser = a.viewHead.p - base;
+    toUser.y = 0;
+    toUser = length(toUser) > 1e-3f ? normalize(toUser) : Vec3{0, 0, 1};
+    const float face = std::atan2(-toUser.x, -toUser.z) + kPi;   // looking at the player
+    const float yaw = face + 0.55f * std::sin((float)nowSeconds() * 0.35f);   // turns side to side
+    const Quat q = Quat::axisAngle({0, 1, 0}, yaw);
+    PlayerInput in;
+    in.headTracked = true;
+    in.head = {q, base + Vec3{0, 1.62f, 0}};
+    in.avatar = a.myAvatar;
+    for (int h = 0; h < 2; ++h) {   // arms relaxed, fists a little forward
+        in.hand[h].tracked = true;
+        const float s = h ? 1.f : -1.f;
+        in.hand[h].grip = {q * Quat::axisAngle({1, 0, 0}, -1.05f) * Quat::axisAngle({0, 0, 1}, s * 0.25f),
+                           in.head.p + q.rotate({s * 0.24f, -0.80f, -0.10f})};
+    }
+    drawAvatarBody(a, in, 0, pass, Mat4::identity(), false, false, 0);
+    const AvatarLook look = lookOf(a, in.avatar, 0);
+    for (int h = 0; h < 2; ++h) drawLancerAt(a, Mat4::fromPose(in.hand[h].grip), h, look, pass, Mat4::identity(), false, in.avatar);
+    if (pass != 1) return;
+    // a hologram disc under the avatar (the bodies end above the knee), and its beam down to the floor
+    const float ring[4] = {0.10f, 0.55f, 0.90f, 1}, ring2[4] = {0.04f, 0.20f, 0.40f, 1}, white[4] = {1, 1, 1, 1};
+    a.gfx.drawSpriteFlat(base + Vec3{0, 0.62f, 0}, 0.75f, ring, {0, 1, 0}, 1);
+    a.gfx.drawSpriteFlat(base + Vec3{0, 0.006f, 0}, 0.9f, ring2, {0, 1, 0}, 1);
+    const Vec3 pts[2] = {base + Vec3{0, 0.02f, 0}, base + Vec3{0, 0.60f, 0}};
+    const float beam[4] = {0.06f, 0.30f, 0.55f, 0.5f};
+    a.gfx.drawRibbon(pts, 2, 0.32f, beam);
+    const Quat lq = Quat::axisAngle({0, 1, 0}, face);
+    a.gfx.drawText(a.net.name(), {lq, base + Vec3{0, 1.90f, 0}}, 0.08f, white);
 }
 
 static void drawBuilder(App& a, int pass) {
@@ -3080,6 +3131,7 @@ static void drawWorld(App& a, int pass) {
         if (!a.rttPass) drawMenu(a);
     }
     if (!a.rttPass) drawBuilder(a, pass);
+    if (!a.rttPass) drawTitleShowcase(a, pass);
     if (pass == 1) drawDirector(a);
 }
 
@@ -3571,6 +3623,7 @@ struct ShotView {
     int w = 1280, h = 720; bool custom = false; Vec3 p; float yaw = 0, pitch = 0, fovY = 64;
     std::string title; float titleH = 0.12f, titleY = 0;   // title height (fraction of the image) and offset (-1..1)
     std::string menu;   // --menu title|xp: draw that menu page in front of the camera (layout checks)
+    std::string scene;  // --scene action: two players mid-rally (store art)
 };
 
 static int selfTest(App& a, const char* out, const ShotView& v) {
@@ -3597,6 +3650,48 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
     if (v.custom) eye = {Quat::axisAngle({0, 1, 0}, deg2rad(v.yaw)) * Quat::axisAngle({1, 0, 0}, deg2rad(v.pitch)), v.p};
     const float ty = std::tan(deg2rad(v.fovY) * 0.5f), tx = ty * W / H;
     a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(tx), std::atan(tx), std::atan(ty), -std::atan(ty), 0.05f, 2000.f), eye.p);
+    if (v.scene == "action") {   // store art: blue throws, orange raises a shield, the ball mid-court
+        Game& g = a.game;
+        g.match = MatchState::InProgress;
+        g.pl[0].score = 3;
+        g.pl[1].score = 2;
+        g.roundClock = 84.f;
+        a.viewing = true;
+        const AvatarDesc looks[2] = {avatar::preset(10), avatar::preset(12)};   // CIRCUIT, TANK AND SHORTS
+        for (int p = 0; p < 2; ++p) {
+            const float side = p ? -1.f : 1.f;   // +X for blue, -X for orange
+            PlayerInput in;
+            in.headTracked = true;
+            const Quat q = Quat::axisAngle({0, 1, 0}, p ? kPi * 0.5f : -kPi * 0.5f) * Quat::axisAngle({1, 0, 0}, -0.08f);
+            in.head = {q, Vec3{-6.85f * side, 1.64f, p ? -0.15f : 0.12f}};
+            in.avatar = looks[p];
+            for (int h = 0; h < 2; ++h) in.hand[h].tracked = true;
+            if (p == 0) {   // follow-through of a throw: right arm reaching down the court, left arm back
+                in.hand[1].grip = {q * Quat::axisAngle({1, 0, 0}, 0.25f), in.head.p + q.rotate({0.24f, -0.18f, -0.55f})};
+                in.hand[0].grip = {q * Quat::axisAngle({1, 0, 0}, -0.9f), in.head.p + q.rotate({-0.30f, -0.55f, -0.05f})};
+            } else {        // shield up on the right arm, left fist guarding
+                in.hand[1].grip = {q * Quat::axisAngle({1, 0, 0}, -0.15f), in.head.p + q.rotate({0.14f, -0.32f, -0.42f})};
+                in.hand[0].grip = {q * Quat::axisAngle({1, 0, 0}, -0.45f), in.head.p + q.rotate({-0.22f, -0.42f, -0.32f})};
+            }
+            a.viewIn[p] = in;
+            a.viewInValid[p] = true;
+            g.pl[p].in = in;
+            g.pl[p].isBot = false;
+        }
+        Ball& b0 = g.pl[0].ball;
+        b0.state = BallState::Flying;
+        b0.pos = {-3.6f, 1.50f, 0.20f};
+        b0.vel = {13.f, 0.2f, -0.4f};
+        b0.charged = true;
+        b0.scale = 2.2f;   // grown by strikes
+        Ball& b1 = g.pl[1].ball;
+        b1.state = BallState::Held;
+        b1.heldHand = 1;
+        b1.charged = true;
+        b1.scale = 1.f;
+        b1.pos = g.launcherPoint(1, 1);
+        g.pl[1].hands[1].shieldUp = true;
+    }
     drawWorld(a, 0);
     drawWorld(a, 1);
     if (!v.menu.empty()) {
@@ -3610,6 +3705,10 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         if (v.menu == "spectate") a.net.spectate();
         if (v.menu == "bug") { a.bugOpen = true; a.bugCat = 1; a.bugNote = "BALL WENT THROUGH THE WALL"; }
         a.menuPose = {eye.q, eye.transform({0, 0.09f, -0.95f})};
+        a.viewHead = eye;
+        a.localIn.head = eye;
+        drawTitleShowcase(a, 0);
+        drawTitleShowcase(a, 1);
         glClear(GL_DEPTH_BUFFER_BIT);
         drawMenu(a);
     }
@@ -3663,6 +3762,7 @@ int main(int argc, char** argv) {
             i += 3;
         }
         else if (!strcmp(argv[i], "--menu") && i + 1 < argc) view.menu = argv[++i];
+        else if (!strcmp(argv[i], "--scene") && i + 1 < argc) view.scene = argv[++i];
         else if (!strcmp(argv[i], "--bug-report") && i + 2 < argc) { bugServer = argv[i + 1]; bugNoteArg = argv[i + 2]; i += 2; }
         else if (!strcmp(argv[i], "--xc-probe") && i + 2 < argc) { probeAddr = argv[i + 1]; probeName = argv[i + 2]; i += 2; }
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) probeSeconds = atof(argv[++i]);
