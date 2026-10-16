@@ -9,8 +9,10 @@ sound.
 - An avatar builder: two body types, outfits, hair, headgear, face shields, masks, gauntlets, patterns and colours
 - Runs natively on Quest (OpenXR + OpenGL ES, no engine) and on PC through SteamVR or Quest Link
 
-**Players:** see `docs/INSTALL.md`. **Asset catalog** (every model, texture and sound, with downloads and the
-template pack for making your own): see the link on the GitHub Pages site of this repository.
+**Players:** see `docs/INSTALL.md`.
+
+**Asset catalog:** https://jendoebelin.github.io/ProjectArena-public/ (every model, texture and sound, each with a
+download, plus the template pack for making your own).
 
 ## Contributing
 
