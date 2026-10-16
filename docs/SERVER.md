@@ -1,0 +1,50 @@
+# Running an Project Arena community server
+
+The community server is one small Python program, `server/projectarena_relay.py` (MIT, no dependencies). It works like
+a shared LAN for everyone connected to it: players see each other's hosted games in the menu, join, and spectate,
+exactly as on home Wi-Fi. Players never see each other's IP addresses; the server only forwards game packets.
+
+## What you need
+- Any machine with Python 3.8+ and a public IP: a small VPS (1 CPU, 512 MB RAM is plenty) or a home PC with a
+  forwarded port.
+- UDP port **47780** open to the internet.
+- Bandwidth: about 90 packets/s each way per player (~40 KB/s per player in a match).
+
+## Quick start
+
+    python3 server/projectarena_relay.py --port 47780
+
+Self-test (runs a local copy and fake players): `python3 server/test_relay.py`.
+
+## Run it as a service (Linux, systemd)
+
+    sudo useradd --system --no-create-home projectarena
+    sudo cp server/projectarena_relay.py /opt/projectarena_relay.py
+    sudo tee /etc/systemd/system/projectarena-relay.service >/dev/null <<'UNIT'
+    [Unit]
+    Description=Project Arena community relay
+    After=network-online.target
+    [Service]
+    User=projectarena
+    ExecStart=/usr/bin/python3 /opt/projectarena_relay.py --port 47780 --max-clients 200
+    Restart=always
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+    sudo systemctl enable --now projectarena-relay
+    sudo ufw allow 47780/udp        # if you use ufw
+
+Give players the address, e.g. `play.yourdomain.net:47780` (a DNS name is easier to type than an IP).
+
+## How players connect
+In the headset: **MENU → SETTINGS → SERVER**, type the address on the keyboard, **DONE**. Then **MENU →
+ONLINE: OFF (LAN)** switches to **ONLINE: ON**; games hosted on the server appear in the list. **HOST GAME**, joining
+and **SPECTATE GAMES** work as on a LAN. Switch back to LAN play with the same button.
+
+## Safety and limits
+- Each player gets a random session token bound to their address; forged or foreign packets are dropped.
+- Only game packets (max 1200 bytes) are forwarded; each player is rate-limited (1000 packets/s).
+- Players on a different game version do not see each other's games (no confusing half-working matches).
+- Names are limited to A-Z, 0-9, space, '-' and '.'. The server logs only joins and leaves (no packet contents).
+- `--max-clients` caps load. There are no accounts, chat or voice yet; matches are host-authoritative, so a modified
+  host could cheat. Planned: ban list, match reports, server-side match lists with player counts.

@@ -1,0 +1,17 @@
+Project Arena
+Copyright (c) 2026 the Project Arena authors. Game code, tools, art and sound are original work.
+Project Arena is an independent game. It is not affiliated with or endorsed by CCP Games; "Sparc" is a trademark
+of CCP hf. No CCP assets are included in this application.
+
+Third-party components shipped in the application:
+
+1. Khronos OpenXR loader (libopenxr_loader.so)
+   Copyright (c) 2017-2025 The Khronos Group Inc.
+   Licensed under the Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0
+   Source: https://github.com/KhronosGroup/OpenXR-SDK
+
+2. Android NDK native_app_glue (android_native_app_glue.c / .h)
+   Copyright (C) 2010 The Android Open Source Project
+   Licensed under the Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0
+
+Tools used to make the art (not shipped): Blender (GPL) with the MPFB2 add-on (GPL; its MakeHuman base meshes and targets are CC0).

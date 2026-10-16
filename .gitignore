@@ -1,0 +1,26 @@
+# --- Never commit CCP / Sparc material (extracted from the player's own install) ---
+# umodel / UAssetAPI exports and Wwise audio
+/assets_src/
+# baked original assets (models, textures, audio)
+/app/assets/
+# Ghidra decompilation of the retail exe and video frames (keep our own Ghidra scripts)
+/re/*
+!/re/scripts/
+# screenshots / captures containing original art
+/docs/preview/
+# string / enum dumps of the retail exe, game text
+/docs/exe_*.txt
+/docs/game_text_en.txt
+
+# --- Build output, downloaded tools, secrets ---
+/servers.local.cfg
+/app/src/servers_default.h
+/build/
+/third_party/
+*.apk
+*.idsig
+*.keystore
+*.jks
+__pycache__/
+tools/UassetDump/bin/
+tools/UassetDump/obj/
