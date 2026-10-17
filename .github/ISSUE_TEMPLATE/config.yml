@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a player (harassment, cheating, offensive names)
+    url: https://github.com/jendoebelin/ProjectArena-public/blob/main/CODE_OF_CONDUCT.md
+    about: Use MENU > REPORT PLAYER in the game, or email vrsportsfan@gmail.com. Please do not post reports about people here.
+  - name: Store test access or other questions
+    url: https://github.com/jendoebelin/ProjectArena-public/blob/main/docs/INSTALL.md
+    about: Email vrsportsfan@gmail.com with the email of your Meta account for the Quest store test.

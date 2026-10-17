@@ -1,0 +1,15 @@
+name: Idea
+description: A feature, rule, mode, outfit theme or anything you would like to see
+labels: [idea]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: What would you like, and why would it make the game better?
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Examples, sketches or references

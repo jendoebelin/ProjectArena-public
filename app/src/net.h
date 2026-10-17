@@ -35,6 +35,11 @@ struct RoomInfo {
     bool bot = false;                   // slot 1 is the practice bot
     std::vector<Member> members;        // everyone in the room except the tank slots' poses (those are in STATE)
     std::vector<Watcher> watchers;
+    // player names (REPORT / MUTE A PLAYER): the host, the tank, the waiting players and the spectators at this
+    // arena. Sent after the rest of ROOM, so builds without it still read the packet.
+    struct Name { uint32_t id = 0; char name[17] = {}; };
+    std::vector<Name> names;
+    const char* nameOf(uint32_t id) const { for (const Name& n : names) if (n.id == id) return n.name; return nullptr; }
 };
 
 // A live match a spectator is subscribed to: the host's snapshots applied to a local Game (not simulated).
@@ -114,6 +119,10 @@ public:
     // their spectators; the app keeps a set only when the team name matches.
     void shareCameras(const char* team, const std::vector<uint8_t>& blob);
     bool takeCameras(char team[17], std::vector<uint8_t>& blob);
+    // REPORT / MUTE A PLAYER: everyone else in our room, or at the arena a spectator stands at (role: VOICE_*)
+    struct Person { uint32_t id = 0; char name[17] = {}; uint8_t role = 0; };
+    std::vector<Person> peopleHere() const;
+    std::string hereName() const;     // that room's name (its host's name; empty: none)
     bool peerConnected() const { return peerSeen_ > 0 && (now_ - peerSeen_) < 3.0; }
     Mode mode() const { return mode_; }
     const char* status() const;
@@ -129,8 +138,9 @@ private:
         int8_t queuePos = -1;
         uint8_t spot = 0;
         bool local = false;
+        char name[17] = {};
     };
-    struct Spectator { uint32_t ip = 0, id = 0; double seen = 0; uint8_t where = 0; Vec3 pos; };
+    struct Spectator { uint32_t ip = 0, id = 0; double seen = 0; uint8_t where = 0; Vec3 pos; char name[17] = {}; };
     void sendTo(const void* d, int n, uint32_t ip, uint16_t port);
     void rawSend(const void* d, int n, uint32_t ip, uint16_t port);
     void relayHello();

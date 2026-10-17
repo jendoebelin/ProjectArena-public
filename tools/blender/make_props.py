@@ -280,6 +280,9 @@ def _spike(b, mat, base, direction, r, h, segs=4):
     b.add_bmesh(tmp, mat, smooth=False)
 
 
+WRIST_TILT = math.radians(30.0)   # plate gauntlets: the cuff turned up from straight back (see gauntlet())
+
+
 def gauntlet(b, style):
     """A medieval plate gauntlet closed round the (hidden) controller, in the lancer's grip frame: overlapping lames
     on every finger with domed joint plates, a knuckle plate, a plate over the back of the hand and a flared bell cuff
@@ -419,17 +422,24 @@ def gauntlet(b, style):
     b.sphere(plate if style != 0 else core, tuple(th_pts[3]), trs[3] + (0.0011 if style != 0 else 0.0), segs=10, rings=6)
 
     # ---- wrist: leather sleeve, two lames over the wrist, a flared bell cuff with rolled rims
+    # The cuff pointed further down than the forearm that enters it (a wrist cocked ~30 deg against the forearm and the
+    # suit's bracer: owner, P10-P12, 2026-10-17): the wrist pieces turn up WRIST_TILT about the wrist joint, nearer
+    # a straight wrist round the handle. app/src/avatar.cpp attaches the forearm along the same direction.
     wrist = Vector((0.004, -0.050, -0.040))
-    fwd = Matrix.Rotation(math.pi / 2, 3, 'X')
+    Rw = Matrix.Rotation(-WRIST_TILT, 3, 'X')
+
+    def wp(v):   # a wrist piece's point, turned with the wrist
+        return wrist + Rw @ (v - wrist)
+    fwd = Rw @ Matrix.Rotation(math.pi / 2, 3, 'X')
     rb = (0.038, 0.042, 0.035)[style]
-    _shaped(b, core, wrist + Vector((0, -0.045, -0.004)), (1, 1, 1), fwd, kind='cone', segs=24, depth=0.085,
+    _shaped(b, core, wp(wrist + Vector((0, -0.045, -0.004))), (1, 1, 1), fwd, kind='cone', segs=24, depth=0.085,
             r1=rb - 0.003, r2=rb - 0.005)
-    up_out = Vector((1.0, 0.0, 0.35)).normalized()
+    up_out = Rw @ Vector((1.0, 0.0, 0.35)).normalized()
     for k, (y0, y1) in enumerate(((0.018, 0.005), (0.009, -0.004))):
-        _lame(b, plate, wrist + Vector((0, y0, 0.004)), wrist + Vector((0, y1, 0.002)), rb + 0.0015 + 0.0016 * k,
+        _lame(b, plate, wp(wrist + Vector((0, y0, 0.004))), wp(wrist + Vector((0, y1, 0.002))), rb + 0.0015 + 0.0016 * k,
               math.radians(190), t_pl, up_out, n_arc=10, n_len=1)
-    a_c = wrist + Vector((0, -0.003, -0.001))
-    c_c = wrist + Vector((0, -0.086, -0.008))
+    a_c = wp(wrist + Vector((0, -0.003, -0.001)))
+    c_c = wp(wrist + Vector((0, -0.086, -0.008)))
     flare = (0.017, 0.024, 0.011)[style]
     co = _lame(b, plate, a_c, c_c, rb + 0.002, 0.0, t_pl * 1.3, up_out, n_arc=28, n_len=5, r_end=rb + 0.002 + flare, ease=2.0,
                point=(0.022, 0.0, 0.012)[style], closed=True)

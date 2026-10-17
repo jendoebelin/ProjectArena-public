@@ -23,6 +23,11 @@ sanitised; nothing is logged except connects / disconnects (no packet contents).
 Run:  python3 projectarena_relay.py [--port 47780] [--max-clients 200]
 Bug reports: the game sends them over TCP to the same port: b"PABUG1\\n", u32 length (<= 200 kB), UTF-8 text;
 answered "OK\\n". Saved as text files in --reports (default ./bug_reports), at most 20 per address per hour.
+Player reports (REPORT PLAYER in the game) arrive the same way; the relay adds the reported name's current address(es)
+to the saved file, for the moderators only (players never see addresses). Files whose names start with
+"player_report" are those.
+Moderation: --bans FILE (default ./bans.txt, optional) lists one ban per line, an IP address or name:PLAYERNAME;
+"#" starts a comment. The file is re-read when it changes; banned players are disconnected and refused (BANNED).
 Testing: --lag MS --jitter MS --loss PERCENT make the relay behave like a long internet path (forwarded game packets
 are delayed by lag plus a smoothly drifting 0..jitter ms, kept in order, and a share is dropped). Never on a public server.
 """
@@ -58,9 +63,43 @@ class Client:
         self.bucket = RATE
 
 
+class Bans:
+    """--bans FILE: IP addresses and name:PLAYERNAME lines, re-read whenever the file changes."""
+
+    def __init__(self, path, log):
+        self.path, self.log = path, log
+        self.ips, self.names, self.mtime = set(), set(), None
+        self.reload()
+
+    def reload(self):
+        try:
+            mtime = os.path.getmtime(self.path)
+        except OSError:
+            mtime = None
+        if mtime == self.mtime:
+            return False
+        self.mtime = mtime
+        ips, names = set(), set()
+        if mtime is not None:
+            with open(self.path, encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    line = line.split('#', 1)[0].strip()
+                    if line.lower().startswith('name:'):
+                        names.add(clean_name(line[5:].encode('ascii', 'replace')))
+                    elif line:
+                        ips.add(line)
+        self.ips, self.names = ips, names
+        self.log('bans: %d addresses, %d names (%s)' % (len(ips), len(names), self.path))
+        return True
+
+    def banned(self, ip, name):
+        return ip in self.ips or name in self.names
+
+
 class Relay(asyncio.DatagramProtocol):
-    def __init__(self, max_clients, log=print, lag=0.0, jitter=0.0, loss=0.0):
+    def __init__(self, max_clients, log=print, lag=0.0, jitter=0.0, loss=0.0, bans=None):
         self.max_clients = max_clients
+        self.bans = bans
         self.lag, self.jitter, self.loss = lag / 1000.0, jitter / 1000.0, loss / 100.0
         self.drift, self.last_out = {}, {}
         self.by_addr, self.by_vip = {}, {}
@@ -119,6 +158,12 @@ class Relay(asyncio.DatagramProtocol):
             if len(body) < 17:
                 return
             version, name = body[0], clean_name(body[1:17])
+            if self.bans is not None and self.bans.banned(addr[0], name):
+                self.error(addr, 'BANNED')
+                old = self.by_addr.get(addr)
+                if old is not None:
+                    self.drop(old, 'banned')
+                return
             c = self.by_addr.get(addr)
             if c is None:
                 if len(self.by_addr) >= self.max_clients:
@@ -170,6 +215,14 @@ class Relay(asyncio.DatagramProtocol):
         now = time.monotonic()
         for c in [c for c in self.by_addr.values() if now - c.seen > TIMEOUT]:
             self.drop(c, 'timeout')
+        if self.bans is not None and self.bans.reload():
+            for c in [c for c in self.by_addr.values() if self.bans.banned(c.addr[0], c.name)]:
+                self.error(c.addr, 'BANNED')
+                self.drop(c, 'banned')
+
+    def addresses_of(self, name):
+        """moderators: where a reported player name is connected from right now"""
+        return sorted({'%s:%d' % c.addr for c in self.by_addr.values() if c.name == name})
 
 
 REPORT_MAX = 200000
@@ -177,8 +230,8 @@ REPORT_RATE = 20             # per address per hour
 
 
 class Reports:
-    def __init__(self, folder, log):
-        self.folder, self.log = folder, log
+    def __init__(self, folder, log, relay=None):
+        self.folder, self.log, self.relay = folder, log, relay
         self.recent = {}
         os.makedirs(folder, exist_ok=True)
 
@@ -202,16 +255,25 @@ class Reports:
             times.append(now)
             self.recent[ip] = times
             text = body.decode('utf-8', 'replace')
-            name = 'player'
-            for line in text.splitlines()[:20]:
+            name, kind, extra = 'player', 'bug report', ''
+            lines = text.splitlines()
+            if lines and lines[0].strip() == 'Project Arena player report':
+                kind = 'player report'
+            for line in lines[:20]:
                 if line.startswith('player: '):
                     name = ''.join(c for c in line[8:] if c.isalnum() or c in '-_')[:16] or 'player'
-            fn = os.path.join(self.folder, '%s_%s_%03d.txt' % (time.strftime('%Y%m%d_%H%M%S'), name, int(now * 1000) % 1000))
+                if kind == 'player report' and line.startswith('reported: ') and self.relay is not None:
+                    who = clean_name(line[10:].split(' (session', 1)[0].encode('ascii', 'replace'))
+                    where = self.relay.addresses_of(who)
+                    extra = 'reported player on the relay now: %s %s\n' % (who, ', '.join(where) if where else '(not connected)')
+            prefix = 'player_report_' if kind == 'player report' else ''
+            fn = os.path.join(self.folder, '%s%s_%s_%03d.txt' % (prefix, time.strftime('%Y%m%d_%H%M%S'), name, int(now * 1000) % 1000))
             with open(fn, 'w', encoding='utf-8', newline='\n') as f:
                 f.write('received: %s from %s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), ip))
+                f.write(extra)
                 f.write(text)
             writer.write(b'OK\n')
-            self.log('bug report from %-16s saved %s (%d bytes)' % (name, os.path.basename(fn), n))
+            self.log('%s from %-16s saved %s (%d bytes)' % (kind, name, os.path.basename(fn), n))
         except (asyncio.TimeoutError, asyncio.IncompleteReadError, ConnectionError):
             pass
         finally:
@@ -228,16 +290,17 @@ async def main():
     ap.add_argument('--bind', default='0.0.0.0')
     ap.add_argument('--max-clients', type=int, default=200)
     ap.add_argument('--reports', default='bug_reports', help='folder for bug reports sent from the game')
+    ap.add_argument('--bans', default='bans.txt', help='moderation: banned IP addresses and name:PLAYERNAME lines')
     ap.add_argument('--lag', type=float, default=0.0, help='testing: extra one-way delay per forwarded packet (ms)')
     ap.add_argument('--jitter', type=float, default=0.0, help='testing: up to this much more delay at random (ms)')
     ap.add_argument('--loss', type=float, default=0.0, help='testing: percent of forwarded packets dropped')
     args = ap.parse_args()
     loop = asyncio.get_running_loop()
     stamp = lambda m: print(time.strftime('%H:%M:%S ') + m, flush=True)
-    relay = Relay(args.max_clients, stamp, args.lag, args.jitter, args.loss)
+    relay = Relay(args.max_clients, stamp, args.lag, args.jitter, args.loss, Bans(args.bans, stamp))
     await loop.create_datagram_endpoint(lambda: relay, local_addr=(args.bind, args.port))
     stamp('Project Arena relay listening on UDP %s:%d' % (args.bind, args.port))
-    reports = Reports(args.reports, stamp)
+    reports = Reports(args.reports, stamp, relay)
     await asyncio.start_server(reports.handle, args.bind, args.port)
     stamp('bug reports: TCP %s:%d -> %s' % (args.bind, args.port, os.path.abspath(args.reports)))
     if args.lag or args.jitter or args.loss:

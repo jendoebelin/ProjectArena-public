@@ -29,6 +29,21 @@ Reports are used only to find and fix problems, are kept on the official server 
 shared with anyone else. If a report cannot be sent, it waits on your device and is sent the next time the game
 starts.
 
+## Player reports (only when you send one)
+
+**MENU → REPORT PLAYER** (in a room, or at an arena while spectating) sends the official server:
+- the name of the player you report, the reason and note you chose;
+- your player name;
+- the names of the other people in that room;
+- the same details as a bug report (above).
+
+The server adds the internet address the reported player is connected from, so a ban can be applied. Only the people
+who run the official server see reports and addresses; the reported player is not told who reported them. Reports
+are used to keep the game safe (warnings and bans) and are kept for up to 12 months. Banned addresses and names are
+kept on the server while the ban lasts.
+
+**MUTE** on the same page silences one player's voice for you only, until you quit the game. Nothing is sent.
+
 ## What other players see
 
 When you play online or on your local network, other players in the same arena receive:

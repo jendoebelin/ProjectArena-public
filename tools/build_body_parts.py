@@ -804,6 +804,20 @@ def drape(S, thick, max_lift, arms_too=False, reach=0.16, bend=0.6):
         under = ((Qn - base) * Nb).sum(1)
         Qn = Qn - np.minimum(under, 0.0)[:, None] * Nb      # back out to the skin + thickness
         Q = np.where(moving[:, None], Qn, Q)
+    # cloth spanning a hollow hangs straight (under the bust: a curtain from the breast down to the ribs) and turns back
+    # onto the body in a hard convex crease, which catches the light like a second pair of nipples. Round the spans
+    # off: a plain Laplacian (it shrinks convex creases, as cloth under tension does) on the well-lifted interior
+    # only (the bust itself is not lifted and keeps its shape), still never into the body.
+    lifted = ((Q - base) * Nd).sum(1)
+    wv = np.clip(blur(((lifted > 0.003) & (near_edge < 0.05) & ~edge).astype(float), 2) * 1.5, 0.0, 1.0)
+    wv[edge] = 0.0
+    for it in range(60):
+        acc = np.zeros_like(Q)
+        for i, j in ((0, 1), (1, 2), (2, 0), (1, 0), (2, 1), (0, 2)):
+            np.add.at(acc, T[:, i], Q[T[:, j]])
+        Qn = Q + (wv * 0.5)[:, None] * (acc / np.maximum(cnt, 1)[:, None] - Q)
+        under = ((Qn - base) * Nb).sum(1)
+        Q = Qn - np.minimum(under, 0.0)[:, None] * Nb
     lift = ((Q - base) * Nd).sum(1)
     Nq = np.zeros_like(Q)
     fn = np.cross(Q[T[:, 1]] - Q[T[:, 0]], Q[T[:, 2]] - Q[T[:, 0]])

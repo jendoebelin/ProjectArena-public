@@ -97,6 +97,21 @@ static void writeRoom(Writer& w, const RoomInfo& ri, uint32_t seq) {
         const RoomInfo::Watcher& s = ri.watchers[i];
         w.put(s.id); w.put(s.where); w.put(s.pos);
     }
+    w.put<uint8_t>((uint8_t)std::min<size_t>(ri.names.size(), 16));
+    for (size_t i = 0; i < ri.names.size() && i < 16; ++i) {
+        w.put(ri.names[i].id);
+        for (int k = 0; k < 16; ++k) w.put<uint8_t>((uint8_t)ri.names[i].name[k]);
+    }
+}
+
+// a name from the network: 16 bytes, upper-case letters, digits and the keyboard's symbols only
+static void readName(Reader& r, char out[17]) {
+    for (int i = 0; i < 16; ++i) out[i] = (char)r.get<uint8_t>();
+    out[16] = 0;
+    for (int i = 0; i < 16; ++i) if (out[i] && (out[i] < 32 || out[i] > 'Z')) out[i] = ' ';
+}
+static void writeName(Writer& w, const char* name) {
+    for (int i = 0; i < 16; ++i) w.put<uint8_t>((uint8_t)name[i]);
 }
 
 static bool readRoom(Reader& r, RoomInfo& ri, uint32_t& lastSeq) {
@@ -118,6 +133,15 @@ static bool readRoom(Reader& r, RoomInfo& ri, uint32_t& lastSeq) {
         if (std::isfinite(s.pos.x) && std::isfinite(s.pos.y) && std::isfinite(s.pos.z)) n.watchers.push_back(s);
     }
     if (!r.ok || (lastSeq && seq <= lastSeq)) return false;
+    if (r.p < r.e) {   // the names (older builds stop before them)
+        uint8_t nn = r.get<uint8_t>();
+        for (uint8_t i = 0; i < nn && i < 16 && r.ok; ++i) {
+            RoomInfo::Name x;
+            x.id = r.get<uint32_t>();
+            readName(r, x.name);
+            if (r.ok) n.names.push_back(x);
+        }
+    }
     lastSeq = seq;
     ri = n;
     return true;
@@ -265,6 +289,7 @@ void Net::goOffline() {
 void Net::setName(const char* n) {
     std::snprintf(name_, sizeof name_, "%s", n && *n ? n : "QUEST");
     for (char* c = name_; *c; ++c) if (*c >= 'a' && *c <= 'z') *c -= 32;   // HUD font is upper-case only
+    if (online_ && serverIp_) relayHello();   // the relay knows us by name (its log, player reports)
 }
 
 std::vector<LanGame> Net::games() const {
@@ -299,7 +324,7 @@ void Net::join(uint32_t ip, bool play) {
     lastEventId_ = 0; pendingEvents_.clear(); resetStats();
     room_ = RoomInfo();
     lastJoin_ = now_; joinPlay_ = play;
-    Writer w; header(w, MSG_JOIN, session_, ++seq_); w.put<uint8_t>(play ? 1 : 0);
+    Writer w; header(w, MSG_JOIN, session_, ++seq_); w.put<uint8_t>(play ? 1 : 0); writeName(w, name_);
     sendTo(w.b.data(), (int)w.b.size(), peerIp_, kPort);
     LOGI("net: joining host %s (%s)", ipStr(ip), play ? "play" : "room");
 }
@@ -535,6 +560,41 @@ void Net::hostRoomInfo() {
     room_.watchers.clear();
     for (const Spectator& sp : spectators_)
         if (sp.where <= 1) room_.watchers.push_back({sp.id, sp.where, sp.pos});
+    room_.names.clear();
+    for (const Member& m : members_) {
+        RoomInfo::Name x; x.id = m.id;
+        std::memcpy(x.name, m.local ? name_ : m.name, 16);
+        if (x.name[0]) room_.names.push_back(x);
+    }
+    for (const Spectator& sp : spectators_)
+        if (sp.where == 1 && sp.name[0]) { RoomInfo::Name x; x.id = sp.id; std::memcpy(x.name, sp.name, 16); room_.names.push_back(x); }
+}
+
+std::string Net::hereName() const {
+    if (mode_ == Mode::Host) return name_;
+    const uint32_t ip = mode_ == Mode::Client ? peerIp_ : (mode_ == Mode::Spectate && presWhere_ == 1) ? presWatch_ : 0;
+    for (const LanGame& lg : games_) if (ip && lg.ip == ip) return lg.name;
+    return "";
+}
+
+std::vector<Net::Person> Net::peopleHere() const {
+    std::vector<Person> v;
+    const RoomInfo* ri = inRoom() ? &room_ : nullptr;
+    if (mode_ == Mode::Spectate && presWhere_ == 1)
+        for (const SpecMatch& m : matches_) if (m.ip == presWatch_) ri = &m.room;
+    if (!ri) return v;
+    auto add = [&](uint32_t id, uint8_t role) {
+        if (!id || id == session_) return;
+        for (const Person& p : v) if (p.id == id) return;
+        Person p; p.id = id; p.role = role;
+        if (const char* n = ri->nameOf(id)) std::memcpy(p.name, n, 16);
+        else std::snprintf(p.name, sizeof p.name, "PLAYER %04X", id & 0xffff);   // a build without names
+        v.push_back(p);
+    };
+    for (int s = 0; s < 2; ++s) add(ri->slot[s], VOICE_PLAYER);
+    for (const RoomInfo::Member& m : ri->members) add(m.id, VOICE_WAITING);
+    for (const RoomInfo::Watcher& w : ri->watchers) if (w.where == 1) add(w.id, VOICE_SPECTATOR);
+    return v;
 }
 
 void Net::sendRoom() {
@@ -675,6 +735,8 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
         } else if (type == MSG_SPECTATE && mode_ == Mode::Host) {
             uint8_t where = r.get<uint8_t>(); Vec3 pos = r.get<Vec3>();
             if (!r.ok || !std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) { where = 2; pos = {}; }
+            char who[17] = {};
+            if (r.ok && r.e - r.p >= 16) readName(r, who);   // 0.3.1+
             Spectator* sp = nullptr;
             for (Spectator& x : spectators_) if (x.ip == fromIp && x.id == session) sp = &x;
             if (!sp && spectators_.size() < 24) {
@@ -683,7 +745,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                 LOGI("net: spectator %s watching", ipStr(fromIp));
                 if (where == 1) notice("A SPECTATOR IS WATCHING");
             }
-            if (sp) { sp->seen = now_; sp->where = where; sp->pos = pos; }
+            if (sp) { sp->seen = now_; sp->where = where; sp->pos = pos; if (who[0]) std::memcpy(sp->name, who, sizeof who); }
         } else if ((type == MSG_STATE || type == MSG_ROOM) && mode_ == Mode::Spectate) {
             SpecMatch* m = nullptr;
             for (SpecMatch& x : matches_) if (x.ip == fromIp) m = &x;
@@ -721,8 +783,9 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             if ((int)members_.size() >= 2 + kMaxWaiting) { reject(fromIp, "ARENA FULL"); continue; }
             Member m;
             m.ip = fromIp; m.id = session; m.seen = now_;
-            members_.push_back(m);
             r.get<uint8_t>();   // "play now" from older builds: everyone now starts in the room's waiting area
+            if (r.e - r.p >= 16) readName(r, m.name);   // 0.3.1+
+            members_.push_back(m);
             compactTank(g, false);   // ... and gets into the tank through the queue (owner request)
             notice("A PLAYER IS WAITING");
             peerSeen_ = now_;
@@ -817,7 +880,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             for (const LanGame& lg : games_) {
                 if (now_ - lg.seen > 2.5) continue;
                 uint8_t where = presWhere_ == 0 ? 0 : (presWatch_ == lg.ip ? 1 : 2);
-                Writer w; header(w, MSG_SPECTATE, session_, 0); w.put(where); w.put(presPos_);
+                Writer w; header(w, MSG_SPECTATE, session_, 0); w.put(where); w.put(presPos_); writeName(w, name_);
                 sendTo(w.b.data(), (int)w.b.size(), lg.ip, kPort);
             }
         }
@@ -892,13 +955,15 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
         return true;   // caller steps; snapshot is sent via sendState
     }
     case Mode::Client: {
+        if (localSlot() < 0)
+            for (const LanGame& lg : games_) if (lg.ip == peerIp_ && now_ - lg.seen < 3.0) g.tun.advanced = lg.advanced;
         Writer w; header(w, MSG_INPUT, session_, ++seq_); writeInput(w, local);
         sendTo(w.b.data(), (int)w.b.size(), peerIp_, kPort);
         const bool known = room_.slot[0] == session_ || room_.slot[1] == session_ ||
                            std::any_of(room_.members.begin(), room_.members.end(), [&](const RoomInfo::Member& m) { return m.id == session_; });
         if (!known && now_ - lastJoin_ > 1.0) {   // the JOIN may have been lost: ask again until the room lists us
             lastJoin_ = now_;
-            Writer j; header(j, MSG_JOIN, session_, ++seq_); j.put<uint8_t>(joinPlay_ ? 1 : 0);
+            Writer j; header(j, MSG_JOIN, session_, ++seq_); j.put<uint8_t>(joinPlay_ ? 1 : 0); writeName(j, name_);
             sendTo(j.b.data(), (int)j.b.size(), peerIp_, kPort);
         }
         const int s = localSlot();

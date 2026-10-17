@@ -158,16 +158,15 @@ void Audio::play(const std::string& name, float gain, float pan, bool loop) {
     voices_.push_back({c, 0, l, r, loop});
 }
 
-void Audio::onEvent(const GameEvent& e, const Vec3& listener) {
-    static const char* names[] = {"Spawn", "Grab", "Throw", "ThrowFail", "Bounce", "ShieldBlock", "ShieldBreak", "HitPlayer",
-                                  "Returned", "Caught", "Foul", "RoundStart", "RoundEnd", "MatchEnd", "Countdown",
-                                  "KnuckleBlock", "Recharge", "Strike", "Overtime", "SpawnRise"};
-    std::string key = names[(int)e.type];
-    if (e.type == EventType::HitPlayer) key = (e.player == 0) ? "HitPlayerSelf" : "HitPlayerOpponent";
-    if (e.type == EventType::RoundEnd || e.type == EventType::MatchEnd) key += (e.player == 0) ? "Win" : "Lose";
+void Audio::onEvent(const GameEvent& e, const Vec3& listener, int local) {
+    std::string key = eventName(e.type);
+    // from the listener's side (it used to be player 0's: the orange player heard "you were hit" when they scored)
+    if (e.type == EventType::HitPlayer) key = (e.player == local) ? "HitPlayerSelf" : "HitPlayerOpponent";
+    if (e.type == EventType::RoundEnd || e.type == EventType::MatchEnd) key += (e.player == local) ? "Win" : "Lose";
     if (e.type == EventType::Throw) key = e.value < 6 ? "ThrowSlow" : e.value < 9 ? "ThrowMed" : e.value < 12 ? "ThrowFast" : "ThrowFull";
     auto it = eventMap_.find(key);
-    if (it == eventMap_.end()) it = eventMap_.find(names[(int)e.type]);
+    if (it == eventMap_.end()) it = eventMap_.find(eventName(e.type));
+    if (it == eventMap_.end() && e.type == EventType::FistBump) it = eventMap_.find("KnuckleBlock");   // a solid knock
     if (it == eventMap_.end()) return;
     float d = length(e.pos - listener);
     float gain = (e.pos.x == 0 && e.pos.y == 0 && e.pos.z == 0) ? 1.f : clampf(2.0f / (1.0f + d), 0.15f, 1.f);

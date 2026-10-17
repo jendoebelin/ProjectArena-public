@@ -1,0 +1,35 @@
+name: Bug report
+description: Something in the game does not work or looks wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Tip: MENU > REPORT BUG in the game also sends us the game's recent log, which helps a lot. Something about another player's behaviour? Use MENU > REPORT PLAYER in the game instead (it stays private)."
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what happened, and what you expected.
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Headset
+      options: [Quest 3, Quest 3S, Quest 2, Quest Pro, PC VR (SteamVR), PC VR (Quest Link / Air Link), Other]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Game version
+      description: From the release you installed, e.g. 0.3.1
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where in the game
+      options: [Practice vs bot, Online room, Home network room, Spectating, Menus, Avatar builder, Other]
+  - type: textarea
+    id: more
+    attributes:
+      label: Screenshots, video or anything else

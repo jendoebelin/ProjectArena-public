@@ -106,6 +106,24 @@ int main() {
     if (!S.net.matches().empty()) std::printf("  (spectator: %zu matches, room members %zu, slots %u %u)\n", S.net.matches().size(),
                                              S.net.matches()[0].room.members.size(), S.net.matches()[0].room.slot[0], S.net.matches()[0].room.slot[1]);
     CHECK(!S.net.matches().empty() && waitingCount(S.net.matches()[0].room) == 4, "the spectator sees the waiting players (red markers)");
+    std::printf("[names: report / mute a player]\n");
+    {
+        auto has = [](const std::vector<Net::Person>& v, const char* name, uint8_t role) {
+            for (const Net::Person& p : v) if (std::strcmp(p.name, name) == 0 && p.role == role) return true;
+            return false;
+        };
+        const char* n2 = H.net.room().nameOf(ns[2]->net.session());
+        CHECK(n2 && std::strcmp(n2, "TWO") == 0, "the host knows a visitor's name from their JOIN");
+        const std::vector<Net::Person> two = ns[2]->net.peopleHere();
+        bool self = false;
+        for (const Net::Person& p : two) self |= p.id == ns[2]->net.session();
+        CHECK(has(two, "HOST", Net::VOICE_PLAYER) && has(two, "ONE", Net::VOICE_PLAYER) && has(two, "THREE", Net::VOICE_WAITING),
+              "a waiting player sees everyone's names and roles in ROOM");
+        CHECK(has(two, "WATCHER", Net::VOICE_SPECTATOR) && !self, "... the spectator at the arena too, but not themselves");
+        CHECK(has(S.net.peopleHere(), "TWO", Net::VOICE_WAITING) && has(S.net.peopleHere(), "HOST", Net::VOICE_PLAYER),
+              "a spectator at the arena sees the room's names");
+        CHECK(H.net.hereName() == "HOST" && ns[2]->net.hereName() == "HOST", "everyone knows the room's name");
+    }
     std::printf("[rotation]\n");
     H.game.match = MatchState::MatchSummary;   // the match ends
     pump(ns, 7.5);

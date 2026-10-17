@@ -79,7 +79,7 @@ static void swingAndRelease(Game& g, PlayerInput in[2], Vec3 dir, float speed, s
 
 // a passive human opponent standing at the far end
 static Game makeGame(const std::vector<CollisionTri>& tris, PlayerInput in[2], bool advanced = false) {
-    Game g; g.setArena(tris); g.tun.advanced = advanced; g.reset(false);
+    Game g; g.setArena(tris); g.tun.advanced = advanced; g.tun.meetTime = 0; g.reset(false);   // no centre meeting
     in[0] = standing(g, 0); in[1] = standing(g, 1);
     run(g, in, 3.6f);
     return g;
@@ -140,7 +140,7 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         CHECK(r.arm[0] && r.arm[1], "both arms solved for tracked hands");
         bool ends = true;
         for (int k = 0; k < 2; ++k) {
-            Vec3 w = in.hand[k].grip.transform({k == 1 ? 0.004f : -0.004f, -0.042f, 0.105f});
+            Vec3 w = in.hand[k].grip.transform({k == 1 ? 0.004f : -0.004f, -0.0142f, 0.0986f});   // plate gauntlet wrist
             if (length(r.fore[k].b - w) > 1e-4f || length(r.upper[k].b - r.fore[k].a) > 1e-6f) ends = false;
         }
         CHECK(ends, "forearm ends inside the gauntlet; the elbow joins both bones");
@@ -217,6 +217,38 @@ int main(int argc, char** argv) {
         CHECK(g.match == MatchState::InProgress, "match in progress after countdown");
         CHECK(std::fabs(g.roundClock - (180.f - 3.5f + 3.0f + 0.1f)) < 1.0f || g.roundClock > 170.f, "Basic: 3 minute match clock");
         CHECK(length(g.pl[0].ball.pos - g.idlePoint(0)) < 0.05f, "idle ball held by damped spring");
+    }
+    {
+        std::printf("[fist bump start (two people)]\n");
+        Game g; g.setArena(tris); g.reset(false);
+        PlayerInput in[2] = {standing(g, 0), standing(g, 1)};
+        run(g, in, 0.1f);
+        CHECK(g.match == MatchState::Meet, "two people meet in the centre before the match");
+        in[0].hand[1].trigger = 1; in[0].hand[1].grip.p = {-0.06f, 1.2f, 0.f};
+        in[1].hand[1].trigger = 0.3f; in[1].hand[1].grip.p = {0.06f, 1.2f, 0.f};
+        run(g, in, 0.2f);
+        CHECK(g.match == MatchState::Meet, "fists together but one trigger not pulled: no bump");
+        in[1].hand[1].trigger = 1;
+        std::vector<GameEvent> log;
+        run(g, in, 0.05f, &log);
+        CHECK(hasEvent(log, EventType::FistBump) && g.match == MatchState::Meet, "fist bump (both triggers): confirmed first (buzz, sound)");
+        log.clear();
+        run(g, in, g.tun.bumpPause + 0.05f, &log);
+        int bumps = 0;
+        for (const GameEvent& e : log) bumps += e.type == EventType::FistBump;
+        CHECK(g.match == MatchState::Countdown && bumps == 0, "... then the countdown, once (holding the fists together does not repeat it)");
+        bool named = true;
+        for (int t = 0; t <= (int)EventType::FistBump; ++t) named &= std::strcmp(eventName((EventType)t), "?") != 0;
+        CHECK(named, "every event has a name (logs and sounds read it: a missing one crashed both headsets)");
+        Game g2; g2.setArena(tris); g2.reset(false);
+        PlayerInput in2[2] = {standing(g2, 0), standing(g2, 1)};
+        run(g2, in2, 0.1f);
+        run(g2, in2, g2.tun.meetTime + 0.1f);
+        CHECK(g2.match == MatchState::Countdown, "no bump: the countdown starts by itself");
+        Game g3; g3.setArena(tris); g3.reset(true);
+        PlayerInput in3[2] = {standing(g3, 0), {}};
+        run(g3, in3, 0.1f);
+        CHECK(g3.match == MatchState::Countdown, "against the bot: no meeting");
     }
     {
         std::printf("[shield needs a held, charged ball]\n");

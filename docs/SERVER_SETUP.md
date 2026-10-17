@@ -37,7 +37,17 @@ Check it: `ssh -i oracle.key ubuntu@PUBLIC_IP "journalctl -u projectarena-relay 
 reports arriving. Reports are saved in `/opt/projectarena/bug_reports`; fetch them with
 `scp -i oracle.key "ubuntu@PUBLIC_IP:/opt/projectarena/bug_reports/*" .`
 
-Updating: copy the new `projectarena_relay.py` up and run `sudo sh setup.sh` again.
+Updating: copy the new `projectarena_relay.py` (and `setup.sh`) up and run `sudo sh setup.sh` again; it restarts
+the relay, which drops everyone for a few seconds (players reconnect by themselves).
+
+**Player reports and bans (moderation):**
+- Player reports are the `player_report_*.txt` files in `/opt/projectarena/bug_reports`. Each one has the reported
+  name, the reason and note, who else was in the room, the game log, and a line
+  `reported player on the relay now: NAME address` (their address at the moment of the report).
+- Ban someone: `ssh -t -i oracle.key ubuntu@PUBLIC_IP "sudo nano /opt/projectarena/bans.txt"`, add a line with their
+  address (`203.0.113.7`) or `name:PLAYERNAME`, save. It takes effect within a few seconds, no restart. Delete the
+  line to lift the ban. An address ban is stronger (a name can be changed), but a home address can change too.
+- Check the folder regularly (a few times a week) once strangers play together; act on reports quickly.
 
 ## Any other Ubuntu server
 

@@ -17,7 +17,13 @@ download, plus the template pack for making your own).
 
 ## Contributing
 
-New outfits, hair, masks and gauntlets are very welcome, as are bug reports and code. See `CONTRIBUTING.md`.
+Everyone can help, no programming needed:
+- **Play and report:** MENU > REPORT BUG in the game, or open an issue (Bug report form).
+- **Make art:** outfits, hair, headgear, masks, gauntlets: download any model from the catalog and the template pack.
+- **Make sounds:** `docs/SOUND_BRIEF.md` lists every sound with what we are looking for.
+- **Ideas and code:** open an issue (Idea form) or a pull request.
+
+How to do each: [CONTRIBUTING.md](CONTRIBUTING.md). Please follow the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Repository
 

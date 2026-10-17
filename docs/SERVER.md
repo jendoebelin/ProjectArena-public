@@ -46,5 +46,14 @@ and **SPECTATE GAMES** work as on a LAN. Switch back to LAN play with the same b
 - Only game packets (max 1200 bytes) are forwarded; each player is rate-limited (1000 packets/s).
 - Players on a different game version do not see each other's games (no confusing half-working matches).
 - Names are limited to A-Z, 0-9, space, '-' and '.'. The server logs only joins and leaves (no packet contents).
-- `--max-clients` caps load. There are no accounts, chat or voice yet; matches are host-authoritative, so a modified
-  host could cheat. Planned: ban list, match reports, server-side match lists with player counts.
+- `--max-clients` caps load. There are no accounts; matches are host-authoritative, so a modified host could cheat.
+  Voice is forwarded live inside a room and never stored.
+
+## Reports and moderation
+- **REPORT BUG** and **REPORT PLAYER** in the game send text reports over TCP to the same port; they are saved in
+  `--reports` (player reports as `player_report_*.txt`). A player report names the reported player, the reason, the
+  reporter's note, everyone who was in the room and the game's recent log; the server adds the address the reported
+  name is connected from, which only you (the operator) see.
+- **Bans:** `--bans bans.txt` (one per line: an IP address, or `name:PLAYERNAME`; `#` starts a comment). The file is
+  re-read within a few seconds of a change: banned players are disconnected and see BANNED when they try again.
+- Players can also mute one person for themselves (REPORT PLAYER > MUTE) or whole groups (SETTINGS > VOICE AND MUTES).

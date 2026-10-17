@@ -110,6 +110,13 @@ struct Tunables {
 
     // ---- match flow
     float countdown = 3.0f;
+    // Match start between two people (owner, 2026-10-16, as in Sparc): both join in the centre of the court; a fist
+    // bump with the triggers pulled sends them to their ends at once, or the countdown does it after meetTime.
+    // 0 = no meeting (the practice bot never meets).
+    float meetTime = 10.0f;
+    float meetSpot = 0.45f;          // each player stands this far from the centre line (heads ~0.9 m apart)
+    float fistBumpDist = 0.20f;      // two closed fists (triggers pulled) closer than this = a bump
+    float bumpPause = 0.8f;          // after the bump: the confirmation (buzz, sound, FIST BUMP!) before the move
     float roundSummaryTime = 4.0f;
 
     // ---- body hit volumes; torso offset below the head
@@ -146,10 +153,15 @@ struct PlayerInput {
 };
 
 enum class BallState : uint8_t { Spawning, Idle, Held, Flying, Dead, Returning };
-enum class MatchState : uint8_t { WaitingForPlayers, Countdown, InProgress, RoundSummary, MatchSummary };
+// Meet (appended, so older builds keep their numbers): two players start a match face to face in the centre
+enum class MatchState : uint8_t { WaitingForPlayers, Countdown, InProgress, RoundSummary, MatchSummary, Meet };
 enum class EventType : uint8_t { Spawn, Grab, Throw, ThrowFail, Bounce, ShieldBlock, ShieldBreak, HitPlayer,
                                  Returned, Caught, Foul, RoundStart, RoundEnd, MatchEnd, Countdown,
-                                 KnuckleBlock, Recharge, Strike, Overtime, SpawnRise };
+                                 KnuckleBlock, Recharge, Strike, Overtime, SpawnRise, FistBump };
+
+// the event's name (logs, sound mapping). One table for everything: two private copies once fell behind the enum
+// and a new event (FistBump) read past their end and crashed both headsets. Unknown values give "?".
+const char* eventName(EventType t);
 
 struct GameEvent {
     EventType type;
@@ -207,6 +219,7 @@ public:
     PlayerState pl[2];
     MatchState match = MatchState::WaitingForPlayers;
     float stateTimer = 0;
+    bool meetBumped = false;    // host: the fist bump happened; the short pause before both go to their ends
     float roundClock = 0;       // Basic: match clock; Advanced: unused (no time limit)
     bool overtime = false;
     int round = 0;
@@ -240,6 +253,7 @@ public:
 
 private:
     void stepMatch(float dt);
+    void startCountdown();   // round 1 of a new match: the 3-2-1
     void stepPlayer(int p, float dt);
     void stepBall(int p, float dt);
     void stepBot(int p, float dt);

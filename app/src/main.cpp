@@ -142,12 +142,14 @@ struct App {
     XrAction thumbstick = XR_NULL_HANDLE, thumbstickL = XR_NULL_HANDLE;
     bool stickLatched = false, stickLatchedY = false, stickLatchedL = false;
     // live gauntlet tuning (applied to the tool frame): pitch about grip X, forward / up offsets
-    float tunePitchDeg = 0, tuneFwd = 0, tuneUp = 0;
+    float tunePitchDeg = -25.f, tuneFwd = 0, tuneUp = 0;   // gauntlet pitch: -25 = fist along the forearm (owner)
     Game game;
     Audio audio;
     Net net;
     double lastTime = 0;
     float hitFlash[2] = {0, 0};
+    float bumpFlash = 0;            // FIST BUMP! (1 -> 0 over a second)
+    double meetTick = 0;            // the meeting's reminder buzz, and the closeness buzz as the fists come together
     // hit fireworks (PORT stand-in for the original's hit VFX): sparks + delayed shells that burst above the court
     struct HitFx { Vec3 pos, dir; float t; int team, victim; uint32_t seed; };
     std::vector<HitFx> hits;
@@ -191,7 +193,8 @@ struct App {
     bool startTitle = true;        // show HOW TO PLAY on the first launch
     bool helpOpen = false;         // the menu shows HOW TO PLAY (first launch, or MENU > HOW TO PLAY)
     bool nameEdit = false;
-    int editTarget = 0;            // keyboard edits: 0 the lobby name, 1 the community server address, 2 team, 3 Sparc server
+    int editTarget = 0;            // keyboard edits: 0 the lobby name, 1 the community server address, 2 team, 3 Sparc server,
+                                   // 4 bug note, 5 player report note
     // EXPERIMENTAL SOFTWARE (title menu): cross-play test with the Sparc Reviver server (app/src/xcompat.h)
     bool xpOpen = false;
     GLuint emblemTex = 0;           // the logo above the main menu (open_emblem)
@@ -203,6 +206,18 @@ struct App {
     std::string bugStatus;          // last result, shown on the page and as a notice
     std::atomic<bool> bugSending{false};
     std::atomic<int> bugDone{0};    // 1 sent, 2 saved (will retry)
+    // REPORT / MUTE A PLAYER page (top-left of the menu in a room or spectating): someone here, a reason, a note.
+    // The report goes the same way as a bug report; a mute silences that person's voice for this session.
+    bool reportOpen = false;
+    // CHOOSE THE RULES page: HOST A ROOM and PLAY PRACTICE open it (ADVANCED first; the last choice is remembered)
+    bool rulesOpen = false, rulesForHost = false;
+    int cfgVersion = 0;             // settings.cfg cfgver= (2: older files may hold a test server address; 3: gauntlet pitch default)
+    uint32_t reportWho = 0;
+    char reportName[17] = {};
+    int reportWhy = -1;
+    std::string reportNote;
+    std::vector<uint32_t> mutedIds;
+    std::vector<Net::Person> reportFake;   // self-test pictures only (--menu report)
     xc::SparcLink sparc;
     std::string sparcAddr = PA_SPARC_SERVER;       // settings.cfg sparcserver= (default from the build)
     std::string sparcId;                           // anonymous install id (files/xc_id), never a device name
@@ -751,18 +766,30 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.0";
+static const char* kAppVersion = "0.3.1";
+static const char* kReportWhy[4] = {"HARASSMENT OR HATE", "OFFENSIVE NAME OR LOOK", "CHEATING", "OTHER"};
 
-static std::string bugReportText(App& a) {
+static std::vector<Net::Person> reportPeople(App& a) { return a.reportFake.empty() ? a.net.peopleHere() : a.reportFake; }
+static bool isMuted(const App& a, uint32_t id) { return std::find(a.mutedIds.begin(), a.mutedIds.end(), id) != a.mutedIds.end(); }
+static const char* roleText(uint8_t role) {
+    return role == Net::VOICE_PLAYER ? "PLAYING" : role == Net::VOICE_SPECTATOR ? "WATCHING" : "WAITING";
+}
+
+// what: the report's own lines (a player report); empty: the bug page's category and note
+static std::string bugReportText(App& a, const char* title = "Project Arena bug report", const std::string& what = "") {
     std::string r;
     char b[256];
     const time_t now = time(nullptr);
     strftime(b, sizeof b, "%Y-%m-%d %H:%M:%S", localtime(&now));
-    r += "Project Arena bug report\n";
+    r += std::string(title) + "\n";
     r += std::string("player: ") + a.net.name() + "\n";
     r += std::string("time: ") + b + "\n";
-    r += std::string("category: ") + (a.bugCat >= 0 ? kBugCats[a.bugCat] : "-") + "\n";
-    r += "note: " + (a.bugNote.empty() ? std::string("-") : a.bugNote) + "\n";
+    if (what.empty()) {
+        r += std::string("category: ") + (a.bugCat >= 0 ? kBugCats[a.bugCat] : "-") + "\n";
+        r += "note: " + (a.bugNote.empty() ? std::string("-") : a.bugNote) + "\n";
+    } else {
+        r += what;
+    }
 #ifdef __ANDROID__
     char model[92] = "?";
     __system_property_get("ro.product.model", model);
@@ -856,8 +883,7 @@ static std::vector<std::string> bugOutbox(App& a) {
     return v;
 }
 
-static void bugSubmit(App& a) {
-    const std::string text = bugReportText(a);
+static void submitReport(App& a, const std::string& text, const char* what) {
     std::string fn;
     if (const char* dir = dataDir(a)) {
         std::string folder = std::string(dir) + "/bug_reports";
@@ -874,11 +900,39 @@ static void bugSubmit(App& a) {
         fn += ".txt";
         if (FILE* f = fopen(fn.c_str(), "wb")) { fwrite(text.data(), 1, text.size(), f); fclose(f); }
     }
-    LOGI("bug report: %s, \"%s\" -> %s", a.bugCat >= 0 ? kBugCats[a.bugCat] : "-", a.bugNote.c_str(), fn.c_str());
+    LOGI("%s -> %s", what, fn.c_str());
     std::vector<std::string> files = bugOutbox(a);
     if (!fn.empty()) files.push_back(fn);
     { std::lock_guard<std::mutex> lk(a.bugMx); a.bugStatus = "SENDING..."; }
     bugSendAll(a, files);
+}
+
+static void bugSubmit(App& a) {
+    std::string what = std::string("bug report: ") + (a.bugCat >= 0 ? kBugCats[a.bugCat] : "-") + ", \"" + a.bugNote + "\"";
+    submitReport(a, bugReportText(a), what.c_str());
+}
+
+// a player report: who, why, where, and everyone else who was there (for the moderators)
+static void playerReportSubmit(App& a) {
+    char b[160];
+    std::string w;
+    std::string role = "-";
+    for (const Net::Person& p : reportPeople(a)) if (p.id == a.reportWho) role = roleText(p.role);
+    snprintf(b, sizeof b, "reported: %s (session %08X, %s)\n", a.reportName, a.reportWho, role.c_str());
+    w += b;
+    w += std::string("reason: ") + (a.reportWhy >= 0 ? kReportWhy[a.reportWhy] : "-") + "\n";
+    w += "note: " + (a.reportNote.empty() ? std::string("-") : a.reportNote) + "\n";
+    snprintf(b, sizeof b, "reporter: %s (session %08X)\n", a.net.name(), a.net.session());
+    w += b;
+    w += "where: room " + (a.net.hereName().empty() ? std::string("-") : a.net.hereName()) + (a.spectating ? " (spectating)" : "") + "\n";
+    w += "people here:";
+    for (const Net::Person& p : reportPeople(a)) {
+        snprintf(b, sizeof b, " %s (%08X, %s);", p.name, p.id, roleText(p.role));
+        w += b;
+    }
+    w += "\n";
+    LOGI("player report: %s, %s", a.reportName, a.reportWhy >= 0 ? kReportWhy[a.reportWhy] : "-");
+    submitReport(a, bugReportText(a, "Project Arena player report", w), "player report");
 }
 
 // EXPERIMENTAL cross-play: the player's own name with the Project Arena tag, so the Sparc server (and its
@@ -922,6 +976,7 @@ static std::string sparcId(App& a) {
 }
 
 static void haptic(App& a, int hand, float amp, float seconds) {
+    if (a.session == XR_NULL_HANDLE || hand < 0 || hand > 1) return;   // no headset (desktop self-tests)
     XrHapticVibration v{XR_TYPE_HAPTIC_VIBRATION};
     v.amplitude = amp;
     v.duration = (XrDuration)(seconds * 1e9);
@@ -961,6 +1016,9 @@ static void viewTarget(const App& a, int local, Vec3& pos, Vec3& fwd) {
     } else if (a.spectating) {
         if (a.watchIp) { pos = {0, 1.0f, 5.4f}; fwd = {0, 0, -1}; }
         else { pos = {0, 0, 0}; fwd = {1, 0, 0}; }
+    } else if (a.game.match == MatchState::Meet && a.net.inRoom()) {   // face to face in the centre (fist bump start)
+        pos = {local == 0 ? -a.game.tun.meetSpot : a.game.tun.meetSpot, 0, 0};
+        fwd = local == 0 ? Vec3{1, 0, 0} : Vec3{-1, 0, 0};
     } else {
         pos = a.game.tun.start[local];
         fwd = local == 0 ? Vec3{1, 0, 0} : Vec3{-1, 0, 0};
@@ -1138,7 +1196,8 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
     bool rc = getBool(a, a.buttonB) || getBool(a, a.thumbClick, a.handPath[0]) || getBool(a, a.thumbClick, a.handPath[1]);
     if (local != g_lastLocal) { a.recentered = false; g_lastLocal = local; }
     {   // moving between playing / the hub / watching a match re-places the viewer
-        uint32_t key = a.spectating ? (a.watchIp ? a.watchIp : 1u) : a.net.localWaiting() ? 10u + (uint32_t)a.net.localSpot() : 0u;
+        uint32_t key = a.spectating ? (a.watchIp ? a.watchIp : 1u) : a.net.localWaiting() ? 10u + (uint32_t)a.net.localSpot()
+                     : (a.game.match == MatchState::Meet && a.net.inRoom()) ? 2u : 0u;   // the centre meeting, then your end
         if (key != a.viewKey) { a.viewKey = key; a.recentered = false; }
     }
     if (a.fadePending && headOk) {   // the previous frame was captured: move now, fade the old view out
@@ -1283,7 +1342,8 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 }
 
 // ------------------------------------------------------------------ lobby menu
-enum class MenuAct { None, MainMenu, Bug, BugCat, BugNote, BugSend, BugCancel, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill };
+enum class MenuAct { None, MainMenu, Nav, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute,
+                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill };
 struct MenuItem {
     std::string label;
     float x, y, w, h;
@@ -1294,14 +1354,36 @@ struct MenuItem {
 
 static void haptic(App& a, int hand, float amp, float seconds);
 
+// side menu (left of the panel): the areas of the game, the current one lit
+enum { NAV_HOME, NAV_PRACTICE, NAV_MULTI, NAV_SPECTATE, NAV_AVATAR, NAV_SETTINGS, NAV_REPORT, NAV_BUG, NAV_HELP, kNavCount };
+static const char* kNavLabels[kNavCount] = {"MAIN MENU", "PRACTICE", "MULTIPLAYER", "SPECTATE", "AVATAR", "SETTINGS",
+                                            "REPORT PLAYER", "REPORT BUG", "HOW TO PLAY"};
+static const float kNavX = -0.67f, kNavTop = 0.29f, kNavStep = 0.088f;
+
+static int navCurrent(const App& a) {
+    if (a.titleOpen || a.xpOpen) return NAV_HOME;
+    if (a.rulesOpen) return a.rulesForHost ? NAV_MULTI : NAV_PRACTICE;
+    if (a.settingsOpen) return NAV_SETTINGS;
+    if (a.reportOpen) return NAV_REPORT;
+    if (a.bugOpen) return NAV_BUG;
+    if (a.helpOpen) return NAV_HELP;
+    return a.net.mode() == Net::Mode::Spectate ? NAV_SPECTATE : NAV_MULTI;
+}
+
 static std::vector<MenuItem> menuItemsBase(App& a);
 static std::vector<MenuItem> menuItems(App& a) {
     std::vector<MenuItem> v = menuItemsBase(a);
-    if (!a.helpOpen && !a.nameEdit && !a.bugOpen && !a.titleOpen && !a.xpOpen) {
-        v.push_back({"REPORT BUG", 0.37f, 0.34f, 0.20f, 0.045f, MenuAct::Bug, 0, true});
+    if (!a.nameEdit) {   // the side menu: every area one click away
         const Net::Mode m = a.net.mode();
-        if (!a.settingsOpen && !a.builderOpen && (m == Net::Mode::Offline || m == Net::Mode::Searching))
-            v.push_back({"< MAIN MENU", -0.37f, 0.34f, 0.20f, 0.045f, MenuAct::MainMenu, 0, true});
+        const bool offline = m == Net::Mode::Offline || m == Net::Mode::Searching;
+        const bool people = a.net.inRoom() || m == Net::Mode::Spectate;
+        for (int i = 0; i < kNavCount; ++i) {
+            bool on = true;
+            if (i == NAV_SPECTATE) on = !a.net.inRoom();
+            if (i == NAV_AVATAR) on = offline && !a.avModels.empty();
+            if (i == NAV_REPORT) on = people;
+            v.push_back({kNavLabels[i], kNavX, kNavTop - kNavStep * i, 0.24f, 0.068f, MenuAct::Nav, (uint32_t)i, on});
+        }
     }
     return v;
 }
@@ -1316,6 +1398,33 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({note, 0, -0.145f, 0.82f, 0.07f, MenuAct::BugNote, 0, true});
         v.push_back({a.bugSending ? "SENDING..." : "SEND REPORT", 0.19f, -0.25f, 0.36f, 0.08f, MenuAct::BugSend, 0, a.bugCat >= 0 && !a.bugSending});
         v.push_back({"CANCEL", -0.19f, -0.25f, 0.36f, 0.08f, MenuAct::BugCancel, 0, true});
+        return v;
+    }
+    if (a.rulesOpen && !a.nameEdit) {
+        v.push_back({"ADVANCED", 0, 0.12f, 0.70f, 0.10f, MenuAct::RulesPick, 1, true});
+        v.push_back({"BASIC", 0, -0.04f, 0.70f, 0.10f, MenuAct::RulesPick, 0, true});
+        v.push_back({"EXPERIMENTAL - COMING LATER", 0, -0.20f, 0.70f, 0.08f, MenuAct::RulesPick, 2, false});
+        v.push_back({"BACK", 0, -0.35f, 0.36f, 0.06f, MenuAct::RulesBack, 0, true});
+        return v;
+    }
+    if (a.reportOpen && !a.nameEdit) {
+        const std::vector<Net::Person> people = reportPeople(a);
+        for (size_t i = 0; i < people.size() && i < 8; ++i) {
+            const Net::Person& p = people[i];
+            std::string l = std::string(p.name) + (isMuted(a, p.id) ? " - MUTED" : std::string(" (") + roleText(p.role) + ")");
+            v.push_back({l, (i % 2) ? 0.21f : -0.21f, 0.15f - 0.07f * (float)(i / 2), 0.40f, 0.06f, MenuAct::ReportWho, p.id, true});
+        }
+        bool here = false;
+        for (const Net::Person& p : people) here |= p.id == a.reportWho;
+        for (int i = 0; i < 4; ++i)
+            v.push_back({kReportWhy[i], (i % 2) ? 0.21f : -0.21f, -0.15f - 0.07f * (i / 2), 0.40f, 0.06f, MenuAct::ReportWhy, (uint32_t)i, here});
+        std::string note = a.reportNote.empty() ? std::string("ADD A NOTE (OPTIONAL)") : "NOTE: " + a.reportNote;
+        if (note.size() > 40) note = note.substr(0, 39) + ".";
+        v.push_back({note, 0, -0.30f, 0.82f, 0.06f, MenuAct::ReportNote, 0, here});
+        v.push_back({here && isMuted(a, a.reportWho) ? "UNMUTE" : "MUTE", -0.28f, -0.39f, 0.25f, 0.07f, MenuAct::ReportMute, 0, here});
+        v.push_back({a.bugSending ? "SENDING..." : "SEND REPORT", 0, -0.39f, 0.25f, 0.07f, MenuAct::ReportSend, 0,
+                     here && a.reportWhy >= 0 && !a.bugSending});
+        v.push_back({"BACK", 0.28f, -0.39f, 0.25f, 0.07f, MenuAct::ReportBack, 0, true});
         return v;
     }
     if (a.helpOpen) {
@@ -1347,7 +1456,9 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"VOICE AND MUTES", 0.19f, -0.18f, 0.36f, 0.08f, MenuAct::VoicePage, 0, true});
         std::string sv = "SERVER: " + (a.serverAddr.empty() ? std::string("NOT SET") : a.serverAddr);
         if (sv.size() > 34) sv = sv.substr(0, 33) + ".";
-        v.push_back({sv, 0, -0.28f, 0.74f, 0.07f, MenuAct::Server, 0, true});
+        const bool custom = PA_DEFAULT_SERVER[0] && a.serverAddr != PA_DEFAULT_SERVER;
+        v.push_back({sv, custom ? -0.12f : 0.f, -0.28f, custom ? 0.50f : 0.74f, 0.07f, MenuAct::Server, 0, true});
+        if (custom) v.push_back({"USE DEFAULT", 0.26f, -0.28f, 0.22f, 0.07f, MenuAct::ServerDefault, 0, true});
         v.push_back({"BACK", 0, -0.37f, 0.36f, 0.06f, MenuAct::Back, 0, true});
         return v;
     }
@@ -1423,10 +1534,11 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         bool mine = (m == Net::Mode::Client && lg.ip == a.net.peerIp());
         char buf[64];
         if (spec) {
-            snprintf(buf, sizeof buf, "%s  %d-%d%s", lg.name, lg.score0, lg.score1, lg.ip == a.watchIp ? "  (WATCHING)" : "");
+            snprintf(buf, sizeof buf, "%s  %s  %d-%d%s", lg.name, lg.advanced ? "ADV" : "BASIC", lg.score0, lg.score1,
+                     lg.ip == a.watchIp ? "  (WATCHING)" : "");
             v.push_back({buf, rx, 0.08f - 0.09f * i, bw, 0.07f, MenuAct::Watch, lg.ip, lg.ip != a.watchIp});
         } else {
-            snprintf(buf, sizeof buf, "JOIN  %s%s", lg.name, mine ? "  (IN)" : lg.full ? "  FULL" : "");
+            snprintf(buf, sizeof buf, "JOIN  %s  %s%s", lg.name, lg.advanced ? "ADVANCED" : "BASIC", mine ? "  (IN)" : lg.full ? "  FULL" : "");
             v.push_back({buf, rx, 0.08f - 0.09f * i, bw, 0.07f, MenuAct::JoinRoom, lg.ip, !lg.full && !mine});   // into the room's waiting area
         }
     }
@@ -1448,6 +1560,24 @@ static void menuActivate(App& a, const MenuItem& it) {
     LOGI("menu: %s", it.label.c_str());
     switch (it.act) {
     case MenuAct::Experimental: a.xpOpen = true; break;
+    case MenuAct::Nav: {
+        a.titleOpen = a.settingsOpen = a.voicePage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen = a.helpOpen = false;
+        a.nameEdit = false;
+        auto go = [&](MenuAct act) { MenuItem x{"", 0, 0, 0, 0, act, 0, true}; menuActivate(a, x); };
+        switch ((int)it.ip) {
+        case NAV_HOME: a.titleOpen = true; break;
+        case NAV_PRACTICE: go(MenuAct::Play); break;
+        case NAV_MULTI: break;   // the multiplayer page (rooms; the spectator's page while spectating)
+        case NAV_SPECTATE: if (a.net.mode() != Net::Mode::Spectate) go(MenuAct::Spectate); break;
+        case NAV_AVATAR: go(MenuAct::Avatar); break;
+        case NAV_SETTINGS: a.settingsOpen = true; break;
+        case NAV_REPORT: go(MenuAct::Report); break;
+        case NAV_BUG: go(MenuAct::Bug); break;
+        case NAV_HELP: a.helpOpen = true; break;
+        default: break;
+        }
+        break;
+    }
     case MenuAct::MainMenu: a.titleOpen = true; a.settingsOpen = false; break;
     case MenuAct::Bug:
         a.bugReturnTitle = a.titleOpen; a.titleOpen = false; a.settingsOpen = false; a.xpOpen = false;
@@ -1458,6 +1588,23 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::BugNote: a.nameEdit = true; a.editTarget = 4; a.nameBuf = a.bugNote; break;
     case MenuAct::BugSend: bugSubmit(a); a.bugOpen = false; a.titleOpen = a.bugReturnTitle; break;
     case MenuAct::BugCancel: a.bugOpen = false; a.titleOpen = a.bugReturnTitle; break;
+    case MenuAct::Report:
+        a.settingsOpen = false; a.voicePage = false; a.reportOpen = true;
+        a.reportWho = 0; a.reportName[0] = 0; a.reportWhy = -1; a.reportNote.clear();
+        break;
+    case MenuAct::ReportWho:
+        a.reportWho = it.ip;
+        for (const Net::Person& p : reportPeople(a)) if (p.id == it.ip) std::memcpy(a.reportName, p.name, sizeof a.reportName);
+        break;
+    case MenuAct::ReportWhy: a.reportWhy = (int)it.ip; break;
+    case MenuAct::ReportNote: a.nameEdit = true; a.editTarget = 5; a.nameBuf = a.reportNote; break;
+    case MenuAct::ReportMute:
+        if (isMuted(a, a.reportWho)) a.mutedIds.erase(std::remove(a.mutedIds.begin(), a.mutedIds.end(), a.reportWho), a.mutedIds.end());
+        else if (a.reportWho) a.mutedIds.push_back(a.reportWho);
+        LOGI("voice: %s %s", a.reportName, isMuted(a, a.reportWho) ? "muted" : "unmuted");
+        break;
+    case MenuAct::ReportSend: playerReportSubmit(a); a.reportOpen = false; break;
+    case MenuAct::ReportBack: a.reportOpen = false; break;
     case MenuAct::Forfeit: a.net.forfeit(); a.menuOpen = false; break;
     case MenuAct::XpBack: a.xpOpen = false; break;
     case MenuAct::XpServer: a.nameEdit = true; a.editTarget = 3; a.nameBuf = a.sparcAddr; break;
@@ -1465,7 +1612,26 @@ static void menuActivate(App& a, const MenuItem& it) {
         if (a.sparc.state() != xc::SparcLink::State::Off && a.sparc.state() != xc::SparcLink::State::Failed) a.sparc.disconnect("LEFT");
         else a.sparc.connect(a.sparcAddr.c_str(), sparcName(a), sparcId(a));
         break;
-    case MenuAct::Host: a.net.host(); break;
+    case MenuAct::Host: a.rulesOpen = true; a.rulesForHost = true; break;   // CHOOSE THE RULES, then the room opens
+    case MenuAct::RulesPick: {
+        if (it.ip > 1) break;   // EXPERIMENTAL: not defined yet
+        const bool adv = it.ip == 1;
+        if (a.game.tun.advanced != adv) {
+            a.game.tun.advanced = adv;
+            a.game.reset(a.game.pl[1].isBot);
+            saveSettings(a);
+        }
+        LOGI("rules -> %s (%s)", adv ? "advanced" : "basic", a.rulesForHost ? "host a room" : "practice");
+        a.rulesOpen = false;
+        if (a.rulesForHost) {
+            a.net.host();
+        } else {
+            a.titleOpen = false; a.menuOpen = false;
+            if (a.net.mode() == Net::Mode::Offline) a.game.reset(true);
+        }
+        break;
+    }
+    case MenuAct::RulesBack: a.rulesOpen = false; if (!a.rulesForHost) a.titleOpen = true; break;
     case MenuAct::Leave: a.net.leave(); break;
     case MenuAct::Join: a.net.join(it.ip, false); a.menuOpen = false; break;         // the room's waiting area, then JOIN QUEUE
     case MenuAct::JoinRoom: a.net.join(it.ip, false); a.menuOpen = false; break;
@@ -1478,7 +1644,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         saveSettings(a);
         break;
     }
-    case MenuAct::Close: a.menuOpen = false; a.nameEdit = false; a.helpOpen = false; a.settingsOpen = false; a.titleOpen = false; a.xpOpen = false; break;
+    case MenuAct::Close: a.menuOpen = false; a.nameEdit = false; a.helpOpen = false; a.settingsOpen = false; a.titleOpen = false; a.xpOpen = false; a.rulesOpen = false; break;
     case MenuAct::Spectate: a.net.spectate(); a.watchIp = 0; a.menuOpen = false; break;
     case MenuAct::Watch: a.watchIp = it.ip; a.menuOpen = false; break;
     case MenuAct::Hub: a.watchIp = 0; a.autoCam = false; a.dirOpen = false; break;
@@ -1487,7 +1653,7 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::ClearWarps: a.warps.clear(); a.warpIdx = -1; a.autoCam = false; saveWarps(a); break;
     case MenuAct::Director: openDirector(a, a.localIn); break;
     case MenuAct::Avatar: a.titleOpen = false; openBuilder(a, a.localIn); break;
-    case MenuAct::Play: a.titleOpen = false; a.menuOpen = false; if (a.net.mode() == Net::Mode::Offline) a.game.reset(true); break;
+    case MenuAct::Play: a.titleOpen = false; a.rulesOpen = true; a.rulesForHost = false; break;   // CHOOSE THE RULES first
     case MenuAct::Multi: a.titleOpen = false; break;
     case MenuAct::Settings: a.settingsOpen = true; break;
     case MenuAct::Back: if (a.voicePage) a.voicePage = false; else a.settingsOpen = false; saveSettings(a); break;
@@ -1502,6 +1668,12 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::Fx: a.fxLevel = (a.fxLevel + 1) % 3; saveSettings(a); break;
     case MenuAct::Name: a.nameEdit = true; a.editTarget = 0; a.nameBuf = a.net.name(); break;
     case MenuAct::Server: a.nameEdit = true; a.editTarget = 1; a.nameBuf = a.serverAddr; break;
+    case MenuAct::ServerDefault:
+        a.serverAddr = PA_DEFAULT_SERVER;
+        saveSettings(a);
+        LOGI("server -> default %s", a.serverAddr.c_str());
+        if (a.net.online()) { a.net.goOffline(); a.net.goOnline(a.serverAddr.c_str()); }
+        break;
     case MenuAct::Online: {
         const bool wasSpec = a.net.mode() == Net::Mode::Spectate;
         if (a.net.online()) a.net.goOffline();
@@ -1518,11 +1690,12 @@ static void menuActivate(App& a, const MenuItem& it) {
         if (const char* ext = dataDir(a))
             if (FILE* fp = fopen((std::string(ext) + "/help_seen").c_str(), "w")) fclose(fp);
         break;
-    case MenuAct::Key: if (a.nameBuf.size() < (a.editTarget == 4 ? 60u : a.editTarget == 1 || a.editTarget == 3 ? 48u : 16u) && !(it.ip == ' ' && (a.nameBuf.empty() || a.nameBuf.back() == ' '))) a.nameBuf += (char)it.ip; break;
+    case MenuAct::Key: if (a.nameBuf.size() < (a.editTarget >= 4 ? 60u : a.editTarget == 1 || a.editTarget == 3 ? 48u : 16u) && !(it.ip == ' ' && (a.nameBuf.empty() || a.nameBuf.back() == ' '))) a.nameBuf += (char)it.ip; break;
     case MenuAct::KeyDel: if (!a.nameBuf.empty()) a.nameBuf.pop_back(); break;
     case MenuAct::KeyDone:
         while (!a.nameBuf.empty() && a.nameBuf.back() == ' ') a.nameBuf.pop_back();
-        if (a.editTarget == 4) { a.bugNote = a.nameBuf; }
+        if (a.editTarget == 5) { a.reportNote = a.nameBuf; }
+        else if (a.editTarget == 4) { a.bugNote = a.nameBuf; }
         else if (a.editTarget == 3) { if (!a.nameBuf.empty()) a.sparcAddr = a.nameBuf; saveSettings(a); }
         else if (a.editTarget == 2) { a.team = a.nameBuf.substr(0, 16); saveSettings(a); a.menuOpen = false; }
         else if (a.editTarget == 1) { a.serverAddr = a.nameBuf; saveSettings(a); if (!a.serverAddr.empty()) a.net.goOnline(a.serverAddr.c_str()); }
@@ -1548,7 +1721,9 @@ static void updateMenu(App& a, PlayerInput& in) {
             if (t > 0 && t < 4) {
                 Vec3 p = o + d * t;
                 Vec3 lp = a.menuPose.q.conj().rotate(p - a.menuPose.p);
-                if (std::fabs(lp.x) < 0.5f && std::fabs(lp.y + 0.09f) < 0.47f) { a.menuHit = p; a.menuHitValid = true; }
+                const bool onPanel = std::fabs(lp.x) < 0.5f && std::fabs(lp.y + 0.09f) < 0.47f;
+                const bool onSide = !a.nameEdit && lp.x > kNavX - 0.15f && lp.x < kNavX + 0.15f && std::fabs(lp.y + 0.09f) < 0.47f;
+                if (onPanel || onSide) { a.menuHit = p; a.menuHitValid = true; }
                 std::vector<MenuItem> items = menuItems(a);
                 for (size_t i = 0; i < items.size(); ++i) {
                     const MenuItem& it = items[i];
@@ -1572,6 +1747,10 @@ static void drawMenu(App& a) {
         a.gfx.drawPanel(Mat4::fromPose({a.menuPose.q, at(x, y, z)}, {w, h, 1}), c);
     };
     auto text = [&](const std::string& s, float x, float y, float h, const float* c) {
+        if (std::fabs(x) < 0.5f) {   // on the panel: keep inside its edges (the font's glyphs are 0.75 x their height)
+            const float room = 2.f * (0.485f - std::fabs(x)), w = 0.75f * h * (float)s.size();
+            if (w > room) h *= room / w;
+        }
         a.gfx.drawText(s, {a.menuPose.q, at(x, y, 0.006f)}, h, c);
     };
     const float bg[4] = {0.004f, 0.007f, 0.016f, 0.90f}, edge[4] = {0.05f, 0.35f, 0.60f, 0.9f};
@@ -1579,12 +1758,32 @@ static void drawMenu(App& a) {
     const float white[4] = {1, 1, 1, 1}, grey[4] = {0.35f, 0.38f, 0.42f, 1}, cyan[4] = {0.3f, 0.85f, 1.0f, 1};
     quad(0, -0.09f, 1.04f, 0.98f, -0.002f, edge);
     quad(0, -0.09f, 1.0f, 0.94f, 0, bg);
+    if (!a.nameEdit) {   // side menu
+        quad(kNavX, -0.09f, 0.30f, 0.98f, -0.002f, edge);
+        quad(kNavX, -0.09f, 0.28f, 0.94f, 0, bg);
+    }
     char buf[96];
     if (a.bugOpen && !a.nameEdit) {
         text("REPORT A BUG", 0, 0.29f, 0.055f, cyan);
         text("WHAT KIND OF PROBLEM? PICK ONE, ADD A NOTE IF YOU LIKE", 0, 0.215f, 0.022f, white);
         text("SENDS THE NOTE, YOUR SETTINGS AND THE GAME'S RECENT LOG - NOTHING ELSE", 0, -0.33f, 0.018f, grey);
         text("TIP: REPORT RIGHT AFTER IT HAPPENS", 0, -0.37f, 0.018f, grey);
+    } else if (a.rulesOpen && !a.nameEdit) {
+        text("CHOOSE THE RULES", 0, 0.29f, 0.055f, cyan);
+        text(a.rulesForHost ? "FOR YOUR ROOM - EVERYONE WHO JOINS PLAYS THESE RULES" : "FOR PRACTICE AGAINST THE BOT", 0, 0.215f, 0.022f, white);
+        text("BEST OF 3 ROUNDS, FIRST TO 4 POINTS - LOW AIM ASSIST", 0, 0.045f, 0.019f, grey);
+        text("3 MINUTE MATCH - KNUCKLE GUARDS - MORE AIM ASSIST", 0, -0.115f, 0.019f, grey);
+        text("NEW RULES TO TRY OUT - NOT READY YET", 0, -0.265f, 0.019f, grey);
+    } else if (a.reportOpen && !a.nameEdit) {
+        text("REPORT OR MUTE A PLAYER", 0, 0.29f, 0.050f, cyan);
+        if (reportPeople(a).empty()) {
+            text("NOBODY ELSE IS HERE", 0, 0.12f, 0.030f, white);
+            text("JOIN A ROOM, OR STAND AT AN ARENA WHILE SPECTATING", 0, 0.06f, 0.020f, grey);
+        } else {
+            text("WHO? PICK THE PERSON, THEN WHY", 0, 0.215f, 0.022f, white);
+        }
+        text("SENT TO THE PROJECT ARENA TEAM WITH THE NAMES HERE AND THE RECENT LOG", 0, -0.50f, 0.017f, grey);
+        text("MUTE SILENCES THEIR VOICE FOR YOU UNTIL YOU QUIT THE GAME", 0, -0.53f, 0.017f, grey);
     } else if (a.xpOpen && !a.nameEdit) {
         const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
         text("EXPERIMENTAL SOFTWARE", 0, 0.29f, 0.050f, cyan);
@@ -1654,29 +1853,41 @@ static void drawMenu(App& a) {
             "B / STICK CLICK: RECENTER    MENU: GAMES, AVATAR"};
         for (int i = 0; i < 9; ++i) text(lines[i], 0, 0.20f - 0.055f * i, 0.024f, i == 8 ? grey : white);
     } else if (a.nameEdit) {
-        text(a.editTarget == 4 ? "BUG NOTE" : a.editTarget == 3 ? "SPARC SERVER" : a.editTarget == 2 ? "TEAM NAME" : a.editTarget ? "COMMUNITY SERVER" : "YOUR NAME", 0, 0.29f, 0.055f, cyan);
+        text(a.editTarget == 5 ? "REPORT NOTE" : a.editTarget == 4 ? "BUG NOTE" : a.editTarget == 3 ? "SPARC SERVER" : a.editTarget == 2 ? "TEAM NAME" : a.editTarget ? "COMMUNITY SERVER" : "YOUR NAME", 0, 0.29f, 0.055f, cyan);
         snprintf(buf, sizeof buf, "%s_", a.nameBuf.c_str());
         text(buf, 0, 0.205f, 0.045f, white);
     } else if (!a.titleOpen && !a.settingsOpen) {
         text("MULTIPLAYER", 0, 0.29f, 0.055f, cyan);
-        snprintf(buf, sizeof buf, "YOU: %s   -   %s", a.net.name(), a.net.status());
+        if (a.net.inRoom())
+            snprintf(buf, sizeof buf, "YOU: %s   -   %s   -   %s RULES", a.net.name(), a.net.status(), a.game.tun.advanced ? "ADVANCED" : "BASIC");
+        else
+            snprintf(buf, sizeof buf, "YOU: %s   -   %s", a.net.name(), a.net.status());
         text(buf, 0, 0.215f, 0.026f, white);
-        text(a.net.online() ? (a.net.onlineReady() ? "GAMES ONLINE" : "CONNECTING...") : "GAMES ON YOUR NETWORK", 0.25f, 0.165f, 0.026f, grey);
+        if (a.net.online() && !a.net.onlineReady()) {
+            const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
+            snprintf(buf, sizeof buf, "CONNECTING TO %s...", a.serverAddr.c_str());
+            text(buf, 0.25f, 0.165f, 0.020f, amber);
+        } else {
+            text(a.net.online() ? "GAMES ONLINE" : "GAMES ON YOUR NETWORK", 0.25f, 0.165f, 0.026f, grey);
+        }
     }
     std::vector<MenuItem> items = menuItems(a);
     int games = 0;
     for (size_t i = 0; i < items.size(); ++i) {
         const MenuItem& it = items[i];
         const bool row = (it.act == MenuAct::Join || it.act == MenuAct::JoinRoom) && it.ip;
-        if (it.act == MenuAct::Join && it.ip) ++games;
-        const bool picked = it.act == MenuAct::BugCat && (int)it.ip == a.bugCat;
+        if ((it.act == MenuAct::Join || it.act == MenuAct::JoinRoom || it.act == MenuAct::Watch) && it.ip) ++games;
+        const bool picked = (it.act == MenuAct::Nav && (int)it.ip == navCurrent(a)) ||
+                            (it.act == MenuAct::BugCat && (int)it.ip == a.bugCat) ||
+                            (it.act == MenuAct::RulesPick && (int)it.ip == (a.game.tun.advanced ? 1 : 0)) || (it.act == MenuAct::ReportWho && it.ip == a.reportWho) ||
+                            (it.act == MenuAct::ReportWhy && (int)it.ip == a.reportWhy);
         quad(it.x, it.y, it.w, it.h, 0.003f, !it.enabled && !row ? dis : ((int)i == a.menuHover || picked) ? hov : btn);
         float th = row ? 0.026f : 0.034f;
         const float tw = th * 0.75f * (float)it.label.size();          // the font's glyphs are 0.75 x their height
         if (tw > it.w * 0.90f) th *= it.w * 0.90f / tw;                 // long labels shrink instead of spilling over
         text(it.label, it.x, it.y, th, it.enabled || row ? white : grey);
     }
-    if (games == 0 && !a.nameEdit && !a.helpOpen && !a.titleOpen && !a.settingsOpen && !a.xpOpen && !a.bugOpen) {
+    if (games == 0 && !a.nameEdit && !a.helpOpen && !a.titleOpen && !a.settingsOpen && !a.xpOpen && !a.bugOpen && !a.reportOpen && !a.rulesOpen) {
         if (int ov = a.net.otherVersion()) {
             const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
             snprintf(buf, sizeof buf, "A GAME ON VERSION %d IS NEARBY", ov);
@@ -1695,7 +1906,7 @@ static void drawMenu(App& a) {
         text(buf, 0, -0.495f, 0.02f, grey);
     }
     if (a.devMode) {   // gauntlet / shield tuning (thumbsticks only act while this menu is open)
-        static const char* kPlace[4] = {"ABOVE", "BELOW", "BACK OF HAND", "PALM SIDE"};
+        static const char* kPlace[4] = {"ABOVE", "BACK OF HAND", "BACK OF HAND (OLD)", "PALM SIDE"};
         snprintf(buf, sizeof buf, "SHIELD: %s (R-STICK L/R)   GAUNTLET PITCH %+.0f (R-STICK U/D)", kPlace[a.game.tun.shieldPlacement & 3],
                  a.tunePitchDeg);
         text(buf, 0, -0.505f, 0.02f, grey);
@@ -1852,11 +2063,8 @@ static void handleEvents(App& a) {
     const int L = a.net.localIndex();
     for (GameEvent e : a.game.events) {
         bool mine = !a.viewing && e.player == L;
-        static const char* kNames[] = {"Spawn", "Grab", "Throw", "ThrowFail", "Bounce", "ShieldBlock", "ShieldBreak", "HitPlayer",
-                                       "Returned", "Caught", "Foul", "RoundStart", "RoundEnd", "MatchEnd", "Countdown",
-                                       "KnuckleBlock", "Recharge", "Strike", "Overtime", "SpawnRise"};
         if (e.type != EventType::Bounce && e.type != EventType::Countdown)
-            LOGI("event %s player %d hand %d value %.2f pos (%.2f %.2f %.2f) spin %.1f", kNames[(int)e.type], e.player, e.hand, e.value,
+            LOGI("event %s player %d hand %d value %.2f pos (%.2f %.2f %.2f) spin %.1f", eventName(e.type), e.player, e.hand, e.value,
                  e.pos.x, e.pos.y, e.pos.z, e.player >= 0 ? length(a.game.pl[e.player].ball.spin) : 0.f);
         switch (e.type) {
         // haptics: strong and long enough to feel through the Touch controllers' motors
@@ -1867,6 +2075,10 @@ static void handleEvents(App& a) {
         case EventType::KnuckleBlock: if (mine && e.hand >= 0) haptic(a, e.hand, 1.0f, 0.20f); break;
         case EventType::Throw: if (mine && e.hand >= 0) haptic(a, e.hand, 0.6f, 0.08f); break;
         case EventType::ThrowFail: if (mine && e.hand >= 0) haptic(a, e.hand, 0.4f, 0.06f); break;
+        case EventType::FistBump:
+            a.bumpFlash = 1.0f;
+            if (!a.net.localWaiting() && !a.spectating) { haptic(a, 0, 1, 0.35f); haptic(a, 1, 1, 0.35f); }
+            break;
         case EventType::HitPlayer:
             a.hitFlash[e.player] = a.fxLevel == 0 ? 0.6f : a.fxLevel == 1 ? 0.3f : 0.1f;
             addHitFx(a, e.pos, e.player, (int)e.value);
@@ -1875,7 +2087,7 @@ static void handleEvents(App& a) {
         default: break;
         }
         if (e.player >= 0 && L == 1) e.player = 1 - e.player;   // audio keys use "player 0 = me"
-        a.audio.onEvent(e, a.game.pl[L].in.head.p);
+        a.audio.onEvent(e, a.game.pl[L].in.head.p, L);
     }
 }
 
@@ -2593,6 +2805,7 @@ static void drawRoomPeople(App& a, int pass) {
         if (q >= 0) snprintf(buf, sizeof buf, "YOU ARE %s IN LINE", q == 0 ? "NEXT" : "SECOND");
         else snprintf(buf, sizeof buf, "%d OF 2 IN THE QUEUE", queued);
         a.gfx.drawText(buf, k * Pose{Quat{}, {0, 0.085f, 0.004f}}, 0.022f, grey);
+        a.gfx.drawText(a.game.tun.advanced ? "ADVANCED RULES" : "BASIC RULES", k * Pose{Quat{}, {0, -0.055f, 0.004f}}, 0.020f, grey);
     }
 }
 
@@ -2691,8 +2904,8 @@ static void drawHub(App& a, int pass) {
             const Game& g = ms[i].game;
             a.gfx.drawText(ms[i].name[0] ? ms[i].name : "LIVE GAME", {lq, at + Vec3{0, 0.46f, 0}}, 0.05f, hover ? cyan : white);
             int secs = (int)std::ceil(std::max(0.f, g.roundClock));
-            if (g.tun.advanced) snprintf(buf, sizeof buf, "%d  -  %d   ROUND %d", g.pl[0].score, g.pl[1].score, std::max(1, g.round));
-            else snprintf(buf, sizeof buf, "%d  -  %d   %d:%02d", g.pl[0].score, g.pl[1].score, secs / 60, secs % 60);
+            if (g.tun.advanced) snprintf(buf, sizeof buf, "ADVANCED   %d  -  %d   ROUND %d", g.pl[0].score, g.pl[1].score, std::max(1, g.round));
+            else snprintf(buf, sizeof buf, "BASIC   %d  -  %d   %d:%02d", g.pl[0].score, g.pl[1].score, secs / 60, secs % 60);
             a.gfx.drawText(buf, {lq, at + Vec3{0, 0.39f, 0}}, 0.04f, grey);
         }
     }
@@ -2809,6 +3022,7 @@ static void updateVoice(App& a) {
     Vec3 f = a.viewHead.q.rotate({0, 0, -1}), right = normalize(cross(f, Vec3{0, 1, 0}));
     for (const Net::VoiceFrame& v : a.net.voiceInbox()) {
         if (a.muteAll || (v.role == Net::VOICE_SPECTATOR && a.muteSpectators) || (v.role != Net::VOICE_SPECTATOR && a.mutePlayers)) continue;
+        if (isMuted(a, v.speaker)) continue;   // REPORT PLAYER > MUTE
         int16_t pcm[Net::kVoiceSamples];
         for (int i = 0; i < Net::kVoiceSamples; ++i) pcm[i] = ulawDecode(v.data[i]);
         float gain = 1.f, pan = 0.f;
@@ -3114,16 +3328,34 @@ static void drawWorld(App& a, int pass) {
         snprintf(buf, sizeof buf, "STRIKES %d", g.pl[L].strikesAgainst);
         txt(buf, 0.80f, -0.22f, 0.05f, grey);
         txt(g.pl[L].ball.charged ? "BALL CHARGED" : "NO CHARGE", 0, -0.24f, 0.045f, g.pl[L].ball.charged ? myC : grey);
-        txt(a.net.status(), 0, -0.42f, 0.045f, grey);
+        snprintf(buf, sizeof buf, "%s  -  %s RULES", a.net.status(), g.tun.advanced ? "ADVANCED" : "BASIC");
+        txt(buf, 0, -0.42f, 0.045f, grey);
         const char* banner = nullptr;
         switch (g.match) {
         case MatchState::WaitingForPlayers: banner = "WAITING FOR PLAYERS"; break;
+        case MatchState::Meet: snprintf(buf, sizeof buf, "FIST BUMP TO START   %d", (int)std::ceil(g.stateTimer)); banner = buf; break;
         case MatchState::Countdown: snprintf(buf, sizeof buf, "ROUND %d   %d", g.round, (int)std::ceil(g.stateTimer)); banner = buf; break;
         case MatchState::RoundSummary: banner = g.lastRoundWinner == L ? "ROUND WON" : "ROUND LOST"; break;
         case MatchState::MatchSummary: banner = g.matchWinner == L ? "YOU WIN  -  PRESS A" : "YOU LOSE  -  PRESS A"; break;
         default: break;
         }
         if (banner) a.gfx.drawText(banner, {faceP0, {-1.5f * sx, 2.2f, 0}}, 0.15f, white);
+        if (a.bumpFlash > 0 && !a.spectating && !a.net.localWaiting()) {
+            const float gold[4] = {1.0f, 0.85f, 0.3f, std::min(1.f, a.bumpFlash * 2.f)};
+            const Quat face = Quat::axisAngle({0, 1, 0}, deg2rad(L == 0 ? -90.f : 90.f));
+            a.gfx.drawText("FIST BUMP!", {face, {L == 0 ? 1.6f : -1.6f, 2.30f, 0}}, 0.12f, gold);
+        }
+        if (g.match == MatchState::Meet && a.bumpFlash <= 0 && !a.spectating && !a.net.localWaiting()) {   // between the two players
+            const float cyanT[4] = {0.3f, 0.85f, 1.0f, 1};
+            const Quat face = Quat::axisAngle({0, 1, 0}, deg2rad(L == 0 ? -90.f : 90.f));
+            const float pulse = 0.5f + 0.5f * std::sin((float)nowSeconds() * 5.f);
+            const float glowT[4] = {0.3f, 0.85f, 1.0f, 0.55f + 0.35f * pulse};
+            a.gfx.drawSprite({0, 1.2f, 0}, 0.10f + 0.04f * pulse, glowT, a.viewHead.p, 0);   // meet here
+            a.gfx.drawText("BUMP HERE", {face, {L == 0 ? 0.08f : -0.08f, 1.36f, 0}}, 0.035f, cyanT);
+            a.gfx.drawText("BUMP FISTS - HOLD BOTH TRIGGERS", {face, {L == 0 ? 1.6f : -1.6f, 2.15f, 0}}, 0.08f, cyanT);   // above the other player
+            snprintf(buf, sizeof buf, "OR THE MATCH STARTS IN %d", (int)std::ceil(g.stateTimer));
+            a.gfx.drawText(buf, {face, {L == 0 ? 1.6f : -1.6f, 2.03f, 0}}, 0.05f, white);
+        }
         if (const char* note = a.net.noticeText()) {
             const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
             a.gfx.drawText(note, {faceP0, {-1.5f * sx, 1.9f, 0}}, 0.12f, amber);
@@ -3158,6 +3390,21 @@ static bool renderFrame(App& a) {
     in[L] = readInput(a, predicted, L);
     a.localIn = in[L];
     a.viewHead = in[L].head;
+    a.bumpFlash = std::max(0.f, a.bumpFlash - dt);
+    if (a.game.match == MatchState::Meet && a.net.inRoom() && !a.net.localWaiting() && !a.spectating) {
+        // closer fists buzz harder (you can feel the other hand coming); otherwise a light reminder every 2 s
+        const PlayerState& o = a.game.pl[1 - L];
+        float best = 9.f;
+        int bh = 1;
+        for (int h = 0; h < 2; ++h)
+            for (int oh = 0; oh < 2; ++oh)
+                if (in[L].hand[h].tracked && o.in.hand[oh].tracked) {
+                    const float d = length(in[L].hand[h].grip.p - o.in.hand[oh].grip.p);
+                    if (d < best) { best = d; bh = h; }
+                }
+        if (best < 0.45f && t - a.meetTick > 0.12) { a.meetTick = t; haptic(a, bh, 0.15f + 0.6f * (1.f - best / 0.45f), 0.05f); }
+        else if (t - a.meetTick > 2.0) { a.meetTick = t; haptic(a, 0, 0.25f, 0.06f); haptic(a, 1, 0.25f, 0.06f); }
+    }
     if (a.game.pl[1].isBot) a.game.pl[1].in.avatar = a.botAvatar;
     updateHub(a, in[L]);
     updateQueueKiosk(a, in[L]);
@@ -3468,6 +3715,7 @@ static void saveSettings(App& a) {
     if (!ext) return;
     std::string f = std::string(ext) + "/settings.cfg";
     if (FILE* fp = fopen(f.c_str(), "w")) {
+        fprintf(fp, "cfgver=3\n");
         fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\nteam=%s\nserver=%s\nsparcserver=%s\n",
                 a.game.tun.advanced ? 1 : 0, a.game.tun.shieldPlacement, a.tunePitchDeg, a.tuneFwd, a.tuneUp, a.volume,
                 a.pointerHand, a.fxLevel, a.hideOutside ? 1 : 0, a.voiceMode, a.muteSpectators ? 1 : 0, a.mutePlayers ? 1 : 0,
@@ -3505,7 +3753,8 @@ static void loadSettings(App& a) {
         float v;
         if (sscanf(line, "%31[^=]=%f", key, &v) != 2) continue;
         std::string k = key;
-        if (k == "advanced") a.game.tun.advanced = v != 0;
+        if (k == "cfgver") a.cfgVersion = (int)v;
+        else if (k == "advanced") a.game.tun.advanced = v != 0;
         else if (k == "shield") a.game.tun.shieldPlacement = ((int)v) & 3;
         else if (k == "pitch") a.tunePitchDeg = clampf(v, -60, 60);
         else if (k == "fwd") a.tuneFwd = clampf(v, -0.2f, 0.2f);
@@ -3555,13 +3804,40 @@ static void loadPlayerName(App& a) {
     LOGI("player name: %s", a.net.name());
 }
 
+// a LAN / loopback address ("192.168.1.20:47780", "10.x", "172.16-31.x", "127.x", "localhost")
+static bool isPrivateHost(const std::string& hp) {
+    const std::string h = hp.substr(0, hp.find(':'));
+    int b0 = -1, b1 = -1;
+    if (h == "localhost") return true;
+    if (sscanf(h.c_str(), "%d.%d", &b0, &b1) != 2) return false;
+    return b0 == 10 || b0 == 127 || (b0 == 192 && b1 == 168) || (b0 == 172 && b1 >= 16 && b1 <= 31);
+}
+
 static void startUp(App& a) {
     logOpenFile(dataDir(a));
     a.net.init();
     loadPlayerName(a);
     loadAvatar(a);
+    a.game.tun.advanced = true;   // the default rules (owner: Advanced is the most played); settings.cfg advanced= wins
     loadSettings(a);
     if (a.serverAddr.empty() && PA_DEFAULT_SERVER[0]) a.serverAddr = PA_DEFAULT_SERVER;   // the community server of this build
+    // settings from before 0.3.1 can hold a local test server (a developer PC on the home network, e.g. 192.168.x.x):
+    // it made two headsets look for each other on different servers. Those move to this build's server, once.
+    if (a.cfgVersion < 2 && PA_DEFAULT_SERVER[0] && a.serverAddr != PA_DEFAULT_SERVER && isPrivateHost(a.serverAddr)) {
+        LOGI("settings: server %s (a local test address from an older build) -> %s", a.serverAddr.c_str(), PA_DEFAULT_SERVER);
+        a.serverAddr = PA_DEFAULT_SERVER;
+        saveSettings(a);
+    }
+    if (a.cfgVersion < 3 && a.tunePitchDeg == 0.f) {   // 0.3.1: the gauntlet's new default angle (saved 0 = never tuned)
+        a.tunePitchDeg = -25.f;
+        LOGI("settings: gauntlet pitch 0 -> -25 (new default)");
+        saveSettings(a);
+    }
+    if (a.cfgVersion < 2 && a.sparcAddr != PA_SPARC_SERVER) {   // EXPERIMENTAL cross-play: test addresses from older builds
+        LOGI("settings: cross-play server %s -> %s", a.sparcAddr.c_str(), PA_SPARC_SERVER[0] ? PA_SPARC_SERVER : "(none)");
+        a.sparcAddr = PA_SPARC_SERVER;
+        saveSettings(a);
+    }
     a.net.setBotFill(a.botFill);
     if (a.onlinePref && !a.serverAddr.empty()) a.net.goOnline(a.serverAddr.c_str());
     if (!a.serverAddr.empty()) { std::vector<std::string> ob = bugOutbox(a); if (!ob.empty()) bugSendAll(a, ob); }   // reports saved earlier
@@ -3650,6 +3926,37 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
     if (v.custom) eye = {Quat::axisAngle({0, 1, 0}, deg2rad(v.yaw)) * Quat::axisAngle({1, 0, 0}, deg2rad(v.pitch)), v.p};
     const float ty = std::tan(deg2rad(v.fovY) * 0.5f), tx = ty * W / H;
     a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(tx), std::atan(tx), std::atan(ty), -std::atan(ty), 0.05f, 2000.f), eye.p);
+    if (v.scene == "meet") {   // the fist bump start: both players face to face in the centre, right fists out
+        Game& g = a.game;
+        g.match = MatchState::Meet;
+        g.stateTimer = 7.f;
+        a.viewing = true;
+        const AvatarDesc looks[2] = {avatar::preset(10), avatar::preset(12)};
+        for (int p = 0; p < 2; ++p) {
+            const float side = p ? 1.f : -1.f;
+            PlayerInput in;
+            in.headTracked = true;
+            const Quat q = Quat::axisAngle({0, 1, 0}, p ? kPi * 0.5f : -kPi * 0.5f);
+            in.head = {q, Vec3{g.tun.meetSpot * side, 1.64f, 0.f}};
+            in.avatar = looks[p];
+            for (int h = 0; h < 2; ++h) in.hand[h].tracked = true;
+            in.hand[1].grip = {q, in.head.p + q.rotate({0.10f, -0.42f, -0.36f})};
+            in.hand[0].grip = {q, in.head.p + q.rotate({-0.22f, -0.62f, -0.08f})};
+            a.viewIn[p] = in;
+            a.viewInValid[p] = true;
+            g.pl[p].in = in;
+            g.pl[p].isBot = false;
+        }
+        // every kind of event through the real handlers (logs, sounds, haptics): a missing name once crashed both headsets
+        for (int t = 0; t <= (int)EventType::FistBump; ++t) {
+            GameEvent e{};
+            e.type = (EventType)t; e.player = 0; e.hand = -1;
+            g.events.push_back(e);
+        }
+        handleEvents(a);
+        g.events.clear();
+        LOGI("selftest: all %d event kinds handled", (int)EventType::FistBump + 1);
+    }
     if (v.scene == "action") {   // store art: blue throws, orange raises a shield, the ball mid-court
         Game& g = a.game;
         g.match = MatchState::InProgress;
@@ -3704,6 +4011,14 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         if (v.menu == "name") { a.nameEdit = true; a.editTarget = 0; a.nameBuf = "MOJO"; }
         if (v.menu == "spectate") a.net.spectate();
         if (v.menu == "bug") { a.bugOpen = true; a.bugCat = 1; a.bugNote = "BALL WENT THROUGH THE WALL"; }
+        if (v.menu == "rules") { a.rulesOpen = true; a.rulesForHost = true; a.game.tun.advanced = true; }
+        if (v.menu == "report") {   // a room of example people (pictures of the page only)
+            const char* nm[5] = {"MOJO", "SPARKY", "QUEST7", "ZAP_ZAP", "WATCHER"};
+            const uint8_t ro[5] = {Net::VOICE_PLAYER, Net::VOICE_WAITING, Net::VOICE_WAITING, Net::VOICE_WAITING, Net::VOICE_SPECTATOR};
+            for (int i = 0; i < 5; ++i) { Net::Person p; p.id = 0x1000u + i; p.role = ro[i]; std::snprintf(p.name, sizeof p.name, "%s", nm[i]); a.reportFake.push_back(p); }
+            a.reportOpen = true; a.reportWho = 0x1001u; std::snprintf(a.reportName, sizeof a.reportName, "SPARKY"); a.reportWhy = 0;
+            a.reportNote = "SHOUTING INSULTS IN THE WAITING AREA"; a.mutedIds.push_back(0x1001u);
+        }
         a.menuPose = {eye.q, eye.transform({0, 0.09f, -0.95f})};
         a.viewHead = eye;
         a.localIn.head = eye;
@@ -3716,8 +4031,8 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         const float d = 2.f, halfH = d * ty;
         glDisable(GL_DEPTH_TEST);
         const float glow[4] = {0.15f, 0.75f, 1.f, 0.35f}, white[4] = {1, 1, 1, 1};
-        for (int k = 0; k < 2; ++k) {
-            const float h = v.titleH * 2 * halfH * (k ? 1.f : 1.06f);
+        for (int k = v.titleH < 0 ? 1 : 0; k < 2; ++k) {   // a negative height: the white letters only (the glow is added later)
+            const float h = std::fabs(v.titleH) * 2 * halfH * (k ? 1.f : 1.06f);
             Pose tp{eye.q, eye.transform({0, v.titleY * halfH, -d + (k ? 0.f : 0.01f)})};
             a.gfx.drawText(v.title, tp, h, k ? white : glow);
         }
@@ -3745,6 +4060,7 @@ int main(int argc, char** argv) {
     const char* probeAddr = nullptr;
     const char* bugServer = nullptr;
     const char* bugNoteArg = nullptr;
+    bool playerReport = false;   // --player-report host:port NOTE: a REPORT PLAYER report about an example person
     const char* probeName = nullptr;
     double probeSeconds = 60;
     bool noDialog = false;
@@ -3764,6 +4080,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--menu") && i + 1 < argc) view.menu = argv[++i];
         else if (!strcmp(argv[i], "--scene") && i + 1 < argc) view.scene = argv[++i];
         else if (!strcmp(argv[i], "--bug-report") && i + 2 < argc) { bugServer = argv[i + 1]; bugNoteArg = argv[i + 2]; i += 2; }
+        else if (!strcmp(argv[i], "--player-report") && i + 2 < argc) { bugServer = argv[i + 1]; bugNoteArg = argv[i + 2]; i += 2; playerReport = true; }
         else if (!strcmp(argv[i], "--xc-probe") && i + 2 < argc) { probeAddr = argv[i + 1]; probeName = argv[i + 2]; i += 2; }
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) probeSeconds = atof(argv[++i]);
         else if (!strcmp(argv[i], "--no-dialog")) noDialog = true;
@@ -3789,9 +4106,16 @@ int main(int argc, char** argv) {
         loadPlayerName(a);
         loadAvatar(a);
         a.serverAddr = bugServer;
-        a.bugCat = 5;
-        a.bugNote = bugNoteArg;
-        bugSubmit(a);
+        if (playerReport) {
+            Net::Person p; p.id = 0x1234ABCDu; p.role = Net::VOICE_WAITING; std::snprintf(p.name, sizeof p.name, "EXAMPLE");
+            a.reportFake.push_back(p);
+            a.reportWho = p.id; std::memcpy(a.reportName, p.name, sizeof a.reportName); a.reportWhy = 3; a.reportNote = bugNoteArg;
+            playerReportSubmit(a);
+        } else {
+            a.bugCat = 5;
+            a.bugNote = bugNoteArg;
+            bugSubmit(a);
+        }
         for (int k = 0; k < 200 && a.bugDone == 0; ++k) Sleep(50);
         std::printf("%s\n", a.bugStatus.c_str());
         return a.bugDone == 1 ? 0 : 5;

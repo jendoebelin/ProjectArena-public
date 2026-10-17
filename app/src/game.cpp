@@ -93,7 +93,9 @@ Pose Game::shieldLocal(int h) const {
     switch (tun.shieldPlacement & 3) {
     default:
     case 0: return {Quat{}, tun.shieldOffset};                                                // above, ahead (ShieldTransform)
-    case 1: return {Quat::axisAngle({0, 0, 1}, kPi), {0.0f, -0.10f, -0.20f}};               // below the hand
+    // on the back of the hand, standing out from the outside of the arm and running back along the forearm (plate
+    // normal = grip X, long side along the forearm), as in the owner's reference from the original (2026-10-17)
+    case 1: return {Quat::axisAngle({0, 0, 1}, -side * kPi * 0.5f), {side * 0.07f, 0.0f, 0.06f}};
     case 2: return {Quat::axisAngle({0, 0, 1}, -side * kPi * 0.5f), {side * 0.10f, 0.0f, -0.08f}};   // back of the hand
     case 3: return {Quat::axisAngle({0, 0, 1}, side * kPi * 0.5f), {-side * 0.10f, 0.0f, -0.08f}};   // palm side
     }
@@ -138,6 +140,23 @@ Vec3 Game::handVelocity(int p, int h, float t) const {
     return (hs.hist[newest] - hs.hist[oldest]) / dt;
 }
 
+const char* eventName(EventType t) {
+    switch (t) {
+    case EventType::Spawn: return "Spawn";               case EventType::Grab: return "Grab";
+    case EventType::Throw: return "Throw";               case EventType::ThrowFail: return "ThrowFail";
+    case EventType::Bounce: return "Bounce";             case EventType::ShieldBlock: return "ShieldBlock";
+    case EventType::ShieldBreak: return "ShieldBreak";   case EventType::HitPlayer: return "HitPlayer";
+    case EventType::Returned: return "Returned";         case EventType::Caught: return "Caught";
+    case EventType::Foul: return "Foul";                 case EventType::RoundStart: return "RoundStart";
+    case EventType::RoundEnd: return "RoundEnd";         case EventType::MatchEnd: return "MatchEnd";
+    case EventType::Countdown: return "Countdown";       case EventType::KnuckleBlock: return "KnuckleBlock";
+    case EventType::Recharge: return "Recharge";         case EventType::Strike: return "Strike";
+    case EventType::Overtime: return "Overtime";         case EventType::SpawnRise: return "SpawnRise";
+    case EventType::FistBump: return "FistBump";
+    }
+    return "?";
+}
+
 void Game::reset(bool player1IsBot) {
     for (int p = 0; p < 2; ++p) {
         PlayerState& s = pl[p];
@@ -150,6 +169,7 @@ void Game::reset(bool player1IsBot) {
     }
     match = MatchState::WaitingForPlayers;
     stateTimer = 0;
+    meetBumped = false;
     round = 0;
     overtime = false;
     roundClock = tun.basicMatchTime;
@@ -652,18 +672,48 @@ void Game::stepBot(int p, float dt) {
     }
 }
 
+void Game::startCountdown() {
+    match = MatchState::Countdown;
+    stateTimer = tun.countdown;
+    round = 1;
+    roundClock = tun.basicMatchTime;
+    overtime = false;
+    emit(EventType::Countdown, -1, -1, {}, tun.countdown);
+}
+
 void Game::stepMatch(float dt) {
     switch (match) {
     case MatchState::WaitingForPlayers:
         if (pl[0].in.headTracked && pl[1].in.headTracked) {
-            match = MatchState::Countdown;
-            stateTimer = tun.countdown;
-            round = 1;
-            roundClock = tun.basicMatchTime;
-            overtime = false;
-            emit(EventType::Countdown, -1, -1, {}, tun.countdown);
+            if (!pl[0].isBot && !pl[1].isBot && tun.meetTime > 0) {   // two people: meet in the centre first
+                match = MatchState::Meet;
+                stateTimer = tun.meetTime;
+            } else {
+                startCountdown();
+            }
         }
         break;
+    case MatchState::Meet: {
+        stateTimer -= dt;
+        bool bump = false;
+        Vec3 at;
+        for (int h0 = 0; h0 < 2; ++h0)
+            for (int h1 = 0; h1 < 2; ++h1) {
+                const HandInput& a = pl[0].in.hand[h0];
+                const HandInput& b = pl[1].in.hand[h1];
+                if (a.tracked && b.tracked && a.trigger > 0.7f && b.trigger > 0.7f && length(a.grip.p - b.grip.p) < tun.fistBumpDist) {
+                    bump = true;
+                    at = (a.grip.p + b.grip.p) * 0.5f;
+                }
+            }
+        if (bump && !meetBumped) {   // confirm it (buzz, sound, FIST BUMP!) for a moment, then both go to their ends
+            meetBumped = true;
+            emit(EventType::FistBump, -1, -1, at, 0);
+            stateTimer = std::min(stateTimer, tun.bumpPause);
+        }
+        if (stateTimer <= 0) { meetBumped = false; startCountdown(); }
+        break;
+    }
     case MatchState::Countdown: {
         float before = stateTimer;
         stateTimer -= dt;
