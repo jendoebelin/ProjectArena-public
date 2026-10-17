@@ -31,7 +31,9 @@ Questions, or not sure where something fits? Open an issue, or email vrsportsfan
 `docs/SOUND_BRIEF.md` lists every sound the game plays: when it plays, how long and how loud it should be, and the
 style we are after (subtle, short, clean sci-fi sport; no music or voices in effects). To propose a sound:
 
-1. Make it (record, synthesize, or generate with a tool whose terms let you give it away under CC BY 4.0).
+1. Make it yourself: record or synthesize it. AI sound generators usually do not let you give their output away
+   under CC BY 4.0 (ElevenLabs sound effects explicitly forbid sharing them as audio files), so please do not submit
+   generated audio unless its terms allow that.
 2. Name the WAV after its slot (`Grab.wav`, `ShieldBlock.wav`, ...) and try it in your build:
    `python -I tools/import_sounds.py <folder>` fits it to the slot (trim, length, loudness), then build and play.
 3. Put the original WAV in `contrib/sound/<slot>/` with a `README.md` (who made it, how, the licence) and open a pull

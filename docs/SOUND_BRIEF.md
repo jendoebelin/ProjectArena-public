@@ -6,6 +6,8 @@ and a prompt for each.
 
 ## How to make them
 
+*The generator workflow below applies only once the rights above are cleared.*
+
 **ElevenLabs → Sound Effects** (every effect, the crowd, the ambience):
 - Paste the prompt; set **Duration** to the "length" given (or Auto for the short ones); **Prompt influence** about
   0.5 (higher = follows the words more literally).
@@ -26,10 +28,20 @@ It trims the silence, cuts each to its slot's length, sets each slot's loudness 
 ambience loop seamlessly, and writes `app/assets_open/audio/`. Slots you have not made yet keep today's sound, so it
 can be done a few at a time. Then rebuild and listen in the headset. To go back: `python -I tools/gen_open_audio.py`.
 
-**Rights:** use the outputs from your paid plans (both allow commercial use on paid tiers; check the current terms).
-The art licence (`LICENSE-ASSETS.md`, CC BY 4.0) lets anyone reuse our assets: before the public release, decide
-whether the generated sounds go under it and add a credit line ("Sound effects generated with ElevenLabs; music
-generated with Suno"). Never ask either tool for a sound "like Sparc" or any other game.
+**Rights (read first).** Project Arena's sounds are open: they are in the public repository, the catalog offers each
+one as a download, and they are licensed CC BY 4.0 (`LICENSE-ASSETS.md`). Generated audio does not fit that:
+- **ElevenLabs sound effects** may be used inside a game, but its terms (ElevenCreative Terms, Exhibit 4 section 2)
+  forbid making the output "available as isolated audio files or samples" or "as part of any sound, sample, effects
+  ... library or other collection of sounds". So ElevenLabs effects must not go in the repository, the catalog, a
+  pull request, or loose WAVs in the PC download, and cannot be licensed CC BY, without written permission from
+  ElevenLabs.
+- **Suno** assigns its rights in Pro / Premier output to you, but does not promise that copyright exists in it and
+  says nothing about open licences; copies must come from Suno's own download channels. Treat it as unsettled.
+
+What this means: the open sound set stays **original** (made by `tools/gen_open_audio.py`, or recorded / synthesized
+by people who can license it CC BY). This brief is the target for that set. Generated audio is only an option with
+written permission (or a licence that allows CC BY), and then it is credited and kept apart from the CC BY assets.
+Never ask any tool for a sound "like Sparc" or any other game.
 
 ## The style (put in mind for every prompt)
 

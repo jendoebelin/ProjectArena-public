@@ -140,7 +140,7 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         CHECK(r.arm[0] && r.arm[1], "both arms solved for tracked hands");
         bool ends = true;
         for (int k = 0; k < 2; ++k) {
-            Vec3 w = in.hand[k].grip.transform({k == 1 ? 0.004f : -0.004f, -0.0142f, 0.0986f});   // plate gauntlet wrist
+            Vec3 w = in.hand[k].grip.transform({k == 1 ? 0.0267f : -0.0267f, -0.0068f, 0.0876f});   // plate gauntlet wrist
             if (length(r.fore[k].b - w) > 1e-4f || length(r.upper[k].b - r.fore[k].a) > 1e-6f) ends = false;
         }
         CHECK(ends, "forearm ends inside the gauntlet; the elbow joins both bones");

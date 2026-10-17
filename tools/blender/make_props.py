@@ -281,6 +281,9 @@ def _spike(b, mat, base, direction, r, h, segs=4):
 
 
 WRIST_TILT = math.radians(30.0)   # plate gauntlets: the cuff turned up from straight back (see gauntlet())
+# and swung 32 deg about the catalog camera's line of sight (owner's edit of P10 / P11, 2026-10-17: the bell higher)
+WRIST_SWING = math.radians(32.0)
+WRIST_SWING_AXIS = (-0.502, 0.772, 0.390)
 
 
 def gauntlet(b, style):
@@ -426,7 +429,7 @@ def gauntlet(b, style):
     # suit's bracer: owner, P10-P12, 2026-10-17): the wrist pieces turn up WRIST_TILT about the wrist joint, nearer
     # a straight wrist round the handle. app/src/avatar.cpp attaches the forearm along the same direction.
     wrist = Vector((0.004, -0.050, -0.040))
-    Rw = Matrix.Rotation(-WRIST_TILT, 3, 'X')
+    Rw = Matrix.Rotation(WRIST_SWING, 3, Vector(WRIST_SWING_AXIS)) @ Matrix.Rotation(-WRIST_TILT, 3, 'X')
 
     def wp(v):   # a wrist piece's point, turned with the wrist
         return wrist + Rw @ (v - wrist)
