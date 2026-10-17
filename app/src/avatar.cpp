@@ -356,11 +356,12 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
             const float side = k == 1 ? 1.f : -1.f;
             // the forearm ends inside the gauntlet's bracer (tools/blender/make_props.py lancer: wrist ring at grip
             // (0.004, -0.040, 0.050), bracer to z = 0.135). The plate gauntlets' cuffs turn up 30 deg and swing 32 deg
-            // about that wrist ring (WRIST_TILT / WRIST_SWING there); the forearm follows the cuff's
-            // rise but not its sideways swing (that flared the elbows out when the hands hang low).
+            // about that wrist ring (WRIST_TILT / WRIST_SWING there): the forearm ends inside the new cuff, but the
+            // elbow is still placed the natural way (straight back from the controller, below the hand): placing it
+            // along the cuff lifted the elbows out whenever the hands were held low.
             const bool plate = in.avatar.gauntlet < 3;
-            const Vec3 W = hi.grip.transform(plate ? Vec3{side * 0.0267f, -0.0068f, 0.0876f} : Vec3{side * 0.004f, -0.042f, 0.105f});
-            const Vec3 back = hi.grip.q.rotate(plate ? normalize(Vec3{0, 0.595f, 0.691f}) : normalize(Vec3{0, -0.047f, 1.f}));
+            const Vec3 W = hi.grip.transform(plate ? Vec3{side * 0.0267f, 0.0382f, 0.0876f} : Vec3{side * 0.004f, -0.042f, 0.105f});
+            const Vec3 back = hi.grip.q.rotate(normalize(Vec3{0, -0.047f, 1.f}));
             // elbow: where a straight wrist would put it, nudged down / out / back so the IK stays stable
             const Vec3 pole = W + back * L2 + yaw.rotate({side * 0.35f, -1.0f, 0.25f}) * 0.12f;
             const Vec3 E = elbowIK(S, W, L1, L2, pole);

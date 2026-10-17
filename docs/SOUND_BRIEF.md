@@ -38,6 +38,10 @@ one as a download, and they are licensed CC BY 4.0 (`LICENSE-ASSETS.md`). Genera
 - **Suno** assigns its rights in Pro / Premier output to you, but does not promise that copyright exists in it and
   says nothing about open licences; copies must come from Suno's own download channels. Treat it as unsettled.
 
+**Where things stand (2026-10-17):** the game uses the **subtle set** made by `tools/gen_open_audio.py` from this
+brief (quieter, shorter, softer than before, plus the new FistBump sound). The first, punchier set is kept in
+`sounds/classic/` (see its README to switch back; `tools/gen_open_audio_classic.py` rebuilds it exactly).
+
 What this means: the open sound set stays **original** (made by `tools/gen_open_audio.py`, or recorded / synthesized
 by people who can license it CC BY). This brief is the target for that set. Generated audio is only an option with
 written permission (or a licence that allows CC BY), and then it is credited and kept apart from the CC BY assets.

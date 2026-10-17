@@ -24,4 +24,5 @@ MatchEndLose oa_MatchEndLose
 Recharge oa_Recharge
 Strike oa_Strike
 Overtime oa_Overtime
+FistBump oa_FistBump
 Ambience oa_Ambience

@@ -284,6 +284,9 @@ WRIST_TILT = math.radians(30.0)   # plate gauntlets: the cuff turned up from str
 # and swung 32 deg about the catalog camera's line of sight (owner's edit of P10 / P11, 2026-10-17: the bell higher)
 WRIST_SWING = math.radians(32.0)
 WRIST_SWING_AXIS = (-0.502, 0.772, 0.390)
+# the wrist joint sat 4 cm under the middle of the fist, so the forearm's line passed below it (a cocked look): the
+# wrist pieces are raised this much (owner's cut-and-moved hands, 2026-10-17)
+WRIST_RAISE = 0.045
 
 
 def gauntlet(b, style):
@@ -431,8 +434,10 @@ def gauntlet(b, style):
     wrist = Vector((0.004, -0.050, -0.040))
     Rw = Matrix.Rotation(WRIST_SWING, 3, Vector(WRIST_SWING_AXIS)) @ Matrix.Rotation(-WRIST_TILT, 3, 'X')
 
-    def wp(v):   # a wrist piece's point, turned with the wrist
-        return wrist + Rw @ (v - wrist)
+    lift = Vector((0.0, 0.0, WRIST_RAISE))
+
+    def wp(v):   # a wrist piece's point, turned with the wrist and raised in line with the fist
+        return wrist + Rw @ (v - wrist) + lift
     fwd = Rw @ Matrix.Rotation(math.pi / 2, 3, 'X')
     rb = (0.038, 0.042, 0.035)[style]
     _shaped(b, core, wp(wrist + Vector((0, -0.045, -0.004))), (1, 1, 1), fwd, kind='cone', segs=24, depth=0.085,

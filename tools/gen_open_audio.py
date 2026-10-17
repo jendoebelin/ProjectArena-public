@@ -1,4 +1,5 @@
-"""Project Arena sound set: every sound synthesized here (no samples, no CCP content).
+"""Project Arena sound set (subtle, 2026-10-17): every sound synthesized here (no samples, no CCP content).
+The first, punchier set is kept in sounds/classic (tools/gen_open_audio_classic.py rebuilds it).
 
 Design: each sound is layered (transient + body + tail), shaped with FFT filters and pitch envelopes, given some
 analogue warmth (soft saturation) and placed in a generated arena reverb. Crowd reactions are built from a few dozen
@@ -8,6 +9,7 @@ Writes app/assets_open/audio/*.wav (48 kHz mono 16-bit) and events.txt (keys use
 Usage: python -I tools/gen_open_audio.py
 """
 import os
+import sys
 import wave
 
 import numpy as np
@@ -264,215 +266,220 @@ def claps(sec, rate=18.0, density_env=None):
     return out
 
 
-# ---------------------------------------------------------------- the sounds
+# ---------------------------------------------------------------- the sounds (subtle set, docs/SOUND_BRIEF.md)
+# Owner, 2026-10-17: "better, more subtle sounds for each effect". Compared with the classic set (sounds/classic,
+# tools/gen_open_audio_classic.py): sine and triangle bodies instead of saws, no saturation, softer and fewer noise
+# layers, highs rolled off, short tails in a small dry room, and each slot cut and levelled by
+# tools/import_sounds.py (frequent sounds quietest).
+def room(x, wet=0.12, size=0.7):
+    return reverb(x, size, wet, bright=3000, predelay=0.010)
+
+
+def thump(f0, f1, sec, amp=1.0):
+    return osc(sweep(f0, f1, sec)) * env(sec, 0.004, sec * 0.35) * amp
+
+
 def s_spawn():
-    body = osc(sweep(900, 300, 0.18), shape='sine') * env(0.18, 0.002, 0.08)
-    sub = osc(sweep(260, 120, 0.25)) * env(0.25, 0.002, 0.12) * 0.6
-    click = bp(noise(0.02), 3500, 1.2) * env(0.02, 0.0005, 0.006) * 0.5
-    shimmer = osc(1800, 0.35) * env(0.35, 0.01, 0.15) * 0.08
-    return reverb(mix(body, sub, click, shimmer), 0.9, 0.22)
+    """a small orb blooming into place"""
+    sec = 0.5
+    bloom = osc(sweep(420, 760, 0.18), shape='tri')
+    bloom = lp(pad(bloom, sec), 2200) * env(sec, 0.018, 0.16) * 0.6
+    glint = osc(1520, sec) * env(sec, 0.03, 0.14) * 0.07 + osc(2280, sec) * env(sec, 0.04, 0.10) * 0.03
+    return room(mix(bloom, glint), 0.14)
 
 
 def s_spawn_rise():
-    sec = 1.3
-    air = bp_sweep(pink(sec), 260, 2600, q=2.2) * (np.linspace(0.2, 1, n_(sec)) ** 1.5) * env(sec, 0.02, 9, r=0.18)
-    tone = osc(sweep(180, 560, sec), shape='tri') * np.linspace(0, 1, n_(sec)) ** 2 * env(sec, 0.05, 9, r=0.15) * 0.18
-    hiss = hp(noise(sec), 6000) * np.linspace(0, 1, n_(sec)) ** 3 * 0.08
-    return reverb(mix(air, tone, hiss) * 0.9, 1.0, 0.25)
+    """the launcher lifting: a gentle airy swell, rising"""
+    sec = 1.25
+    t = T(sec)
+    air = bp_sweep(pink(sec), 260, 1300, q=2.4) * (t / sec) ** 1.6 * 0.5
+    tone = lp(osc(sweep(150, 380, sec), shape='tri'), 1200) * (t / sec) ** 2 * 0.22
+    x = mix(air, tone) * np.clip((sec - t) / 0.12, 0, 1)
+    return room(x, 0.12)
 
 
 def s_grab():
-    thunk = osc(sweep(170, 110, 0.12)) * env(0.12, 0.001, 0.05)
-    tick = hp(noise(0.01), 5000) * env(0.01, 0.0002, 0.003) * 0.5
-    hum = lp(osc(220, 0.3, 'saw') + osc(221.7, 0.3, 'saw'), 1600) * env(0.3, 0.01, 0.12) * 0.25
-    hum *= 1 + 0.3 * np.sin(2 * np.pi * 34 * T(0.3))
-    return reverb(sat(mix(thunk, tick, hum), 1.3), 0.6, 0.15)
+    """hand closing on the ball: muted thump, brief warm hum"""
+    hum = osc(220, 0.2) * env(0.2, 0.008, 0.07) * 0.18 + osc(330.5, 0.2) * env(0.2, 0.008, 0.05) * 0.06
+    return room(mix(thump(150, 95, 0.09), hum), 0.08)
 
 
 def s_caught():
-    thunk = osc(sweep(200, 120, 0.14)) * env(0.14, 0.001, 0.06)
-    zip_ = osc(sweep(420, 1700, 0.12), shape='tri') * env(0.12, 0.002, 0.06) * 0.35
-    tick = hp(noise(0.012), 4500) * env(0.012, 0.0002, 0.004) * 0.6
-    ring = modal([1320, 2780], [0.12, 0.07], [0.15, 0.08], 0.4)
-    return reverb(sat(mix(thunk, zip_, tick, ring), 1.4), 0.7, 0.18)
+    """a firm padded catch with a quick soft rise"""
+    zip_ = lp(osc(sweep(480, 1150, 0.11), shape='tri'), 2400) * env(0.11, 0.004, 0.05) * 0.22
+    return room(mix(thump(170, 100, 0.11, 1.0), delay(zip_, 0.012)), 0.1)
 
 
 def s_throw(tier):
-    sec = 0.55 + 0.05 * tier
-    bright = [1400, 2200, 3400, 5200][tier]
-    whoosh = bp_sweep(pink(sec), bright * 1.4, bright * 0.35, q=1.6) * bell(sec, 0.28, 0.22)
-    zap = osc(sweep(900 + 300 * tier, 160, sec * 0.5), shape='saw')
-    zap = lp(zap, 2500 + 900 * tier) * env(sec * 0.5, 0.002, 0.12) * (0.18 + 0.06 * tier)
-    thump = osc(sweep(120, 55, 0.12)) * env(0.12, 0.001, 0.05) * (0.25 * tier)
-    return reverb(sat(mix(whoosh * (0.7 + 0.15 * tier), zap, thump), 1.2 + 0.2 * tier), 0.9, 0.2)
+    """air moving: a filtered whoosh, brighter and fuller with speed; the hardest throw gets a soft low push"""
+    sec = 0.34 + 0.07 * tier
+    centre = (850, 1150, 1550, 2000)[tier]
+    whoosh = bp_sweep(pink(sec), centre * 1.5, centre * 0.55, q=1.3) * bell(sec, 0.30, 0.24)
+    streak = lp(osc(sweep(centre * 0.7, centre * 0.4, sec)), 2500) * bell(sec, 0.35, 0.2) * 0.04 * tier
+    push = thump(95, 55, 0.14, 0.35) if tier == 3 else np.zeros(1)
+    return room(mix(whoosh * (0.75 + 0.1 * tier), streak, push), 0.1)
 
 
 def s_throw_fail():
-    sec = 0.7
-    crackle = np.zeros(n_(sec))
-    for _ in range(60):
-        i = rng.integers(0, n_(sec) - 400)
-        crackle[i:i + 300] += hp(noise(300 / SR), 2500) * np.exp(-np.arange(300) / 60) * rng.random()
-    crackle *= np.linspace(1, 0.1, n_(sec))
-    fall = osc(sweep(700, 140, sec), shape='tri') * env(sec, 0.01, 0.4) * 0.3
-    return reverb(lp(mix(crackle * 0.5, fall), 5000), 0.8, 0.2)
+    """the orb losing power: a soft falling tone with a faint fizzle"""
+    sec = 0.6
+    fall = lp(osc(sweep(520, 170, sec), shape='tri'), 1600) * env(sec, 0.01, 0.25) * 0.4
+    fizz = np.zeros(n_(sec))
+    for _ in range(14):
+        i = rng.integers(0, n_(sec * 0.7))
+        g = bp(noise(0.004), 2200, 1.5) * env(0.004, 0.0003, 0.0015)
+        fizz[i:i + len(g)] += g[:n_(sec) - i] * 0.25 * rng.random()
+    return room(mix(fall, lp(fizz, 3500) * np.linspace(1, 0.2, n_(sec))), 0.1)
 
 
 def s_bounce():
-    knock = modal([410, 1185, 2330, 3920, 5600], [0.10, 0.07, 0.05, 0.035, 0.02], [1, 0.6, 0.45, 0.3, 0.2], 0.4)
-    click = hp(noise(0.006), 3000) * env(0.006, 0.0002, 0.002)
-    low = osc(sweep(140, 90, 0.08)) * env(0.08, 0.001, 0.03) * 0.6
-    return reverb(sat(mix(knock * 0.5, click * 0.7, low), 1.2), 1.1, 0.25)
+    """a small ball tapping thick glass: a short soft tok"""
+    tok = modal([540, 1310, 2470], [0.045, 0.03, 0.02], [1, 0.35, 0.12], 0.2)
+    return room(lp(mix(tok * 0.6, thump(130, 95, 0.05, 0.4)), 3800), 0.08, 0.5)
 
 
 def s_shield_block():
-    sec = 1.1
-    punch = osc(sweep(110, 55, 0.25)) * env(0.25, 0.001, 0.12)
-    ring = modal([523, 1046 * 1.01, 1568, 2637, 3520], [0.5, 0.35, 0.25, 0.18, 0.12], [0.6, 0.4, 0.35, 0.25, 0.15], sec)
-    burst = bp(noise(0.25), 2400, 0.9) * env(0.25, 0.001, 0.07) * 0.5
-    vwoom = lp(osc(sweep(300, 90, 0.5), shape='saw'), 1200) * env(0.5, 0.004, 0.2) * 0.35
-    return reverb(sat(mix(punch, ring * 0.6, burst, vwoom), 1.4), 1.3, 0.3)
+    """deflected by the force field: a resonant soft thoom and a short glassy shimmer"""
+    sec = 0.9
+    ring = modal([440, 880 * 1.005, 1318], [0.30, 0.20, 0.12], [0.5, 0.25, 0.12], sec)
+    swell = lp(bp(noise(0.2), 1100, 0.8), 2000) * env(0.2, 0.006, 0.06) * 0.25
+    return room(lp(mix(thump(120, 68, 0.3, 1.0), ring * 0.5, swell), 4200), 0.16, 0.9)
 
 
 def s_shield_break():
-    sec = 1.4
+    """the shield dissolving: a soft crystalline crack, then fading glitter"""
+    sec = 1.1
     out = np.zeros(n_(sec))
-    for _ in range(26):   # glassy shards
-        start = int(rng.random() ** 2 * n_(0.6))
-        f = 1800 + rng.random() * 5200
-        shard = modal([f, f * 1.47, f * 2.13], [0.06, 0.04, 0.03], [1, 0.5, 0.3], 0.25)
-        out[start:start + len(shard)] += shard[:len(out) - start] * (0.3 + 0.7 * rng.random())
-    burst = hp(noise(0.3), 800) * env(0.3, 0.001, 0.1) * 0.8
-    fall = osc(sweep(900, 120, 0.8), shape='saw')
-    fall = lp(fall, 2000) * env(0.8, 0.003, 0.35) * 0.3
-    boom = osc(sweep(90, 40, 0.4)) * env(0.4, 0.001, 0.2) * 0.8
-    return reverb(sat(mix(out * 0.35, burst, fall, boom), 1.3), 1.4, 0.3)
+    for _ in range(10):
+        start = int(rng.random() ** 1.6 * n_(0.5))
+        f = 1200 + rng.random() * 2400
+        shard = modal([f, f * 1.47], [0.05, 0.035], [1, 0.4], 0.2)
+        out[start:start + len(shard)] += shard[:len(out) - start] * (0.3 + 0.5 * rng.random())
+    crack = lp(bp(noise(0.06), 1800, 0.9), 4000) * env(0.06, 0.003, 0.02) * 0.6
+    fall = lp(osc(sweep(700, 180, 0.7), shape='tri'), 1500) * env(0.7, 0.01, 0.28) * 0.22
+    return room(lp(mix(out * 0.3, crack, fall, thump(100, 50, 0.25, 0.6)), 5000), 0.16, 0.9)
 
 
 def s_knuckle_block():
-    thump = osc(sweep(160, 70, 0.12)) * env(0.12, 0.001, 0.05)
-    glass = modal([620, 1490, 2910, 4300], [0.08, 0.06, 0.04, 0.03], [0.7, 0.5, 0.35, 0.2], 0.35)
-    snap = bp(noise(0.02), 3000, 1.0) * env(0.02, 0.0005, 0.006) * 0.8
-    return reverb(sat(mix(thump, glass * 0.6, snap), 1.5), 0.8, 0.2)
+    """gauntlet punches the ball away: a tight padded metallic knock"""
+    knock = modal([720, 1680, 2900], [0.05, 0.035, 0.022], [0.6, 0.3, 0.12], 0.25)
+    return room(lp(mix(thump(160, 85, 0.1, 1.0), knock * 0.55), 4000), 0.1)
 
 
 def s_hit_opponent():
-    """You scored: plasma discharge, a bright zap and a sparkle tail."""
-    sec = 1.6
-    t = T(0.6)
-    crack = hp(noise(0.6), 1500) * (np.abs(np.sin(2 * np.pi * 37 * t)) ** 6) * env(0.6, 0.001, 0.25) * 0.9
-    zap = osc(sweep(2400, 300, 0.35), shape='saw')
-    zap = lp(zap, 6000) * env(0.35, 0.001, 0.12) * 0.5
-    boom = osc(sweep(130, 50, 0.4)) * env(0.4, 0.001, 0.18) * 0.9
-    sparkle = np.zeros(n_(sec))
-    for _ in range(40):
-        i = int((0.1 + rng.random() * 0.9) * n_(sec) * 0.8)
-        f = 2500 + rng.random() * 6000
-        s = osc(f, 0.06) * env(0.06, 0.001, 0.02)
-        sparkle[i:i + len(s)] += s[:len(sparkle) - i] * 0.25 * rng.random()
-    return reverb(sat(mix(crack, zap, boom, sparkle), 1.3), 1.6, 0.32)
+    """your point: a soft deep thud, a gentle discharge, then a small rising two-note chime"""
+    sec = 1.2
+    t = T(0.35)
+    discharge = lp(hp(noise(0.35), 900), 3500) * (0.5 + 0.5 * np.sin(2 * np.pi * 23 * t)) ** 3 * env(0.35, 0.004, 0.1) * 0.35
+    chime = mix(delay(osc(880, 0.45) * env(0.45, 0.006, 0.16) * 0.22, 0.12),
+                delay(osc(1318.5, 0.5) * env(0.5, 0.006, 0.2) * 0.2, 0.24))
+    return room(mix(thump(120, 52, 0.32, 1.0), discharge, chime, length=n_(sec)), 0.16, 1.0)
 
 
 def s_hit_self():
-    """You were hit: heavy, muffled impact."""
-    sec = 1.3
-    boom = osc(sweep(95, 34, 0.7)) * env(0.7, 0.001, 0.35)
-    crunch = sat(lp(noise(0.25), 1800) * env(0.25, 0.001, 0.08) * 3, 3) * 0.5
-    zap = lp(osc(sweep(800, 90, 0.4), shape='square'), 1500) * env(0.4, 0.002, 0.15) * 0.3
-    rumble = lp(pink(sec), 220) * env(sec, 0.01, 0.6) * 0.4
-    return reverb(sat(mix(boom, crunch, zap, rumble), 1.6), 1.3, 0.25, bright=2500)
+    """you were hit: a muffled heavy thud and a low downward wobble"""
+    sec = 1.0
+    t = T(0.55)
+    wobble = lp(osc(sweep(300, 120, 0.55) * (1 + 0.05 * np.sin(2 * np.pi * 9 * t)), shape='tri'), 900) * env(0.55, 0.01, 0.2) * 0.3
+    return room(lp(mix(thump(92, 38, 0.45, 1.0), delay(wobble, 0.03), length=n_(sec)), 2400), 0.14, 0.9)
 
 
 def s_returned():
-    sec = 1.1
-    f = sweep(300, 950, sec) * (1 + 0.02 * np.sin(2 * np.pi * 6 * T(sec)))
-    tone = osc(f, shape='tri') * bell(sec, 0.55, 0.35) * 0.5 + osc(f * 2.01) * bell(sec, 0.6, 0.3) * 0.12
-    air = bp_sweep(pink(sec), 600, 2400, q=2.5) * bell(sec, 0.6, 0.3) * 0.5
-    return reverb(mix(tone, air), 1.2, 0.3)
+    """the ball flying home: an airy whoosh moving away, falling slightly"""
+    sec = 1.0
+    air = bp_sweep(pink(sec), 1300, 480, q=2.0) * bell(sec, 0.25, 0.35) * 0.6
+    tone = lp(osc(sweep(620, 420, sec)), 1500) * bell(sec, 0.3, 0.3) * 0.06
+    return room(mix(air, tone), 0.14)
 
 
 def s_foul():
-    a = lp(osc(440, 0.22, 'square'), 1800) * env(0.22, 0.004, 0.15, s=0.5, r=0.05)
-    b = lp(osc(311, 0.32, 'square'), 1500) * env(0.32, 0.004, 0.2, s=0.5, r=0.08)
-    fizz = hp(noise(0.5), 3000) * env(0.5, 0.01, 0.2) * 0.12
-    return reverb(sat(mix(a, delay(b, 0.2), fizz) * 0.6, 1.2), 0.9, 0.22)
+    """a polite penalty tone: two rounded falling notes"""
+    a = lp(osc(392, 0.2, 'tri'), 1400) * env(0.2, 0.01, 0.12, s=0.4, r=0.06)
+    b = lp(osc(311.1, 0.3, 'tri'), 1300) * env(0.3, 0.01, 0.16, s=0.4, r=0.1)
+    return room(mix(a, delay(b, 0.19)) * 0.8, 0.12)
 
 
 def s_countdown():
-    x = osc(880, 0.18) * env(0.18, 0.003, 0.07) + osc(1760, 0.18) * env(0.18, 0.003, 0.03) * 0.25
-    return reverb(x, 0.8, 0.2)
+    """one calm low beep"""
+    x = osc(660, 0.2) * env(0.2, 0.006, 0.08) + osc(1320, 0.2) * env(0.2, 0.006, 0.03) * 0.12
+    return room(x, 0.12)
 
 
 def s_round_start():
-    sec = 1.5
+    """GO: a short bright swell landing on a soft chord"""
+    sec = 1.3
     t = T(sec)
-    chord = sum(lp(osc(f * (1 + 0.004 * k), sec, 'saw'), 3000) for k, f in enumerate((220, 277.2, 329.6, 440)))
-    chord *= env(sec, 0.02, 0.6) * 0.3
-    rise = bp_sweep(pink(sec), 400, 5000, q=2.0) * np.clip(1 - t / 0.5, 0, 1) * 0.4
-    hit = osc(sweep(140, 60, 0.3)) * env(0.3, 0.001, 0.12) * 0.8
-    return reverb(sat(mix(chord, rise, hit), 1.2), 1.5, 0.32)
+    rise = bp_sweep(pink(0.45), 300, 2400, q=2.2) * np.linspace(0, 1, n_(0.45)) ** 2 * 0.35
+    chord = sum(osc(f, sec) * a for f, a in ((523.3, 0.22), (659.3, 0.16), (784.0, 0.13), (1046.5, 0.06)))
+    chord = delay(chord * env(sec, 0.012, 0.45), 0.42)
+    return room(mix(rise, chord, delay(thump(110, 70, 0.18, 0.5), 0.42)), 0.18, 1.2)
 
 
 def s_round_end(win):
-    sec = 2.6
-    v = crowd(sec, 'ah' if win else 'oh', voices=36, pitch_glide=(0.95, 1.12) if win else (1.05, 0.82),
-              swell=(0.15, 0.65), base=190 if win else 160, excite=1.3 if win else 0.9)
-    c = claps(sec, 50, np.clip(np.linspace(1, 0.1, 100), 0, 1)) * (0.5 if win else 0.12)
-    return reverb(mix(v * 0.8, c), 2.0, 0.35, bright=3000)
+    sec = 3.0 if win else 2.6
+    v = crowd(sec, 'ah' if win else 'oh', voices=30, pitch_glide=(0.97, 1.08) if win else (1.03, 0.86),
+              swell=(0.15, 0.6), base=185 if win else 160, excite=1.0 if win else 0.75)
+    c = claps(sec, 34 if win else 10, np.clip(np.linspace(1, 0.1, 100), 0, 1)) * (0.35 if win else 0.1)
+    return reverb(lp(mix(v * 0.7, c), 3200), 1.6, 0.28, bright=2600)
 
 
 def s_match_end(win):
-    sec = 5.0 if win else 4.0
-    v = crowd(sec, 'ah' if win else 'oh', voices=56, pitch_glide=(0.95, 1.18) if win else (1.0, 0.75),
-              swell=(0.2, 0.75), base=200 if win else 155, excite=1.5 if win else 0.8)
-    c = claps(sec, 160 if win else 25, np.clip(np.linspace(0.6, 1.0, 100) * np.linspace(1, 0.3, 100), 0, 1))
+    sec = 5.5 if win else 4.5
+    v = crowd(sec, 'ah' if win else 'oh', voices=48, pitch_glide=(0.97, 1.12) if win else (1.0, 0.8),
+              swell=(0.2, 0.7), base=195 if win else 155, excite=1.15 if win else 0.65)
+    c = claps(sec, 110 if win else 30, np.clip(np.linspace(0.6, 1.0, 100) * np.linspace(1, 0.25, 100), 0, 1))
     if win:
-        chord = sum(lp(osc(f, sec, 'saw'), 3500) for f in (261.6, 329.6, 392.0, 523.3)) * env(sec, 0.05, 2.5) * 0.18
+        chord = sum(osc(f, sec) * a for f, a in ((261.6, 0.12), (329.6, 0.09), (392.0, 0.08), (523.3, 0.05)))
     else:
-        chord = sum(lp(osc(sweep(f, f * 0.85, sec), shape='saw'), 1800) for f in (220.0, 261.6, 311.1)) * env(sec, 0.05, 2.0) * 0.14
-    return reverb(mix(v * 0.75, c * (0.5 if win else 0.15), chord), 2.4, 0.38, bright=3200)
+        chord = sum(osc(sweep(f, f * 0.94, sec)) * 0.08 for f in (220.0, 261.6, 329.6))
+    chord *= env(sec, 0.08, 2.2)
+    return reverb(lp(mix(v * 0.7, c * (0.4 if win else 0.18), chord), 3400), 2.0, 0.3, bright=2800)
 
 
 def s_recharge():
-    sec = 1.0
-    f = sweep(220, 1760, 0.7)
-    charge = pad(osc(f, shape='saw'), sec)
-    charge = lp(charge, 4000) * pad(np.linspace(0.2, 1, n_(0.7)) ** 1.5, sec) * 0.35
-    ding = delay(osc(1760, 0.35) * env(0.35, 0.002, 0.12) + osc(2637, 0.35) * env(0.35, 0.002, 0.08) * 0.4, 0.68)
-    sparkle = hp(noise(sec), 7000) * pad(np.linspace(0, 1, n_(0.7)) ** 2, sec) * 0.08
-    return reverb(mix(charge, ding * 0.6, sparkle), 1.0, 0.25)
+    """power back: a short soft rise and a gentle bright ding"""
+    sec = 0.9
+    rise = lp(osc(sweep(330, 990, 0.45), shape='tri'), 2400) * np.linspace(0.2, 1, n_(0.45)) * 0.18
+    ding = delay(osc(1318.5, 0.45) * env(0.45, 0.005, 0.15) * 0.3 + osc(1975.5, 0.45) * env(0.45, 0.005, 0.1) * 0.1, 0.42)
+    return room(mix(rise, ding, length=n_(sec)), 0.14)
 
 
 def s_strike():
-    crack = hp(noise(0.05), 2000) * env(0.05, 0.0005, 0.012) * 1.2
-    ping = modal([1568, 3136, 4700], [0.25, 0.15, 0.1], [0.6, 0.3, 0.2], 0.6)
-    low = osc(sweep(180, 90, 0.15)) * env(0.15, 0.001, 0.06) * 0.6
-    return reverb(sat(mix(crack, ping, low), 1.4), 1.2, 0.3)
+    """a strike: a clear two-note ding-ding over a soft swell"""
+    sec = 1.3
+    d1 = osc(1046.5, 0.5) * env(0.5, 0.004, 0.16) * 0.3
+    d2 = delay(osc(1318.5, 0.6) * env(0.6, 0.004, 0.2) * 0.3, 0.16)
+    swell = lp(osc(261.6, 0.8), 800) * env(0.8, 0.05, 0.3) * 0.15
+    return room(mix(d1, d2, swell, length=n_(sec)), 0.16, 1.0)
 
 
 def s_overtime():
-    tones = []
-    for i, f in enumerate((660, 880, 660, 880)):
-        tones.append(delay(lp(osc(f, 0.16, 'square'), 2500) * env(0.16, 0.004, 0.1, s=0.4, r=0.03), i * 0.19))
-    swell = bp_sweep(pink(1.0), 300, 3000, q=2.0) * np.linspace(0, 1, n_(1.0)) ** 2 * 0.3
-    return reverb(sat(mix(*tones, swell) * 0.6, 1.3), 1.2, 0.28)
+    """sudden death: a deep pulsing swell with two heartbeat thumps"""
+    sec = 2.2
+    t = T(sec)
+    swell = lp(bp_sweep(pink(sec), 120, 700, q=1.8), 900) * (t / sec) ** 1.5 * np.clip((sec - t) / 0.3, 0, 1) * 0.45
+    beats = mix(thump(70, 45, 0.18, 0.8), delay(thump(70, 45, 0.18, 0.6), 0.22),
+                delay(thump(70, 45, 0.18, 0.8), 1.0), delay(thump(70, 45, 0.18, 0.6), 1.22), length=n_(sec))
+    pad_ = osc(110, sec) * 0.05 * (0.5 + 0.5 * np.sin(2 * np.pi * 1.2 * t))
+    return room(mix(swell, beats, pad_), 0.15, 1.0)
+
+
+def s_fist_bump():
+    """two gauntlets bumping: a solid friendly knock and a warm pulse blooming out"""
+    sec = 0.8
+    knock = modal([610, 1450, 2550], [0.06, 0.04, 0.025], [0.55, 0.3, 0.12], 0.3)
+    pulse = osc(sweep(196, 262, 0.5)) * env(0.5, 0.03, 0.16) * 0.25
+    return room(lp(mix(thump(170, 95, 0.12, 1.0), knock * 0.6, delay(pulse, 0.03), length=n_(sec)), 4000), 0.14)
 
 
 def s_ambience():
-    sec = 32.0
+    sec = 34.0
     t = T(sec)
-    hum = (osc(55, sec) * 0.5 + osc(110.3, sec) * 0.2 + osc(82.4, sec) * 0.12) * (0.85 + 0.15 * np.sin(2 * np.pi * 0.07 * t))
-    air = lp(pink(sec), 900) * 0.5 + hp(lp(pink(sec), 5000), 2000) * 0.05
-    murmur = crowd(sec, 'eh', voices=30, swell=(0.0, 1.2), base=150) * 0.12
-    murmur = lp(murmur, 1800) * (0.7 + 0.3 * np.sin(2 * np.pi * 0.05 * t + 1.0))
-    x = reverb(mix(hum * 0.35, air, murmur), 2.5, 0.4, bright=2500)[:len(t)]
-    # seamless loop: crossfade the last 2 s into the start
-    xf = n_(2.0)
-    head, tail = x[:xf].copy(), x[-xf:]
-    w = np.linspace(0, 1, xf)
-    x = x[:-xf]
-    x[:xf] = head * w + tail * (1 - w)
-    return x
+    hum = (osc(55, sec) * 0.5 + osc(110.3, sec) * 0.15) * (0.88 + 0.12 * np.sin(2 * np.pi * 0.06 * t))
+    air = lp(pink(sec), 700) * 0.45
+    murmur = crowd(sec, 'eh', voices=24, swell=(0.0, 1.1), base=150) * 0.07
+    murmur = lp(murmur, 1400) * (0.7 + 0.3 * np.sin(2 * np.pi * 0.045 * t + 1.0))
+    return reverb(mix(hum * 0.3, air, murmur), 2.2, 0.32, bright=2200)[:len(t)]
 
 
 SOUNDS = [
@@ -484,9 +491,8 @@ SOUNDS = [
     ('Countdown', s_countdown), ('RoundStart', s_round_start), ('RoundEndWin', lambda: s_round_end(True)),
     ('RoundEndLose', lambda: s_round_end(False)), ('MatchEndWin', lambda: s_match_end(True)),
     ('MatchEndLose', lambda: s_match_end(False)), ('Recharge', s_recharge), ('Strike', s_strike),
-    ('Overtime', s_overtime), ('Ambience', s_ambience),
+    ('Overtime', s_overtime), ('FistBump', s_fist_bump), ('Ambience', s_ambience),
 ]
-LEVEL = {'Ambience': 0.32, 'Bounce': 0.6, 'Countdown': 0.55, 'Grab': 0.7, 'SpawnRise': 0.6, 'Spawn': 0.6}
 
 
 def save(name, x):
@@ -499,17 +505,20 @@ def save(name, x):
 
 
 def main():
+    sys.path.insert(0, os.path.join(ROOT, 'tools'))
+    import import_sounds   # each slot's length and loudness (one table for generated and imported sounds)
     for f in os.listdir(OUT) if os.path.isdir(OUT) else []:
         if f.endswith('.wav'):
             os.remove(os.path.join(OUT, f))
     lines = []
     for key, fn in SOUNDS:
         x = fn()
-        x = finish(x, LEVEL.get(key, 0.85), trim=(key != 'Ambience'), soft=(key != 'Ambience'))
+        x = x - np.mean(x)
+        x = import_sounds.fit(key, x, SR)
         name = 'oa_' + key
         save(name, x)
         lines.append('%s %s' % (key, name))
-        print('  %-18s %5.2fs' % (key, len(x) / SR))
+        print('  %-18s %5.2fs  %5.1f dB' % (key, len(x) / SR, import_sounds.rms_db(x)))
     with open(os.path.join(OUT, 'events.txt'), 'w', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
     print('wrote %d sounds -> %s' % (len(lines), OUT))
