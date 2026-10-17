@@ -211,6 +211,9 @@ struct PlayerState {
     float botNoticeT = -1;
     bool botWillBlock = false;
     int botBlockHand = 0;
+    Vec3 botLean;               // the bot's body leaning / dipping toward a far block (smoothed)
+    Vec3 botHand[2];            // the bot's hands, moving toward their targets (no teleporting)
+    bool botHandSet = false;
 };
 
 class Game {

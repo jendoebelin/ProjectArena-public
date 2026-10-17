@@ -1,5 +1,7 @@
 # Project Arena
 
+![The Project Arena court](docs/images/arena.jpg)
+
 A free, open-source VR court sport for **Meta Quest** and **PC VR**: throw, curve and punch energy balls at your
 opponent in a neon glass arena. Inspired by CCP Games' *Sparc* (2017); an independent game with its own code, art and
 sound.
@@ -8,6 +10,19 @@ sound.
 - Rooms with a waiting area and a queue, spectating (a hub of live miniature arenas), voice chat
 - An avatar builder: two body types, outfits, hair, headgear, face shields, masks, gauntlets, patterns and colours
 - Runs natively on Quest (OpenXR + OpenGL ES, no engine) and on PC through SteamVR or Quest Link
+
+| | |
+|---|---|
+| ![A throw down the court](docs/images/rally.jpg) | ![The rally from the side](docs/images/rally_side.jpg) |
+| ![The whole court from above](docs/images/overview.jpg) | ![The main menu and your avatar](docs/images/main_menu.jpg) |
+
+**Make it yours:** outfits, shorts, hair, headgear, masks, colours and patterns, on two body types.
+
+![Some of the outfits](docs/images/avatars.jpg)
+
+**Plate gauntlets:** Striker, Titan and Phantom (or the classic controller glove).
+
+![The three plate gauntlets](docs/images/gauntlets.jpg)
 
 **Download:** https://github.com/jendoebelin/ProjectArena-public/releases (PC zip and Quest APK). Install guide:
 `docs/INSTALL.md`.

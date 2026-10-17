@@ -596,7 +596,7 @@ void Game::stepBot(int p, float dt) {
     Quat q = Quat::axisAngle(kUp, deg2rad(p == 0 ? -90.f : 90.f));
     float sway = std::sin(now * 0.9f) * 0.25f;
     s.in.headTracked = true;
-    s.in.head = {q, tun.start[p] + Vec3{0, 1.62f + 0.03f * std::sin(now * 2.1f), sway}};
+    s.in.head = {q, tun.start[p] + Vec3{0, 1.62f + 0.03f * std::sin(now * 2.1f), sway} + s.botLean};
     Vec3 right = q.rotate({1, 0, 0}), fwd = q.rotate({0, 0, -1});
     Vec3 chest = s.in.head.p - Vec3{0, 0.4f, 0};
     Quat handQ = q * Quat::axisAngle({1, 0, 0}, deg2rad(-20));
@@ -658,6 +658,25 @@ void Game::stepBot(int p, float dt) {
             hi.trigger = 0;
         }
     }
+    // the body follows a far block (leans sideways, dips for low balls) instead of the arm stretching out, and the
+    // hands move to their targets quickly rather than teleporting (owner: the bot looked stiff reaching for a ball)
+    Vec3 leanWant{};
+    if (blockHand >= 0) {
+        const Vec3 shoulder = chest + right * (blockHand == 1 ? 0.19f : -0.19f) + Vec3{0, 0.12f, 0};
+        Vec3 d = s.in.hand[blockHand].grip.p - shoulder;
+        d.x *= 0.3f;   // barely along the court
+        const float dist = length(d), excess = dist - 0.50f;
+        if (excess > 0 && dist > 1e-4f) leanWant = d / dist * std::min(excess * 0.9f, 0.40f);
+        leanWant.y = clampf(leanWant.y, -0.35f, 0.05f);
+    }
+    s.botLean += (leanWant - s.botLean) * std::min(1.f, dt * 7.f);
+    for (int h = 0; h < 2; ++h) {
+        Vec3& cur = s.botHand[h];
+        if (!s.botHandSet) cur = s.in.hand[h].grip.p;
+        cur += (s.in.hand[h].grip.p - cur) * std::min(1.f, dt * 20.f);
+        s.in.hand[h].grip.p = cur;
+    }
+    s.botHandSet = true;
     if (holding && !b.charged) s.botTimer = std::min(s.botTimer, 0.35f);   // recharge by throwing
     if (holding && !incoming && s.botTimer <= 0) {
         if (match == MatchState::InProgress) {

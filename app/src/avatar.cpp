@@ -344,7 +344,7 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
     r.skin[BONE_NECK] = boneMatrix(r.neck, false, 1.f) * affineInverse(boneMatrix(bindNeck, false, 1.f));
     for (int k = 0; k < 2; ++k) {
         const float L1 = length(K.elbow[k] - K.shoulder[k]), L2 = length(K.wrist[k] - K.elbow[k]);
-        const Vec3 S = r.torso.transform({K.shoulder[k].x * scale.x, K.shoulder[k].y, K.shoulder[k].z * scale.z});
+        Vec3 S = r.torso.transform({K.shoulder[k].x * scale.x, K.shoulder[k].y, K.shoulder[k].z * scale.z});
         const Bone bu = {K.shoulder[k], K.elbow[k], (K.wrist[k] - K.elbow[k]) + Vec3{0, 0, -0.3f}, L1};
         const Bone bf = {K.elbow[k], K.wrist[k], K.thumb[k] - K.wrist[k], L2};
         const HandInput& hi = in.hand[k];
@@ -364,6 +364,11 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
             const Vec3 back = hi.grip.q.rotate(normalize(Vec3{0, -0.047f, 1.f}));
             // elbow: where a straight wrist would put it, nudged down / out / back so the IK stays stable
             const Vec3 pole = W + back * L2 + yaw.rotate({side * 0.35f, -1.0f, 0.25f}) * 0.12f;
+            // a hand beyond the arm's reach draws the shoulder after it (up to 7 cm, as a real shoulder blade
+            // slides) before the arm has to stretch
+            const Vec3 SW = W - S;
+            const float over = length(SW) - (L1 + L2) * 0.97f;
+            if (over > 0) S += normalize(SW) * std::min(over, 0.07f);
             const Vec3 E = elbowIK(S, W, L1, L2, pole);
             r.upper[k] = {S, E, (W - E) + fwd * 0.3f, L1};   // the inner elbow faces the forearm
             r.fore[k] = {E, W, hi.grip.q.rotate({0, 1, 0}), L2};   // thumb side (controller top) is the front

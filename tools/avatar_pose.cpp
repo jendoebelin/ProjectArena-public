@@ -1,7 +1,7 @@
 // Desktop helper for tools/preview_avatar.py: prints one avatar's draw list (the game's own rig and part
 // selection from app/src/avatar.cpp) for a look and a canned pose, as JSON on stdout.
 // Build: tools/build_avatar_pose.bat   Usage: avatar_pose <preset N | seed:N | k=v,k=v...> <pose> <team 0|1> [yaw_deg]
-//   poses: ready, guard, throw, rest
+//   poses: ready, guard, throw, rest, reach
 #define _CRT_SECURE_NO_WARNINGS
 #include <cstdio>
 #include <cstdlib>
@@ -55,6 +55,7 @@ int main(int argc, char** argv) {
     HandPose hp[2];   // in the avatar's frame: x = its right, z = its forward
     if (pose == "guard") { hp[0] = {{-0.15f, 1.40f, 0.30f}, 50, 15, 0}; hp[1] = {{0.15f, 1.40f, 0.30f}, 50, -15, 0}; }
     else if (pose == "throw") { hp[0] = {{-0.22f, 1.22f, 0.36f}, 10, 10, 0}; hp[1] = {{0.30f, 1.58f, -0.12f}, 35, -10, -20}; }
+    else if (pose == "reach") { hp[0] = {{-0.21f, 1.08f, 0.30f}, -22, 8, 0}; hp[1] = {{0.80f, 1.10f, 0.35f}, 0, -60, 0}; }   // far block
     else if (pose == "rest") { hp[0] = {{-0.24f, 0.92f, 0.12f}, -60, 0, 0}; hp[1] = {{0.24f, 0.92f, 0.12f}, -60, 0, 0}; }
     else { hp[0] = {{-0.21f, 1.08f, 0.30f}, -22, 8, 0}; hp[1] = {{0.21f, 1.08f, 0.30f}, -22, -8, 0}; }
     for (int h = 0; h < 2; ++h) {
