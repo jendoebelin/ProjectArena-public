@@ -94,7 +94,7 @@ struct Tunables {
     // (x is mirrored for the left hand). The face normal is grip -Z (the front of the fist). Sparc's centre was
     // (-0.022, 0.010, -0.137); the owner moved the glass onto the fist with the TUNING tool (2026-10-18), and the
     // bumper goes with it (what you see is what hits).
-    Vec3 knuckleOffset = {0.006f, -0.020f, -0.057f};
+    Vec3 knuckleOffset = {0.0f, -0.026f, -0.057f};
     Vec3 knuckleHalf = {0.064f, 0.048f, 0.029f};
     float knuckleRadius = 0.07f;                           // used for glow rendering only
     // Deflections treat the guard / shield as a moving surface: v_out = reflect(v_in - v_hand) * restitution + v_hand,

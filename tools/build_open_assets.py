@@ -298,19 +298,20 @@ def main():
     static_env_fx = {k: v for k, v in fx_env.items() if k not in twinkle}
     environment = {k: v for k, v in env.items() if k not in fx_env}
     write_mdl(os.path.join(OUT, 'arena.mdl'), arena, 'open_court_lm', 2.0)
+    # PASSTHROUGH > OUTLINE: only the court's neon edges and its floor lines, over your room
+    outline = {k: v for k, v in court.items() if k in ('neon_white', 'neon_t0', 'neon_t1', 'foul_t0', 'foul_t1', 'center_mark')}
+    write_mdl(os.path.join(OUT, 'court_outline.mdl'), outline, 'open_court_lm', 2.0)
     write_mdl(os.path.join(OUT, 'floor.mdl'), floor, 'open_court_lm', 2.0)
     write_mdl(os.path.join(OUT, 'environment.mdl'), environment, 'open_env_lm', 2.0)
-    fx_all = dict(fx_court)
-    fx_all.update({('env_' + k if k in fx_all else k): v for k, v in static_env_fx.items()})
-    mats_fx = {k: material(k[4:] if k.startswith('env_') else k) for k in fx_all}
-    write_mdl(os.path.join(OUT, 'court_fx.mdl'), fx_all, mats_override=mats_fx)
+    # the court's own glow layers and the stadium's (light beams, halos) apart: PASSTHROUGH hides the stadium
+    write_mdl(os.path.join(OUT, 'court_fx.mdl'), fx_court, mats_override={k: material(k) for k in fx_court})
+    write_mdl(os.path.join(OUT, 'stadium_fx.mdl'), static_env_fx, mats_override={k: material(k) for k in static_env_fx})
     write_mdl(os.path.join(OUT, 'env_fx.mdl'), twinkle)
     write_mdl(os.path.join(OUT, 'court_pulse.mdl'), pulses)
     refl, rmats = mirrored(court, 0.30)
     refl_e, rmats_e = mirrored(env, 0.22)
-    refl.update({('e' + k): v for k, v in refl_e.items()})
-    rmats.update({('e' + k): v for k, v in rmats_e.items()})
-    write_mdl(os.path.join(OUT, 'floor_reflect.mdl'), refl, mats_override=rmats)
+    write_mdl(os.path.join(OUT, 'floor_reflect.mdl'), refl, mats_override=rmats)          # the court in the floor
+    write_mdl(os.path.join(OUT, 'floor_reflect_env.mdl'), refl_e, mats_override=rmats_e)  # the stadium in the floor
     write_collision(os.path.join(OUT, 'arena.col'))
     built = {'arena', 'environment'} | build_props() | build_props('avatar_head_m.npz') | build_props('avatar_head_f.npz')
     print('skinned bodies')

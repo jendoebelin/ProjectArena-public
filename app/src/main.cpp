@@ -123,6 +123,53 @@ struct App {
     std::vector<XrView> views;
     Swap swaps[2];
     bool hasLocalFloor = false, hasRefreshRate = false;
+    // PASSTHROUGH (settings): your room around the arena (XR_FB_passthrough: Quest, and Quest Link when the Meta app
+    // allows it). Everything outside the arena is hidden; the rendered image carries alpha for the compositor.
+    bool hasPassthrough = false, ptRunning = false, ptFailed = false;
+    // SETTINGS > PASSTHROUGH page: the mode and how the court and your room look (settings.cfg)
+    int ptMode = 0;                 // PT_OFF, PT_ARENA, PT_WINDOW, PT_OUTLINE
+    float ptFloor = 0.8f;           // court floor opacity (0 = your real floor)
+    float ptGlass = 1.0f;           // glass walls / roof: their normal opacity times this
+    float ptRoom = 1.0f;            // your room's brightness (passthrough opacity over black)
+    bool ptMono = false, ptEdges = false;   // the room in grey; outlines on real objects
+    bool ptStyleDirty = true, ptPage = false;
+    // safety and convenience, in every mode (OFF too): the room fades in near the edge of your play space, and while
+    // you hold Y (left controller) during play
+    bool ptEdgeReveal = true, ptPeekOn = true, peekHeld = false;
+    float ptReveal = 0.f;            // how far the game is faded out to show the room now (0..1)
+    float ptFadeNow = 0.f;           // this frame's fade, applied under the menus (menus never fade)
+    double ptRevealLogAt = 0;
+    XrSpace stageSpace = XR_NULL_HANDLE;
+    bool hasBounds = false;
+    XrExtent2Df stageExt{0, 0};
+    double boundsAt = 0;
+    PFN_xrGetReferenceSpaceBoundsRect xrGetBoundsRect_ = nullptr;   // (looked up: the PC loader exports only the basics)
+    // WINDOW with depth (XR_META_environment_depth, Quest 3 / 3S; needs the spatial data permission, USE_SCENE): real
+    // surfaces nearer than the glass are covered, so only what lies beyond the court shows through it
+    // hasDepth: the runtime has the extension; the provider is made once the permission is granted (it can't be
+    // before: the first build never asked, owner's test 2026-10-18)
+    bool hasDepth = false, depthReady = false, depthFailed = false, depthRunning = false, depthAsked = false, scenePerm = false,
+         depthImgValid = false;
+    double scenePermAt = 0;
+    XrEnvironmentDepthProviderMETA depthProvider = XR_NULL_HANDLE;
+    XrEnvironmentDepthSwapchainMETA depthSwap = XR_NULL_HANDLE;
+    std::vector<SwapImage> depthImages;
+    XrEnvironmentDepthImageMETA depthImg{XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_META};
+    Mat4 depthView[2], depthProj[2];
+    int curEye = 0;
+    PFN_xrStartEnvironmentDepthProviderMETA xrStartDepth_ = nullptr;
+    PFN_xrStopEnvironmentDepthProviderMETA xrStopDepth_ = nullptr;
+    PFN_xrAcquireEnvironmentDepthImageMETA xrAcquireDepth_ = nullptr;
+    PFN_xrPassthroughLayerSetStyleFB xrPassthroughLayerSetStyleFB_ = nullptr;
+    bool mrView = false;            // draw for passthrough this frame (also the --selftest --passthrough picture)
+    XrPassthroughFB ptHandle = XR_NULL_HANDLE;
+    XrPassthroughLayerFB ptLayer = XR_NULL_HANDLE;
+    PFN_xrCreatePassthroughFB xrCreatePassthroughFB_ = nullptr;
+    PFN_xrPassthroughStartFB xrPassthroughStartFB_ = nullptr;
+    PFN_xrPassthroughPauseFB xrPassthroughPauseFB_ = nullptr;
+    PFN_xrCreatePassthroughLayerFB xrCreatePassthroughLayerFB_ = nullptr;
+    PFN_xrPassthroughLayerResumeFB xrPassthroughLayerResumeFB_ = nullptr;
+    PFN_xrPassthroughLayerPauseFB xrPassthroughLayerPauseFB_ = nullptr;
     PFN_xrRequestDisplayRefreshRateFB xrRequestDisplayRefreshRateFB = nullptr;
 
     // input
@@ -150,6 +197,8 @@ struct App {
     Model gauntletHand[3], gauntletCuff[3];   // the same, split at the wrist (the cuff can be moved: TUNING)
     // open art set only (absent in the original set): glossy floor + its mirrored light sources, additive glow layers
     Model floor, floorReflect, courtFx, envFx, courtPulse;
+    Model stadiumFx, floorReflectEnv;   // the stadium's light beams / halos and its reflection in the floor (not in PASSTHROUGH)
+    Model courtOutline;                 // PASSTHROUGH > OUTLINE: the neon edges and the floor lines
     double startTime = 0;
     struct Trail {
         Vec3 core[48], helixA[48], helixB[48];
@@ -162,9 +211,10 @@ struct App {
     // live gauntlet tuning (applied to the tool frame): see the TUNING tool
     // gauntlet on the controller: pitch (deg), forward and up (m), and x / yaw / roll (right hand; the left is
     // mirrored; TUNING only, not in settings.cfg). Defaults = the owner's tuning in the headset with the TUNING tool
-    // (2026-10-18: +21 deg, yaw -14 deg, 9 cm forward; before: +35 deg, 9 cm forward, 2 cm up; 0 and -25 before that)
-    float tunePitchDeg = 21.f, tuneFwd = 0.09f, tuneUp = 0.0f;
-    float tuneX = 0.f, tuneYawDeg = -14.f, tuneRollDeg = 0.f;
+    // (second export 2026-10-18: +26 deg, yaw -16, roll -1, 5.4 cm forward, 3 cm down, 2.6 cm right; the first that
+    // day: +21 deg, yaw -14, 9 cm forward; before: +35 deg, 9 cm forward, 2 cm up; 0 and -25 before that)
+    float tunePitchDeg = 26.f, tuneFwd = 0.054f, tuneUp = -0.03f;
+    float tuneX = 0.026f, tuneYawDeg = -16.f, tuneRollDeg = -1.f;
     // developer tuning tool (SETTINGS > TUNING in developer mode): a mirror like the avatar builder's and a panel of
     // values for the gauntlet parts and the skeleton; the thumbsticks change the picked value (files/tuning.cfg)
     bool tuneOpen = false, prevTuneTrig = true;
@@ -343,13 +393,13 @@ bool netAcquireMulticastLock() {
     return true;
 }
 
-// RECORD_AUDIO is a runtime permission: ask once, the headset shows its own prompt
-static bool micPermission(bool request) {
+// runtime permissions (RECORD_AUDIO for voice, USE_SCENE for WINDOW's depth): ask once, the headset shows its own prompt
+static bool androidPermission(const char* name, bool request, int code) {
     if (!g_vm || !g_activity) return false;
     JNIEnv* env = nullptr;
     g_vm->AttachCurrentThread(&env, nullptr);
     jclass cls = env->GetObjectClass(g_activity);
-    jstring perm = env->NewStringUTF("android.permission.RECORD_AUDIO");
+    jstring perm = env->NewStringUTF(name);
     jmethodID check = env->GetMethodID(cls, "checkSelfPermission", "(Ljava/lang/String;)I");
     jint r = check ? env->CallIntMethod(g_activity, check, perm) : -1;
     if (env->ExceptionCheck()) { env->ExceptionClear(); return false; }
@@ -358,14 +408,17 @@ static bool micPermission(bool request) {
         jclass strCls = env->FindClass("java/lang/String");
         jobjectArray arr = env->NewObjectArray(1, strCls, perm);
         jmethodID req = env->GetMethodID(cls, "requestPermissions", "([Ljava/lang/String;I)V");
-        if (req) env->CallVoidMethod(g_activity, req, arr, 1);
+        if (req) env->CallVoidMethod(g_activity, req, arr, code);
         if (env->ExceptionCheck()) env->ExceptionClear();
     }
     return false;
 }
+static bool micPermission(bool request) { return androidPermission("android.permission.RECORD_AUDIO", request, 1); }
+static bool scenePermission(bool request) { return androidPermission("com.oculus.permission.USE_SCENE", request, 2); }
 #else
 bool netAcquireMulticastLock() { return false; }   // Windows delivers LAN broadcasts without one
 static bool micPermission(bool) { return true; }   // Windows asks for microphone access itself
+static bool scenePermission(bool) { return true; }
 #endif
 
 static double nowSeconds() {
@@ -495,6 +548,8 @@ static bool initInstance(App& a) {
     for (auto& e : exts) {
         if (!strcmp(e.extensionName, XR_EXT_LOCAL_FLOOR_EXTENSION_NAME)) { a.hasLocalFloor = true; enable.push_back(XR_EXT_LOCAL_FLOOR_EXTENSION_NAME); }
         if (!strcmp(e.extensionName, XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME)) { a.hasRefreshRate = true; enable.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME); }
+        if (!strcmp(e.extensionName, XR_FB_PASSTHROUGH_EXTENSION_NAME)) { a.hasPassthrough = true; enable.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME); }
+        if (!strcmp(e.extensionName, XR_META_ENVIRONMENT_DEPTH_EXTENSION_NAME)) { a.hasDepth = true; enable.push_back(XR_META_ENVIRONMENT_DEPTH_EXTENSION_NAME); }
     }
     XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
 #ifdef __ANDROID__
@@ -613,6 +668,175 @@ static bool initActions(App& a) {
     return true;
 }
 
+// ------------------------------------------------------------------ passthrough (XR_FB_passthrough)
+// Created paused once the session exists; updatePassthrough() starts it while PASSTHROUGH is on and pauses it
+// otherwise (the cameras cost power). Any failure turns the option off for this run (N/A on the settings page).
+enum { PT_OFF, PT_ARENA, PT_WINDOW, PT_OUTLINE, PT_COUNT };
+static const char* kPtModeName[PT_COUNT] = {"OFF", "ARENA", "WINDOW", "OUTLINE"};
+static const char* kPtModeHelp[PT_COUNT] = {"THE FULL STADIUM", "THE COURT IN YOUR ROOM: THE STADIUM IS GONE",
+                                            "INSIDE THE COURT IS ALL GAME: YOUR ROOM LOOKS IN THROUGH THE GLASS",
+                                            "ONLY THE COURT'S EDGES AND LINES: SEE YOUR WHOLE ROOM"};
+static const float kPtModeFloor[PT_COUNT] = {0.8f, 0.8f, 1.0f, 0.0f};   // the floor each mode starts with
+template <class F> static bool xrFn(App& a, const char* name, F& f) {
+    return XR_SUCCEEDED(xrGetInstanceProcAddr(a.instance, name, (PFN_xrVoidFunction*)&f)) && f;
+}
+static void initPassthrough(App& a) {
+    if (!a.hasPassthrough) return;
+    PFN_xrDestroyPassthroughFB destroy = nullptr;
+    bool ok = xrFn(a, "xrCreatePassthroughFB", a.xrCreatePassthroughFB_) && xrFn(a, "xrPassthroughStartFB", a.xrPassthroughStartFB_) &&
+              xrFn(a, "xrPassthroughPauseFB", a.xrPassthroughPauseFB_) && xrFn(a, "xrCreatePassthroughLayerFB", a.xrCreatePassthroughLayerFB_) &&
+              xrFn(a, "xrPassthroughLayerResumeFB", a.xrPassthroughLayerResumeFB_) &&
+              xrFn(a, "xrPassthroughLayerPauseFB", a.xrPassthroughLayerPauseFB_) && xrFn(a, "xrDestroyPassthroughFB", destroy);
+    xrFn(a, "xrPassthroughLayerSetStyleFB", a.xrPassthroughLayerSetStyleFB_);   // optional: ROOM brightness / colour / edges
+    XrResult r = XR_ERROR_FUNCTION_UNSUPPORTED;
+    if (ok) {
+        XrPassthroughCreateInfoFB pc{XR_TYPE_PASSTHROUGH_CREATE_INFO_FB};
+        r = a.xrCreatePassthroughFB_(a.session, &pc, &a.ptHandle);
+        ok = XR_SUCCEEDED(r);
+    }
+    if (ok) {
+        XrPassthroughLayerCreateInfoFB lc{XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB};
+        lc.passthrough = a.ptHandle;
+        lc.purpose = XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB;
+        r = a.xrCreatePassthroughLayerFB_(a.session, &lc, &a.ptLayer);
+        ok = XR_SUCCEEDED(r);
+        if (!ok && destroy) { destroy(a.ptHandle); a.ptHandle = XR_NULL_HANDLE; }
+    }
+    a.ptFailed = !ok;
+    LOGI("passthrough: %s (%d)", ok ? "ready" : "not available", (int)r);
+}
+// how close you are to the edge of your play space (m, negative = outside): the head (head) and the nearer hand
+// (hands) against the STAGE rectangle (Quest: the largest rectangle inside your boundary), or, without one, a 1.5 m
+// circle round the tracking origin
+static void edgeDistance(App& a, XrTime t, float& head, float& hands) {
+    const double now = nowSeconds();
+    if (now > a.boundsAt) {
+        a.boundsAt = now + 3.0;
+        XrExtent2Df e{0, 0};
+        if (!a.xrGetBoundsRect_) xrFn(a, "xrGetReferenceSpaceBoundsRect", a.xrGetBoundsRect_);
+        const bool ok = a.stageSpace != XR_NULL_HANDLE && a.xrGetBoundsRect_ &&
+                        XR_SUCCEEDED(a.xrGetBoundsRect_(a.session, XR_REFERENCE_SPACE_TYPE_STAGE, &e)) && e.width > 0.5f && e.height > 0.5f;
+        if (ok != a.hasBounds || (ok && (std::fabs(e.width - a.stageExt.width) > 0.05f || std::fabs(e.height - a.stageExt.height) > 0.05f)))
+            LOGI("play space: %s", ok ? "boundary rectangle" : "no boundary rectangle (1.5 m circle)");
+        a.hasBounds = ok;
+        if (ok) a.stageExt = e;
+    }
+    head = hands = 99.f;
+    const XrSpace pts[3] = {a.headSpace, a.handSpace[0], a.handSpace[1]};
+    for (int i = 0; i < 3; ++i) {
+        XrSpaceLocation l{XR_TYPE_SPACE_LOCATION};
+        if (XR_FAILED(xrLocateSpace(pts[i], a.hasBounds ? a.stageSpace : a.appSpace, t, &l)) ||
+            !(l.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)) continue;
+        const float x = l.pose.position.x, z = l.pose.position.z;
+        float di = a.hasBounds ? std::min(a.stageExt.width * 0.5f - std::fabs(x), a.stageExt.height * 0.5f - std::fabs(z))
+                               : 1.5f - std::sqrt(x * x + z * z);
+        if (i == 0) head = di;
+        else hands = std::min(hands, di);
+    }
+}
+
+// environment depth: created stopped; runs only in WINDOW (with passthrough on and the spatial data permission)
+static void initDepth(App& a) {
+    a.depthFailed = true;   // (one try per run)
+    PFN_xrCreateEnvironmentDepthProviderMETA createP = nullptr;
+    PFN_xrCreateEnvironmentDepthSwapchainMETA createS = nullptr;
+    PFN_xrEnumerateEnvironmentDepthSwapchainImagesMETA enumI = nullptr;
+    PFN_xrGetEnvironmentDepthSwapchainStateMETA state = nullptr;
+    bool ok = xrFn(a, "xrCreateEnvironmentDepthProviderMETA", createP) && xrFn(a, "xrCreateEnvironmentDepthSwapchainMETA", createS) &&
+              xrFn(a, "xrEnumerateEnvironmentDepthSwapchainImagesMETA", enumI) && xrFn(a, "xrGetEnvironmentDepthSwapchainStateMETA", state) &&
+              xrFn(a, "xrStartEnvironmentDepthProviderMETA", a.xrStartDepth_) && xrFn(a, "xrStopEnvironmentDepthProviderMETA", a.xrStopDepth_) &&
+              xrFn(a, "xrAcquireEnvironmentDepthImageMETA", a.xrAcquireDepth_);
+    XrResult r = XR_ERROR_FUNCTION_UNSUPPORTED;
+    if (ok) {
+        XrEnvironmentDepthProviderCreateInfoMETA pc{XR_TYPE_ENVIRONMENT_DEPTH_PROVIDER_CREATE_INFO_META};
+        r = createP(a.session, &pc, &a.depthProvider);
+        ok = XR_SUCCEEDED(r);
+    }
+    if (ok) {
+        XrEnvironmentDepthSwapchainCreateInfoMETA sc{XR_TYPE_ENVIRONMENT_DEPTH_SWAPCHAIN_CREATE_INFO_META};
+        r = createS(a.depthProvider, &sc, &a.depthSwap);
+        ok = XR_SUCCEEDED(r);
+    }
+    uint32_t n = 0;
+    if (ok) ok = XR_SUCCEEDED(enumI(a.depthSwap, 0, &n, nullptr)) && n > 0;
+    if (ok) {
+        a.depthImages.assign(n, {kSwapImageType});
+        ok = XR_SUCCEEDED(enumI(a.depthSwap, n, &n, (XrSwapchainImageBaseHeader*)a.depthImages.data()));
+    }
+    XrEnvironmentDepthSwapchainStateMETA st{XR_TYPE_ENVIRONMENT_DEPTH_SWAPCHAIN_STATE_META};
+    if (ok) state(a.depthSwap, &st);
+    a.depthReady = ok;
+    a.depthFailed = !ok;
+    LOGI("environment depth: %s (%d; %u images %ux%u)", ok ? "ready" : "could not be set up", (int)r, n, st.width, st.height);
+}
+static void updateDepth(App& a, XrTime t) {
+    if (!a.hasDepth) return;
+    const double now = nowSeconds();
+    const bool window = a.ptRunning && a.ptMode == PT_WINDOW;
+    if (window && now > a.scenePermAt) {   // (checked once a second; the prompt comes up the first time WINDOW is chosen)
+        a.scenePermAt = now + 1.0;
+        const bool was = a.scenePerm;
+        a.scenePerm = scenePermission(!a.depthAsked);
+        if (!a.depthAsked) LOGI("environment depth: asking for the spatial data permission");
+        a.depthAsked = true;
+        if (a.scenePerm != was) LOGI("environment depth: spatial data permission %s", a.scenePerm ? "granted" : "not granted");
+    }
+    if (window && a.scenePerm && !a.depthReady && !a.depthFailed) initDepth(a);
+    const bool want = window && a.scenePerm && a.depthReady;
+    if (want != a.depthRunning) {
+        const XrResult r = want ? a.xrStartDepth_(a.depthProvider) : a.xrStopDepth_(a.depthProvider);
+        LOGI("environment depth: %s (%d)", want ? "started" : "stopped", (int)r);
+        a.depthRunning = want && XR_SUCCEEDED(r);
+        a.depthImgValid = false;
+        if (want && XR_FAILED(r)) a.scenePermAt = now + 5.0;   // try again in a while
+    }
+    if (!a.depthRunning) return;
+    XrEnvironmentDepthImageAcquireInfoMETA ai{XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_ACQUIRE_INFO_META};
+    ai.space = a.appSpace;
+    ai.displayTime = t;
+    XrEnvironmentDepthImageMETA img{XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_META};
+    img.views[0].type = img.views[1].type = XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_VIEW_META;
+    if (XR_SUCCEEDED(a.xrAcquireDepth_(a.depthProvider, &ai, &img)) && img.swapchainIndex < a.depthImages.size()) {
+        a.depthImg = img;
+        a.depthImgValid = true;
+        for (int i = 0; i < 2; ++i) {   // the depth cameras' views, in arena space
+            const XrFovf& f = img.views[i].fov;
+            a.depthView[i] = Mat4::viewFromPose(a.trackToWorld * fromXr(img.views[i].pose));
+            a.depthProj[i] = Mat4::projection(f.angleLeft, f.angleRight, f.angleUp, f.angleDown, 0.05f, 100.f);   // (x, y only)
+        }
+    }
+}
+
+static void updatePassthrough(App& a) {
+    const bool want = a.ptMode != PT_OFF && a.ptLayer != XR_NULL_HANDLE && !a.ptFailed;
+    if (want && a.ptRunning && a.ptStyleDirty && a.xrPassthroughLayerSetStyleFB_) {   // ROOM brightness, grey, edges
+        a.ptStyleDirty = false;
+        XrPassthroughBrightnessContrastSaturationFB bcs{XR_TYPE_PASSTHROUGH_BRIGHTNESS_CONTRAST_SATURATION_FB};
+        bcs.brightness = 0.f;
+        bcs.contrast = 1.f;
+        bcs.saturation = a.ptMono ? 0.f : 1.f;
+        XrPassthroughStyleFB st{XR_TYPE_PASSTHROUGH_STYLE_FB};
+        st.next = &bcs;
+        st.textureOpacityFactor = clampf(a.ptRoom, 0.f, 1.f);
+        st.edgeColor = a.ptEdges ? XrColor4f{0.25f, 0.85f, 1.0f, 1.0f} : XrColor4f{0, 0, 0, 0};
+        const XrResult r = a.xrPassthroughLayerSetStyleFB_(a.ptLayer, &st);
+        LOGI("passthrough style: room %.0f%% %s, edges %s (%d)", a.ptRoom * 100, a.ptMono ? "grey" : "colour", a.ptEdges ? "on" : "off", (int)r);
+    }
+    if (want == a.ptRunning) return;
+    XrResult r1, r2;
+    if (want) { r1 = a.xrPassthroughStartFB_(a.ptHandle); r2 = a.xrPassthroughLayerResumeFB_(a.ptLayer); }
+    else { r2 = a.xrPassthroughLayerPauseFB_(a.ptLayer); r1 = a.xrPassthroughPauseFB_(a.ptHandle); }
+    if (want && (XR_FAILED(r1) || XR_FAILED(r2))) {
+        LOGW("passthrough: start failed (%d, %d)", (int)r1, (int)r2);
+        a.ptFailed = true;
+        a.ptMode = PT_OFF;
+        return;
+    }
+    a.ptRunning = want;
+    a.ptStyleDirty = true;
+    LOGI("passthrough: %s", want ? "running" : "paused");
+}
+
 static bool initSession(App& a) {
 #ifdef __ANDROID__
     PFN_xrGetOpenGLESGraphicsRequirementsKHR getReq = nullptr;
@@ -655,6 +879,15 @@ static bool initSession(App& a) {
     rs.poseInReferenceSpace.position.y = 0;
     XR_CHECK(xrCreateReferenceSpace(a.session, &rs, &a.headSpace));
     LOGI("reference space type %d", (int)a.spaceType);
+    for (auto t : types)
+        if (t == XR_REFERENCE_SPACE_TYPE_STAGE) {   // the play space's rectangle (ROOM AT EDGES)
+            XrReferenceSpaceCreateInfo st{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+            st.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+            st.poseInReferenceSpace.orientation.w = 1;
+            if (XR_FAILED(xrCreateReferenceSpace(a.session, &st, &a.stageSpace))) a.stageSpace = XR_NULL_HANDLE;
+        }
+    initPassthrough(a);
+    LOGI("environment depth: %s", a.hasDepth ? "supported (asked for when WINDOW is chosen)" : "not on this headset");
 
     for (int h = 0; h < 2; ++h) {
         XrActionSpaceCreateInfo ac{XR_TYPE_ACTION_SPACE_CREATE_INFO};
@@ -766,6 +999,9 @@ static bool initContent(App& a) {
         a.gfx.loadModel("floor", a.floor);
         a.gfx.loadModel("floor_reflect", a.floorReflect);
         a.gfx.loadModel("court_fx", a.courtFx);
+        a.gfx.loadModel("stadium_fx", a.stadiumFx);               // (open asset set; older sets have them in court_fx)
+        a.gfx.loadModel("floor_reflect_env", a.floorReflectEnv);
+        a.gfx.loadModel("court_outline", a.courtOutline);
         a.gfx.loadModel("env_fx", a.envFx);
         a.gfx.loadModel("court_pulse", a.courtPulse);
     }
@@ -1277,6 +1513,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
     }
     bool y = getBool(a, a.buttonY);
     a.prevY = y;
+    a.peekHeld = y && !a.spectating;   // PASSTHROUGH > PEEK: the room while Y is held
     // adb trigger for testing without controllers: touch <externalDataPath>/lan_toggle
     if (++a.lanTriggerPoll >= 36) {
         a.lanTriggerPoll = 0;
@@ -1374,7 +1611,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 
 // ------------------------------------------------------------------ lobby menu
 enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute,
-                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning };
+                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek };
 struct MenuItem {
     std::string label;
     float x, y, w, h;
@@ -1466,6 +1703,29 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"GOT IT", 0, -0.33f, 0.36f, 0.07f, MenuAct::HelpDone, 0, true});
         return v;
     }
+    if (a.settingsOpen && a.ptPage) {
+        for (int m = 0; m < PT_COUNT; ++m)
+            v.push_back({kPtModeName[m], -0.30f + 0.20f * m, 0.15f, 0.18f, 0.065f, MenuAct::PtMode, (uint32_t)m, true});
+        v.push_back({"INDOOR PRESET", -0.19f, 0.075f, 0.36f, 0.06f, MenuAct::PtPreset, 0, true});
+        v.push_back({"OUTDOOR PRESET", 0.19f, 0.075f, 0.36f, 0.06f, MenuAct::PtPreset, 1, true});
+        const bool on = a.ptMode != PT_OFF;
+        char b[48];
+        auto row = [&](const char* label, float val, float y, int id, bool en) {
+            snprintf(b, sizeof b, "%s %d%%", label, (int)std::lround(val * 100));
+            v.push_back({b, 0, y, 0.40f, 0.06f, MenuAct::None, 0, en});
+            v.push_back({"-", -0.27f, y, 0.08f, 0.06f, MenuAct::PtAdjust, (uint32_t)(id * 2), en});
+            v.push_back({"+", 0.27f, y, 0.08f, 0.06f, MenuAct::PtAdjust, (uint32_t)(id * 2 + 1), en});
+        };
+        row("COURT FLOOR", a.ptFloor, -0.005f, 0, on);
+        row("GLASS WALLS", a.ptGlass, -0.075f, 1, on && a.ptMode != PT_OUTLINE);
+        row("ROOM BRIGHTNESS", a.ptRoom, -0.145f, 2, true);
+        v.push_back({a.ptMono ? "ROOM: GREY" : "ROOM: COLOUR", -0.19f, -0.22f, 0.36f, 0.06f, MenuAct::PtMono, 0, true});
+        v.push_back({a.ptEdges ? "OBJECT EDGES: ON" : "OBJECT EDGES: OFF", 0.19f, -0.22f, 0.36f, 0.06f, MenuAct::PtEdges, 0, true});
+        v.push_back({a.ptEdgeReveal ? "ROOM AT EDGES: ON" : "ROOM AT EDGES: OFF", -0.19f, -0.29f, 0.36f, 0.06f, MenuAct::PtReveal, 0, true});
+        v.push_back({a.ptPeekOn ? "PEEK (HOLD Y): ON" : "PEEK (HOLD Y): OFF", 0.19f, -0.29f, 0.36f, 0.06f, MenuAct::PtPeek, 0, true});
+        v.push_back({"BACK", 0, -0.375f, 0.36f, 0.06f, MenuAct::Back, 0, true});
+        return v;
+    }
     if (a.settingsOpen && a.voicePage) {
         static const char* modes[3] = {"VOICE: PUSH TO TALK (LEFT GRIP)", "VOICE: OPEN MIC", "VOICE: OFF"};
         v.push_back({modes[a.voiceMode % 3], 0, 0.12f, 0.80f, 0.08f, MenuAct::VoiceMode, 0, true});
@@ -1477,10 +1737,12 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
     }
     if (a.settingsOpen) {
         char b[48];
-        snprintf(b, sizeof b, "VOLUME  %d%%", a.volume * 10);
-        v.push_back({b, 0, 0.12f, 0.46f, 0.08f, MenuAct::None, 0, true});
-        v.push_back({"-", -0.32f, 0.12f, 0.10f, 0.08f, MenuAct::VolDown, 0, a.volume > 0});
-        v.push_back({"+", 0.32f, 0.12f, 0.10f, 0.08f, MenuAct::VolUp, 0, a.volume < 10});
+        snprintf(b, sizeof b, "VOLUME %d%%", a.volume * 10);
+        v.push_back({b, -0.19f, 0.12f, 0.20f, 0.08f, MenuAct::None, 0, true});
+        v.push_back({"-", -0.335f, 0.12f, 0.07f, 0.08f, MenuAct::VolDown, 0, a.volume > 0});
+        v.push_back({"+", -0.045f, 0.12f, 0.07f, 0.08f, MenuAct::VolUp, 0, a.volume < 10});
+        v.push_back({!a.hasPassthrough || a.ptFailed ? "PASSTHROUGH: N/A" : std::string("PASSTHROUGH: ") + kPtModeName[a.ptMode % PT_COUNT],
+                     0.19f, 0.12f, 0.36f, 0.08f, MenuAct::Passthrough, 0, a.hasPassthrough && !a.ptFailed});
         v.push_back({a.pointerHand == 1 ? "POINTER: RIGHT" : "POINTER: LEFT", -0.19f, 0.02f, 0.36f, 0.08f, MenuAct::Hand, 0, true});
         v.push_back({a.botFill ? "BOT FILLS IN: ON" : "BOT FILLS IN: OFF", 0.19f, 0.02f, 0.36f, 0.08f, MenuAct::BotFill, 0, true});
         static const char* fx[3] = {"HIT EFFECTS: FULL", "HIT EFFECTS: SOFT", "HIT EFFECTS: LOW"};
@@ -1607,7 +1869,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         if (a.session != XR_NULL_HANDLE) xrRequestExitSession(a.session); else a.quit = true;
         break;
     case MenuAct::Nav: {
-        a.titleOpen = a.settingsOpen = a.voicePage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen = a.helpOpen = false;
+        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen = a.helpOpen = false;
         a.nameEdit = false;
         auto go = [&](MenuAct act) { MenuItem x{"", 0, 0, 0, 0, act, 0, true}; menuActivate(a, x); };
         switch ((int)it.ip) {
@@ -1640,7 +1902,7 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::BugSend: bugSubmit(a); a.bugOpen = false; a.titleOpen = a.bugReturnTitle; break;
     case MenuAct::BugCancel: a.bugOpen = false; a.titleOpen = a.bugReturnTitle; break;
     case MenuAct::Report:
-        a.settingsOpen = false; a.voicePage = false; a.reportOpen = true;
+        a.settingsOpen = false; a.voicePage = false; a.ptPage = false; a.reportOpen = true;
         a.reportWho = 0; a.reportName[0] = 0; a.reportWhy = -1; a.reportNote.clear();
         break;
     case MenuAct::ReportWho:
@@ -1708,8 +1970,35 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::Play: a.titleOpen = false; a.rulesOpen = true; a.rulesForHost = false; break;   // CHOOSE THE RULES first
     case MenuAct::Multi: a.titleOpen = false; break;
     case MenuAct::Settings: a.settingsOpen = true; break;
-    case MenuAct::Back: if (a.voicePage) a.voicePage = false; else a.settingsOpen = false; saveSettings(a); break;
+    case MenuAct::Back: if (a.voicePage) a.voicePage = false; else if (a.ptPage) a.ptPage = false; else a.settingsOpen = false; saveSettings(a); break;
     case MenuAct::VoicePage: a.voicePage = true; break;
+    case MenuAct::Passthrough: a.ptPage = true; break;
+    case MenuAct::PtMode:
+        if ((int)it.ip != a.ptMode) { a.ptMode = (int)it.ip % PT_COUNT; a.ptFloor = kPtModeFloor[a.ptMode]; }
+        LOGI("passthrough mode %s", kPtModeName[a.ptMode]);
+        saveSettings(a);
+        break;
+    case MenuAct::PtAdjust: {   // 0/1 floor -/+, 2/3 glass, 4/5 room
+        float* f[3] = {&a.ptFloor, &a.ptGlass, &a.ptRoom};
+        const float lo[3] = {0.f, 0.f, 0.1f}, hi[3] = {1.f, 2.f, 1.f};
+        const int k = (int)it.ip / 2;
+        *f[k] = clampf(std::round((*f[k] + ((it.ip & 1) ? 0.1f : -0.1f)) * 10.f) / 10.f, lo[k], hi[k]);
+        a.ptStyleDirty = true;
+        saveSettings(a);
+        break;
+    }
+    case MenuAct::PtMono: a.ptMono = !a.ptMono; a.ptStyleDirty = true; saveSettings(a); break;
+    case MenuAct::PtPreset:   // INDOOR: all game inside the court; OUTDOOR: see everything, real objects outlined
+        if (it.ip == 0) { a.ptMode = PT_WINDOW; a.ptFloor = 1.f; a.ptGlass = 1.f; a.ptRoom = 1.f; a.ptMono = false; a.ptEdges = false; }
+        else { a.ptMode = PT_OUTLINE; a.ptFloor = 0.f; a.ptGlass = 1.f; a.ptRoom = 0.7f; a.ptMono = false; a.ptEdges = true; }
+        a.ptEdgeReveal = true;
+        a.ptStyleDirty = true;
+        LOGI("passthrough preset %s", it.ip == 0 ? "indoor" : "outdoor");
+        saveSettings(a);
+        break;
+    case MenuAct::PtReveal: a.ptEdgeReveal = !a.ptEdgeReveal; saveSettings(a); break;
+    case MenuAct::PtPeek: a.ptPeekOn = !a.ptPeekOn; saveSettings(a); break;
+    case MenuAct::PtEdges: a.ptEdges = !a.ptEdges; a.ptStyleDirty = true; saveSettings(a); break;
     case MenuAct::Tuning: a.settingsOpen = false; openTuning(a, a.localIn); break;
     case MenuAct::VoiceMode: a.voiceMode = (a.voiceMode + 1) % 3; a.micDenied = false; saveSettings(a); break;
     case MenuAct::MuteSpec: a.muteSpectators = !a.muteSpectators; saveSettings(a); break;
@@ -1811,8 +2100,10 @@ static void drawMenu(App& a) {
         }
         a.gfx.drawText(s, {a.menuPose.q, at(x, y, 0.006f)}, h, c);
     };
-    const float bg[4] = {0.004f, 0.007f, 0.016f, 0.90f}, edge[4] = {0.05f, 0.35f, 0.60f, 0.9f};
-    const float btn[4] = {0.03f, 0.05f, 0.08f, 0.95f}, hov[4] = {0.05f, 0.40f, 0.75f, 0.98f}, dis[4] = {0.015f, 0.015f, 0.02f, 0.9f};
+    const float ua = a.ptRunning ? 0.998f : 0.f;   // over your room the menus are solid (never see-through)
+    const float bg[4] = {0.004f, 0.007f, 0.016f, std::max(ua, 0.90f)}, edge[4] = {0.05f, 0.35f, 0.60f, std::max(ua, 0.9f)};
+    const float btn[4] = {0.03f, 0.05f, 0.08f, std::max(ua, 0.95f)}, hov[4] = {0.05f, 0.40f, 0.75f, std::max(ua, 0.98f)},
+                dis[4] = {0.015f, 0.015f, 0.02f, std::max(ua, 0.9f)};
     const float white[4] = {1, 1, 1, 1}, grey[4] = {0.35f, 0.38f, 0.42f, 1}, cyan[4] = {0.3f, 0.85f, 1.0f, 1};
     quad(0, -0.09f, 1.04f, 0.98f, -0.002f, edge);
     quad(0, -0.09f, 1.0f, 0.94f, 0, bg);
@@ -1895,8 +2186,17 @@ static void drawMenu(App& a) {
         snprintf(buf, sizeof buf, "WELCOME, %s", a.net.name());
         text(buf, 0, 0.185f, 0.03f, white);
     } else if (a.settingsOpen) {
-        text(a.voicePage ? "VOICE CHAT" : "SETTINGS", 0, 0.29f, 0.055f, cyan);
+        text(a.voicePage ? "VOICE CHAT" : a.ptPage ? "PASSTHROUGH" : "SETTINGS", 0, 0.29f, 0.055f, cyan);
         if (a.voicePage) text("ONLY PEOPLE AT YOUR ARENA CAN HEAR YOU", 0, 0.205f, 0.024f, grey);
+        if (a.ptPage) {
+            std::string h = kPtModeHelp[a.ptMode % PT_COUNT];
+            if (a.ptMode == PT_WINDOW)   // what hides the real things inside the court (environment depth)
+                h = !a.hasDepth ? "WINDOW: YOUR ROOM THROUGH THE GLASS (NO DEPTH ON THIS HEADSET)"
+                    : a.depthRunning ? "WINDOW: THINGS INSIDE THE COURT HIDDEN (ROOM DEPTH ON)"
+                    : !a.scenePerm ? "WINDOW: ALLOW SPATIAL DATA TO HIDE THINGS INSIDE THE COURT"
+                    : a.depthFailed ? "WINDOW: ROOM DEPTH COULD NOT START" : "WINDOW: STARTING ROOM DEPTH";
+            text(h, 0, 0.205f, 0.022f, grey);
+        }
     } else if (a.helpOpen) {
         text("HOW TO PLAY", 0, 0.29f, 0.055f, cyan);
         static const char* lines[] = {
@@ -1946,7 +2246,7 @@ static void drawMenu(App& a) {
         const bool picked = (it.act == MenuAct::Nav && (int)it.ip == navCurrent(a)) ||
                             (it.act == MenuAct::BugCat && (int)it.ip == a.bugCat) ||
                             (it.act == MenuAct::RulesPick && (int)it.ip == (a.game.tun.advanced ? 1 : 0)) || (it.act == MenuAct::ReportWho && it.ip == a.reportWho) ||
-                            (it.act == MenuAct::ReportWhy && (int)it.ip == a.reportWhy);
+                            (it.act == MenuAct::ReportWhy && (int)it.ip == a.reportWhy) || (it.act == MenuAct::PtMode && (int)it.ip == a.ptMode);
         quad(it.x, it.y, it.w, it.h, 0.003f, !it.enabled && !row ? dis : ((int)i == a.menuHover || picked) ? hov : btn);
         float th = row ? 0.026f : 0.034f;
         const float tw = th * 0.75f * (float)it.label.size();          // the font's glyphs are 0.75 x their height
@@ -2442,7 +2742,8 @@ static void drawBuilder(App& a, int pass) {
     auto text = [&](const std::string& t, float x, float y, float h, const float* c) {
         a.gfx.drawText(t, {a.builderPose.q, at(x, y, 0.006f)}, h, c);
     };
-    const float bg[4] = {0.004f, 0.007f, 0.016f, 0.90f}, frame[4] = {edge[0] * 0.6f, edge[1] * 0.6f, edge[2] * 0.6f, 0.9f};
+    const float ua = a.ptRunning ? 0.998f : 0.f;   // solid over your room
+    const float bg[4] = {0.004f, 0.007f, 0.016f, std::max(ua, 0.90f)}, frame[4] = {edge[0] * 0.6f, edge[1] * 0.6f, edge[2] * 0.6f, std::max(ua, 0.9f)};
     const float btn[4] = {0.03f, 0.05f, 0.08f, 0.95f}, hov[4] = {0.05f, 0.40f, 0.75f, 0.98f};
     const float white[4] = {1, 1, 1, 1}, grey[4] = {0.45f, 0.5f, 0.56f, 1}, cyan[4] = {0.3f, 0.85f, 1.0f, 1};
     const float top = 0.52f, bottom = builderButtonsY() - 0.06f;
@@ -2561,7 +2862,7 @@ static std::vector<TuneParam> tuneParams(App& a) {
 static const std::vector<float>& tuneDefaults() {
     static std::vector<float> d;
     if (d.empty()) {
-        static float g[6] = {0.f, 0.0f, 0.09f, 21.f, -14.f, 0.f};   // App's defaults (the owner's tuning, 2026-10-18)
+        static float g[6] = {0.026f, -0.03f, 0.054f, 26.f, -16.f, -1.f};   // App's defaults (the owner's tuning, 2026-10-18)
         static avatar::RigTuning r;
         static Tunables t;
         for (const TuneParam& p : tuneParamsFor({&g[0], &g[1], &g[2], &g[3], &g[4], &g[5]}, r, t)) d.push_back(*p.v);
@@ -2732,7 +3033,11 @@ static void tuneActivate(App& a, int id) {
     case TB_MARKERS: a.tuneMarkers = !a.tuneMarkers; break;
     case TB_RESET: tuneReset(a, false); break;
     case TB_RESETALL: tuneReset(a, true); break;
-    case TB_EXPORT: exportTuning(a); break;
+    case TB_EXPORT: {   // one export per press (a press once sent two)
+        static double last = -10;
+        if (nowSeconds() - last > 3.0) { last = nowSeconds(); exportTuning(a); }
+        break;
+    }
     case TB_DONE: closeTuning(a); break;
     default: break;
     }
@@ -2907,7 +3212,8 @@ static void drawTuning(App& a, int pass) {
         a.gfx.drawPanel(Mat4::fromPose({P.q, at(x, y, z)}, {w, h, 1}), c);
     };
     auto text = [&](const std::string& t, float x, float y, float h, const float* c) { a.gfx.drawText(t, {P.q, at(x, y, 0.006f)}, h, c); };
-    const float bg[4] = {0.004f, 0.007f, 0.016f, 0.92f}, frame[4] = {look.rim[0] * 0.5f, look.rim[1] * 0.5f, look.rim[2] * 0.5f, 0.9f};
+    const float ua = a.ptRunning ? 0.998f : 0.f;   // solid over your room
+    const float bg[4] = {0.004f, 0.007f, 0.016f, std::max(ua, 0.92f)}, frame[4] = {look.rim[0] * 0.5f, look.rim[1] * 0.5f, look.rim[2] * 0.5f, std::max(ua, 0.9f)};
     const float btn[4] = {0.03f, 0.05f, 0.08f, 0.95f}, hov[4] = {0.05f, 0.40f, 0.75f, 0.98f}, on[4] = {0.06f, 0.22f, 0.36f, 0.98f};
     const float white[4] = {1, 1, 1, 1}, grey[4] = {0.5f, 0.55f, 0.62f, 1}, cyan[4] = {0.3f, 0.85f, 1.0f, 1}, amber[4] = {1.0f, 0.8f, 0.3f, 1};
     quad(0, 0, kTuneW + 0.03f, kTuneTop - kTuneBottom + 0.03f, -0.002f, frame);
@@ -3335,7 +3641,7 @@ static void lobbyAction(App& a, int which, const PlayerInput& in) {
     LOGI("lobby: %s", which == kPosterCount ? "the court" : kPosters[which].title);
     auto menuPage = [&]() {
         openMenu(a, in);
-        a.titleOpen = a.settingsOpen = a.voicePage = a.helpOpen = a.xpOpen = a.rulesOpen = a.bugOpen = a.reportOpen = false;
+        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.bugOpen = a.reportOpen = false;
     };
     switch (which) {
     case 0: case kPosterCount: menuPage(); a.rulesOpen = true; a.rulesForHost = false; break;   // PLAY THE BOT / the court
@@ -3788,10 +4094,13 @@ static void drawWorld(App& a, int pass) {
     const int L = a.net.localIndex();
     DrawParams dp;
     const float now = float(nowSeconds() - a.startTime);
-    if (pass == 1 && a.floor.valid()) {
+    const int ptm = a.mrView ? a.ptMode : PT_OFF;
+    const bool outline = ptm == PT_OUTLINE && a.courtOutline.valid();
+    if (pass == 1 && a.floor.valid() && !(a.mrView && a.ptFloor <= 0.01f)) {
         // glossy floor: mirrored light sources (and the balls) seen through the semi-transparent floor
         DrawParams rp;
         a.gfx.draw(a.floorReflect, Mat4::identity(), rp, 1);
+        if (!a.mrView && a.floorReflectEnv.valid()) a.gfx.draw(a.floorReflectEnv, Mat4::identity(), rp, 1);
         const Vec3 eye = a.viewHead.p;
         const float tcol[2][3] = {{0.1f, 0.7f, 1.0f}, {1.0f, 0.4f, 0.1f}};
         for (int p = 0; p < 2; ++p) {
@@ -3809,11 +4118,35 @@ static void drawWorld(App& a, int pass) {
             a.gfx.drawSpriteFlat({b.pos.x, 0.004f, b.pos.z}, 0.9f + 0.4f * b.pos.y, pc, {0, 1, 0}, 0);
         }
         DrawParams fp;
-        fp.alphaMul = 0.80f;
+        fp.alphaMul = a.mrView ? std::min(0.998f, a.ptFloor) : 0.80f;   // PASSTHROUGH: COURT FLOOR
         a.gfx.draw(a.floor, Mat4::identity(), fp, 1);
     }
-    a.gfx.draw(a.environment, Mat4::identity(), dp, pass);
-    a.gfx.draw(a.arena, Mat4::identity(), dp, pass);
+    if (!a.mrView) a.gfx.draw(a.environment, Mat4::identity(), dp, pass);   // PASSTHROUGH: your room instead
+    if (outline) {
+        a.gfx.draw(a.courtOutline, Mat4::identity(), dp, pass);
+    } else {
+        DrawParams ap;
+        ap.glassMul = a.mrView ? a.ptGlass : 1.f;   // PASSTHROUGH: GLASS WALLS
+        a.gfx.draw(a.arena, Mat4::identity(), ap, pass);
+    }
+    if (pass == 1 && ptm == PT_WINDOW) {   // WINDOW: a night sky over the court, so only the glass walls look out
+        const float sky[4] = {0.006f, 0.010f, 0.022f, 0.998f};
+        a.gfx.drawPanel(Mat4::fromPose({Quat::axisAngle({1, 0, 0}, kPi * 0.5f), {0, 4.0f, 0}}, {19.0f, 5.0f, 1}), sky);
+        if (a.depthRunning && a.depthImgValid && !a.rttPass) {   // real things nearer than the glass: covered (night behind the glass)
+            const Mat4 walls[4] = {Mat4::fromPose({Quat{}, {0, 2.0f, 2.52f}}, {19.04f, 4.0f, 1}),
+                                   Mat4::fromPose({Quat{}, {0, 2.0f, -2.52f}}, {19.04f, 4.0f, 1}),
+                                   Mat4::fromPose({Quat::axisAngle({0, 1, 0}, kPi * 0.5f), {9.52f, 2.0f, 0}}, {5.04f, 4.0f, 1}),
+                                   Mat4::fromPose({Quat::axisAngle({0, 1, 0}, kPi * 0.5f), {-9.52f, 2.0f, 0}}, {5.04f, 4.0f, 1})};
+            const int e = a.curEye & 1;
+            a.gfx.drawDepthBacking(walls, 4, a.depthImages[a.depthImg.swapchainIndex].image, e, a.depthView[e], a.depthProj[e],
+                                   a.depthImg.nearZ, a.depthImg.farZ, sky);
+        }
+    }
+    if (pass == 1 && a.mrView && inLobby(a)) {   // PASSTHROUGH: the balcony is gone; a platform to stand on instead
+        const float pc[4] = {0.03f, 0.08f, 0.12f, 1}, rc[4] = {0.15f, 0.5f, 0.75f, 1};
+        a.gfx.drawSpriteFlat({kLobbySpot.x, kLobbySpot.y + 0.004f, kLobbySpot.z}, 1.8f, pc, {0, 1, 0}, 0);
+        a.gfx.drawSpriteFlat({kLobbySpot.x, kLobbySpot.y + 0.006f, kLobbySpot.z}, 2.0f, rc, {0, 1, 0}, 1);
+    }
     if (pass == 1 && a.spectating) {   // the floating gallery seat the spectator stands on
         const float pc[4] = {0.03f, 0.08f, 0.12f, 1}, rc[4] = {0.15f, 0.5f, 0.75f, 1};
         a.gfx.drawSpriteFlat({0, 1.004f, 5.4f}, 1.8f, pc, {0, 1, 0}, 0);
@@ -3822,9 +4155,10 @@ static void drawWorld(App& a, int pass) {
     if (pass == 1) {
         DrawParams xp;
         xp.uvOff[0] = now * 0.035f;   // crowd lights twinkle (env_fx = crowd lights only; they sample a scrolling twinkle strip)
-        a.gfx.draw(a.envFx, Mat4::identity(), xp, 1);
+        if (!a.mrView) a.gfx.draw(a.envFx, Mat4::identity(), xp, 1);
         DrawParams cp;   // static glow layers: light halos, holographic rings, end-zone energy, light beams
-        a.gfx.draw(a.courtFx, Mat4::identity(), cp, 1);
+        if (!outline) a.gfx.draw(a.courtFx, Mat4::identity(), cp, 1);
+        if (!a.mrView && a.stadiumFx.valid()) a.gfx.draw(a.stadiumFx, Mat4::identity(), cp, 1);
         DrawParams pp;   // energy pulses racing along the neon outline
         pp.uvOff[1] = -now * 0.9f;
         a.gfx.draw(a.courtPulse, Mat4::identity(), pp, 1);
@@ -4052,6 +4386,7 @@ static void drawWorld(App& a, int pass) {
             const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
             a.gfx.drawText(note, {faceP0, {-1.5f * sx, 1.9f, 0}}, 0.12f, amber);
         }
+        if (!a.rttPass && a.ptFadeNow > 0.f) a.gfx.fadeToRoom(a.ptFadeNow);   // the world toward the room, not the menus
         if (!a.rttPass) drawMenu(a);
     }
     if (!a.rttPass) drawBuilder(a, pass);
@@ -4079,7 +4414,7 @@ static void stepFrame(App& a, PlayerInput in[2], int L, double t, float dt) {
         if (a.stateKey != 0xFFFFFFFFu && key != a.stateKey) {
             if (a.dirOpen) { a.dirOpen = false; a.infoKind = -1; }
             if (a.menuOpen && !a.nameEdit && !a.bugOpen && !a.reportOpen) {
-                a.menuOpen = false; a.titleOpen = a.settingsOpen = a.voicePage = a.helpOpen = a.xpOpen = a.rulesOpen = false;
+                a.menuOpen = false; a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.helpOpen = a.xpOpen = a.rulesOpen = false;
                 LOGI("menu: closed (moved to %s)", a.net.status());
             }
         }
@@ -4239,6 +4574,42 @@ static bool renderFrame(App& a) {
     std::vector<XrCompositionLayerProjectionView> projViews(a.views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     std::vector<XrCompositionLayerBaseHeader*> layers;
+    {   // ROOM AT EDGES and PEEK (Y): fade the game toward the room
+        float target = 0.f;
+        // only with a passthrough mode on: OFF is off (owner, 2026-10-18: with OFF picked the room still showed)
+        if (a.hasPassthrough && !a.ptFailed && !a.spectating && a.ptMode != PT_OFF) {
+            if (a.ptEdgeReveal) {
+                // the head from 35 cm inside the edge (full at 10 cm), a hand only once it reaches past the edge (full
+                // 15 cm out). A small (stationary) boundary: the hands only (owner, 2026-10-18: a 1.2 m boundary kept
+                // the court half faded all the time, the desk showing through the floor and the roof)
+                float dh, dk;
+                edgeDistance(a, predicted, dh, dk);
+                const bool smallBounds = a.hasBounds && std::min(a.stageExt.width, a.stageExt.height) < 1.8f;
+                const float th = smallBounds ? 0.f : clampf((0.35f - dh) / 0.25f, 0.f, 1.f);
+                const float tk = clampf(-dk / 0.15f, 0.f, 1.f);
+                target = std::max(th, tk) * 0.85f;
+                if (target > 0 && t > a.ptRevealLogAt) {   // why the room showed (bug reports carry the log)
+                    a.ptRevealLogAt = t + 5.0;
+                    LOGI("room at edges: head %.2f m, hand %.2f m from the edge (%s %.2f x %.2f m)", dh, dk,
+                         a.hasBounds ? "boundary" : "circle", a.stageExt.width, a.stageExt.height);
+                }
+            }
+            if (a.ptPeekOn && a.peekHeld && !a.menuOpen) target = 0.95f;
+        }
+        a.ptReveal += (target - a.ptReveal) * std::min(1.f, dt * (target > a.ptReveal ? 10.f : 4.f));
+        if (a.ptReveal < 0.003f) a.ptReveal = 0.f;
+    }
+    updatePassthrough(a);
+    a.mrView = a.ptRunning && a.ptMode != PT_OFF;
+    updateDepth(a, predicted);
+    XrCompositionLayerPassthroughFB ptl{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
+    const bool ptOn = a.ptRunning;
+    if (ptOn) {   // your room first; the game over it where its image is opaque
+        ptl.layerHandle = a.ptLayer;
+        ptl.flags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+        layers.push_back((XrCompositionLayerBaseHeader*)&ptl);
+        layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;   // premultiplied: glows add light to the room
+    }
     if (fs.shouldRender) renderInfoPreview(a);
     if (fs.shouldRender) {
         XrViewLocateInfo vl{XR_TYPE_VIEW_LOCATE_INFO};
@@ -4262,9 +4633,12 @@ static bool renderFrame(App& a) {
             glViewport(0, 0, s.w, s.h);
             glEnable(GL_DEPTH_TEST);
             glDepthFunc(GL_LEQUAL);
-            glClearColor(0.01f, 0.012f, 0.02f, 1);
+            if (a.mrView) glClearColor(0, 0, 0, 0);   // nothing drawn = your room
+            else glClearColor(0.01f, 0.012f, 0.02f, 1);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             Pose eye = a.trackToWorld * fromXr(a.views[i].pose);
+            a.ptFadeNow = ptOn ? a.ptReveal : 0.f;   // ROOM AT EDGES / PEEK (drawWorld fades the world under the menus)
+            a.curEye = (int)i;
             const XrFovf& f = a.views[i].fov;
             Mat4 proj = Mat4::projection(f.angleLeft, f.angleRight, f.angleUp, f.angleDown, 0.05f, 2000.f);
             a.gfx.beginEye(Mat4::viewFromPose(eye), proj, eye.p);
@@ -4446,11 +4820,11 @@ static void saveSettings(App& a) {
     if (!ext) return;
     std::string f = std::string(ext) + "/settings.cfg";
     if (FILE* fp = fopen(f.c_str(), "w")) {
-        fprintf(fp, "cfgver=6\n");
-        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\nteam=%s\nserver=%s\nsparcserver=%s\n",
+        fprintf(fp, "cfgver=7\n");
+        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nsparcserver=%s\n",
                 a.game.tun.advanced ? 1 : 0, a.game.tun.shieldPlacement, a.tunePitchDeg, a.tuneFwd, a.tuneUp, a.volume,
                 a.pointerHand, a.fxLevel, a.hideOutside ? 1 : 0, a.voiceMode, a.muteSpectators ? 1 : 0, a.mutePlayers ? 1 : 0,
-                a.muteAll ? 1 : 0, a.onlinePref ? 1 : 0, a.botFill ? 1 : 0, a.team.c_str(),
+                a.muteAll ? 1 : 0, a.onlinePref ? 1 : 0, a.botFill ? 1 : 0, a.ptMode, a.ptFloor, a.ptGlass, a.ptRoom, a.ptMono ? 1 : 0, a.ptEdges ? 1 : 0, a.ptEdgeReveal ? 1 : 0, a.ptPeekOn ? 1 : 0, a.team.c_str(),
                 (a.serverOverride.empty() ? a.serverAddr : a.serverSaved).c_str(),
                 a.sparcAddr.c_str());
         fclose(fp);
@@ -4495,6 +4869,14 @@ static void loadSettings(App& a) {
         else if (k == "hand") a.pointerHand = ((int)v) ? 1 : 0;
         else if (k == "fx") a.fxLevel = std::max(0, std::min(2, (int)v));
         else if (k == "hideoutside") a.hideOutside = v != 0;
+        else if (k == "passthrough") {}   // always OFF when the game starts (owner, 2026-10-18); the page keeps the rest
+        else if (k == "ptfloor") a.ptFloor = clampf(v, 0.f, 1.f);
+        else if (k == "ptglass") a.ptGlass = clampf(v, 0.f, 2.f);
+        else if (k == "ptroom") a.ptRoom = clampf(v, 0.1f, 1.f);
+        else if (k == "ptmono") a.ptMono = v != 0;
+        else if (k == "ptedges") a.ptEdges = v != 0;
+        else if (k == "ptreveal") a.ptEdgeReveal = v != 0;
+        else if (k == "ptpeek") a.ptPeekOn = v != 0;
         else if (k == "voice") a.voiceMode = std::max(0, std::min(2, (int)v));
         else if (k == "mutespec") a.muteSpectators = v != 0;
         else if (k == "muteplayers") a.mutePlayers = v != 0;
@@ -4567,9 +4949,13 @@ static void startUp(App& a) {
         a.tunePitchDeg = 35.f; a.tuneFwd = 0.09f; a.tuneUp = 0.02f;
         saveSettings(a);
     }
-    if (a.cfgVersion < 6 && a.tunePitchDeg == 35.f && std::fabs(a.tuneFwd - 0.09f) < 1e-4f && std::fabs(a.tuneUp - 0.02f) < 1e-4f) {
-        LOGI("settings: gauntlet 35 deg, 2 cm up -> 21 deg, level (new default, the owner's TUNING export 2026-10-18)");
-        a.tunePitchDeg = 21.f; a.tuneUp = 0.f;
+    // a file still holding an earlier default (35 deg / 9 cm / 2 cm up, or 21 deg / 9 cm / level) moves to the owner's
+    // TUNING export of 2026-10-18 once; values someone tuned themselves are kept
+    const bool oldDef = (a.tunePitchDeg == 35.f && std::fabs(a.tuneFwd - 0.09f) < 1e-4f && std::fabs(a.tuneUp - 0.02f) < 1e-4f) ||
+                        (a.tunePitchDeg == 21.f && std::fabs(a.tuneFwd - 0.09f) < 1e-4f && std::fabs(a.tuneUp) < 1e-4f);
+    if (a.cfgVersion < 7 && oldDef) {
+        LOGI("settings: gauntlet %.0f deg -> 26 deg, 5.4 cm forward, 3 cm down (new default)", a.tunePitchDeg);
+        a.tunePitchDeg = 26.f; a.tuneFwd = 0.054f; a.tuneUp = -0.03f;
         saveSettings(a);
     }
     if (a.cfgVersion < 5 && !a.onlinePref) {   // older builds started on home Wi-Fi: online is the default now, once
@@ -4649,6 +5035,9 @@ struct ShotView {
     std::string scene;  // --scene action: two players mid-rally (store art)
     bool lobby = false; // --lobby: the lobby balcony and posters (other pictures show the plain court)
     int tunePart = 0;   // --scene tuning --tune N: the developer tuning tool on that part
+    bool passthrough = false;   // --passthrough MODE (1 ARENA, 2 WINDOW, 3 OUTLINE): drawn over a stand-in room (a checkerboard)
+    int ptMode = 1;
+    float ptRoom = 1.f;         // --ptroom: ROOM BRIGHTNESS in the picture
 };
 
 static int selfTest(App& a, const char* out, const ShotView& v) {
@@ -4672,6 +5061,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
     glClearColor(0.01f, 0.012f, 0.02f, 1);
+    if (v.passthrough) { a.mrView = true; a.ptMode = std::max(1, std::min(PT_COUNT - 1, v.ptMode)); a.ptFloor = kPtModeFloor[a.ptMode]; glClearColor(0, 0, 0, 0); }
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     Pose eye{Quat::axisAngle({0, 1, 0}, -1.5707963f), a.game.tun.start[0] + Vec3{-0.6f, 1.7f, 0}};   // facing the opponent (+X)
     if (v.custom) eye = {Quat::axisAngle({0, 1, 0}, deg2rad(v.yaw)) * Quat::axisAngle({1, 0, 0}, deg2rad(v.pitch)), v.p};
@@ -4781,6 +5171,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         a.xpOpen = v.menu == "xp";
         a.settingsOpen = v.menu == "settings" || v.menu == "voice";
         a.voicePage = v.menu == "voice";
+        if (v.menu == "passthrough") { a.settingsOpen = true; a.ptPage = true; a.hasPassthrough = true; a.ptMode = PT_WINDOW; a.ptFloor = 1.f; }
         a.helpOpen = v.menu == "help";
         if (v.menu == "name") { a.nameEdit = true; a.editTarget = 0; a.nameBuf = "MOJO"; }
         if (v.menu == "spectate") a.net.spectate();
@@ -4821,7 +5212,15 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
     if (!f) return 3;
     fprintf(f, "P6\n%d %d\n255\n", W, H);
     for (int y = H - 1; y >= 0; --y)
-        for (int x = 0; x < W; ++x) fwrite(&px[((size_t)y * W + x) * 4], 1, 3, f);
+        for (int x = 0; x < W; ++x) {
+            uint8_t* c = &px[((size_t)y * W + x) * 4];
+            if (v.passthrough) {   // premultiplied over the stand-in room, as the compositor does
+                const int room = (((x / 48) + (y / 48)) & 1) ? 150 : 105;
+                const int warm[3] = {int((room + 12) * v.ptRoom), int(room * v.ptRoom), int((room - 14) * v.ptRoom)};
+                for (int k = 0; k < 3; ++k) c[k] = (uint8_t)std::min(255, c[k] + (255 - c[3]) * warm[k] / 255);
+            }
+            fwrite(c, 1, 3, f);
+        }
     fclose(f);
     LOGI("selftest: wrote %s (GL error 0x%x)", out, err);
     shutDown(a);
@@ -5164,6 +5563,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--scene") && i + 1 < argc) view.scene = argv[++i];
         else if (!strcmp(argv[i], "--lobby")) view.lobby = true;
         else if (!strcmp(argv[i], "--tune") && i + 1 < argc) view.tunePart = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--passthrough") && i + 1 < argc) { view.passthrough = true; view.ptMode = atoi(argv[++i]); }
+        else if (!strcmp(argv[i], "--ptroom") && i + 1 < argc) view.ptRoom = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--bug-report") && i + 2 < argc) { bugServer = argv[i + 1]; bugNoteArg = argv[i + 2]; i += 2; }
         else if (!strcmp(argv[i], "--player-report") && i + 2 < argc) { bugServer = argv[i + 1]; bugNoteArg = argv[i + 2]; i += 2; playerReport = true; }
         else if (!strcmp(argv[i], "--xc-probe") && i + 2 < argc) { probeAddr = argv[i + 1]; probeName = argv[i + 2]; i += 2; }

@@ -87,8 +87,10 @@ struct RigTuning {
     Vec3 neck{0, 0, 0};                         // the neck top against the head (head frame: up, back = +y, +z)
     // where the forearm ends inside a plate gauntlet's cuff (grip space), and the cuff's own pose against the hand:
     // a rotation (pitch / yaw / roll degrees, gripEuler) about the wrist pivot, then an offset
-    Vec3 forearmEnd{0.0267f, 0.0382f, 0.0876f};
-    Vec3 cuffPos{0, 0, 0}, cuffRot{18, 0, 0};   // cuff pitched 18 deg about the wrist (owner's TUNING export, 2026-10-18)
+    Vec3 forearmEnd{0.0247f, 0.0382f, 0.0876f};
+    // the cuff against the hand: the owner's TUNING export (2026-10-18, second): 1.6 right, 2.2 up, 2.6 back (cm),
+    // pitched 17 deg, yaw and roll -1
+    Vec3 cuffPos{0.016f, 0.022f, 0.026f}, cuffRot{17, -1, -1};
 };
 RigTuning& rigTuning();
 constexpr Vec3 kCuffPivot{0.004f, 0.005f, 0.050f};   // the wrist joint of the plate gauntlets (make_props.py, grip space)

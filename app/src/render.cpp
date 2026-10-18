@@ -284,6 +284,12 @@ bool Renderer::loadModel(const char* name, Model& m) {
     return true;
 }
 
+// Blending writes the image's alpha too, as premultiplied coverage, so PASSTHROUGH can show the room where nothing is
+// drawn: translucent surfaces add their coverage, additive light adds colour and leaves the coverage alone (glows
+// brighten the room behind them). With an opaque background the colours are exactly as before.
+static void blendAlpha() { glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
+static void blendAdditive() { glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ZERO, GL_ONE); }
+
 void Renderer::buildPrimitive(Model& m, const std::vector<float>& v, const std::vector<uint32_t>& idx) {
     // v: pos3 nrm3 uv2 per vertex -> expand to the 44-byte layout
     size_t nv = v.size() / 8;
@@ -483,11 +489,12 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
         uint32_t sh = dp.forceShader >= 0 ? uint32_t(dp.forceShader) : mt.shader;
         bool blended = (sh == SH_ADDITIVE || sh == SH_TRANSLUCENT || dp.alphaMul < 0.999f);
         if ((pass == 1) != blended) continue;
-        if (sh == SH_ADDITIVE) { glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE); glDepthMask(GL_FALSE); }
-        else if (blended) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE); }
+        if (sh == SH_ADDITIVE) { glEnable(GL_BLEND); blendAdditive(); glDepthMask(GL_FALSE); }
+        else if (blended) { glEnable(GL_BLEND); blendAlpha(); glDepthMask(GL_FALSE); }
         else { glDisable(GL_BLEND); glDepthMask(GL_TRUE); }
         if (mt.flags & MAT_TWOSIDED || blended) glDisable(GL_CULL_FACE); else glEnable(GL_CULL_FACE);
         float tint[4] = {mt.tint[0] * dp.tintMul[0], mt.tint[1] * dp.tintMul[1], mt.tint[2] * dp.tintMul[2], mt.tint[3] * dp.tintMul[3] * dp.alphaMul};
+        if (sh == SH_TRANSLUCENT && dp.glassMul != 1.f) tint[3] = std::min(1.f, tint[3] * dp.glassMul);
         float em[4] = {mt.emissive[0] + dp.emissiveAdd[0], mt.emissive[1] + dp.emissiveAdd[1], mt.emissive[2] + dp.emissiveAdd[2], mt.emissive[3]};
         const uint32_t ch = matChannel(mt.flags);
         if (dp.channels && ch) for (int k = 0; k < 3; ++k) tint[k] *= dp.channels[ch][k];
@@ -649,7 +656,7 @@ void Renderer::drawText(const std::string& s, const Pose& pose, float height, co
         glUniform1i(uHasDiffuse_, 1);
         glUniform1i(uHasMask_, 0);
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, g_fontTex);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        blendAlpha();
         glDisable(GL_CULL_FACE);
         glDepthMask(GL_FALSE);
         glBindVertexArray(quad.vao);
@@ -709,7 +716,7 @@ void Renderer::drawRibbon(const Vec3* pts, int n, float width, const float rgba[
     glUniform1i(uHasDiffuse_, 0);
     glUniform1i(uHasMask_, 0);
     glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE);   // additive light
+    blendAdditive();   // additive light
     glDisable(GL_CULL_FACE);
     glDepthMask(GL_FALSE);
     glUniform1i(uVColFade_, 1);
@@ -739,7 +746,7 @@ void Renderer::drawScreenTexture(GLuint tex, float alpha) {
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    blendAlpha();
     glDepthMask(GL_FALSE);
     glBindVertexArray(quad.vao);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
@@ -747,6 +754,132 @@ void Renderer::drawScreenTexture(GLuint tex, float alpha) {
     glUniform4f(g_uUVRect, 1, 1, 0, 0);
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
+}
+
+void Renderer::fadeToRoom(float k) {
+    if (k <= 0) return;
+    Mat4 m = Mat4::identity();
+    m.m[0] = 2; m.m[5] = 2; m.m[10] = 0;   // quad [-0.5, 0.5] -> clip [-1, 1], z = 0
+    glUseProgram(prog_);
+    glUniformMatrix4fv(uMVP_, 1, GL_FALSE, m.m);
+    glUniformMatrix4fv(uModel_, 1, GL_FALSE, m.m);
+    glUniform1i(uShader_, SH_UNLIT);
+    const float tint[4] = {0, 0, 0, std::min(1.f, k)}, zero[4] = {0, 0, 0, 0};
+    glUniform4fv(uTint_, 1, tint);
+    glUniform4fv(uEmissive_, 1, zero);
+    glUniform1i(uUV_, 0);
+    glUniform1i(uHasDiffuse_, 0);
+    glUniform1i(uHasMask_, 0);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glBlendFuncSeparate(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);   // premultiplied: scale it all
+    glDepthMask(GL_FALSE);
+    glBindVertexArray(quad.vao);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+}
+
+static const char* kDepthVS = R"(#version 300 es
+layout(location=0) in vec3 aPos;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+out vec3 vW;
+void main() { vec4 p = vec4(aPos, 1.0); vW = (uModel * p).xyz; gl_Position = uMVP * p; }
+)";
+static const char* kDepthFS = R"(#version 300 es
+precision highp float;
+precision highp sampler2DArray;
+uniform sampler2DArray uDepth;
+uniform int uLayer;
+uniform mat4 uDepthVP;
+uniform mat4 uDepthView;
+uniform vec2 uNearFar;
+uniform vec4 uCol;
+in vec3 vW;
+out vec4 oColor;
+void main() {
+    vec4 c = uDepthVP * vec4(vW, 1.0);
+    if (c.w <= 0.0) discard;
+    vec2 uv = c.xy / c.w * 0.5 + 0.5;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) discard;   // outside the depth cameras' view
+    // the nearest of 9 samples round the spot (1.5 texels apart): the depth map is coarse, so a real thing's edge
+    // gets covered cleanly instead of speckling (a slightly wider dark border round it)
+    vec2 px = 1.5 / vec2(textureSize(uDepth, 0).xy);
+    float d = 1.0;
+    for (int j = -1; j <= 1; ++j)
+        for (int i = -1; i <= 1; ++i)
+            d = min(d, texture(uDepth, vec3(uv + vec2(float(i), float(j)) * px, float(uLayer))).r);
+    float n = uNearFar.x, f = uNearFar.y;
+    // depth in [0, 1] to metres along the depth camera's axis (an infinite far plane when farZ is huge)
+    float real = f > 1.0e5 ? n / max(1.0e-5, 1.0 - d) : (2.0 * n * f) / (f + n - (2.0 * d - 1.0) * (f - n));
+    float glass = -(uDepthView * vec4(vW, 1.0)).z;
+    if (real >= glass - 0.10) discard;   // the real surface is beyond the glass: your room shows there
+    oColor = uCol;
+}
+)";
+
+void Renderer::drawDepthBacking(const Mat4* quads, int n, GLuint depthTex, int layer, const Mat4& depthView, const Mat4& depthProj,
+                                float nearZ, float farZ, const float rgba[4]) {
+    if (!depthTex || n <= 0) return;
+    if (!depthProg_) {
+        depthProg_ = glCreateProgram();
+        glAttachShader(depthProg_, compile(GL_VERTEX_SHADER, kDepthVS));
+        glAttachShader(depthProg_, compile(GL_FRAGMENT_SHADER, kDepthFS));
+        glLinkProgram(depthProg_);
+        GLint ok = 0;
+        glGetProgramiv(depthProg_, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char buf[2048];
+            glGetProgramInfoLog(depthProg_, sizeof buf, nullptr, buf);
+            LOGE("depth program link failed: %s", buf);
+        }
+        dMVP_ = glGetUniformLocation(depthProg_, "uMVP");
+        dModel_ = glGetUniformLocation(depthProg_, "uModel");
+        dDepthVP_ = glGetUniformLocation(depthProg_, "uDepthVP");
+        dDepthView_ = glGetUniformLocation(depthProg_, "uDepthView");
+        dNearFar_ = glGetUniformLocation(depthProg_, "uNearFar");
+        dLayer_ = glGetUniformLocation(depthProg_, "uLayer");
+        dTex_ = glGetUniformLocation(depthProg_, "uDepth");
+        dCol_ = glGetUniformLocation(depthProg_, "uCol");
+        LOGI("depth backing program %s", ok ? "ready" : "FAILED");
+    }
+    glUseProgram(depthProg_);
+    const Mat4 dvp = depthProj * depthView;
+    glUniformMatrix4fv(dDepthVP_, 1, GL_FALSE, dvp.m);
+    glUniformMatrix4fv(dDepthView_, 1, GL_FALSE, depthView.m);
+    glUniform2f(dNearFar_, nearZ, farZ > 1.0e6f || farZ != farZ ? 1.0e6f : farZ);
+    glUniform1i(dLayer_, layer);
+    const float col[4] = {rgba[0], rgba[1], rgba[2], 1.f};   // premultiplied, opaque
+    glUniform4fv(dCol_, 1, col);
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, depthTex);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+    glUniform1i(dTex_, 5);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    // under what is already there: dst + (1 - dst coverage) * src
+    glBlendFuncSeparate(GL_ONE_MINUS_DST_ALPHA, GL_ONE, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
+    glBindVertexArray(quad.vao);
+    for (int i = 0; i < n; ++i) {
+        const Mat4 mvp = viewProj_ * quads[i];
+        glUniformMatrix4fv(dMVP_, 1, GL_FALSE, mvp.m);
+        glUniformMatrix4fv(dModel_, 1, GL_FALSE, quads[i].m);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+    }
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glDepthMask(GL_TRUE);
+    glUseProgram(prog_);
 }
 
 void Renderer::drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4], bool flipV) {

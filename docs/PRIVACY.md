@@ -1,6 +1,6 @@
 # Project Arena privacy policy
 
-_Last updated: 16 October 2026. Contact: vrsportsfan@gmail.com._
+_Last updated: 18 October 2026. Contact: vrsportsfan@gmail.com._
 
 Project Arena is a free, open-source VR game. This policy explains what the game and the community servers do with
 information about you.
@@ -15,6 +15,14 @@ The game keeps these in its own folder on your headset or PC (`%APPDATA%\Project
 
 They are not sent to us, except in a bug report you choose to send (below). Uninstalling the game removes them on
 Quest; on PC you can delete the folder.
+
+## Passthrough and your room (Quest, only when you turn it on)
+
+SETTINGS > PASSTHROUGH shows your room around the court through the headset's cameras. The camera images go from
+the headset's system straight to the display; the game never receives them, and nothing is recorded or sent.
+In the WINDOW mode on Quest 3 / 3S the game asks for access to **spatial data**: the headset's depth map of your
+room, used frame by frame on the headset to hide real things inside the court. It is not stored or sent anywhere,
+and you can refuse it (WINDOW then works without hiding them).
 
 ## Bug reports (only when you send one)
 

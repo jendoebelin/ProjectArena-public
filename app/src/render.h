@@ -41,6 +41,7 @@ struct DrawParams {
     float alphaMul = 1.f;
     int forceShader = -1;
     bool mirrored = false;   // negative-determinant model matrix: flip front-face winding
+    float glassMul = 1.f;    // translucent (glass) sections' opacity times this (PASSTHROUGH > GLASS WALLS)
     float uvOff[2] = {0, 0};   // additive: UV scroll
     float erode = 0.f;         // additive: dissolve threshold 0..1
     // avatars: per-channel colours (index = material channel, 8 entries; rgb multiply the material tint),
@@ -73,6 +74,12 @@ public:
     void drawRibbon(const Vec3* pts, int n, float width, const float rgba[4]);
     GLuint texture(const char* name, bool srgb) { return loadTexture(name, srgb); }   // tex/<name>.tex, cached
     void drawScreenTexture(GLuint tex, float alpha);   // full-view overlay (cross-fades), bottom-up texture
+    void fadeToRoom(float k);   // PASSTHROUGH: the whole image (colour and coverage) times 1 - k: the room shows through
+    // PASSTHROUGH > WINDOW with environment depth: on the given quads (the court's walls, just outside the glass), fill
+    // in rgba *under* what is drawn wherever the real surface there (depth texture array, layer = eye) is nearer
+    // than the quad: things in your room inside the court stop showing through the glass
+    void drawDepthBacking(const Mat4* quads, int n, GLuint depthTex, int layer, const Mat4& depthView, const Mat4& depthProj,
+                          float nearZ, float farZ, const float rgba[4]);
     // a quad showing a texture: flipV for render targets (bottom-up), false for loaded images
     void drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4], bool flipV = true);
 
@@ -81,6 +88,8 @@ public:
 private:
     GLuint loadTexture(const std::string& rel, bool srgb);
     GLuint prog_ = 0;
+    GLuint depthProg_ = 0;
+    GLint dMVP_ = -1, dModel_ = -1, dDepthVP_ = -1, dDepthView_ = -1, dNearFar_ = -1, dLayer_ = -1, dTex_ = -1, dCol_ = -1;
     GLint uUVOff_ = -1, uErode_ = -1, uRim_ = -1, uPattern_ = -1, uPatCol_ = -1, uPatGlow_ = -1;
     GLint uSkinned_ = -1, uBones_ = -1, uDesign_ = -1, uDesCol_ = -1, uDesGlow_ = -1;
     GLint uChar_ = -1, uCloth_ = -1;

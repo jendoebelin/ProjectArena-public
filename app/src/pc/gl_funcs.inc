@@ -9,6 +9,7 @@
     X(glBindTexture, PFNGLBINDTEXTUREPROC) \
     X(glBindVertexArray, PFNGLBINDVERTEXARRAYPROC) \
     X(glBlendFunc, PFNGLBLENDFUNCPROC) \
+    X(glBlendFuncSeparate, PFNGLBLENDFUNCSEPARATEPROC) \
     X(glBlitFramebuffer, PFNGLBLITFRAMEBUFFERPROC) \
     X(glBufferData, PFNGLBUFFERDATAPROC) \
     X(glBufferSubData, PFNGLBUFFERSUBDATAPROC) \
