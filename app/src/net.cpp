@@ -955,6 +955,10 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
         return true;   // caller steps; snapshot is sent via sendState
     }
     case Mode::Client: {
+        // the snapshots do not say who is a bot: take it from the room (only slot 1 can be the host's bot). A flag
+        // left over from practice or the lobby made the host flicker between its own look and the bot's, unsmoothed.
+        g.pl[0].isBot = false;
+        g.pl[1].isBot = room_.bot;
         if (localSlot() < 0)
             for (const LanGame& lg : games_) if (lg.ip == peerIp_ && now_ - lg.seen < 3.0) g.tun.advanced = lg.advanced;
         Writer w; header(w, MSG_INPUT, session_, ++seq_); writeInput(w, local);

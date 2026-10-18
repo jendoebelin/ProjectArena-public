@@ -80,8 +80,8 @@ Length = the longest the game keeps (the importer cuts the rest). Level = how lo
 
 | Slot | When it plays | Length / level | ElevenLabs prompt |
 |---|---|---|---|
-| **ShieldBlock** | The ball bounces off your energy shield | 1.2 s / medium-loud | An energy ball deflecting off a glowing hexagonal force field: a solid resonant "thoom" with a short shimmering glassy ring, powerful but smooth, no distortion |
-| **ShieldBreak** | Your shield is hit and shatters (the ball loses its charge) | 1.4 s / medium-loud | A translucent energy shield shattering into fading sparks: a soft crystalline crack followed by a quick glittering dissolve, dramatic but not harsh |
+| **ShieldBlock** | The ball bounces off your energy shield (plays together with ShieldBreak) | 0.6 s / quiet | A short soft energy thump under the glass, low and brief |
+| **ShieldBreak** | Your shield is hit and shatters (the ball loses its charge) | 1.0 s / medium-loud | **A wine glass crushed in a hand** (owner): a sharp thin crack, a quick crunch of tiny shards, a few small tinkles settling; no big crash, no echo |
 | **KnuckleBlock** | You punch the ball away with the knuckle guard (Basic rules) | 0.7 s / medium | A fist in an armoured gauntlet punching away a small energy ball: a tight padded metallic knock with a short electric snap, short and punchy |
 | **HitPlayerOpponent** | Your ball hits the other player: your point | 1.6 s / loud | A satisfying score impact: an energy ball hitting a body-suit with a soft deep thud and an electric discharge crackle, then a short bright rising chime of success |
 | **HitPlayerSelf** | You are hit: their point | 1.4 s / loud | Getting hit by an energy ball: a muffled heavy thud with a short downward electric buzz, a gentle low "wobble", disappointing but not painful or harsh |

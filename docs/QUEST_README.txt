@@ -33,18 +33,26 @@ B. Sideload the APK (developer mode)
   4. On the headset: Library > the drop-down at the top right > Unknown Sources > Project Arena.
   Updates: install the new APK the same way (your name, avatar and settings are kept).
 
+  Coming from the 0.3.0 APK? Uninstall it first (from 0.3.1 the GitHub APK has a new signature); your name,
+  avatar and settings start fresh. Later APKs install over 0.3.1 as usual.
+
   Use one or the other: if you have the store test version, uninstall it before sideloading (and the other way
   round). Uninstall: Settings > Apps > Installed apps > Project Arena > Uninstall.
 
 
 Playing
 -------
+  - You start in the lobby, a balcony over the practice court where two bots play. Point at a poster (or touch it)
+    and pull the trigger: PLAY THE BOT, MULTIPLAYER, CUSTOMIZE, SPECTATE, HOW TO PLAY, SETTINGS. Point at the court
+    to play the bot. The side menu's LOBBY brings you back; QUIT GAME is at its bottom.
   - Online is on by default: MENU > MULTIPLAYER shows the rooms on the community server, where Quest and PC
     players meet. HOST A ROOM, or JOIN someone's; in the waiting area press JOIN QUEUE (the red button) to play.
   - Grab your ball: hold the trigger and reach for it (or swing through it on the spawner). Throw: swing and let go.
   - Holding a charged ball raises your shield; your fists punch balls away.
   - MENU button (left controller): menus. B or a thumbstick click (or holding the Meta button) re-centres you.
-  - Hold the left grip to talk. MENU > REPORT BUG sends us a note and the game's recent log.
+  - Two players start a match face to face in the centre: hold your trigger and bump fists (or wait 10 seconds).
+  - Hold the left grip to talk. MENU > REPORT BUG sends us a note and the game's recent log; MENU > REPORT PLAYER
+    reports or mutes someone in your room.
 
 Project Arena is free and open source: https://github.com/jendoebelin/ProjectArena-public
 Questions: vrsportsfan@gmail.com

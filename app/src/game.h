@@ -84,7 +84,9 @@ struct Tunables {
     // Offsets in OpenXR grip-local space (+X right, +Y up, -Z forward); UE (x,y,z) cm -> grip (y, z, -x)/100.
     float catchRadius = 0.125f, catchHalfHeight = 0.25f;   // BrawlCatcher.Collision capsule 12.5 / 25 cm
     Vec3 catcherOffset = {-0.01f, 0.0f, -0.22f};           // CatcherTransform (22,-1,0) cm
-    Vec3 launcherOffset = {-0.02f, 0.02f, -0.25f};         // LauncherTransform (25,-2,2) cm
+    Vec3 launcherOffset = {-0.02f, 0.02f, -0.25f};         // LauncherTransform (25,-2,2) cm (throw physics)
+    Vec3 holdOffset = {-0.015f, 0.005f, -0.15f};          // where a held ball sits: in the fist (owner: it showed at
+                                                          // the shield's tip when held at the launcher point)
     Vec3 shieldOffset = {0.0f, 0.10f, -0.20f};             // ShieldTransform (20,0,10) cm, roll 180
     Vec3 shieldHalfExtents = {0.20f, 0.02f, 0.32f};        // BrawlShieldBP.SweepCollisionBoxDimensions (32,20,2) cm
     // Knuckle bumper = box fitted to the KnuckleShield_01 mesh as placed by KnuckleGuardTransform (10.5,0,0) +
@@ -115,7 +117,11 @@ struct Tunables {
     // 0 = no meeting (the practice bot never meets).
     float meetTime = 10.0f;
     float meetSpot = 0.45f;          // each player stands this far from the centre line (heads ~0.9 m apart)
-    float fistBumpDist = 0.20f;      // two closed fists (triggers pulled) closer than this = a bump
+    // a fist = the segment from the back of the hand to the knuckles you see (grip frame; the visible fist front is 6-7
+    // cm in front of the grip). Two closed fists whose segments come closer than fistBumpGap = a bump. (Measuring the
+    // grips, then Sparc's knuckle-glass point 13.7 cm out, both missed real bumps on 2026-10-17.)
+    Vec3 fistBack = {0.0f, 0.0f, 0.03f}, fistFront = {0.0f, 0.0f, -0.065f};
+    float fistBumpGap = 0.11f;
     float bumpPause = 0.8f;          // after the bump: the confirmation (buzz, sound, FIST BUMP!) before the move
     float roundSummaryTime = 4.0f;
 
@@ -240,6 +246,7 @@ public:
     Vec3 catcherPoint(int p, int h) const;
     Vec3 knucklePoint(int p, int h) const;
     Pose shieldPose(int p, int h) const;
+    float fistGap(int p0, int h0, int p1, int h1) const;   // closest distance between two fists (segments), metres
     Pose shieldLocal(int h) const;           // plate pose in grip space (plate normal = local +Y)
     Vec3 strikeZoneCenter(int p) const;
     Vec3 peakAngVel(int p, int h, float now) const;
@@ -257,6 +264,11 @@ public:
 private:
     void stepMatch(float dt);
     void startCountdown();   // round 1 of a new match: the 3-2-1
+    float lastFistLog = 0;
+public:
+    bool meetLog = false;       // a meeting diagnostic is ready (main.cpp logs it): closest fist gap, triggers
+    float meetGap = 0, meetTrig[2] = {0, 0};
+private:
     void stepPlayer(int p, float dt);
     void stepBall(int p, float dt);
     void stepBot(int p, float dt);

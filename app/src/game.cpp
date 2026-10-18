@@ -95,10 +95,26 @@ Pose Game::shieldLocal(int h) const {
     case 0: return {Quat{}, tun.shieldOffset};                                                // above, ahead (ShieldTransform)
     // on the back of the hand, standing out from the outside of the arm and running back along the forearm (plate
     // normal = grip X, long side along the forearm), as in the owner's reference from the original (2026-10-17)
-    case 1: return {Quat::axisAngle({0, 0, 1}, -side * kPi * 0.5f), {side * 0.07f, 0.0f, 0.06f}};
+    case 1: return {Quat::axisAngle({0, 0, 1}, -side * kPi * 0.5f), {side * 0.07f, 0.0f, 0.01f}};   // nudged 5 cm forward (owner)
     case 2: return {Quat::axisAngle({0, 0, 1}, -side * kPi * 0.5f), {side * 0.10f, 0.0f, -0.08f}};   // back of the hand
     case 3: return {Quat::axisAngle({0, 0, 1}, side * kPi * 0.5f), {-side * 0.10f, 0.0f, -0.08f}};   // palm side
     }
+}
+static float segSegDist(const Vec3& p1, const Vec3& q1, const Vec3& p2, const Vec3& q2) {
+    const Vec3 d1 = q1 - p1, d2 = q2 - p2, r = p1 - p2;
+    const float a = dot(d1, d1), e = dot(d2, d2), f = dot(d2, r), c = dot(d1, r), b = dot(d1, d2);
+    float s = 0, t = 0;
+    const float den = a * e - b * b;
+    if (den > 1e-9f) s = clampf((b * f - c * e) / den, 0.f, 1.f);
+    t = e > 1e-9f ? (b * s + f) / e : 0.f;
+    if (t < 0) { t = 0; s = a > 1e-9f ? clampf(-c / a, 0.f, 1.f) : 0.f; }
+    else if (t > 1) { t = 1; s = a > 1e-9f ? clampf((b - c) / a, 0.f, 1.f) : 0.f; }
+    return length((p1 + d1 * s) - (p2 + d2 * t));
+}
+float Game::fistGap(int p0, int h0, int p1, int h1) const {
+    const Pose& g0 = pl[p0].in.hand[h0].grip;
+    const Pose& g1 = pl[p1].in.hand[h1].grip;
+    return segSegDist(g0.transform(tun.fistBack), g0.transform(tun.fistFront), g1.transform(tun.fistBack), g1.transform(tun.fistFront));
 }
 Pose Game::shieldPose(int p, int h) const { return pl[p].in.hand[h].grip * shieldLocal(h); }
 Vec3 Game::strikeZoneCenter(int p) const {
@@ -375,7 +391,7 @@ void Game::stepBall(int p, float dt) {
         return;
     }
     case BallState::Held:
-        b.pos = launcherPoint(p, b.heldHand);
+        b.pos = pl[p].in.hand[b.heldHand].grip.transform(tun.holdOffset);   // in the fist (throws use the launcher)
         return;
     case BallState::Returning:
     case BallState::Flying: break;
@@ -716,15 +732,28 @@ void Game::stepMatch(float dt) {
         stateTimer -= dt;
         bool bump = false;
         Vec3 at;
+        float best = 9.f;
+        auto closed = [](const HandInput& x) { return x.trigger > 0.5f || x.squeeze > 0.5f; };   // a fist
         for (int h0 = 0; h0 < 2; ++h0)
             for (int h1 = 0; h1 < 2; ++h1) {
                 const HandInput& a = pl[0].in.hand[h0];
                 const HandInput& b = pl[1].in.hand[h1];
-                if (a.tracked && b.tracked && a.trigger > 0.7f && b.trigger > 0.7f && length(a.grip.p - b.grip.p) < tun.fistBumpDist) {
+                if (!a.tracked || !b.tracked) continue;
+                const float gap = fistGap(0, h0, 1, h1);
+                best = std::min(best, gap);
+                // either fist closed is enough: in the headset the two triggers were rarely held at the same moment
+                // (log 2026-10-17: fists 1-3 cm apart with triggers 1/0, 0/1)
+                if ((closed(a) || closed(b)) && gap < tun.fistBumpGap) {
                     bump = true;
-                    at = (a.grip.p + b.grip.p) * 0.5f;
+                    at = (a.grip.transform(tun.fistFront) + b.grip.transform(tun.fistFront)) * 0.5f;
                 }
             }
+        if (now - lastFistLog > 0.5f && best < 0.6f) {   // diagnostics while they reach for each other
+            lastFistLog = now;
+            const float t0 = std::max(pl[0].in.hand[0].trigger, pl[0].in.hand[1].trigger);
+            const float t1 = std::max(pl[1].in.hand[0].trigger, pl[1].in.hand[1].trigger);
+            meetLog = true; meetGap = best; meetTrig[0] = t0; meetTrig[1] = t1;
+        }
         if (bump && !meetBumped) {   // confirm it (buzz, sound, FIST BUMP!) for a moment, then both go to their ends
             meetBumped = true;
             emit(EventType::FistBump, -1, -1, at, 0);

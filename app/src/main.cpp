@@ -116,7 +116,7 @@ struct App {
     XrAction gripPose = XR_NULL_HANDLE, trigger = XR_NULL_HANDLE, squeeze = XR_NULL_HANDLE, buttonA = XR_NULL_HANDLE,
              buttonB = XR_NULL_HANDLE, buttonY = XR_NULL_HANDLE, buttonX = XR_NULL_HANDLE, thumbClick = XR_NULL_HANDLE, menu = XR_NULL_HANDLE, haptic = XR_NULL_HANDLE;
     bool prevY = false, prevMenu = false;
-    bool onlinePref = false;
+    bool onlinePref = true;         // the community server by default (owner); ONLINE: OFF = home Wi-Fi only
     bool botFill = true;       // settings.cfg botfill: the bot plays a lone host   // settings.cfg online=1: go online at start-up
     XrPath handPath[2] = {};
     XrSpace handSpace[2] = {};
@@ -142,7 +142,9 @@ struct App {
     XrAction thumbstick = XR_NULL_HANDLE, thumbstickL = XR_NULL_HANDLE;
     bool stickLatched = false, stickLatchedY = false, stickLatchedL = false;
     // live gauntlet tuning (applied to the tool frame): pitch about grip X, forward / up offsets
-    float tunePitchDeg = -25.f, tuneFwd = 0, tuneUp = 0;   // gauntlet pitch: -25 = fist along the forearm (owner)
+    // gauntlet on the controller: pitch (deg), forward and up (m). Defaults = the owner's tuning in the headset
+    // (2026-10-17: +35 deg, 9 cm forward, 2 cm up; earlier guesses were 0 and -25)
+    float tunePitchDeg = 35.f, tuneFwd = 0.09f, tuneUp = 0.02f;
     Game game;
     Audio audio;
     Net net;
@@ -211,6 +213,16 @@ struct App {
     bool reportOpen = false;
     // CHOOSE THE RULES page: HOST A ROOM and PLAY PRACTICE open it (ADVANCED first; the last choice is remembered)
     bool rulesOpen = false, rulesForHost = false;
+    bool quitArmed = false;         // QUIT GAME pressed once: the next press quits
+    // THE LOBBY (owner, 2026-10-17): where you arrive, and come back to from a room, spectating or practice. A balcony
+    // over the practice court where two bots play; posters around it; point at the court to play the bot.
+    bool lobby = true;
+    int lobbyPrevMode = 0;          // Net::Mode last frame (back to Offline = back to the lobby)
+    float lobbySummaryT = 0;        // bot match over: a new one after a few seconds
+    int lobbyHover = -1;            // poster under the pointer (kPosterCount = the court)
+    bool prevLobbyTrig = true, prevLobbyPoke = false;
+    float rawTrigger[2] = {0, 0};   // the triggers as pulled (the open menu zeroes the game's copy)
+    uint32_t stateKey = 0xFFFFFFFFu;   // net mode / tank slot / spectating: a change closes the menu and director panel
     int cfgVersion = 0;             // settings.cfg cfgver= (2: older files may hold a test server address; 3: gauntlet pitch default)
     uint32_t reportWho = 0;
     char reportName[17] = {};
@@ -767,6 +779,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
 static const char* kAppVersion = "0.3.1";
+static const size_t kNoteMax = 120;   // bug / player report notes (was 60: testers ran out)
 static const char* kReportWhy[4] = {"HARASSMENT OR HATE", "OFFENSIVE NAME OR LOOK", "CHEATING", "OTHER"};
 
 static std::vector<Net::Person> reportPeople(App& a) { return a.reportFake.empty() ? a.net.peopleHere() : a.reportFake; }
@@ -1006,11 +1019,20 @@ static float getFloat(App& a, XrAction act, XrPath sub) {
 // keeping their real height.
 // Where the viewer stands and faces: a player at their end of the court, a spectator in the hub (facing the
 // miniatures) or on the floating gallery seat beside the court (1 m up, looking across it).
+// the lobby: a balcony 2.5 m up on the +Z side of the practice court, facing it
+static const float kLobbyFloor = 2.5f;
+static const Vec3 kLobbySpot = {0, kLobbyFloor, 5.2f};
+static bool inLobby(const App& a) { return a.lobby && !a.spectating && a.net.mode() == Net::Mode::Offline; }
+static float floorHere(const App& a) { return inLobby(a) ? kLobbyFloor : 0.f; }
+
 // holding area outside the tank (waiting players): four spots along the -Z side, facing the glass
 static Vec3 holdingSpot(int spot) { return {-4.5f + 3.0f * (spot & 3), 0, -4.2f}; }
 
 static void viewTarget(const App& a, int local, Vec3& pos, Vec3& fwd) {
-    if (a.net.localWaiting()) {
+    if (inLobby(a)) {
+        pos = kLobbySpot;
+        fwd = {0, 0, -1};
+    } else if (a.net.localWaiting()) {
         pos = holdingSpot(a.net.localSpot());
         fwd = {0, 0, 1};
     } else if (a.spectating) {
@@ -1197,7 +1219,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
     if (local != g_lastLocal) { a.recentered = false; g_lastLocal = local; }
     {   // moving between playing / the hub / watching a match re-places the viewer
         uint32_t key = a.spectating ? (a.watchIp ? a.watchIp : 1u) : a.net.localWaiting() ? 10u + (uint32_t)a.net.localSpot()
-                     : (a.game.match == MatchState::Meet && a.net.inRoom()) ? 2u : 0u;   // the centre meeting, then your end
+                     : (a.game.match == MatchState::Meet && a.net.inRoom()) ? 2u : inLobby(a) ? 3u : 0u;   // the centre meeting, then your end
         if (key != a.viewKey) { a.viewKey = key; a.recentered = false; }
     }
     if (a.fadePending && headOk) {   // the previous frame was captured: move now, fade the old view out
@@ -1286,7 +1308,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
     bool menu = getBool(a, a.menu);
     if (menu && !a.prevMenu) {
         if (a.builderOpen) closeBuilder(a);
-        else if (a.menuOpen) { a.menuOpen = false; a.nameEdit = false; a.helpOpen = false; a.settingsOpen = false; a.titleOpen = false; LOGI("menu: closed"); }
+        else if (a.menuOpen) { a.menuOpen = false; a.nameEdit = false; a.helpOpen = false; a.settingsOpen = false; a.titleOpen = false; a.quitArmed = false; LOGI("menu: closed"); }
         else openMenu(a, in);
     }
     a.prevMenu = menu;
@@ -1335,6 +1357,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
             if (a.menuOpen) a.menuOpen = false; else openMenu(a, in);
         }
     }
+    for (int h = 0; h < 2; ++h) a.rawTrigger[h] = in.hand[h].trigger;   // before the menu clears it (posters, kiosk)
     updateMenu(a, in);
     updateBuilder(a, in);
     updateDirector(a, in);
@@ -1342,7 +1365,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 }
 
 // ------------------------------------------------------------------ lobby menu
-enum class MenuAct { None, MainMenu, Nav, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute,
+enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute,
                      ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill };
 struct MenuItem {
     std::string label;
@@ -1355,13 +1378,15 @@ struct MenuItem {
 static void haptic(App& a, int hand, float amp, float seconds);
 
 // side menu (left of the panel): the areas of the game, the current one lit
-enum { NAV_HOME, NAV_PRACTICE, NAV_MULTI, NAV_SPECTATE, NAV_AVATAR, NAV_SETTINGS, NAV_REPORT, NAV_BUG, NAV_HELP, kNavCount };
-static const char* kNavLabels[kNavCount] = {"MAIN MENU", "PRACTICE", "MULTIPLAYER", "SPECTATE", "AVATAR", "SETTINGS",
-                                            "REPORT PLAYER", "REPORT BUG", "HOW TO PLAY"};
-static const float kNavX = -0.67f, kNavTop = 0.29f, kNavStep = 0.088f;
+enum { NAV_LOBBY, NAV_HOME, NAV_PRACTICE, NAV_MULTI, NAV_SPECTATE, NAV_AVATAR, NAV_SETTINGS, NAV_REPORT, NAV_BUG, NAV_HELP,
+       NAV_QUIT, kNavCount };
+static const char* kNavLabels[kNavCount] = {"LOBBY", "MAIN MENU", "PRACTICE", "MULTIPLAYER", "SPECTATE", "AVATAR", "SETTINGS",
+                                            "REPORT PLAYER", "REPORT BUG", "HOW TO PLAY", "QUIT GAME"};
+static const float kNavX = -0.67f, kNavTop = 0.30f, kNavStep = 0.081f;
 
 static int navCurrent(const App& a) {
     if (a.titleOpen || a.xpOpen) return NAV_HOME;
+    if (inLobby(a) && !a.menuOpen) return NAV_LOBBY;
     if (a.rulesOpen) return a.rulesForHost ? NAV_MULTI : NAV_PRACTICE;
     if (a.settingsOpen) return NAV_SETTINGS;
     if (a.reportOpen) return NAV_REPORT;
@@ -1382,7 +1407,9 @@ static std::vector<MenuItem> menuItems(App& a) {
             if (i == NAV_SPECTATE) on = !a.net.inRoom();
             if (i == NAV_AVATAR) on = offline && !a.avModels.empty();
             if (i == NAV_REPORT) on = people;
-            v.push_back({kNavLabels[i], kNavX, kNavTop - kNavStep * i, 0.24f, 0.068f, MenuAct::Nav, (uint32_t)i, on});
+            if (i == NAV_QUIT) { v.push_back({a.quitArmed ? "SURE? QUIT" : "QUIT GAME", kNavX, kNavTop - kNavStep * i, 0.24f, 0.062f, MenuAct::Quit, 0, true}); continue; }
+            if (i == NAV_LOBBY) on = !inLobby(a);
+            v.push_back({kNavLabels[i], kNavX, kNavTop - kNavStep * i, 0.24f, 0.062f, MenuAct::Nav, (uint32_t)i, on});
         }
     }
     return v;
@@ -1394,7 +1421,7 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         for (int i = 0; i < 6; ++i)
             v.push_back({kBugCats[i], (i % 2) ? 0.21f : -0.21f, 0.13f - 0.085f * (i / 2), 0.40f, 0.07f, MenuAct::BugCat, (uint32_t)i, true});
         std::string note = a.bugNote.empty() ? std::string("ADD A NOTE (OPTIONAL)") : "NOTE: " + a.bugNote;
-        if (note.size() > 40) note = note.substr(0, 39) + ".";
+        if (note.size() > 40) note = note.substr(0, 37) + "...";
         v.push_back({note, 0, -0.145f, 0.82f, 0.07f, MenuAct::BugNote, 0, true});
         v.push_back({a.bugSending ? "SENDING..." : "SEND REPORT", 0.19f, -0.25f, 0.36f, 0.08f, MenuAct::BugSend, 0, a.bugCat >= 0 && !a.bugSending});
         v.push_back({"CANCEL", -0.19f, -0.25f, 0.36f, 0.08f, MenuAct::BugCancel, 0, true});
@@ -1551,6 +1578,8 @@ static void openMenu(App& a, const PlayerInput& in) {
     f = length(f) > 1e-3f ? normalize(f) : Vec3{1, 0, 0};
     float yaw = std::atan2(-f.x, -f.z);   // panel +Z faces the player
     a.menuPose = {Quat::axisAngle({0, 1, 0}, yaw), in.head.p + f * 0.9f + Vec3{0, -0.15f, 0}};
+    if (inLobby(a))   // the lobby: always in the middle, between the posters, facing the balcony (owner)
+        a.menuPose = {Quat{}, {kLobbySpot.x, in.head.p.y - 0.22f, kLobbySpot.z - 0.95f}};
     a.menuOpen = true;
     a.prevMenuTrig = true;   // ignore a trigger that is already held
     LOGI("menu: open");
@@ -1558,13 +1587,26 @@ static void openMenu(App& a, const PlayerInput& in) {
 
 static void menuActivate(App& a, const MenuItem& it) {
     LOGI("menu: %s", it.label.c_str());
+    if (it.act != MenuAct::Quit) a.quitArmed = false;
     switch (it.act) {
     case MenuAct::Experimental: a.xpOpen = true; break;
+    case MenuAct::Quit:
+        if (!a.quitArmed) { a.quitArmed = true; break; }   // the second press quits
+        LOGI("menu: quit game");
+        saveSettings(a);
+        if (a.net.inRoom()) a.net.leave();
+        if (a.session != XR_NULL_HANDLE) xrRequestExitSession(a.session); else a.quit = true;
+        break;
     case MenuAct::Nav: {
         a.titleOpen = a.settingsOpen = a.voicePage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen = a.helpOpen = false;
         a.nameEdit = false;
         auto go = [&](MenuAct act) { MenuItem x{"", 0, 0, 0, 0, act, 0, true}; menuActivate(a, x); };
         switch ((int)it.ip) {
+        case NAV_LOBBY:   // leave whatever you are in; the frame loop puts the bots back on the court
+            if (a.net.mode() != Net::Mode::Offline) a.net.leave();
+            a.lobby = true;
+            a.menuOpen = false;
+            break;
         case NAV_HOME: a.titleOpen = true; break;
         case NAV_PRACTICE: go(MenuAct::Play); break;
         case NAV_MULTI: break;   // the multiplayer page (rooms; the spectator's page while spectating)
@@ -1627,6 +1669,7 @@ static void menuActivate(App& a, const MenuItem& it) {
             a.net.host();
         } else {
             a.titleOpen = false; a.menuOpen = false;
+            a.lobby = false;   // into the court against the bot
             if (a.net.mode() == Net::Mode::Offline) a.game.reset(true);
         }
         break;
@@ -1680,6 +1723,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         else if (a.serverAddr.empty()) { a.nameEdit = true; a.editTarget = 1; a.nameBuf.clear(); }
         else a.net.goOnline(a.serverAddr.c_str());
         if (wasSpec) { a.net.spectate(); a.watchIp = 0; }   // keep spectating, now on the other network
+        a.onlinePref = a.net.online();
         saveSettings(a);
         break;
     }
@@ -1690,7 +1734,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         if (const char* ext = dataDir(a))
             if (FILE* fp = fopen((std::string(ext) + "/help_seen").c_str(), "w")) fclose(fp);
         break;
-    case MenuAct::Key: if (a.nameBuf.size() < (a.editTarget >= 4 ? 60u : a.editTarget == 1 || a.editTarget == 3 ? 48u : 16u) && !(it.ip == ' ' && (a.nameBuf.empty() || a.nameBuf.back() == ' '))) a.nameBuf += (char)it.ip; break;
+    case MenuAct::Key: if (a.nameBuf.size() < (a.editTarget >= 4 ? kNoteMax : a.editTarget == 1 || a.editTarget == 3 ? 48u : 16u) && !(it.ip == ' ' && (a.nameBuf.empty() || a.nameBuf.back() == ' '))) a.nameBuf += (char)it.ip; break;
     case MenuAct::KeyDel: if (!a.nameBuf.empty()) a.nameBuf.pop_back(); break;
     case MenuAct::KeyDone:
         while (!a.nameBuf.empty() && a.nameBuf.back() == ' ') a.nameBuf.pop_back();
@@ -1698,7 +1742,11 @@ static void menuActivate(App& a, const MenuItem& it) {
         else if (a.editTarget == 4) { a.bugNote = a.nameBuf; }
         else if (a.editTarget == 3) { if (!a.nameBuf.empty()) a.sparcAddr = a.nameBuf; saveSettings(a); }
         else if (a.editTarget == 2) { a.team = a.nameBuf.substr(0, 16); saveSettings(a); a.menuOpen = false; }
-        else if (a.editTarget == 1) { a.serverAddr = a.nameBuf; saveSettings(a); if (!a.serverAddr.empty()) a.net.goOnline(a.serverAddr.c_str()); }
+        else if (a.editTarget == 1) {
+            a.serverAddr = a.nameBuf;
+            if (!a.serverAddr.empty()) { a.onlinePref = true; a.net.goOnline(a.serverAddr.c_str()); }
+            saveSettings(a);
+        }
         else if (!a.nameBuf.empty()) savePlayerName(a, a.nameBuf.c_str());
         a.nameEdit = false;
         break;
@@ -1854,14 +1902,22 @@ static void drawMenu(App& a) {
         for (int i = 0; i < 9; ++i) text(lines[i], 0, 0.20f - 0.055f * i, 0.024f, i == 8 ? grey : white);
     } else if (a.nameEdit) {
         text(a.editTarget == 5 ? "REPORT NOTE" : a.editTarget == 4 ? "BUG NOTE" : a.editTarget == 3 ? "SPARC SERVER" : a.editTarget == 2 ? "TEAM NAME" : a.editTarget ? "COMMUNITY SERVER" : "YOUR NAME", 0, 0.29f, 0.055f, cyan);
-        snprintf(buf, sizeof buf, "%s_", a.nameBuf.c_str());
-        text(buf, 0, 0.205f, 0.045f, white);
+        {
+            std::string shown = a.nameBuf + "_";
+            if (shown.size() > 34) shown = "..." + shown.substr(shown.size() - 31);   // the end of a long note
+            text(shown, 0, 0.205f, 0.040f, white);
+            const size_t cap = a.editTarget >= 4 ? kNoteMax : (a.editTarget == 1 || a.editTarget == 3) ? 48u : 16u;
+            const size_t left = cap > a.nameBuf.size() ? cap - a.nameBuf.size() : 0;
+            snprintf(buf, sizeof buf, "%zu LEFT", left);
+            const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
+            text(buf, 0.40f, 0.155f, 0.020f, left < 10 ? amber : grey);   // bottom right of the field
+        }
     } else if (!a.titleOpen && !a.settingsOpen) {
         text("MULTIPLAYER", 0, 0.29f, 0.055f, cyan);
         if (a.net.inRoom())
             snprintf(buf, sizeof buf, "YOU: %s   -   %s   -   %s RULES", a.net.name(), a.net.status(), a.game.tun.advanced ? "ADVANCED" : "BASIC");
         else
-            snprintf(buf, sizeof buf, "YOU: %s   -   %s", a.net.name(), a.net.status());
+            snprintf(buf, sizeof buf, "YOU: %s   -   %s", a.net.name(), inLobby(a) ? "LOBBY" : a.net.status());
         text(buf, 0, 0.215f, 0.026f, white);
         if (a.net.online() && !a.net.onlineReady()) {
             const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
@@ -1918,7 +1974,7 @@ static void drawMenu(App& a) {
         Vec3 o = a.aim[a.pointerHand].p, d = a.aim[a.pointerHand].q.rotate({0, 0, -1});
         float len = a.menuHitValid ? length(a.menuHit - o) : 1.5f;
         const float laser[4] = {0.15f, 0.6f, 1.0f, 1};
-        a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + d * (len * 0.5f)}, {0.003f, 0.003f, len}), laser, true);
+        a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + d * (len * 0.5f)}, {0.003f, 0.003f, len * 0.5f}), laser, true);
         if (a.menuHitValid) a.gfx.drawSphere(a.menuHit, 0.008f, cyan, true);
     }
 }
@@ -2087,7 +2143,7 @@ static void handleEvents(App& a) {
         default: break;
         }
         if (e.player >= 0 && L == 1) e.player = 1 - e.player;   // audio keys use "player 0 = me"
-        a.audio.onEvent(e, a.game.pl[L].in.head.p, L);
+        a.audio.onEvent(e, a.viewing ? a.viewHead.p : a.game.pl[L].in.head.p, L);
     }
 }
 
@@ -2297,11 +2353,12 @@ static void drawTitleShowcase(App& a, int pass) {
     if (!a.menuOpen || !a.titleOpen || a.builderOpen || a.helpOpen || a.avModels.empty()) return;
     const Vec3 right = a.menuPose.q.rotate({1, 0, 0}), away = a.menuPose.q.rotate({0, 0, -1});
     Vec3 base = a.menuPose.p + right * 1.9f + away * 1.4f;   // clear of the panel (about 40 degrees to the right)
-    base.y = 0;
+    if (inLobby(a)) base = kLobbySpot + Vec3{1.45f * std::sin(deg2rad(40.f)), 0, -1.45f * std::cos(deg2rad(40.f))};   // to the right
+    base.y = floorHere(a);
     Vec3 toUser = a.viewHead.p - base;
     toUser.y = 0;
     toUser = length(toUser) > 1e-3f ? normalize(toUser) : Vec3{0, 0, 1};
-    const float face = std::atan2(-toUser.x, -toUser.z) + kPi;   // looking at the player
+    const float face = std::atan2(-toUser.x, -toUser.z);   // the avatar looks at the player (it had its back turned)
     const float yaw = face + 0.55f * std::sin((float)nowSeconds() * 0.35f);   // turns side to side
     const Quat q = Quat::axisAngle({0, 1, 0}, yaw);
     PlayerInput in;
@@ -2325,7 +2382,7 @@ static void drawTitleShowcase(App& a, int pass) {
     const Vec3 pts[2] = {base + Vec3{0, 0.02f, 0}, base + Vec3{0, 0.60f, 0}};
     const float beam[4] = {0.06f, 0.30f, 0.55f, 0.5f};
     a.gfx.drawRibbon(pts, 2, 0.32f, beam);
-    const Quat lq = Quat::axisAngle({0, 1, 0}, face);
+    const Quat lq = Quat::axisAngle({0, 1, 0}, face + kPi);   // text quads face +Z
     a.gfx.drawText(a.net.name(), {lq, base + Vec3{0, 1.90f, 0}}, 0.08f, white);
 }
 
@@ -2403,7 +2460,7 @@ static void drawBuilder(App& a, int pass) {
         Vec3 o = a.aim[a.pointerHand].p, dd = a.aim[a.pointerHand].q.rotate({0, 0, -1});
         float len = a.builderHitValid ? length(a.builderHit - o) : 1.5f;
         const float laser[4] = {0.15f, 0.6f, 1.0f, 1};
-        a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + dd * (len * 0.5f)}, {0.003f, 0.003f, len}), laser, true);
+        a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + dd * (len * 0.5f)}, {0.003f, 0.003f, len * 0.5f}), laser, true);
         if (a.builderHitValid) a.gfx.drawSphere(a.builderHit, 0.008f, cyan, true);
     }
 }
@@ -2686,7 +2743,7 @@ static void drawDirector(App& a) {
         Vec3 o = a.aim[a.pointerHand].p, d = a.aim[a.pointerHand].q.rotate({0, 0, -1});
         float len = a.dirHitValid ? length(a.dirHit - o) : 1.5f;
         const float laser[4] = {1.0f, 0.75f, 0.2f, 1};
-        a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + d * (len * 0.5f)}, {0.003f, 0.003f, len}), laser, true);
+        a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + d * (len * 0.5f)}, {0.003f, 0.003f, len * 0.5f}), laser, true);
         if (a.dirHitValid) a.gfx.drawSphere(a.dirHit, 0.008f, gold, true);
     }
 }
@@ -2728,7 +2785,7 @@ static void updateQueueKiosk(App& a, const PlayerInput& in) {
         Vec3 lp = k.q.conj().rotate(in.hand[h].grip.p - k.p);
         if (std::fabs(lp.x) < 0.22f && std::fabs(lp.y) < 0.08f && lp.z < 0.04f && lp.z > -0.10f) poked = true;
     }
-    const bool trig = in.hand[a.pointerHand].trigger > 0.7f;
+    const bool trig = a.rawTrigger[a.pointerHand] > 0.7f;   // the open menu zeroes the game's trigger
     const bool press = (trig && !a.prevQueueTrig && a.queueHover == 0) || (poked && !a.prevQueuePoke);
     if (press) {
         const bool join = a.net.localQueuePos() < 0;
@@ -2738,6 +2795,160 @@ static void updateQueueKiosk(App& a, const PlayerInput& in) {
     }
     a.prevQueueTrig = trig;
     a.prevQueuePoke = poked;
+}
+
+// ---------------------------------------------------------------- the lobby
+static void startLobbyMatch(App& a) {
+    a.game.reset(true);
+    a.game.pl[0].isBot = true;
+    a.game.pl[0].in.avatar = avatar::preset(10);
+    a.game.pl[1].in.avatar = avatar::preset(12);
+    a.lobbySummaryT = 0;
+    LOGI("lobby: bots playing");
+}
+
+struct Poster { const char* title; const char* line1; const char* line2; float ang; };
+static const Poster kPosters[] = {
+    {"PLAY THE BOT", "POINT AT THE COURT", "AND PULL THE TRIGGER", -75},
+    {"MULTIPLAYER", "HOST OR JOIN A ROOM", "ONLINE OR ON YOUR WI-FI", -105},
+    {"HOW TO PLAY", "THROW, CURVE, PUNCH", "AND SHIELD", -135},
+    {"CUSTOMIZE", "YOUR LOOK: OUTFITS,", "HAIR, GAUNTLETS", 75},
+    {"SPECTATE", "WATCH LIVE MATCHES", "AND DIRECT CAMERAS", 105},
+    {"SETTINGS", "VOLUME, VOICE,", "SERVER AND RULES", 135},
+};
+static const int kPosterCount = (int)(sizeof kPosters / sizeof kPosters[0]);
+
+static Pose posterPose(int i) {
+    const float ang = deg2rad(kPosters[i].ang), R = 1.4f;
+    const Vec3 p = kLobbySpot + Vec3{R * std::sin(ang), 1.40f, -R * std::cos(ang)};
+    return {Quat::axisAngle({0, 1, 0}, -ang), p};   // quad +Z faces the middle of the balcony
+}
+
+// pointer ray against the posters and the court; -1 nothing, 0..kPosterCount-1 a poster, kPosterCount the court
+static int lobbyRayHit(const App& a, const Vec3& o, const Vec3& d, float& dist) {
+    int hit = -1;
+    dist = 1e9f;
+    for (int i = 0; i < kPosterCount; ++i) {
+        const Pose k = posterPose(i);
+        const Vec3 nz = k.q.rotate({0, 0, 1});
+        const float den = dot(d, nz);
+        if (den > -1e-3f) continue;
+        const float t = dot(k.p - o, nz) / den;
+        const Vec3 lp = k.q.conj().rotate(o + d * t - k.p);
+        if (t > 0 && t < dist && std::fabs(lp.x) < 0.33f && std::fabs(lp.y) < 0.27f) { dist = t; hit = i; }
+    }
+    // the court (the glass tank): slab test
+    const Vec3 lo{-9.45f, 0.f, -2.45f}, hi{9.45f, 3.6f, 2.45f};
+    float t0 = 0.f, t1 = 60.f;
+    const float* po = &o.x; const float* pd = &d.x; const float* pl = &lo.x; const float* ph = &hi.x;
+    bool inside = true;
+    for (int k = 0; k < 3 && inside; ++k) {
+        if (std::fabs(pd[k]) < 1e-6f) { if (po[k] < pl[k] || po[k] > ph[k]) inside = false; continue; }
+        float ta = (pl[k] - po[k]) / pd[k], tb = (ph[k] - po[k]) / pd[k];
+        if (ta > tb) std::swap(ta, tb);
+        t0 = std::max(t0, ta); t1 = std::min(t1, tb);
+        if (t0 > t1) inside = false;
+    }
+    if (inside && t0 < dist) { dist = t0; hit = kPosterCount; }
+    return hit;
+}
+
+static void lobbyAction(App& a, int which, const PlayerInput& in) {
+    LOGI("lobby: %s", which == kPosterCount ? "the court" : kPosters[which].title);
+    auto menuPage = [&]() {
+        openMenu(a, in);
+        a.titleOpen = a.settingsOpen = a.voicePage = a.helpOpen = a.xpOpen = a.rulesOpen = a.bugOpen = a.reportOpen = false;
+    };
+    switch (which) {
+    case 0: case kPosterCount: menuPage(); a.rulesOpen = true; a.rulesForHost = false; break;   // PLAY THE BOT / the court
+    case 1: menuPage(); break;                                                       // MULTIPLAYER page
+    case 2: menuPage(); a.helpOpen = true; break;
+    case 3: if (!a.avModels.empty()) openBuilder(a, in); break;
+    case 4: a.net.spectate(); a.watchIp = 0; break;
+    case 5: menuPage(); a.settingsOpen = true; break;
+    default: break;
+    }
+}
+
+static void updateLobby(App& a, const PlayerInput& in) {
+    a.lobbyHover = -1;
+    if (!inLobby(a) || a.builderOpen || (a.menuOpen && a.menuHitValid) || !a.aimValid[a.pointerHand]) {
+        a.prevLobbyTrig = true;
+        return;
+    }
+    float dist;
+    a.lobbyHover = lobbyRayHit(a, a.aim[a.pointerHand].p, a.aim[a.pointerHand].q.rotate({0, 0, -1}), dist);
+    if (a.menuOpen && a.lobbyHover == kPosterCount) a.lobbyHover = -1;   // the open menu sits in front of the court
+    // posters can be pressed by hand too
+    int poked = -1;
+    for (int h = 0; h < 2 && poked < 0; ++h) {
+        if (!in.hand[h].tracked) continue;
+        for (int i = 0; i < kPosterCount; ++i) {
+            const Pose k = posterPose(i);
+            const Vec3 lp = k.q.conj().rotate(in.hand[h].grip.p - k.p);
+            if (std::fabs(lp.x) < 0.31f && std::fabs(lp.y) < 0.25f && lp.z < 0.05f && lp.z > -0.12f) poked = i;
+        }
+    }
+    const bool trig = a.rawTrigger[a.pointerHand] > 0.7f;   // works with the main menu open (it opens on arrival)
+    if (trig && !a.prevLobbyTrig && a.lobbyHover >= 0) { lobbyAction(a, a.lobbyHover, in); haptic(a, a.pointerHand, 0.4f, 0.03f); }
+    else if (poked >= 0 && !a.prevLobbyPoke) { lobbyAction(a, poked, in); haptic(a, a.pointerHand, 0.4f, 0.03f); }
+    a.prevLobbyTrig = trig;
+    a.prevLobbyPoke = poked >= 0;
+}
+
+static void drawLobby(App& a, int pass) {
+    if (!inLobby(a)) return;
+    // your own hands (the court only draws the two bots' hands)
+    const AvatarLook look = lookOf(a, a.myAvatar, 2);
+    for (int h = 0; h < 2; ++h)
+        if (a.localIn.hand[h].tracked)
+            drawLancerAt(a, Mat4::fromPose(a.localIn.hand[h].grip), h, look, pass, Mat4::identity(), false, a.myAvatar);
+    if (pass != 1) return;
+    const float cyan[4] = {0.3f, 0.85f, 1.0f, 1}, white[4] = {1, 1, 1, 1}, grey[4] = {0.62f, 0.68f, 0.76f, 1};
+    const float deck[4] = {0.02f, 0.03f, 0.05f, 0.92f}, glow[4] = {0.10f, 0.55f, 0.85f, 1};
+    // the balcony: a dark deck with glowing edges and a front rail
+    const Vec3 c{0, kLobbyFloor, kLobbySpot.z - 0.4f};
+    a.gfx.drawPanel(Mat4::fromPose({Quat::axisAngle({1, 0, 0}, -kPi * 0.5f), c + Vec3{0, -0.005f, 0}}, {5.4f, 2.6f, 1}), deck);
+    // (the unit box spans -1..1: its scale is a half size)
+    a.gfx.drawBox(Mat4::fromPose({Quat{}, c + Vec3{0, 0.0f, -1.3f}}, {2.7f, 0.004f, 0.004f}), glow, true);
+    a.gfx.drawBox(Mat4::fromPose({Quat{}, c + Vec3{0, 1.0f, -1.3f}}, {2.7f, 0.006f, 0.006f}), glow, true);   // the rail
+    for (float x : {-2.7f, 2.7f}) a.gfx.drawBox(Mat4::fromPose({Quat{}, c + Vec3{x, 0.0f, 0}}, {0.004f, 0.004f, 1.3f}), glow, true);
+    for (float x : {-2.6f, -1.3f, 0.f, 1.3f, 2.6f}) a.gfx.drawBox(Mat4::fromPose({Quat{}, c + Vec3{x, 0.5f, -1.3f}}, {0.004f, 0.5f, 0.004f}), glow, true);
+    const float ring[4] = {0.15f, 0.6f, 0.9f, 1};
+    a.gfx.drawSpriteFlat({kLobbySpot.x, kLobbyFloor + 0.006f, kLobbySpot.z}, 1.0f, ring, {0, 1, 0}, 1);
+    // the rail sign: the two things everyone needs
+    const Pose sign{Quat{}, c + Vec3{0, 0.82f, -1.31f}};
+    a.gfx.drawPanel(Mat4::fromPose(sign, {2.3f, 0.2f, 1}), deck);
+    a.gfx.drawText("LEFT MENU BUTTON: MAIN MENU    -    HOLD THE META BUTTON: RECENTER", sign * Pose{Quat{}, {0, 0.03f, 0.004f}}, 0.035f, white);
+    a.gfx.drawText("POINT AT A POSTER OR THE COURT AND PULL THE TRIGGER", sign * Pose{Quat{}, {0, -0.04f, 0.004f}}, 0.026f, grey);
+    // posters on stands
+    for (int i = 0; i < kPosterCount; ++i) {
+        const Pose k = posterPose(i);
+        const bool hov = a.lobbyHover == i;
+        const float frame[4] = {hov ? 0.4f : 0.08f, hov ? 0.9f : 0.42f, hov ? 1.0f : 0.62f, 1};
+        a.gfx.drawPanel(Mat4::fromPose(k * Pose{Quat{}, {0, 0, -0.003f}}, {0.66f, 0.54f, 1}), frame);
+        a.gfx.drawPanel(Mat4::fromPose(k, {0.62f, 0.50f, 1}), deck);
+        a.gfx.drawText(kPosters[i].title, k * Pose{Quat{}, {0, 0.12f, 0.004f}}, 0.065f, hov ? white : cyan);
+        a.gfx.drawText(kPosters[i].line1, k * Pose{Quat{}, {0, -0.02f, 0.004f}}, 0.030f, white);
+        a.gfx.drawText(kPosters[i].line2, k * Pose{Quat{}, {0, -0.08f, 0.004f}}, 0.030f, white);
+        a.gfx.drawText(hov ? "PULL THE TRIGGER" : "POINT OR TOUCH", k * Pose{Quat{}, {0, -0.19f, 0.004f}}, 0.022f, hov ? cyan : grey);
+        a.gfx.drawBox(Mat4::fromPose({Quat{}, Vec3{k.p.x, kLobbyFloor + (1.40f - 0.27f) * 0.5f, k.p.z}}, {0.006f, (1.40f - 0.27f) * 0.5f, 0.006f}), glow, true);   // the stand, up to the poster's lower edge
+    }
+    // the court as a button
+    if (a.lobbyHover == kPosterCount) {
+        const float gold[4] = {1.0f, 0.85f, 0.3f, 1};
+        a.gfx.drawText("PULL THE TRIGGER TO PLAY THE BOT", {Quat{}, {0, 3.95f, 2.6f}}, 0.22f, gold);
+    }
+    // the pointer
+    if (!a.menuOpen && !a.builderOpen && a.aimValid[a.pointerHand]) {
+        const Vec3 o = a.aim[a.pointerHand].p, d = a.aim[a.pointerHand].q.rotate({0, 0, -1});
+        float dist;
+        const int hit = lobbyRayHit(a, o, d, dist);
+        const float len = hit >= 0 ? std::min(dist, 25.f) : 2.0f;
+        const float laser[4] = {0.3f, 0.8f, 1.0f, 1};
+        a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + d * (len * 0.5f)}, {0.003f, 0.003f, len * 0.5f}), laser, true);
+        if (hit >= 0) a.gfx.drawSphere(o + d * len, hit == kPosterCount ? 0.05f : 0.008f, laser, true);
+    }
 }
 
 static void drawRoomPeople(App& a, int pass) {
@@ -2770,7 +2981,7 @@ static void drawRoomPeople(App& a, int pass) {
         const float den = dot(d, nz);
         if (a.queueHover == 0 && den < -1e-3f) len = dot(k.p - o, nz) / den;
         const float laser[4] = {1.0f, 0.35f, 0.25f, 1};
-        a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + d * (len * 0.5f)}, {0.003f, 0.003f, len}), laser, true);
+        a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + d * (len * 0.5f)}, {0.003f, 0.003f, len * 0.5f}), laser, true);
         if (a.queueHover == 0) a.gfx.drawSphere(o + d * len, 0.008f, laser, true);
     }
     if (a.net.localWaiting()) {
@@ -3286,6 +3497,7 @@ static void drawWorld(App& a, int pass) {
         a.gfx.draw(a.strikezone, Mat4::fromPose({Quat{}, g.strikeZoneCenter(p)}), zp, pass);
     }
     drawRoomPeople(a, pass);
+    drawLobby(a, pass);
     if (pass == 1 && !a.rttPass) drawVoiceHud(a);
     if (pass == 1) drawFx(a);
     if (pass == 1) {
@@ -3298,7 +3510,7 @@ static void drawWorld(App& a, int pass) {
         const float sx = (L == 0) ? 1.f : -1.f;
         Quat faceP0 = Quat::axisAngle({0, 1, 0}, deg2rad(L == 0 ? -90.f : 90.f));   // quad +Z -> toward local player
         Vec3 c0{-0.5f * sx, 2.95f, 0};
-        if (a.spectating) { faceP0 = Quat{}; c0 = {0, 4.75f, 0.2f}; }   // above the roof, facing the gallery seat
+        if (a.spectating || inLobby(a)) { faceP0 = Quat{}; c0 = {0, 4.75f, 0.2f}; }   // above the roof, facing the gallery seat / lobby
         else if (a.net.localWaiting()) { faceP0 = Quat::axisAngle({0, 1, 0}, kPi); c0 = {0, 4.75f, -0.2f}; }   // facing the holding area
         auto at = [&](float u, float v, float w = 0.f) { return c0 + faceP0.rotate({u, v, w}); };
         auto txt = [&](const char* t, float u, float v, float h, const float* c) { a.gfx.drawText(t, {faceP0, at(u, v, 0.004f)}, h, c); };
@@ -3336,7 +3548,9 @@ static void drawWorld(App& a, int pass) {
         case MatchState::Meet: snprintf(buf, sizeof buf, "FIST BUMP TO START   %d", (int)std::ceil(g.stateTimer)); banner = buf; break;
         case MatchState::Countdown: snprintf(buf, sizeof buf, "ROUND %d   %d", g.round, (int)std::ceil(g.stateTimer)); banner = buf; break;
         case MatchState::RoundSummary: banner = g.lastRoundWinner == L ? "ROUND WON" : "ROUND LOST"; break;
-        case MatchState::MatchSummary: banner = g.matchWinner == L ? "YOU WIN  -  PRESS A" : "YOU LOSE  -  PRESS A"; break;
+        case MatchState::MatchSummary:
+            banner = inLobby(a) ? (g.matchWinner == 0 ? "BLUE WINS" : "ORANGE WINS") : g.matchWinner == L ? "YOU WIN  -  PRESS A" : "YOU LOSE  -  PRESS A";
+            break;
         default: break;
         }
         if (banner) a.gfx.drawText(banner, {faceP0, {-1.5f * sx, 2.2f, 0}}, 0.15f, white);
@@ -3352,7 +3566,7 @@ static void drawWorld(App& a, int pass) {
             const float glowT[4] = {0.3f, 0.85f, 1.0f, 0.55f + 0.35f * pulse};
             a.gfx.drawSprite({0, 1.2f, 0}, 0.10f + 0.04f * pulse, glowT, a.viewHead.p, 0);   // meet here
             a.gfx.drawText("BUMP HERE", {face, {L == 0 ? 0.08f : -0.08f, 1.36f, 0}}, 0.035f, cyanT);
-            a.gfx.drawText("BUMP FISTS - HOLD BOTH TRIGGERS", {face, {L == 0 ? 1.6f : -1.6f, 2.15f, 0}}, 0.08f, cyanT);   // above the other player
+            a.gfx.drawText("HOLD YOUR TRIGGER AND BUMP FISTS", {face, {L == 0 ? 1.6f : -1.6f, 2.15f, 0}}, 0.08f, cyanT);   // above the other player
             snprintf(buf, sizeof buf, "OR THE MATCH STARTS IN %d", (int)std::ceil(g.stateTimer));
             a.gfx.drawText(buf, {face, {L == 0 ? 1.6f : -1.6f, 2.03f, 0}}, 0.05f, white);
         }
@@ -3391,6 +3605,18 @@ static bool renderFrame(App& a) {
     a.localIn = in[L];
     a.viewHead = in[L].head;
     a.bumpFlash = std::max(0.f, a.bumpFlash - dt);
+    {   // moving into a room, the tank, spectating or back out closes the menu and the director panel (testers:
+        // they stayed open over the match); a report being typed stays open
+        const uint32_t key = (uint32_t)a.net.mode() * 64u + (uint32_t)(a.net.localSlot() + 2) * 4u + (a.spectating ? 1u : 0u);
+        if (a.stateKey != 0xFFFFFFFFu && key != a.stateKey) {
+            if (a.dirOpen) { a.dirOpen = false; a.infoKind = -1; }
+            if (a.menuOpen && !a.nameEdit && !a.bugOpen && !a.reportOpen) {
+                a.menuOpen = false; a.titleOpen = a.settingsOpen = a.voicePage = a.helpOpen = a.xpOpen = a.rulesOpen = false;
+                LOGI("menu: closed (moved to %s)", a.net.status());
+            }
+        }
+        a.stateKey = key;
+    }
     if (a.game.match == MatchState::Meet && a.net.inRoom() && !a.net.localWaiting() && !a.spectating) {
         // closer fists buzz harder (you can feel the other hand coming); otherwise a light reminder every 2 s
         const PlayerState& o = a.game.pl[1 - L];
@@ -3399,15 +3625,21 @@ static bool renderFrame(App& a) {
         for (int h = 0; h < 2; ++h)
             for (int oh = 0; oh < 2; ++oh)
                 if (in[L].hand[h].tracked && o.in.hand[oh].tracked) {
-                    const float d = length(in[L].hand[h].grip.p - o.in.hand[oh].grip.p);
+                    const float d = a.game.fistGap(L, h, 1 - L, oh);
                     if (d < best) { best = d; bh = h; }
                 }
+        if (a.game.meetLog) {
+            a.game.meetLog = false;
+            LOGI("meet: closest fists %.0f cm (bump under %.0f), triggers %.2f / %.2f", a.game.meetGap * 100, a.game.tun.fistBumpGap * 100,
+                 a.game.meetTrig[0], a.game.meetTrig[1]);
+        }
         if (best < 0.45f && t - a.meetTick > 0.12) { a.meetTick = t; haptic(a, bh, 0.15f + 0.6f * (1.f - best / 0.45f), 0.05f); }
         else if (t - a.meetTick > 2.0) { a.meetTick = t; haptic(a, 0, 0.25f, 0.06f); haptic(a, 1, 0.25f, 0.06f); }
     }
     if (a.game.pl[1].isBot) a.game.pl[1].in.avatar = a.botAvatar;
     updateHub(a, in[L]);
     updateQueueKiosk(a, in[L]);
+    updateLobby(a, in[L]);
     if (a.net.mode() == Net::Mode::Spectate) {
         if (!a.spectating) { a.savedGame = a.game; a.spectating = true; }
         const PlayerInput mine = in[L];
@@ -3430,15 +3662,28 @@ static bool renderFrame(App& a) {
         }
     } else {
         if (a.spectating) { a.game = a.savedGame; a.spectating = false; a.watchIp = 0; }
+        {   // back to Offline from a room or spectating: back to the lobby
+            const int m = (int)a.net.mode();
+            if (m == (int)Net::Mode::Offline && a.lobbyPrevMode != m) a.lobby = true;
+            a.lobbyPrevMode = m;
+            if (inLobby(a)) {
+                if (!a.game.pl[0].isBot) startLobbyMatch(a);
+                if (a.game.match == MatchState::MatchSummary) {
+                    if ((a.lobbySummaryT += dt) > 6.f) startLobbyMatch(a);
+                } else {
+                    a.lobbySummaryT = 0;
+                }
+            }
+        }
         const PlayerInput mine = in[L];
         if (a.net.exchange(mine, in, a.game, dt)) {
             // practice is paused while you customize your avatar (the builder only opens offline)
-            const bool paused = (a.builderOpen || (a.menuOpen && a.titleOpen)) && a.net.mode() != Net::Mode::Host;
+            const bool paused = (a.builderOpen || (a.menuOpen && a.titleOpen)) && a.net.mode() != Net::Mode::Host && !inLobby(a);
             if (!paused) a.game.step(dt, in);
             a.net.sendState(a.game);
         }
     }
-    a.viewing = a.spectating || a.net.localWaiting();
+    a.viewing = a.spectating || a.net.localWaiting() || inLobby(a);
     updateVoice(a);
     {   // team cameras shared by a teammate
         char team[17];
@@ -3715,11 +3960,11 @@ static void saveSettings(App& a) {
     if (!ext) return;
     std::string f = std::string(ext) + "/settings.cfg";
     if (FILE* fp = fopen(f.c_str(), "w")) {
-        fprintf(fp, "cfgver=3\n");
+        fprintf(fp, "cfgver=5\n");
         fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\nteam=%s\nserver=%s\nsparcserver=%s\n",
                 a.game.tun.advanced ? 1 : 0, a.game.tun.shieldPlacement, a.tunePitchDeg, a.tuneFwd, a.tuneUp, a.volume,
                 a.pointerHand, a.fxLevel, a.hideOutside ? 1 : 0, a.voiceMode, a.muteSpectators ? 1 : 0, a.mutePlayers ? 1 : 0,
-                a.muteAll ? 1 : 0, a.net.online() ? 1 : 0, a.botFill ? 1 : 0, a.team.c_str(), a.serverAddr.c_str(),
+                a.muteAll ? 1 : 0, a.onlinePref ? 1 : 0, a.botFill ? 1 : 0, a.team.c_str(), a.serverAddr.c_str(),
                 a.sparcAddr.c_str());
         fclose(fp);
     }
@@ -3828,9 +4073,16 @@ static void startUp(App& a) {
         a.serverAddr = PA_DEFAULT_SERVER;
         saveSettings(a);
     }
-    if (a.cfgVersion < 3 && a.tunePitchDeg == 0.f) {   // 0.3.1: the gauntlet's new default angle (saved 0 = never tuned)
-        a.tunePitchDeg = -25.f;
-        LOGI("settings: gauntlet pitch 0 -> -25 (new default)");
+    // the gauntlet's default placement changed (0, then -25 deg): a file still holding an old default moves to the new
+    // one once; a value someone tuned themselves is kept
+    if (a.cfgVersion < 4 && (a.tunePitchDeg == 0.f || a.tunePitchDeg == -25.f) && a.tuneFwd == 0.f && a.tuneUp == 0.f) {
+        LOGI("settings: gauntlet %.0f deg -> 35 deg, 9 cm forward, 2 cm up (new default)", a.tunePitchDeg);
+        a.tunePitchDeg = 35.f; a.tuneFwd = 0.09f; a.tuneUp = 0.02f;
+        saveSettings(a);
+    }
+    if (a.cfgVersion < 5 && !a.onlinePref) {   // older builds started on home Wi-Fi: online is the default now, once
+        a.onlinePref = true;
+        LOGI("settings: online on (new default)");
         saveSettings(a);
     }
     if (a.cfgVersion < 2 && a.sparcAddr != PA_SPARC_SERVER) {   // EXPERIMENTAL cross-play: test addresses from older builds
@@ -3900,11 +4152,13 @@ struct ShotView {
     std::string title; float titleH = 0.12f, titleY = 0;   // title height (fraction of the image) and offset (-1..1)
     std::string menu;   // --menu title|xp: draw that menu page in front of the camera (layout checks)
     std::string scene;  // --scene action: two players mid-rally (store art)
+    bool lobby = false; // --lobby: the lobby balcony and posters (other pictures show the plain court)
 };
 
 static int selfTest(App& a, const char* out, const ShotView& v) {
     if (!initGraphics(a) || !initContent(a)) return 2;
     startUp(a);
+    a.lobby = v.lobby;
     const int W = v.w, H = v.h;
     GLuint fbo = 0, col = 0, dep = 0;
     glGenTextures(1, &col);
@@ -4020,6 +4274,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             a.reportNote = "SHOUTING INSULTS IN THE WAITING AREA"; a.mutedIds.push_back(0x1001u);
         }
         a.menuPose = {eye.q, eye.transform({0, 0.09f, -0.95f})};
+        if (v.lobby) { PlayerInput pi; pi.head = eye; openMenu(a, pi); a.menuOpen = true; }
         a.viewHead = eye;
         a.localIn.head = eye;
         drawTitleShowcase(a, 0);
@@ -4079,6 +4334,7 @@ int main(int argc, char** argv) {
         }
         else if (!strcmp(argv[i], "--menu") && i + 1 < argc) view.menu = argv[++i];
         else if (!strcmp(argv[i], "--scene") && i + 1 < argc) view.scene = argv[++i];
+        else if (!strcmp(argv[i], "--lobby")) view.lobby = true;
         else if (!strcmp(argv[i], "--bug-report") && i + 2 < argc) { bugServer = argv[i + 1]; bugNoteArg = argv[i + 2]; i += 2; }
         else if (!strcmp(argv[i], "--player-report") && i + 2 < argc) { bugServer = argv[i + 1]; bugNoteArg = argv[i + 2]; i += 2; playerReport = true; }
         else if (!strcmp(argv[i], "--xc-probe") && i + 2 < argc) { probeAddr = argv[i + 1]; probeName = argv[i + 2]; i += 2; }

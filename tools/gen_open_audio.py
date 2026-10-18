@@ -339,25 +339,36 @@ def s_bounce():
 
 
 def s_shield_block():
-    """deflected by the force field: a resonant soft thoom and a short glassy shimmer"""
-    sec = 0.9
-    ring = modal([440, 880 * 1.005, 1318], [0.30, 0.20, 0.12], [0.5, 0.25, 0.12], sec)
-    swell = lp(bp(noise(0.2), 1100, 0.8), 2000) * env(0.2, 0.006, 0.06) * 0.25
-    return room(lp(mix(thump(120, 68, 0.3, 1.0), ring * 0.5, swell), 4200), 0.16, 0.9)
+    """the deflect under the glass (both play on every hit): a quiet short energy thump"""
+    return room(lp(mix(thump(120, 70, 0.16, 1.0), lp(bp(noise(0.08), 900, 0.8), 1600) * env(0.08, 0.004, 0.03) * 0.2), 2500), 0.1)
 
 
 def s_shield_break():
-    """the shield dissolving: a soft crystalline crack, then fading glitter"""
-    sec = 1.1
+    """the shield shattering like a crushed wine glass (owner, 2026-10-17): a sharp thin crack, a quick crunch of
+    tiny shards, then a few small tinkles"""
+    sec = 0.9
     out = np.zeros(n_(sec))
-    for _ in range(10):
-        start = int(rng.random() ** 1.6 * n_(0.5))
-        f = 1200 + rng.random() * 2400
-        shard = modal([f, f * 1.47], [0.05, 0.035], [1, 0.4], 0.2)
-        out[start:start + len(shard)] += shard[:len(out) - start] * (0.3 + 0.5 * rng.random())
-    crack = lp(bp(noise(0.06), 1800, 0.9), 4000) * env(0.06, 0.003, 0.02) * 0.6
-    fall = lp(osc(sweep(700, 180, 0.7), shape='tri'), 1500) * env(0.7, 0.01, 0.28) * 0.22
-    return room(lp(mix(out * 0.3, crack, fall, thump(100, 50, 0.25, 0.6)), 5000), 0.16, 0.9)
+
+    def put(x, at):
+        i = int(at * SR)
+        if i < len(out):
+            out[i:i + len(x)] += x[:len(out) - i]
+    ring = modal([3150, 4720, 6240, 7900], [0.09, 0.06, 0.045, 0.03], [1, 0.7, 0.45, 0.25], 0.25)
+    crack = bp(noise(0.025), 4800, 1.1) * env(0.025, 0.0004, 0.006)
+    put(mix(crack * 0.9, ring * 0.35), 0.0)
+    for _ in range(70):   # the crunch: many tiny shards in the first 0.2 s
+        at = 0.004 + rng.beta(1.3, 4.0) * 0.2
+        f = 2600 + rng.random() * 6500
+        shard = modal([f, f * 1.53], [0.006 + rng.random() * 0.025, 0.005 + rng.random() * 0.015], [1, 0.4], 0.06)
+        put(shard * (0.15 + 0.35 * rng.random()), at)
+        if rng.random() < 0.4:
+            put(hp(noise(0.003), 3500) * env(0.003, 0.0002, 0.001) * 0.3 * rng.random(), at)
+    for k in range(13):   # small pieces settling
+        at = 0.18 + rng.random() ** 1.4 * 0.55
+        f = 3000 + rng.random() * 5000
+        put(modal([f, f * 1.47], [0.05 + rng.random() * 0.06, 0.03], [1, 0.35], 0.18) * (0.22 * (1 - at / 0.9)), at)
+    out = lp(out, 9000)
+    return reverb(out * 0.9, 0.5, 0.08, bright=6000, predelay=0.006)
 
 
 def s_knuckle_block():

@@ -65,6 +65,12 @@ int main(int argc, char** argv) {
                  Quat::axisAngle({0, 0, 1}, deg2rad(hp[h].roll));
         in.hand[h].tracked = true;
         in.hand[h].grip = {q, face.rotate({local.x, 0, local.z}) + Vec3{0, local.y, 0}};
+        // the game's gauntlet tuning (settings.cfg pitch / fwd / up), applied as readInput does: PA_PITCH, PA_FWD, PA_UP
+        const float tp = std::getenv("PA_PITCH") ? (float)std::atof(std::getenv("PA_PITCH")) : 0.f;
+        const float tf = std::getenv("PA_FWD") ? (float)std::atof(std::getenv("PA_FWD")) : 0.f;
+        const float tu = std::getenv("PA_UP") ? (float)std::atof(std::getenv("PA_UP")) : 0.f;
+        const Quat tq = in.hand[h].grip.q * Quat::axisAngle({1, 0, 0}, deg2rad(tp));
+        in.hand[h].grip = {tq, in.hand[h].grip.p + tq.rotate({0, tu, -tf})};
     }
     in.avatar = d;
     avatar::Rig r = avatar::solveRig(in, d);

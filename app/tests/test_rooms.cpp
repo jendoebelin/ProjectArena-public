@@ -73,6 +73,7 @@ int main() {
     std::printf("[join]\n");
     if (ns[1]->net.games().empty()) { std::printf("  FAIL no beacon from the host\n"); return 1; }
     const uint32_t hostIp = ns[1]->net.games()[0].ip;
+    ns[1]->game.pl[0].isBot = ns[1]->game.pl[1].isBot = true;   // as if coming from the lobby's two bots
     ns[1]->net.join(hostIp);
     pump(ns, 1.0);
     CHECK(ns[1]->net.localWaiting() && H.net.room().slot[1] == 0, "a visitor (even asking to play now) arrives in the waiting area");
@@ -80,6 +81,28 @@ int main() {
     pump(ns, 1.0);
     CHECK(H.net.room().slot[0] == H.net.session() && H.net.room().slot[1] == ns[1]->net.session(), "their JOIN QUEUE takes the bot's place in the tank");
     CHECK(ns[1]->net.localSlot() == 1, "the visitor knows it plays slot 1");
+    std::printf("[fist bump over the network]\n");
+    {
+        Node& V = *ns[1];
+        CHECK(H.game.match == MatchState::Meet, "two people in the tank: they meet in the centre");
+        CHECK(!V.game.pl[0].isBot && !V.game.pl[1].isBot,
+              "the visitor (who came from practice / the lobby) does not take the host for a bot (it flickered)");
+        // knuckles 8 cm apart in the middle of the court, both triggers held: the visitor's hand reaches the host
+        // only through its INPUT packets (the 2026-10-17 test: the bump never registered)
+        auto fistAt = [&](Node& n, const Vec3& at, const Vec3& facing) {   // the visible fist's front at `at`
+            n.local.hand[1].trigger = 1;
+            n.local.hand[1].grip.q = fromTo({0, 0, -1}, facing);
+            n.local.hand[1].grip.p = at - n.local.hand[1].grip.q.rotate(H.game.tun.fistFront);
+        };
+        const PlayerInput hostKeep = H.local, visKeep = V.local;
+        fistAt(H, {-0.01f, 1.2f, 0.f}, {1, 0, 0});
+        fistAt(V, {0.01f, 1.2f, 0.f}, {-1, 0, 0});
+        pump(ns, 1.2);
+        CHECK(H.game.match == MatchState::Countdown || H.game.match == MatchState::InProgress,
+              "the host sees the bump and starts the countdown well before the 10 s fallback");
+        CHECK(V.game.match == H.game.match, "the visitor's game follows");
+        H.local = hostKeep; V.local = visKeep;
+    }
     for (int i = 2; i <= 6; ++i) ns[i]->net.join(hostIp, false);   // JOIN ROOM: wait outside
     pump(ns, 1.5);
     CHECK(waitingCount(H.net.room()) == 4, "four more wait outside the tank");

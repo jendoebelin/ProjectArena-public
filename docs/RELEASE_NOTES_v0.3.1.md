@@ -32,6 +32,17 @@ Store build: versionCode 5, versionName 0.3.1.
 - Fixed: the orange player heard the "you were hit" sound when scoring, and the losing sounds when winning.
 - Fixed: the "no games found yet" hint was drawn over the room list (it looked like a second JOIN button).
 
+- **The lobby**: you start on a balcony over the practice court, where two bots play each other. Posters around
+  you (PLAY THE BOT, MULTIPLAYER, HOW TO PLAY, CUSTOMIZE, SPECTATE, SETTINGS) work by pointing and pulling the
+  trigger or by touching them; point at the court to play the bot. Leaving a room, spectating or practice brings you
+  back here, and LOBBY is the first entry of the side menu.
+- QUIT GAME at the bottom of the side menu (press it twice).
+- Fist bump: measured at the knuckles (it never registered before); hold your triggers and bump.
+- The menu and the director panel close by themselves when you move into a room, the court or spectating.
+- Report notes up to 120 characters, with a countdown.
+- The shield sits a little further forward; a held ball sits in your fist; the shield shatters like glass.
+
 ## Store page notes (for the upload)
-- What's new text: "Choose Advanced or Basic rules when you host or practice; every room shows its rules. Report or
-  mute a player from the menu (REPORT PLAYER)."
+- What's new text: "New lobby: start on a balcony over the court and watch two bots play; posters take you
+  anywhere. Two-player matches start with a fist bump. Choose Advanced or Basic rules. Report or mute a player
+  (REPORT PLAYER). Quieter, softer sounds; better gauntlets; online is on by default."

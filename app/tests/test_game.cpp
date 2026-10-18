@@ -224,14 +224,20 @@ int main(int argc, char** argv) {
         PlayerInput in[2] = {standing(g, 0), standing(g, 1)};
         run(g, in, 0.1f);
         CHECK(g.match == MatchState::Meet, "two people meet in the centre before the match");
-        in[0].hand[1].trigger = 1; in[0].hand[1].grip.p = {-0.06f, 1.2f, 0.f};
-        in[1].hand[1].trigger = 0.3f; in[1].hand[1].grip.p = {0.06f, 1.2f, 0.f};
+        // the fronts of the two visible fists 2 cm apart, as players bump in the headset (the grips are ~15 cm apart;
+        // the first version measured the grips, the second a point 13.7 cm out, past the real knuckles)
+        auto placeFist = [&](PlayerInput& pi, const Vec3& at) {
+            pi.hand[1].grip.p = at - pi.hand[1].grip.q.rotate(g.tun.fistFront);
+        };
+        in[0].hand[1].trigger = 0.3f; placeFist(in[0], {-0.01f, 1.2f, 0.f});
+        in[1].hand[1].trigger = 0.3f; placeFist(in[1], {0.01f, 1.2f, 0.f});
+        CHECK(length(in[0].hand[1].grip.p - in[1].hand[1].grip.p) > 0.12f, "(test setup: fists front to front, grips 15 cm apart)");
         run(g, in, 0.2f);
-        CHECK(g.match == MatchState::Meet, "fists together but one trigger not pulled: no bump");
-        in[1].hand[1].trigger = 1;
+        CHECK(g.match == MatchState::Meet, "fists together, neither trigger pulled: no bump");
+        in[1].hand[1].trigger = 1;   // one player holds the trigger: enough
         std::vector<GameEvent> log;
         run(g, in, 0.05f, &log);
-        CHECK(hasEvent(log, EventType::FistBump) && g.match == MatchState::Meet, "fist bump (both triggers): confirmed first (buzz, sound)");
+        CHECK(hasEvent(log, EventType::FistBump) && g.match == MatchState::Meet, "fist bump (one trigger held): confirmed first (buzz, sound)");
         log.clear();
         run(g, in, g.tun.bumpPause + 0.05f, &log);
         int bumps = 0;
@@ -249,6 +255,19 @@ int main(int argc, char** argv) {
         PlayerInput in3[2] = {standing(g3, 0), {}};
         run(g3, in3, 0.1f);
         CHECK(g3.match == MatchState::Countdown, "against the bot: no meeting");
+    }
+    {
+        std::printf("[lobby: two bots play each other]\n");
+        Game g; g.setArena(tris); g.reset(true);
+        g.pl[0].isBot = true;
+        PlayerInput in[2] = {standing(g, 0), {}};
+        std::vector<GameEvent> log;
+        run(g, in, 90.f, &log);
+        int throws[2] = {0, 0}, nan = 0;
+        for (const GameEvent& e : log) if (e.type == EventType::Throw && e.player >= 0) ++throws[e.player];
+        for (int p = 0; p < 2; ++p) nan += !std::isfinite(g.pl[p].ball.pos.x) || !std::isfinite(g.pl[p].in.head.p.x);
+        CHECK(throws[0] > 3 && throws[1] > 3 && nan == 0, "both bots throw (the lobby's match runs by itself)");
+        CHECK(g.match != MatchState::Meet, "bots never wait for a fist bump");
     }
     {
         std::printf("[shield needs a held, charged ball]\n");

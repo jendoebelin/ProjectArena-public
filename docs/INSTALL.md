@@ -29,6 +29,9 @@ Quest and PC players meet in the same rooms online.
 ## Playing
 
 - Stand in a clear space of about 2 x 2 m. The first launch shows **HOW TO PLAY**.
+- You start in the **lobby**: a balcony over the practice court where two bots play. Point at a poster (or touch
+  it) and pull the trigger, or point at the court to play the bot. **LOBBY** (top of the side menu) brings you back;
+  **QUIT GAME** is at its bottom.
 - **MENU** (left controller) opens the menus. **B** or a thumbstick click re-centres you; holding the Meta button
   does too.
 - **PLAY PRACTICE**: you against the bot. **CUSTOMIZE AVATAR**: your look, which other players see.
@@ -37,9 +40,11 @@ Quest and PC players meet in the same rooms online.
     shows rooms on your home Wi-Fi.
   - **HOST A ROOM** opens a room. You start in its waiting area: press **JOIN QUEUE** (the red button in front of
     you) to play. Others pick your room and press **JOIN**, then **JOIN QUEUE**.
+  - Two players start face to face in the centre: hold your trigger and **bump fists** (or wait 10 seconds).
   - **FORFEIT MATCH** takes you back to the waiting area. **SPECTATE GAMES** shows every live match.
 - Voice chat in a room: hold the **left grip** to talk (SETTINGS → VOICE AND MUTES for open mic and mutes).
-- Something wrong? **MENU → REPORT BUG** sends a short note and the game's recent log to us.
+- Something wrong? **MENU → REPORT BUG** sends a short note and the game's recent log to us. Someone behaving
+  badly? **MENU → REPORT PLAYER** (report or mute them).
 
 ## Updating and uninstalling
 
