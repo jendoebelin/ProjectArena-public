@@ -123,6 +123,11 @@ struct App {
     std::vector<XrView> views;
     Swap swaps[2];
     bool hasLocalFloor = false, hasRefreshRate = false;
+    // floor guard: the headset can lose its floor (more often with a stationary boundary) and put it at eye height,
+    // which left the view down in the court's floor (owner, 2026-10-18). Your usual head height is tracked; a head
+    // impossibly low for a while lifts the view by floorFix until the floor is back.
+    float standH = 1.62f, floorFix = 0.f;
+    double lowSince = 0, okSince = 0;
     // PASSTHROUGH (settings): your room around the arena (XR_FB_passthrough: Quest, and Quest Link when the Meta app
     // allows it). Everything outside the arena is hidden; the rendered image carries alpha for the compositor.
     bool hasPassthrough = false, ptRunning = false, ptFailed = false;
@@ -1058,7 +1063,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.2";
+static const char* kAppVersion = "0.3.3";
 static const size_t kNoteMax = 120;   // bug / player report notes (was 60: testers ran out)
 static const char* kReportWhy[4] = {"HARASSMENT OR HATE", "OFFENSIVE NAME OR LOOK", "CHEATING", "OTHER"};
 
@@ -1478,6 +1483,7 @@ static void recenter(App& a, const Pose& headTrack, int local) {
     Vec3 headXZ{headTrack.p.x, 0, headTrack.p.z};
     a.trackToWorld.q = toX;
     a.trackToWorld.p = pos - toX.rotate(headXZ);
+    a.trackToWorld.p.y += a.floorFix;   // (the floor guard, if the headset has lost its floor)
     a.recentered = true;
     LOGI("recentered: yaw %.1f deg", rad2deg(yaw));
 }
@@ -1501,6 +1507,32 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
         uint32_t key = a.spectating ? (a.watchIp ? a.watchIp : 1u) : a.net.localWaiting() ? 10u + (uint32_t)a.net.localSpot()
                      : (a.game.match == MatchState::Meet && a.net.inRoom()) ? 2u : inLobby(a) ? 3u : 0u;   // the centre meeting, then your end
         if (key != a.viewKey) { a.viewKey = key; a.recentered = false; }
+    }
+    if (headOk && !a.spectating) {   // floor guard (see App::floorFix)
+        const double now = nowSeconds();
+        const float hy = headTrack.p.y;   // above the headset's floor
+        if (hy > 1.0f && hy < 2.2f && a.floorFix == 0.f) a.standH += (hy - a.standH) * 0.002f;   // your usual height
+        if (hy < 0.45f || hy > 2.4f) {   // impossibly low or high: the headset's floor is wrong (it once jumped 2.8 m)
+            if (a.lowSince == 0) a.lowSince = now;
+            if (a.floorFix == 0.f && now - a.lowSince > 1.5) {
+                a.floorFix = a.standH - hy;
+                a.trackToWorld.p.y += a.floorFix;
+                LOGW("floor lost: the head reads %.2f m above the floor; view moved %+.2f m (usual height %.2f m)", hy, a.floorFix, a.standH);
+            }
+        } else {
+            a.lowSince = 0;
+        }
+        if (a.floorFix != 0.f && hy > 1.0f && hy < 2.2f) {   // the headset found its floor again
+            if (a.okSince == 0) a.okSince = now;
+            if (now - a.okSince > 1.0) {
+                a.trackToWorld.p.y -= a.floorFix;
+                LOGI("floor back: the head reads %.2f m; the lift of %.2f m removed", hy, a.floorFix);
+                a.floorFix = 0.f;
+                a.okSince = 0;
+            }
+        } else {
+            a.okSince = 0;
+        }
     }
     if (a.fadePending && headOk) {   // the previous frame was captured: move now, fade the old view out
         a.fadePending = false;
@@ -4720,9 +4752,13 @@ static void pollXrEvents(App& a) {
             const float moved = std::sqrt(d.position.x * d.position.x + d.position.z * d.position.z);
             const float turned = 2.f * std::acos(std::min(1.f, std::fabs(d.orientation.w))) * 57.2958f;
             if (rc->poseValid && a.recentered && moved < 0.25f && turned < 10.f) {
-                // small: tracking settling. Keep the court fixed in the room.
-                a.trackToWorld = a.trackToWorld * fromXr(rc->poseInPreviousSpace);
-                LOGI("reference space shifted (%.3f, %.3f, %.3f): compensated", d.position.x, d.position.y, d.position.z);
+                // small: tracking settling. Keep the court fixed across the room, but follow a new floor height
+                // (compensating the height kept the court at the old, wrong floor)
+                XrPosef dxz = rc->poseInPreviousSpace;
+                dxz.position.y = 0;
+                a.trackToWorld = a.trackToWorld * fromXr(dxz);
+                LOGI("reference space shifted (%.3f, %.3f, %.3f): compensated across, floor %+.3f m followed",
+                     d.position.x, d.position.y, d.position.z, d.position.y);
             } else if (rc->poseValid && a.recentered) {
                 // large: the player held the Meta button (system recenter): put them back on their spot, facing in
                 LOGI("system recenter (moved %.2f m, turned %.0f deg): re-placing the player", moved, turned);
