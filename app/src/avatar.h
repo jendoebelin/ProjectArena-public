@@ -71,6 +71,30 @@ struct Rig {
     Mat4 skin[BONE_COUNT];         // bind -> world for the skinned parts
 };
 
+// Skeleton and arm-attachment values the rig uses, adjustable live in developer mode (MENU > SETTINGS > TUNING; the
+// app keeps them in files/tuning.cfg). The defaults are the shipped rig. Right-hand / right-side values; the left
+// side is mirrored.
+struct RigTuning {
+    Vec3 shoulder{0, 0, 0};                     // added to both shoulders (x = outward, y = up, z = back)
+    float upperLen = 1.f, foreLen = 1.f;        // bone length scales
+    float armThick = 1.f;                       // arm cross-section scale (with the build's)
+    Vec3 elbowPole{0.35f, -1.0f, 0.25f};        // the elbow's pull: out, down, back (torso frame)
+    float elbowPull = 0.12f;                    // how far toward the pole (m)
+    float reach = 0.07f;                        // the shoulder follows a hand out of reach by up to this (m)
+    float reachStart = 0.97f;                   // ... once the hand is beyond this share of the arm's length
+    float torsoFollow = 0.6f;                   // how much the chest turns toward the hands
+    float torsoLimitDeg = 50.f;                 // never more than this from the head's heading
+    Vec3 neck{0, 0, 0};                         // the neck top against the head (head frame: up, back = +y, +z)
+    // where the forearm ends inside a plate gauntlet's cuff (grip space), and the cuff's own pose against the hand:
+    // a rotation (pitch / yaw / roll degrees, gripEuler) about the wrist pivot, then an offset
+    Vec3 forearmEnd{0.0267f, 0.0382f, 0.0876f};
+    Vec3 cuffPos{0, 0, 0}, cuffRot{18, 0, 0};   // cuff pitched 18 deg about the wrist (owner's TUNING export, 2026-10-18)
+};
+RigTuning& rigTuning();
+constexpr Vec3 kCuffPivot{0.004f, 0.005f, 0.050f};   // the wrist joint of the plate gauntlets (make_props.py, grip space)
+// the cuff's pose against the hand (grip space; left = mirrored), from rigTuning()
+Pose cuffPose(bool left);
+
 // The two-bone IK elbow for shoulder s, wrist w and bone lengths l1, l2: on the circle of valid elbows, the point
 // toward `pole`. Out of reach the arm points straight at the wrist.
 Vec3 elbowIK(const Vec3& s, const Vec3& w, float l1, float l2, const Vec3& pole);

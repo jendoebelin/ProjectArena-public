@@ -90,6 +90,24 @@ struct App {
     HDC hdc = nullptr;
     HGLRC glrc = nullptr;
     int winW = 1280, winH = 720;
+    // DESKTOP SPECTATOR (PC without a headset, or --spectate): a window, mouse and keyboard cameras, for streamers
+    bool desktop = false;
+    int dcView = 1;                 // 1 side, 2 high, 3 blue end, 4 orange end, 5 top, 0 free camera
+    bool dcAuto = true, dcHelp = false, dcHubPinned = false, dcFull = false;   // dcHelp: the help bar in the picture
+    int dcCmd = 0;                  // a button pressed in the Spectator Controls window (handled next frame)
+    double dcHintUntil = 0;         // "F1: CONTROLS" in the picture for a few seconds after start
+    double dcAutoAt = 0, dcWatchAt = 0;
+    Vec3 dcPos{0, 2.4f, 7.5f};
+    float dcYaw = 0, dcPitch = -0.15f, dcFov = 66.f;
+    float dcWheel = 0;
+    bool dcKey[256] = {};
+    GLuint dFbo = 0, dCol = 0, dDep = 0;
+    int dW = 0, dH = 0;
+#ifndef __ANDROID__
+    POINT dcMouse{};
+    RECT dcWinRect{};
+    HWND dcPanel = nullptr, dcStatus = nullptr;   // the Spectator Controls window (not part of the stream)
+#endif
 #endif
 
     // OpenXR
@@ -129,6 +147,7 @@ struct App {
     Renderer gfx;
     Model arena, environment, projectile, shell, spawner, shield, lancer, knuckle, head, torso, strikezone;
     Model gauntlets[3];   // GAUNTLET styles 0..2 (STRIKER, TITAN, PHANTOM); 3 = CONTROLLER (the lancer)
+    Model gauntletHand[3], gauntletCuff[3];   // the same, split at the wrist (the cuff can be moved: TUNING)
     // open art set only (absent in the original set): glossy floor + its mirrored light sources, additive glow layers
     Model floor, floorReflect, courtFx, envFx, courtPulse;
     double startTime = 0;
@@ -140,11 +159,24 @@ struct App {
         Vec3 burstPos; float burst = 0;   // dissolve burst at the back wall
     } trail[2];
     XrAction thumbstick = XR_NULL_HANDLE, thumbstickL = XR_NULL_HANDLE;
-    bool stickLatched = false, stickLatchedY = false, stickLatchedL = false;
-    // live gauntlet tuning (applied to the tool frame): pitch about grip X, forward / up offsets
-    // gauntlet on the controller: pitch (deg), forward and up (m). Defaults = the owner's tuning in the headset
-    // (2026-10-17: +35 deg, 9 cm forward, 2 cm up; earlier guesses were 0 and -25)
-    float tunePitchDeg = 35.f, tuneFwd = 0.09f, tuneUp = 0.02f;
+    // live gauntlet tuning (applied to the tool frame): see the TUNING tool
+    // gauntlet on the controller: pitch (deg), forward and up (m), and x / yaw / roll (right hand; the left is
+    // mirrored; TUNING only, not in settings.cfg). Defaults = the owner's tuning in the headset with the TUNING tool
+    // (2026-10-18: +21 deg, yaw -14 deg, 9 cm forward; before: +35 deg, 9 cm forward, 2 cm up; 0 and -25 before that)
+    float tunePitchDeg = 21.f, tuneFwd = 0.09f, tuneUp = 0.0f;
+    float tuneX = 0.f, tuneYawDeg = -14.f, tuneRollDeg = 0.f;
+    // developer tuning tool (SETTINGS > TUNING in developer mode): a mirror like the avatar builder's and a panel of
+    // values for the gauntlet parts and the skeleton; the thumbsticks change the picked value (files/tuning.cfg)
+    bool tuneOpen = false, prevTuneTrig = true;
+    Pose tunePose;
+    int tunePart = 0, tuneRow = 0, tuneHover = -1;
+    bool tuneCoarse = false, tuneProps = true, tuneMarkers = true;
+    int tuneStickDir = 0;
+    double tuneRepeatAt = 0, tuneSaveAt = 0, tuneStatusUntil = 0;
+    bool tuneLatchY = false, tuneLatchL = false, tuneSettingsDirty = false;
+    std::string tuneStatus;
+    Vec3 tuneHit;
+    bool tuneHitValid = false;
     Game game;
     Audio audio;
     Net net;
@@ -233,9 +265,11 @@ struct App {
     xc::SparcLink sparc;
     std::string sparcAddr = PA_SPARC_SERVER;       // settings.cfg sparcserver= (default from the build)
     std::string sparcId;                           // anonymous install id (files/xc_id), never a device name
+    std::string serverOverride, serverSaved;   // PC --server host:port for this session; the saved choice stays
     std::string serverAddr;        // community relay "host[:port]" (settings.cfg server=...)         // the menu shows a keyboard for the lobby name
     std::string nameBuf;
     bool devMode = false;
+    bool noOnline = false;   // --selftest: never connect to the community server
     // voice chat: push-to-talk (left grip) by default, open mic, or off; mutes by who is talking
     int voiceMode = 0;             // 0 push-to-talk, 1 open mic, 2 off
     bool muteSpectators = false, mutePlayers = false, muteAll = false;
@@ -366,6 +400,7 @@ static LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_CLOSE: if (a) a->quit = true; return 0;
     case WM_SIZE: if (a) { a->winW = LOWORD(l); a->winH = HIWORD(l); } return 0;
+    case WM_MOUSEWHEEL: if (a) a->dcWheel += (float)GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA; return 0;
     default: return DefWindowProcW(h, m, w, l);
     }
 }
@@ -720,6 +755,11 @@ static bool initContent(App& a) {
     a.gfx.loadModel("lancer", a.lancer);
     a.gfx.loadModel("knuckleguard", a.knuckle);
     for (int k = 0; k < 3; ++k) { char gn[16]; snprintf(gn, sizeof gn, "gauntlet_%d", k); a.gfx.loadModel(gn, a.gauntlets[k]); }
+    for (int k = 0; k < 3; ++k) {   // optional (the open asset set has them)
+        char gn[24];
+        snprintf(gn, sizeof gn, "gauntlet_%d_hand", k); a.gfx.loadModel(gn, a.gauntletHand[k]);
+        snprintf(gn, sizeof gn, "gauntlet_%d_cuff", k); a.gfx.loadModel(gn, a.gauntletCuff[k]);
+    }
     a.gfx.loadModel("head", a.head);
     a.gfx.loadModel("torso", a.torso);
     if (assetExists("floor.mdl")) {
@@ -767,6 +807,10 @@ static bool initContent(App& a) {
 static void openMenu(App& a, const PlayerInput& in);
 static void updateMenu(App& a, PlayerInput& in);
 static void openBuilder(App& a, const PlayerInput& in);
+static void openTuning(App& a, const PlayerInput& in);
+static void closeTuning(App& a);
+static void updateTuning(App& a, PlayerInput& in);
+static void loadTuning(App& a);
 static void openDirector(App& a, const PlayerInput& in);
 static void updateDirector(App& a, PlayerInput& in);
 static std::vector<uint8_t> packWarps(const App& a);
@@ -778,7 +822,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.1";
+static const char* kAppVersion = "0.3.2";
 static const size_t kNoteMax = 120;   // bug / player report notes (was 60: testers ran out)
 static const char* kReportWhy[4] = {"HARASSMENT OR HATE", "OFFENSIVE NAME OR LOOK", "CHEATING", "OTHER"};
 
@@ -1287,8 +1331,8 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
                 a.loggedFrames = true;
             }
             if (a.toolFrame == 1) in.hand[h].grip.q = aim.q;
-            Quat tq = in.hand[h].grip.q * Quat::axisAngle({1, 0, 0}, deg2rad(a.tunePitchDeg));
-            in.hand[h].grip = {tq, in.hand[h].grip.p + tq.rotate({0, a.tuneUp, -a.tuneFwd})};
+            Quat tq = in.hand[h].grip.q * gripEuler({a.tunePitchDeg, a.tuneYawDeg, a.tuneRollDeg}, h == 0);
+            in.hand[h].grip = {tq, in.hand[h].grip.p + tq.rotate({(h == 0 ? -1.f : 1.f) * a.tuneX, a.tuneUp, -a.tuneFwd})};
         }
         if (vel.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT)
             in.hand[h].angVel = a.trackToWorld.q.rotate({vel.angularVelocity.x, vel.angularVelocity.y, vel.angularVelocity.z});
@@ -1308,48 +1352,12 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
     bool menu = getBool(a, a.menu);
     if (menu && !a.prevMenu) {
         if (a.builderOpen) closeBuilder(a);
+        else if (a.tuneOpen) closeTuning(a);
         else if (a.menuOpen) { a.menuOpen = false; a.nameEdit = false; a.helpOpen = false; a.settingsOpen = false; a.titleOpen = false; a.quitArmed = false; LOGI("menu: closed"); }
         else openMenu(a, in);
     }
     a.prevMenu = menu;
-    if (a.menuOpen && a.devMode) {   // gauntlet / shield tuning with the thumbsticks, only while the menu is open
-        XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
-        gi.action = a.thumbstick;
-        XrActionStateVector2f st{XR_TYPE_ACTION_STATE_VECTOR2F};
-        xrGetActionStateVector2f(a.session, &gi, &st);
-        float x = st.isActive ? st.currentState.x : 0.f;
-        float y = st.isActive ? st.currentState.y : 0.f;
-        if (!a.stickLatchedY && std::fabs(y) > 0.8f) {
-            a.stickLatchedY = true;
-            a.tunePitchDeg += y > 0 ? 5.f : -5.f;
-            LOGI("tune: pitch %.0f deg fwd %.2f up %.2f", a.tunePitchDeg, a.tuneFwd, a.tuneUp);
-            saveSettings(a);
-        } else if (std::fabs(y) < 0.3f) {
-            a.stickLatchedY = false;
-        }
-        if (!a.stickLatched && std::fabs(x) > 0.8f) {
-            a.stickLatched = true;
-            a.game.tun.shieldPlacement = (a.game.tun.shieldPlacement + (x > 0 ? 1 : 3)) & 3;
-            LOGI("shield placement -> %d", a.game.tun.shieldPlacement);
-            saveSettings(a);
-        } else if (std::fabs(x) < 0.3f) {
-            a.stickLatched = false;
-        }
-        XrActionStateGetInfo gl{XR_TYPE_ACTION_STATE_GET_INFO};
-        gl.action = a.thumbstickL;
-        XrActionStateVector2f sl{XR_TYPE_ACTION_STATE_VECTOR2F};
-        xrGetActionStateVector2f(a.session, &gl, &sl);
-        float lx = sl.isActive ? sl.currentState.x : 0.f, ly = sl.isActive ? sl.currentState.y : 0.f;
-        if (!a.stickLatchedL && (std::fabs(lx) > 0.8f || std::fabs(ly) > 0.8f)) {
-            a.stickLatchedL = true;
-            if (std::fabs(ly) > std::fabs(lx)) a.tuneFwd += ly > 0 ? 0.01f : -0.01f;
-            else a.tuneUp += lx > 0 ? 0.01f : -0.01f;
-            LOGI("tune: pitch %.0f deg fwd %.2f up %.2f", a.tunePitchDeg, a.tuneFwd, a.tuneUp);
-            saveSettings(a);
-        } else if (std::fabs(lx) < 0.3f && std::fabs(ly) < 0.3f) {
-            a.stickLatchedL = false;
-        }
-    }
+    updateTuning(a, in);
     if (a.lanTriggerPoll == 0 && dataDir(a)) {   // adb test hook, like lan_toggle
         std::string f = std::string(dataDir(a)) + "/menu_toggle";
         if (fileExists(f)) {
@@ -1366,7 +1374,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 
 // ------------------------------------------------------------------ lobby menu
 enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute,
-                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill };
+                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning };
 struct MenuItem {
     std::string label;
     float x, y, w, h;
@@ -1486,7 +1494,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         const bool custom = PA_DEFAULT_SERVER[0] && a.serverAddr != PA_DEFAULT_SERVER;
         v.push_back({sv, custom ? -0.12f : 0.f, -0.28f, custom ? 0.50f : 0.74f, 0.07f, MenuAct::Server, 0, true});
         if (custom) v.push_back({"USE DEFAULT", 0.26f, -0.28f, 0.22f, 0.07f, MenuAct::ServerDefault, 0, true});
-        v.push_back({"BACK", 0, -0.37f, 0.36f, 0.06f, MenuAct::Back, 0, true});
+        v.push_back({"BACK", a.devMode ? -0.19f : 0.f, -0.37f, 0.36f, 0.06f, MenuAct::Back, 0, true});
+        if (a.devMode) v.push_back({"TUNING (DEVELOPER)", 0.19f, -0.37f, 0.36f, 0.06f, MenuAct::Tuning, 0, true});
         return v;
     }
     if (a.xpOpen) {
@@ -1701,6 +1710,7 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::Settings: a.settingsOpen = true; break;
     case MenuAct::Back: if (a.voicePage) a.voicePage = false; else a.settingsOpen = false; saveSettings(a); break;
     case MenuAct::VoicePage: a.voicePage = true; break;
+    case MenuAct::Tuning: a.settingsOpen = false; openTuning(a, a.localIn); break;
     case MenuAct::VoiceMode: a.voiceMode = (a.voiceMode + 1) % 3; a.micDenied = false; saveSettings(a); break;
     case MenuAct::MuteSpec: a.muteSpectators = !a.muteSpectators; saveSettings(a); break;
     case MenuAct::MutePlayers: a.mutePlayers = !a.mutePlayers; saveSettings(a); break;
@@ -1960,14 +1970,6 @@ static void drawMenu(App& a) {
     if (a.spectating && a.watchIp && !a.titleOpen && !a.settingsOpen && !a.nameEdit && !a.helpOpen) {
         snprintf(buf, sizeof buf, "STICKS FLY - A SAVE CAMERA - X NEXT - Y AUTO CAMERA   (%d CAMERAS)", (int)a.warps.size());
         text(buf, 0, -0.495f, 0.02f, grey);
-    }
-    if (a.devMode) {   // gauntlet / shield tuning (thumbsticks only act while this menu is open)
-        static const char* kPlace[4] = {"ABOVE", "BACK OF HAND", "BACK OF HAND (OLD)", "PALM SIDE"};
-        snprintf(buf, sizeof buf, "SHIELD: %s (R-STICK L/R)   GAUNTLET PITCH %+.0f (R-STICK U/D)", kPlace[a.game.tun.shieldPlacement & 3],
-                 a.tunePitchDeg);
-        text(buf, 0, -0.505f, 0.02f, grey);
-        snprintf(buf, sizeof buf, "GAUNTLET FWD %+.2f  UP %+.2f (L-STICK)", a.tuneFwd, a.tuneUp);
-        text(buf, 0, -0.535f, 0.02f, grey);
     }
     // laser + cursor
     if (a.aimValid[a.pointerHand]) {
@@ -2338,6 +2340,18 @@ static const Model& gauntletOf(const App& a, const AvatarDesc& d) {
     return d.gauntlet < 3 && a.gauntlets[d.gauntlet].valid() ? a.gauntlets[d.gauntlet] : a.lancer;
 }
 
+// a gauntlet: gm = (pre *) grip * the hand's mirror. Plate gauntlets are drawn as the hand and the cuff, the cuff in
+// its tuned pose against the hand (avatar::cuffPose; identity unless the TUNING tool moved it)
+static void drawGauntlet(App& a, const AvatarDesc& d, const Mat4& gm, const DrawParams& dp, int pass) {
+    const int k = d.gauntlet;
+    if (k < 3 && a.gauntletHand[k].valid() && a.gauntletCuff[k].valid()) {
+        a.gfx.draw(a.gauntletHand[k], gm * g_lancerLocal, dp, pass);
+        a.gfx.draw(a.gauntletCuff[k], gm * Mat4::fromPose(avatar::cuffPose(false)) * g_lancerLocal, dp, pass);
+        return;
+    }
+    a.gfx.draw(gauntletOf(a, d), gm * g_lancerLocal, dp, pass);
+}
+
 static void drawLancerAt(App& a, const Mat4& grip, int h, const AvatarLook& L, int pass, const Mat4& pre, bool preMirror,
                          const AvatarDesc& d) {
     Mat4 mirror = Mat4::identity();
@@ -2345,7 +2359,7 @@ static void drawLancerAt(App& a, const Mat4& grip, int h, const AvatarLook& L, i
     DrawParams dp;
     applyLook(dp, L);
     dp.mirrored = (h == 0) != preMirror;
-    a.gfx.draw(gauntletOf(a, d), pre * grip * mirror * g_lancerLocal, dp, pass);
+    drawGauntlet(a, d, pre * grip * mirror, dp, pass);
 }
 
 // main menu: your avatar on a slowly turning pedestal to the right of the menu, your name above it
@@ -2386,17 +2400,16 @@ static void drawTitleShowcase(App& a, int pass) {
     a.gfx.drawText(a.net.name(), {lq, base + Vec3{0, 1.90f, 0}}, 0.08f, white);
 }
 
-static void drawBuilder(App& a, int pass) {
-    if (!a.builderOpen) return;
+// the builder's mirror (also the tuning tool's): your reflection, moving with you, and the glass
+static AvatarLook drawMirror(App& a, int pass) {
     const int L = a.net.localIndex();
     const PlayerInput& in = a.localIn;
     const Mat4 R = reflectMat(a.mirrorPoint, a.mirrorNormal);
-    // the reflection: your avatar, moving with you
     drawAvatarBody(a, in, L, pass, R, true, false, 0);
     const AvatarLook look = lookOf(a, in.avatar, L);
     for (int h = 0; h < 2; ++h)
         if (in.hand[h].tracked) drawLancerAt(a, Mat4::fromPose(in.hand[h].grip), h, look, pass, R, true, in.avatar);
-    if (pass != 1) return;
+    if (pass != 1) return look;
     // the mirror: a faint glass pane with a glowing frame, a light ring where the reflection stands
     const Vec3 n = a.mirrorNormal;
     const Quat mq = Quat::axisAngle({0, 1, 0}, std::atan2(n.x, n.z));   // quad +Z = n (toward the player)
@@ -2412,6 +2425,15 @@ static void drawBuilder(App& a, int pass) {
     Vec3 rf = foot - n * (2.f * dot(foot - a.mirrorPoint, n));
     const float ring[4] = {look.rim[0] * 0.5f, look.rim[1] * 0.5f, look.rim[2] * 0.5f, 1};
     a.gfx.drawSpriteFlat({rf.x, 0.006f, rf.z}, 1.1f, ring, {0, 1, 0}, 1);
+    return look;
+}
+
+static void drawBuilder(App& a, int pass) {
+    if (!a.builderOpen) return;
+    const int L = a.net.localIndex();
+    const AvatarLook look = drawMirror(a, pass);
+    if (pass != 1) return;
+    const float edge[4] = {look.rim[0] * 0.8f, look.rim[1] * 0.8f, look.rim[2] * 0.8f, 1};
     // the panel
     auto at = [&](float x, float y, float z) { return a.builderPose.transform({x, y, z}); };
     auto quad = [&](float x, float y, float w, float h, float z, const float* c) {
@@ -2462,6 +2484,462 @@ static void drawBuilder(App& a, int pass) {
         const float laser[4] = {0.15f, 0.6f, 1.0f, 1};
         a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + dd * (len * 0.5f)}, {0.003f, 0.003f, len * 0.5f}), laser, true);
         if (a.builderHitValid) a.gfx.drawSphere(a.builderHit, 0.008f, cyan, true);
+    }
+}
+
+// ------------------------------------------------------------------ developer tuning tool (SETTINGS > TUNING, dev mode)
+// The gauntlet parts and the avatar skeleton, adjusted live in front of a mirror (owner request 2026-10-17). Every
+// value is in the right hand's grip space (+X right, +Y up / thumb, -Z forward) or the rig's frames; the left hand is
+// the mirror image. Values are kept in files/tuning.cfg (read only in developer mode); EXPORT writes
+// files/tuning_export.txt and sends it with the log as a bug report, so the values can become the defaults.
+enum TuneUnit { TU_M, TU_DEG, TU_SCALE };
+struct TuneParam { int part; const char* key; const char* label; float* v; TuneUnit unit; float lo, hi; };
+static const char* kTuneParts[] = {"GAUNTLET ON CONTROLLER", "WRIST CUFF (BRACER)", "FOREARM END", "BALL IN FIST", "SHIELD",
+                                   "KNUCKLE GUARD", "SHOULDERS", "ARMS AND ELBOWS", "TORSO AND NECK"};
+static const int kTunePartCount = (int)(sizeof kTuneParts / sizeof kTuneParts[0]);
+static const char* kTunePartKey[] = {"grip", "cuff", "forearm", "ball", "shield", "knuckle", "shoulder", "arm", "torso"};
+static const char* kTunePartHelp[] = {
+    "THE WHOLE GAUNTLET AGAINST THE CONTROLLER (MOVES EVERYTHING)",
+    "THE CUFF AGAINST THE HAND, TURNING ABOUT THE WRIST",
+    "WHERE THE FOREARM ENDS INSIDE THE CUFF",
+    "WHERE A HELD BALL SITS",
+    "THE SHIELD ON THE BACK OF THE HAND",
+    "THE KNUCKLE GLASS AND ITS BUMPER (WHAT HITS THE BALL)",
+    "SHOULDER JOINTS (BOTH SIDES), AND HOW FAR THEY FOLLOW A REACH",
+    "BONE LENGTHS, THICKNESS, AND WHERE THE ELBOWS POINT",
+    "HOW THE CHEST TURNS TOWARD THE HANDS, AND THE NECK",
+};
+
+// the controller part's six values (App fields); a struct of the same shape holds their defaults
+struct GripTuneRef { float *x, *up, *fwd, *pitch, *yaw, *roll; };
+static std::vector<TuneParam> tuneParamsFor(const GripTuneRef& gr, avatar::RigTuning& r, Tunables& t) {
+    std::vector<TuneParam> v;
+    auto xyz = [&](int part, Vec3& p) {
+        v.push_back({part, "x", "X (RIGHT)", &p.x, TU_M, -0.25f, 0.25f});
+        v.push_back({part, "y", "Y (UP)", &p.y, TU_M, -0.25f, 0.25f});
+        v.push_back({part, "z", "Z (BACK)", &p.z, TU_M, -0.35f, 0.35f});
+    };
+    auto pyr = [&](int part, Vec3& d) {
+        v.push_back({part, "pitch", "PITCH", &d.x, TU_DEG, -180.f, 180.f});
+        v.push_back({part, "yaw", "YAW", &d.y, TU_DEG, -180.f, 180.f});
+        v.push_back({part, "roll", "ROLL", &d.z, TU_DEG, -180.f, 180.f});
+    };
+    v.push_back({0, "x", "X (RIGHT)", gr.x, TU_M, -0.2f, 0.2f});
+    v.push_back({0, "up", "UP", gr.up, TU_M, -0.2f, 0.2f});
+    v.push_back({0, "fwd", "FORWARD", gr.fwd, TU_M, -0.2f, 0.2f});
+    v.push_back({0, "pitch", "PITCH", gr.pitch, TU_DEG, -90.f, 90.f});
+    v.push_back({0, "yaw", "YAW", gr.yaw, TU_DEG, -90.f, 90.f});
+    v.push_back({0, "roll", "ROLL", gr.roll, TU_DEG, -90.f, 90.f});
+    xyz(1, r.cuffPos); pyr(1, r.cuffRot);
+    xyz(2, r.forearmEnd);
+    xyz(3, t.holdOffset);
+    xyz(4, t.shieldBackPos); pyr(4, t.shieldBackRot);
+    xyz(5, t.knuckleOffset);
+    v.push_back({6, "out", "OUT", &r.shoulder.x, TU_M, -0.15f, 0.15f});
+    v.push_back({6, "up", "UP", &r.shoulder.y, TU_M, -0.15f, 0.15f});
+    v.push_back({6, "back", "BACK", &r.shoulder.z, TU_M, -0.15f, 0.15f});
+    v.push_back({6, "reach", "REACH (MAX)", &r.reach, TU_M, 0.f, 0.2f});
+    v.push_back({6, "reachstart", "REACH STARTS AT", &r.reachStart, TU_SCALE, 0.7f, 1.0f});
+    v.push_back({7, "upper", "UPPER ARM LENGTH", &r.upperLen, TU_SCALE, 0.7f, 1.4f});
+    v.push_back({7, "fore", "FOREARM LENGTH", &r.foreLen, TU_SCALE, 0.7f, 1.4f});
+    v.push_back({7, "thick", "THICKNESS", &r.armThick, TU_SCALE, 0.6f, 1.6f});
+    v.push_back({7, "elbowout", "ELBOW OUT", &r.elbowPole.x, TU_SCALE, -1.5f, 1.5f});
+    v.push_back({7, "elbowdown", "ELBOW DOWN", &r.elbowPole.y, TU_SCALE, -2.0f, 1.0f});
+    v.push_back({7, "elbowback", "ELBOW BACK", &r.elbowPole.z, TU_SCALE, -1.5f, 1.5f});
+    v.push_back({7, "elbowpull", "ELBOW PULL", &r.elbowPull, TU_M, 0.f, 0.5f});
+    v.push_back({8, "follow", "CHEST FOLLOWS HANDS", &r.torsoFollow, TU_SCALE, 0.f, 2.f});
+    v.push_back({8, "limit", "CHEST TURN LIMIT", &r.torsoLimitDeg, TU_DEG, 0.f, 90.f});
+    v.push_back({8, "neckup", "NECK UP", &r.neck.y, TU_M, -0.1f, 0.1f});
+    v.push_back({8, "neckback", "NECK BACK", &r.neck.z, TU_M, -0.1f, 0.1f});
+    return v;
+}
+static std::vector<TuneParam> tuneParams(App& a) {
+    return tuneParamsFor({&a.tuneX, &a.tuneUp, &a.tuneFwd, &a.tunePitchDeg, &a.tuneYawDeg, &a.tuneRollDeg},
+                         avatar::rigTuning(), a.game.tun);
+}
+// the shipped defaults, in the same order as tuneParams
+static const std::vector<float>& tuneDefaults() {
+    static std::vector<float> d;
+    if (d.empty()) {
+        static float g[6] = {0.f, 0.0f, 0.09f, 21.f, -14.f, 0.f};   // App's defaults (the owner's tuning, 2026-10-18)
+        static avatar::RigTuning r;
+        static Tunables t;
+        for (const TuneParam& p : tuneParamsFor({&g[0], &g[1], &g[2], &g[3], &g[4], &g[5]}, r, t)) d.push_back(*p.v);
+    }
+    return d;
+}
+static float tuneStep(const App& a, TuneUnit u) {
+    if (u == TU_M) return a.tuneCoarse ? 0.01f : 0.002f;      // 1 cm / 2 mm
+    if (u == TU_DEG) return a.tuneCoarse ? 5.f : 1.f;
+    return a.tuneCoarse ? 0.05f : 0.01f;
+}
+static std::string tuneValueText(const TuneParam& p, float v) {
+    char b[32];
+    if (p.unit == TU_M) snprintf(b, sizeof b, "%+.1f CM", v * 100.f);
+    else if (p.unit == TU_DEG) snprintf(b, sizeof b, "%+.0f DEG", v);
+    else snprintf(b, sizeof b, "%.2f", v);
+    return b;
+}
+static std::vector<int> tuneRows(App& a, const std::vector<TuneParam>& ps) {
+    std::vector<int> r;
+    for (int i = 0; i < (int)ps.size(); ++i) if (ps[i].part == a.tunePart) r.push_back(i);
+    return r;
+}
+static void tuneStatus(App& a, const std::string& s) { a.tuneStatus = s; a.tuneStatusUntil = nowSeconds() + 4.0; }
+
+static void saveTuning(App& a) {
+    if (!dataDir(a)) return;
+    const std::string f = std::string(dataDir(a)) + "/tuning.cfg";
+    FILE* fp = fopen(f.c_str(), "w");
+    if (!fp) { LOGW("tuning: cannot write %s", f.c_str()); return; }
+    fprintf(fp, "# Project Arena developer tuning (SETTINGS > TUNING); read only in developer mode\n");
+    for (const TuneParam& p : tuneParams(a)) fprintf(fp, "%s.%s=%.4f\n", kTunePartKey[p.part], p.key, *p.v);
+    fclose(fp);
+    if (a.tuneSettingsDirty) { saveSettings(a); a.tuneSettingsDirty = false; }   // the controller part is in settings too
+}
+static void loadTuning(App& a) {
+    if (!dataDir(a) || !a.devMode) return;
+    const std::string f = std::string(dataDir(a)) + "/tuning.cfg";
+    FILE* fp = fopen(f.c_str(), "r");
+    if (!fp) return;
+    std::vector<TuneParam> ps = tuneParams(a);
+    char line[160];
+    int n = 0;
+    while (fgets(line, sizeof line, fp)) {
+        char* eq = strchr(line, '=');
+        if (!eq || line[0] == '#') continue;
+        *eq = 0;
+        const float v = (float)atof(eq + 1);
+        for (const TuneParam& p : ps)
+            if (std::string(kTunePartKey[p.part]) + "." + p.key == line) { *p.v = clampf(v, p.lo, p.hi); ++n; }
+    }
+    fclose(fp);
+    LOGI("tuning: %d values from tuning.cfg", n);
+}
+// every value that differs from the shipped default, ready to become the new default
+static std::string tuningText(App& a) {
+    std::vector<TuneParam> ps = tuneParams(a);
+    const std::vector<float>& d = tuneDefaults();
+    std::string s;
+    char b[160];
+    int changed = 0;
+    for (size_t i = 0; i < ps.size(); ++i) {
+        const bool diff = std::fabs(*ps[i].v - d[i]) > 1e-5f;
+        changed += diff;
+        snprintf(b, sizeof b, "%s %s.%s = %.4f (default %.4f)\n", diff ? "*" : " ", kTunePartKey[ps[i].part], ps[i].key, *ps[i].v, d[i]);
+        s += b;
+    }
+    snprintf(b, sizeof b, "%d of %d values changed (* = changed); right-hand grip space, metres / degrees\n", changed, (int)ps.size());
+    return std::string(b) + s;
+}
+static void exportTuning(App& a) {
+    saveTuning(a);
+    const std::string t = tuningText(a);
+    for (size_t p = 0, q; p < t.size(); p = q + 1) {   // into the log, line by line (the bug report carries the log)
+        q = t.find('\n', p);
+        if (q == std::string::npos) q = t.size();
+        if (t[p] == '*' || p == 0) LOGI("tuning export: %s", t.substr(p, q - p).c_str());
+    }
+    if (dataDir(a))
+        if (FILE* fp = fopen((std::string(dataDir(a)) + "/tuning_export.txt").c_str(), "w")) { fputs(t.c_str(), fp); fclose(fp); }
+    submitReport(a, bugReportText(a, "Project Arena tuning export", t), "tuning export");
+    tuneStatus(a, "EXPORTED: SAVED TUNING_EXPORT.TXT AND SENT IT TO THE SERVER");
+}
+
+static void tuneChange(App& a, int dir) {
+    std::vector<TuneParam> ps = tuneParams(a);
+    std::vector<int> rows = tuneRows(a, ps);
+    if (rows.empty()) return;
+    a.tuneRow = std::min(a.tuneRow, (int)rows.size() - 1);
+    const TuneParam& p = ps[rows[a.tuneRow]];
+    const float st = tuneStep(a, p.unit);
+    *p.v = clampf(*p.v + dir * st, p.lo, p.hi);
+    if (p.part == 0) a.tuneSettingsDirty = true;
+    a.tuneSaveAt = nowSeconds() + 1.0;
+    LOGI("tuning: %s %s = %.4f", kTuneParts[p.part], p.key, *p.v);
+}
+static void tuneReset(App& a, bool all) {
+    std::vector<TuneParam> ps = tuneParams(a);
+    const std::vector<float>& d = tuneDefaults();
+    for (size_t i = 0; i < ps.size(); ++i)
+        if (all || ps[i].part == a.tunePart) { *ps[i].v = d[i]; if (ps[i].part == 0) a.tuneSettingsDirty = true; }
+    a.tuneSaveAt = nowSeconds() + 0.2;
+    tuneStatus(a, all ? "EVERY VALUE IS BACK TO ITS DEFAULT" : std::string(kTuneParts[a.tunePart]) + ": DEFAULTS");
+    LOGI("tuning: reset %s", all ? "all" : kTuneParts[a.tunePart]);
+}
+
+// the panel: rows of the picked part (- value +), then the buttons. Ids: 2r / 2r+1 = row r minus / plus, 100 + r =
+// the row itself, the rest below.
+enum { TB_PREV = 200, TB_NEXT, TB_STEP, TB_PROPS, TB_MARKERS, TB_RESET, TB_RESETALL, TB_EXPORT, TB_DONE };
+struct TuneBtn { float x, y, w, h; int id; std::string label; bool on; };
+static const float kTuneW = 0.92f, kTuneTop = 0.50f, kTuneBottom = -0.50f;
+static std::vector<TuneBtn> tuneButtons(App& a) {
+    std::vector<TuneBtn> v;
+    std::vector<TuneParam> ps = tuneParams(a);
+    std::vector<int> rows = tuneRows(a, ps);
+    v.push_back({-0.40f, 0.36f, 0.07f, 0.06f, TB_PREV, "<", false});
+    v.push_back({0.40f, 0.36f, 0.07f, 0.06f, TB_NEXT, ">", false});
+    for (int r = 0; r < (int)rows.size(); ++r) {
+        const float y = 0.235f - r * 0.06f;
+        v.push_back({-0.12f, y, 0.62f, 0.052f, 100 + r, ps[rows[r]].label, r == a.tuneRow});
+        v.push_back({0.25f, y, 0.07f, 0.052f, 2 * r, "-", false});
+        v.push_back({0.39f, y, 0.07f, 0.052f, 2 * r + 1, "+", false});
+    }
+    v.push_back({-0.30f, -0.28f, 0.28f, 0.06f, TB_STEP, a.tuneCoarse ? "STEP: COARSE" : "STEP: FINE", a.tuneCoarse});
+    v.push_back({0.0f, -0.28f, 0.28f, 0.06f, TB_PROPS, a.tuneProps ? "BALL + SHIELD: ON" : "BALL + SHIELD: OFF", a.tuneProps});
+    v.push_back({0.30f, -0.28f, 0.28f, 0.06f, TB_MARKERS, a.tuneMarkers ? "MARKERS: ON" : "MARKERS: OFF", a.tuneMarkers});
+    v.push_back({-0.30f, -0.36f, 0.28f, 0.06f, TB_RESET, "RESET PART", false});
+    v.push_back({0.0f, -0.36f, 0.28f, 0.06f, TB_RESETALL, "RESET ALL", false});
+    v.push_back({0.30f, -0.36f, 0.28f, 0.06f, TB_EXPORT, "EXPORT + SEND", false});
+    v.push_back({0.0f, -0.445f, 0.36f, 0.06f, TB_DONE, "DONE", false});
+    return v;
+}
+
+static void openTuning(App& a, const PlayerInput& in) {
+    if (!a.devMode) return;
+    Vec3 f = in.head.q.rotate({0, 0, -1});
+    f.y = 0;
+    f = length(f) > 1e-3f ? normalize(f) : Vec3{1, 0, 0};
+    const Vec3 right = cross(f, Vec3{0, 1, 0});
+    a.mirrorNormal = -f;   // the builder's mirror, 0.85 m ahead
+    a.mirrorPoint = Vec3{in.head.p.x, 0, in.head.p.z} + f * 0.85f;
+    Vec3 pp = in.head.p + f * 1.0f + right * 0.78f + Vec3{0, -0.22f, 0};
+    Vec3 to = in.head.p - pp;
+    to.y = 0;
+    to = normalize(to);
+    a.tunePose = {Quat::axisAngle({0, 1, 0}, std::atan2(to.x, to.z)), pp};
+    a.tuneOpen = true;
+    a.menuOpen = false;
+    a.prevTuneTrig = true;
+    LOGI("tuning: open");
+}
+static void closeTuning(App& a) {
+    if (!a.tuneOpen) return;
+    a.tuneOpen = false;
+    saveTuning(a);
+    LOGI("tuning: closed");
+}
+static void tuneActivate(App& a, int id) {
+    std::vector<TuneParam> ps = tuneParams(a);
+    const int nrows = (int)tuneRows(a, ps).size();
+    if (id >= 0 && id < 2 * nrows) { a.tuneRow = id / 2; tuneChange(a, (id & 1) ? 1 : -1); return; }
+    if (id >= 100 && id < 100 + nrows) { a.tuneRow = id - 100; return; }
+    switch (id) {
+    case TB_PREV: a.tunePart = (a.tunePart + kTunePartCount - 1) % kTunePartCount; a.tuneRow = 0; break;
+    case TB_NEXT: a.tunePart = (a.tunePart + 1) % kTunePartCount; a.tuneRow = 0; break;
+    case TB_STEP: a.tuneCoarse = !a.tuneCoarse; break;
+    case TB_PROPS: a.tuneProps = !a.tuneProps; break;
+    case TB_MARKERS: a.tuneMarkers = !a.tuneMarkers; break;
+    case TB_RESET: tuneReset(a, false); break;
+    case TB_RESETALL: tuneReset(a, true); break;
+    case TB_EXPORT: exportTuning(a); break;
+    case TB_DONE: closeTuning(a); break;
+    default: break;
+    }
+}
+
+static void stickState(App& a, XrAction act, float& x, float& y) {
+    XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+    gi.action = act;
+    XrActionStateVector2f st{XR_TYPE_ACTION_STATE_VECTOR2F};
+    x = y = 0;
+    if (act != XR_NULL_HANDLE && xrGetActionStateVector2f(a.session, &gi, &st) == XR_SUCCESS && st.isActive) { x = st.currentState.x; y = st.currentState.y; }
+}
+
+// the sticks (right: up / down picks a value, left / right changes it, held = repeats; left: left / right = the
+// part) and the pointer on the panel; no grabbing while tuning
+static void updateTuning(App& a, PlayerInput& in) {
+    a.tuneHover = -1;
+    a.tuneHitValid = false;
+    const double t = nowSeconds();
+    if (a.tuneSaveAt > 0 && t > a.tuneSaveAt) { a.tuneSaveAt = 0; saveTuning(a); }
+    if (!a.tuneOpen) return;
+    std::vector<TuneParam> ps = tuneParams(a);
+    const int nrows = (int)tuneRows(a, ps).size();
+    float rx, ry, lx, ly;
+    stickState(a, a.thumbstick, rx, ry);
+    stickState(a, a.thumbstickL, lx, ly);
+    if (!a.tuneLatchY && std::fabs(ry) > 0.7f && std::fabs(ry) > std::fabs(rx)) {
+        a.tuneLatchY = true;
+        a.tuneRow = (a.tuneRow + (ry > 0 ? nrows - 1 : 1)) % std::max(1, nrows);   // stick up = the row above
+    } else if (std::fabs(ry) < 0.3f) {
+        a.tuneLatchY = false;
+    }
+    const int dir = std::fabs(rx) > 0.6f && std::fabs(rx) > std::fabs(ry) ? (rx > 0 ? 1 : -1) : 0;
+    if (dir != a.tuneStickDir) {
+        a.tuneStickDir = dir;
+        if (dir) { tuneChange(a, dir); a.tuneRepeatAt = t + 0.35; }
+    } else if (dir && t > a.tuneRepeatAt) {
+        tuneChange(a, dir);
+        a.tuneRepeatAt = t + 0.07;
+    }
+    if (!a.tuneLatchL && std::fabs(lx) > 0.7f) {
+        a.tuneLatchL = true;
+        tuneActivate(a, lx > 0 ? TB_NEXT : TB_PREV);
+    } else if (std::fabs(lx) < 0.3f) {
+        a.tuneLatchL = false;
+    }
+    const bool trig = in.hand[a.pointerHand].trigger > 0.7f;
+    if (a.aimValid[a.pointerHand]) {
+        const Vec3 o = a.aim[a.pointerHand].p, d = a.aim[a.pointerHand].q.rotate({0, 0, -1});
+        const Vec3 nz = a.tunePose.q.rotate({0, 0, 1});
+        const float den = dot(d, nz);
+        if (den < -1e-3f) {
+            const float tt = dot(a.tunePose.p - o, nz) / den;
+            if (tt > 0 && tt < 4) {
+                const Vec3 lp = a.tunePose.q.conj().rotate(o + d * tt - a.tunePose.p);
+                if (std::fabs(lp.x) < kTuneW * 0.5f && lp.y < kTuneTop && lp.y > kTuneBottom) {
+                    a.tuneHit = o + d * tt;
+                    a.tuneHitValid = true;
+                    std::vector<TuneBtn> bs = tuneButtons(a);
+                    for (const TuneBtn& b : bs)
+                        if (std::fabs(lp.x - b.x) < b.w * 0.5f && std::fabs(lp.y - b.y) < b.h * 0.5f) a.tuneHover = b.id;
+                    if (trig && !a.prevTuneTrig && a.tuneHover >= 0) { tuneActivate(a, a.tuneHover); haptic(a, a.pointerHand, 0.35f, 0.025f); }
+                }
+            }
+        }
+    }
+    a.prevTuneTrig = trig;
+    for (int h = 0; h < 2; ++h) { in.hand[h].trigger = 0; in.hand[h].squeeze = 0; }
+}
+
+// the knuckle glass follows the bumper: the knuckleguard model is authored round Sparc's bumper centre
+// (make_props.py knuckleguard), the bumper is wherever Tunables::knuckleOffset puts it
+static Mat4 knuckleShift(const Game& g) {
+    static const Vec3 kGlassCentre{-0.022f, 0.010f, -0.137f};
+    return Mat4::fromPose({Quat{}, g.tun.knuckleOffset - kGlassCentre});
+}
+
+// the ball, the shield and the knuckle glass on both of your hands, and the markers: in the room (R = identity) and
+// in the mirror (R = the reflection)
+static void drawTuneHands(App& a, int pass, const Mat4& R, bool refl) {
+    const Game& g = a.game;
+    const PlayerInput& in = a.localIn;
+    const int L = a.net.localIndex();
+    const float teamCol[2][4] = {{0.1f, 0.7f, 1.0f, 1}, {1.0f, 0.4f, 0.1f, 1}};
+    const float* tc = teamCol[L & 1];
+    auto RP = [&](const Vec3& p) {   // a world point in the mirror
+        if (!refl) return p;
+        return p - a.mirrorNormal * (2.f * dot(p - a.mirrorPoint, a.mirrorNormal));
+    };
+    auto line = [&](const Vec3& p0, const Vec3& p1, float th, const float* c) {
+        const Vec3 q0 = RP(p0), q1 = RP(p1), dd = q1 - q0;
+        const float len = length(dd);
+        if (len < 1e-4f) return;
+        a.gfx.drawBox(Mat4::fromPose({fromTo({0, 0, 1}, dd / len), (q0 + q1) * 0.5f}, {th, th, len * 0.5f}), c, true);
+    };
+    for (int h = 0; h < 2; ++h) {
+        if (!in.hand[h].tracked) continue;
+        const Pose& gp = in.hand[h].grip;
+        const Mat4 grip = Mat4::fromPose(gp);
+        Mat4 mirror = Mat4::identity();
+        if (h == 0) mirror.m[0] = -1;
+        const float sx = h == 0 ? -1.f : 1.f;
+        auto G = [&](const Vec3& v) { return gp.transform({sx * v.x, v.y, v.z}); };   // right-hand grip point, mirrored
+        if (a.tuneProps) {
+            DrawParams bp;
+            bp.tintMul[0] = tc[0] * 2.f; bp.tintMul[1] = tc[1] * 2.f; bp.tintMul[2] = tc[2] * 2.f;
+            bp.mirrored = refl;
+            const float s = g.tun.projectileRadius / 0.08f;
+            a.gfx.draw(a.projectile, R * Mat4::fromPose({Quat{}, G(g.tun.holdOffset)}, {s, s, s}), bp, pass);
+            DrawParams sp;
+            sp.tintMul[0] = tc[0]; sp.tintMul[1] = tc[1]; sp.tintMul[2] = tc[2];
+            sp.emissiveAdd[0] = tc[0] * 0.4f; sp.emissiveAdd[1] = tc[1] * 0.4f; sp.emissiveAdd[2] = tc[2] * 0.4f;
+            sp.alphaMul = 0.7f;
+            sp.mirrored = refl;
+            a.gfx.draw(a.shield, R * grip * Mat4::fromPose(g.shieldLocal(h)) * g_plateLocal, sp, pass);
+            DrawParams kp;
+            kp.mirrored = (h == 0) != refl;
+            kp.forceShader = SH_TRANSLUCENT;
+            kp.tintMul[0] = 0.75f + 0.25f * tc[0]; kp.tintMul[1] = 0.75f + 0.25f * tc[1]; kp.tintMul[2] = 0.75f + 0.25f * tc[2];
+            kp.alphaMul = 0.35f;
+            a.gfx.draw(a.knuckle, R * grip * mirror * knuckleShift(g) * g_knuckleLocal, kp, pass);
+        }
+        if (!a.tuneMarkers || pass != 1) continue;
+        glDisable(GL_DEPTH_TEST);   // markers show through the ball and the gauntlet
+        const float cyan[4] = {0.2f, 0.9f, 1.0f, 1}, green[4] = {0.3f, 1.0f, 0.4f, 1}, yellow[4] = {1.0f, 0.9f, 0.2f, 1};
+        const float magenta[4] = {1.0f, 0.3f, 0.9f, 1}, white[4] = {1, 1, 1, 1}, orange[4] = {1.0f, 0.55f, 0.15f, 1};
+        a.gfx.drawSphere(RP(G(g.tun.launcherOffset)), 0.008f, cyan, true);    // throws leave from here
+        a.gfx.drawSphere(RP(G(g.tun.catcherOffset)), 0.008f, green, true);    // catches are measured from here
+        a.gfx.drawSphere(RP(G(g.tun.holdOffset)), 0.006f, orange, true);
+        line(G(g.tun.fistBack), G(g.tun.fistFront), 0.003f, yellow);           // the fist (fist bumps)
+        const Vec3 fe = avatar::cuffPose(false).transform(avatar::rigTuning().forearmEnd);
+        a.gfx.drawSphere(RP(G(fe)), 0.008f, magenta, true);                    // the forearm ends here
+        a.gfx.drawSphere(RP(G(avatar::cuffPose(false).transform(avatar::kCuffPivot))), 0.006f, white, true);   // wrist pivot
+        // the knuckle bumper box (what hits the ball)
+        const Vec3 kc = g.tun.knuckleOffset, kh = g.tun.knuckleHalf;
+        const float kb[4] = {0.5f, 0.8f, 1.0f, 1};
+        for (int e = 0; e < 4; ++e) {
+            const float ex = (e & 1) ? 1.f : -1.f, ey = (e & 2) ? 1.f : -1.f;
+            line(G(kc + Vec3{ex * kh.x, ey * kh.y, -kh.z}), G(kc + Vec3{ex * kh.x, ey * kh.y, kh.z}), 0.0015f, kb);
+            line(G(kc + Vec3{ex * kh.x, -kh.y, ey * kh.z}), G(kc + Vec3{ex * kh.x, kh.y, ey * kh.z}), 0.0015f, kb);
+            line(G(kc + Vec3{-kh.x, ex * kh.y, ey * kh.z}), G(kc + Vec3{kh.x, ex * kh.y, ey * kh.z}), 0.0015f, kb);
+        }
+        glEnable(GL_DEPTH_TEST);
+    }
+    if (!refl || !a.tuneMarkers || pass != 1 || in.head.p.y < 0.3f) return;
+    // the skeleton, in the mirror (you have no body of your own): neck, shoulders, elbows, wrists
+    const avatar::Rig rig = avatar::solveRig(in, in.avatar);
+    const float bone[4] = {1.0f, 0.85f, 0.3f, 1}, joint[4] = {1.0f, 0.4f, 0.2f, 1};
+    glDisable(GL_DEPTH_TEST);   // seen through the body
+    line(rig.neck.a, rig.neck.b, 0.003f, bone);
+    for (int k = 0; k < 2; ++k) {
+        line(rig.neck.b, rig.upper[k].a, 0.003f, bone);
+        line(rig.upper[k].a, rig.upper[k].b, 0.003f, bone);
+        line(rig.fore[k].a, rig.fore[k].b, 0.003f, bone);
+        a.gfx.drawSphere(RP(rig.upper[k].a), 0.012f, joint, true);
+        a.gfx.drawSphere(RP(rig.upper[k].b), 0.012f, joint, true);
+        a.gfx.drawSphere(RP(rig.fore[k].b), 0.010f, joint, true);
+    }
+    a.gfx.drawSphere(RP(rig.neck.a), 0.010f, joint, true);
+    glEnable(GL_DEPTH_TEST);
+}
+
+static void drawTuning(App& a, int pass) {
+    if (!a.tuneOpen) return;
+    const AvatarLook look = drawMirror(a, pass);
+    drawTuneHands(a, pass, Mat4::identity(), false);
+    drawTuneHands(a, pass, reflectMat(a.mirrorPoint, a.mirrorNormal), true);
+    if (pass != 1) return;
+    const Pose& P = a.tunePose;
+    auto at = [&](float x, float y, float z) { return P.transform({x, y, z}); };
+    auto quad = [&](float x, float y, float w, float h, float z, const float* c) {
+        a.gfx.drawPanel(Mat4::fromPose({P.q, at(x, y, z)}, {w, h, 1}), c);
+    };
+    auto text = [&](const std::string& t, float x, float y, float h, const float* c) { a.gfx.drawText(t, {P.q, at(x, y, 0.006f)}, h, c); };
+    const float bg[4] = {0.004f, 0.007f, 0.016f, 0.92f}, frame[4] = {look.rim[0] * 0.5f, look.rim[1] * 0.5f, look.rim[2] * 0.5f, 0.9f};
+    const float btn[4] = {0.03f, 0.05f, 0.08f, 0.95f}, hov[4] = {0.05f, 0.40f, 0.75f, 0.98f}, on[4] = {0.06f, 0.22f, 0.36f, 0.98f};
+    const float white[4] = {1, 1, 1, 1}, grey[4] = {0.5f, 0.55f, 0.62f, 1}, cyan[4] = {0.3f, 0.85f, 1.0f, 1}, amber[4] = {1.0f, 0.8f, 0.3f, 1};
+    quad(0, 0, kTuneW + 0.03f, kTuneTop - kTuneBottom + 0.03f, -0.002f, frame);
+    quad(0, 0, kTuneW, kTuneTop - kTuneBottom, 0, bg);
+    text("TUNING (DEVELOPER)", 0, 0.45f, 0.036f, cyan);
+    text(kTuneParts[a.tunePart], 0, 0.36f, 0.028f, white);
+    text(kTunePartHelp[a.tunePart], 0, 0.30f, 0.016f, grey);
+    std::vector<TuneParam> ps = tuneParams(a);
+    std::vector<int> rows = tuneRows(a, ps);
+    const std::vector<float>& d = tuneDefaults();
+    for (const TuneBtn& b : tuneButtons(a)) {
+        const bool row = b.id >= 100 && b.id < 100 + (int)rows.size();
+        quad(b.x, b.y, b.w, b.h, 0.003f, b.id == a.tuneHover ? hov : b.on ? on : btn);
+        if (row) {
+            const int r = b.id - 100;
+            const TuneParam& p = ps[rows[r]];
+            const bool changed = std::fabs(*p.v - d[rows[r]]) > 1e-5f;
+            text(b.label, b.x - 0.13f, b.y, 0.020f, white);
+            text(tuneValueText(p, *p.v), b.x + 0.19f, b.y, 0.020f, changed ? amber : white);
+        } else {
+            text(b.label, b.x, b.y, b.h > 0.055f && b.w < 0.1f ? 0.03f : 0.018f, white);
+        }
+    }
+    text("RIGHT STICK: UP / DOWN PICKS A VALUE, LEFT / RIGHT CHANGES IT", 0, -0.18f, 0.016f, grey);
+    text("LEFT STICK: NEXT PART    AMBER = CHANGED FROM THE DEFAULT", 0, -0.21f, 0.016f, grey);
+    if (nowSeconds() < a.tuneStatusUntil) text(a.tuneStatus, 0, -0.495f, 0.016f, amber);
+    if (a.aimValid[a.pointerHand]) {
+        const Vec3 o = a.aim[a.pointerHand].p, dd = a.aim[a.pointerHand].q.rotate({0, 0, -1});
+        const float len = a.tuneHitValid ? length(a.tuneHit - o) : 1.5f;
+        const float laser[4] = {0.15f, 0.6f, 1.0f, 1};
+        a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + dd * (len * 0.5f)}, {0.003f, 0.003f, len * 0.5f}), laser, true);
+        if (a.tuneHitValid) a.gfx.drawSphere(a.tuneHit, 0.008f, cyan, true);
     }
 }
 
@@ -2872,7 +3350,7 @@ static void lobbyAction(App& a, int which, const PlayerInput& in) {
 
 static void updateLobby(App& a, const PlayerInput& in) {
     a.lobbyHover = -1;
-    if (!inLobby(a) || a.builderOpen || (a.menuOpen && a.menuHitValid) || !a.aimValid[a.pointerHand]) {
+    if (!inLobby(a) || a.builderOpen || a.tuneOpen || (a.menuOpen && a.menuHitValid) || !a.aimValid[a.pointerHand]) {
         a.prevLobbyTrig = true;
         return;
     }
@@ -2940,7 +3418,7 @@ static void drawLobby(App& a, int pass) {
         a.gfx.drawText("PULL THE TRIGGER TO PLAY THE BOT", {Quat{}, {0, 3.95f, 2.6f}}, 0.22f, gold);
     }
     // the pointer
-    if (!a.menuOpen && !a.builderOpen && a.aimValid[a.pointerHand]) {
+    if (!a.menuOpen && !a.builderOpen && !a.tuneOpen && a.aimValid[a.pointerHand]) {
         const Vec3 o = a.aim[a.pointerHand].p, d = a.aim[a.pointerHand].q.rotate({0, 0, -1});
         float dist;
         const int hit = lobbyRayHit(a, o, d, dist);
@@ -3066,7 +3544,7 @@ static void drawMiniMatch(App& a, const Game& g, const Vec3& at, const Quat& q, 
             DrawParams hp2 = bp;
             if (!a.avModels.empty()) { hp2 = DrawParams(); applyLook(hp2, look); }
             hp2.mirrored = (h == 0);
-            a.gfx.draw(gauntletOf(a, ps.in.avatar), M(Mat4::fromPose(ps.in.hand[h].grip) * mirror * g_lancerLocal), hp2, pass);
+            drawGauntlet(a, ps.in.avatar, M(Mat4::fromPose(ps.in.hand[h].grip) * mirror), hp2, pass);
         }
         const Ball& b = ps.ball;
         if (pass == 1 && b.state != BallState::Dead && b.pos.y > 0.f && (rmini == nullptr || rmini->slot[p] || (p == 1 && rmini->bot))) {
@@ -3377,7 +3855,7 @@ static void drawWorld(App& a, int pass) {
             hp.mirrored = (h == 0);
             if (!a.avModels.empty()) applyLook(hp, lk);
             else { hp.tintMul[0] = 0.6f + 0.4f * teamCol[p][0]; hp.tintMul[1] = 0.6f + 0.4f * teamCol[p][1]; hp.tintMul[2] = 0.6f + 0.4f * teamCol[p][2]; }
-            a.gfx.draw(gauntletOf(a, look), grip * mirror * g_lancerLocal, hp, pass);
+            drawGauntlet(a, look, grip * mirror, hp, pass);
             if (ps.hands[h].shieldUp) {
                 DrawParams sp;
                 sp.tintMul[0] = teamCol[p][0]; sp.tintMul[1] = teamCol[p][1]; sp.tintMul[2] = teamCol[p][2];
@@ -3393,7 +3871,7 @@ static void drawWorld(App& a, int pass) {
                 kp.tintMul[0] = 0.75f + 0.25f * teamCol[p][0]; kp.tintMul[1] = 0.75f + 0.25f * teamCol[p][1]; kp.tintMul[2] = 0.75f + 0.25f * teamCol[p][2];
                 kp.emissiveAdd[0] = teamCol[p][0] * 0.06f; kp.emissiveAdd[1] = teamCol[p][1] * 0.06f; kp.emissiveAdd[2] = teamCol[p][2] * 0.06f;
                 kp.alphaMul = 0.35f;
-                a.gfx.draw(a.knuckle, grip * mirror * g_knuckleLocal, kp, pass);
+                a.gfx.draw(a.knuckle, grip * mirror * knuckleShift(g) * g_knuckleLocal, kp, pass);
             }
         }
         // opponent body (local player has no body, like the original first-person view); spectators see both
@@ -3577,21 +4055,14 @@ static void drawWorld(App& a, int pass) {
         if (!a.rttPass) drawMenu(a);
     }
     if (!a.rttPass) drawBuilder(a, pass);
+    if (!a.rttPass) drawTuning(a, pass);
     if (!a.rttPass) drawTitleShowcase(a, pass);
     if (pass == 1) drawDirector(a);
 }
 
-static bool renderFrame(App& a) {
-    XrFrameWaitInfo fw{XR_TYPE_FRAME_WAIT_INFO};
-    XrFrameState fs{XR_TYPE_FRAME_STATE};
-    XR_CHECK(xrWaitFrame(a.session, &fw, &fs));
-    XrFrameBeginInfo fb{XR_TYPE_FRAME_BEGIN_INFO};
-    XR_CHECK(xrBeginFrame(a.session, &fb));
-
-    double t = nowSeconds();
-    float dt = a.lastTime > 0 ? float(t - a.lastTime) : 0.f;
-    a.lastTime = t;
-    XrTime predicted = fs.predictedDisplayTime;
+// One frame of the game for the local viewer: menus, rooms, spectating, the match, voice, events and effects.
+// The headset frame (renderFrame) and the desktop spectator window (desktopFrame) both run it.
+static void stepFrame(App& a, PlayerInput in[2], int L, double t, float dt) {
     a.sparc.update(t);   // EXPERIMENTAL cross-play link (does nothing unless connected)
     if (int done = a.bugDone.exchange(0)) {
         std::lock_guard<std::mutex> lk(a.bugMx);
@@ -3599,9 +4070,6 @@ static bool renderFrame(App& a) {
         (void)done;
     }
 
-    const int L = a.net.localIndex();
-    PlayerInput in[2];
-    in[L] = readInput(a, predicted, L);
     a.localIn = in[L];
     a.viewHead = in[L].head;
     a.bumpFlash = std::max(0.f, a.bumpFlash - dt);
@@ -3678,7 +4146,7 @@ static bool renderFrame(App& a) {
         const PlayerInput mine = in[L];
         if (a.net.exchange(mine, in, a.game, dt)) {
             // practice is paused while you customize your avatar (the builder only opens offline)
-            const bool paused = (a.builderOpen || (a.menuOpen && a.titleOpen)) && a.net.mode() != Net::Mode::Host && !inLobby(a);
+            const bool paused = (a.builderOpen || a.tuneOpen || (a.menuOpen && a.titleOpen)) && a.net.mode() != Net::Mode::Host && !inLobby(a);
             if (!paused) a.game.step(dt, in);
             a.net.sendState(a.game);
         }
@@ -3749,6 +4217,24 @@ static bool renderFrame(App& a) {
     }
     for (const GameEvent& e : a.game.events)
         if (e.type == EventType::Returned && e.player >= 0) { a.trail[e.player].burst = 0.45f; a.trail[e.player].burstPos = e.pos; a.trail[e.player].n = 0; }
+
+}
+
+static bool renderFrame(App& a) {
+    XrFrameWaitInfo fw{XR_TYPE_FRAME_WAIT_INFO};
+    XrFrameState fs{XR_TYPE_FRAME_STATE};
+    XR_CHECK(xrWaitFrame(a.session, &fw, &fs));
+    XrFrameBeginInfo fb{XR_TYPE_FRAME_BEGIN_INFO};
+    XR_CHECK(xrBeginFrame(a.session, &fb));
+
+    double t = nowSeconds();
+    float dt = a.lastTime > 0 ? float(t - a.lastTime) : 0.f;
+    a.lastTime = t;
+    XrTime predicted = fs.predictedDisplayTime;
+    const int L = a.net.localIndex();
+    PlayerInput in[2];
+    in[L] = readInput(a, predicted, L);
+    stepFrame(a, in, L, t, dt);
 
     std::vector<XrCompositionLayerProjectionView> projViews(a.views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
@@ -3960,11 +4446,12 @@ static void saveSettings(App& a) {
     if (!ext) return;
     std::string f = std::string(ext) + "/settings.cfg";
     if (FILE* fp = fopen(f.c_str(), "w")) {
-        fprintf(fp, "cfgver=5\n");
+        fprintf(fp, "cfgver=6\n");
         fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\nteam=%s\nserver=%s\nsparcserver=%s\n",
                 a.game.tun.advanced ? 1 : 0, a.game.tun.shieldPlacement, a.tunePitchDeg, a.tuneFwd, a.tuneUp, a.volume,
                 a.pointerHand, a.fxLevel, a.hideOutside ? 1 : 0, a.voiceMode, a.muteSpectators ? 1 : 0, a.mutePlayers ? 1 : 0,
-                a.muteAll ? 1 : 0, a.onlinePref ? 1 : 0, a.botFill ? 1 : 0, a.team.c_str(), a.serverAddr.c_str(),
+                a.muteAll ? 1 : 0, a.onlinePref ? 1 : 0, a.botFill ? 1 : 0, a.team.c_str(),
+                (a.serverOverride.empty() ? a.serverAddr : a.serverSaved).c_str(),
                 a.sparcAddr.c_str());
         fclose(fp);
     }
@@ -4080,6 +4567,11 @@ static void startUp(App& a) {
         a.tunePitchDeg = 35.f; a.tuneFwd = 0.09f; a.tuneUp = 0.02f;
         saveSettings(a);
     }
+    if (a.cfgVersion < 6 && a.tunePitchDeg == 35.f && std::fabs(a.tuneFwd - 0.09f) < 1e-4f && std::fabs(a.tuneUp - 0.02f) < 1e-4f) {
+        LOGI("settings: gauntlet 35 deg, 2 cm up -> 21 deg, level (new default, the owner's TUNING export 2026-10-18)");
+        a.tunePitchDeg = 21.f; a.tuneUp = 0.f;
+        saveSettings(a);
+    }
     if (a.cfgVersion < 5 && !a.onlinePref) {   // older builds started on home Wi-Fi: online is the default now, once
         a.onlinePref = true;
         LOGI("settings: online on (new default)");
@@ -4091,12 +4583,15 @@ static void startUp(App& a) {
         saveSettings(a);
     }
     a.net.setBotFill(a.botFill);
-    if (a.onlinePref && !a.serverAddr.empty()) a.net.goOnline(a.serverAddr.c_str());
+    if (!a.serverOverride.empty()) { a.serverSaved = a.serverAddr; a.serverAddr = a.serverOverride; a.onlinePref = true; }
+    // (pictures and probes stay off the community server: --selftest renders once showed up there as players)
+    if (a.onlinePref && !a.serverAddr.empty() && !a.noOnline) a.net.goOnline(a.serverAddr.c_str());
     if (!a.serverAddr.empty()) { std::vector<std::string> ob = bugOutbox(a); if (!ob.empty()) bugSendAll(a, ob); }   // reports saved earlier
     loadWarps(a);
     if (const char* ext = dataDir(a)) a.firstHelp = !fileExists(std::string(ext) + "/help_seen");
     if (const char* ext = dataDir(a)) a.devMode = fileExists(std::string(ext) + "/dev_mode");
     LOGI("developer mode %s", a.devMode ? "on" : "off");
+    loadTuning(a);   // developer mode only
     LOGI("initialised; entering main loop");
 }
 
@@ -4153,10 +4648,12 @@ struct ShotView {
     std::string menu;   // --menu title|xp: draw that menu page in front of the camera (layout checks)
     std::string scene;  // --scene action: two players mid-rally (store art)
     bool lobby = false; // --lobby: the lobby balcony and posters (other pictures show the plain court)
+    int tunePart = 0;   // --scene tuning --tune N: the developer tuning tool on that part
 };
 
 static int selfTest(App& a, const char* out, const ShotView& v) {
     if (!initGraphics(a) || !initContent(a)) return 2;
+    a.noOnline = true;
     startUp(a);
     a.lobby = v.lobby;
     const int W = v.w, H = v.h;
@@ -4210,6 +4707,29 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         handleEvents(a);
         g.events.clear();
         LOGI("selftest: all %d event kinds handled", (int)EventType::FistBump + 1);
+    }
+    if (v.scene == "tuning") {   // the developer tuning tool: you in front of its mirror, hands up, the panel beside
+        a.devMode = true;
+        PlayerInput in;
+        in.headTracked = true;
+        in.head = {Quat::axisAngle({0, 1, 0}, -1.5707963f), a.game.tun.start[0] + Vec3{-0.6f, 1.7f, 0}};   // (--view moves only the camera)
+        in.avatar = avatar::preset(10);
+        a.myAvatar = in.avatar;
+        const Quat q = Quat::axisAngle({0, 1, 0}, -1.5707963f);
+        for (int h = 0; h < 2; ++h) {
+            const float s = h ? 1.f : -1.f;
+            in.hand[h].tracked = true;
+            in.hand[h].grip = {q * Quat::axisAngle({1, 0, 0}, -0.35f) * Quat::axisAngle({0, 0, 1}, s * 0.30f), in.head.p + q.rotate({s * 0.20f, -0.38f, -0.40f})};
+        }
+        a.localIn = in;
+        a.viewIn[0] = in;
+        a.viewInValid[0] = true;
+        a.game.pl[0].in = in;
+        a.viewHead = in.head;
+        openTuning(a, in);
+        a.tunePart = v.tunePart % kTunePartCount;
+        a.tuneRow = 1;
+        a.tuneHover = 2 * 1 + 1;
     }
     if (v.scene == "action") {   // store art: blue throws, orange raises a shield, the ball mid-court
         Game& g = a.game;
@@ -4309,6 +4829,312 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
 }
 
 // PC: ProjectArena.exe, the "assets" folder beside it; player files in %APPDATA%\ProjectArena
+// ------------------------------------------------------------------ desktop spectator
+static Pose lookFrom(const Vec3& pos, const Vec3& target) {
+    Vec3 f = target - pos;
+    f = length(f) > 1e-5f ? normalize(f) : Vec3{0, 0, -1};
+    const float yaw = std::atan2(-f.x, -f.z), pitch = std::asin(clampf(f.y, -1.f, 1.f));
+    return {Quat::axisAngle({0, 1, 0}, yaw) * Quat::axisAngle({1, 0, 0}, pitch), pos};
+}
+
+static const char* kDcViewName[6] = {"FREE CAMERA", "SIDE", "HIGH SIDE", "BLUE END", "ORANGE END", "TOP"};
+
+static Pose desktopPreset(const App& a, int v) {
+    if (a.watchIp == 0) return lookFrom({-1.3f, 1.75f, 0.f}, {1.4f, 0.85f, 0.f});   // the hub of live miniatures
+    switch (v) {
+    case 2: return lookFrom({0, 5.2f, 6.6f}, {0, 0.6f, 0});   // above the near glass (further back is in the stands)
+    case 3: return lookFrom({-12.0f, 2.8f, 0}, {0, 1.3f, 0});
+    case 4: return lookFrom({12.0f, 2.8f, 0}, {0, 1.3f, 0});
+    case 5: return lookFrom({0, 11.f, 5.5f}, {0, 0, 0});   // steep, off-centre (the scoreboard hangs over the middle)
+    default: return lookFrom({0, 2.7f, 7.3f}, {0, 1.0f, 0});   // (the hall wall is just behind)
+    }
+}
+
+static bool dcPressed(App& a, int vk) {   // key went down this frame (window focused)
+    const bool down = GetForegroundWindow() == a.hwnd && (GetAsyncKeyState(vk) & 0x8000);
+    const bool edge = down && !a.dcKey[vk & 255];
+    a.dcKey[vk & 255] = down;
+    return edge;
+}
+static bool dcDown(const App& a, int vk) { return GetForegroundWindow() == a.hwnd && (GetAsyncKeyState(vk) & 0x8000); }
+
+static void desktopFullscreen(App& a, bool on) {
+    if (on == a.dcFull) return;
+    a.dcFull = on;
+    if (on) {
+        GetWindowRect(a.hwnd, &a.dcWinRect);
+        MONITORINFO mi{sizeof mi};
+        GetMonitorInfoW(MonitorFromWindow(a.hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        SetWindowLongW(a.hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(a.hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED);
+    } else {
+        SetWindowLongW(a.hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+        const RECT r = a.dcWinRect;
+        SetWindowPos(a.hwnd, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_NOZORDER);
+    }
+}
+
+// keyboard / mouse: which match, which camera; returns the eye pose
+enum { DC_VIEW = 100, DC_AUTO = 110, DC_FREE, DC_NEXT, DC_HUB, DC_FULL, DC_HELP, DC_PANEL };
+
+static LRESULT CALLBACK dcPanelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    App* a = (App*)GetWindowLongPtrW(h, GWLP_USERDATA);
+    if (m == WM_COMMAND && a && HIWORD(w) == BN_CLICKED) { a->dcCmd = LOWORD(w); SetForegroundWindow(a->hwnd); return 0; }
+    if (m == WM_CLOSE) { ShowWindow(h, SW_HIDE); return 0; }   // F1 brings it back
+    return DefWindowProcW(h, m, w, l);
+}
+
+// a small window beside the spectator with a button for everything: never part of the captured picture
+static void desktopPanel(App& a) {
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = dcPanelProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = L"ProjectArenaSpectatorControls";
+    RegisterClassW(&wc);
+    RECT r;
+    GetWindowRect(a.hwnd, &r);
+    a.dcPanel = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Spectator Controls", WS_CAPTION | WS_SYSMENU,
+                                r.right + 8, r.top, 300, 470, a.hwnd, nullptr, wc.hInstance, nullptr);
+    if (!a.dcPanel) return;
+    SetWindowLongPtrW(a.dcPanel, GWLP_USERDATA, (LONG_PTR)&a);
+    HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    auto add = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id) {
+        HWND c = CreateWindowW(cls, text, WS_CHILD | WS_VISIBLE | style, x, y, w, h, a.dcPanel, (HMENU)(INT_PTR)id, wc.hInstance, nullptr);
+        SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
+        return c;
+    };
+    int y = 10;
+    add(L"STATIC", L"Cameras", SS_LEFT, 12, y, 260, 16, 0); y += 20;
+    const wchar_t* views[5] = {L"1  Side", L"2  High side", L"3  Blue end", L"4  Orange end", L"5  Top"};
+    for (int i = 0; i < 5; ++i) add(L"BUTTON", views[i], BS_PUSHBUTTON, 12 + (i % 2) * 134, y + (i / 2) * 30, 128, 26, DC_VIEW + 1 + i);
+    add(L"BUTTON", L"A  Auto camera", BS_PUSHBUTTON, 146, y + 60, 128, 26, DC_AUTO);
+    y += 96;
+    add(L"BUTTON", L"F  Free camera", BS_PUSHBUTTON, 12, y, 262, 26, DC_FREE); y += 30;
+    add(L"STATIC", L"Free camera: hold the right mouse button to look,\nW A S D move, Q / E down / up, Shift faster.\nMouse wheel zooms in any camera.",
+        SS_LEFT, 12, y, 270, 48, 0); y += 56;
+    add(L"STATIC", L"Matches", SS_LEFT, 12, y, 260, 16, 0); y += 20;
+    add(L"BUTTON", L"Tab  Next live match", BS_PUSHBUTTON, 12, y, 128, 26, DC_NEXT);
+    add(L"BUTTON", L"H  Spectator hub", BS_PUSHBUTTON, 146, y, 128, 26, DC_HUB); y += 36;
+    add(L"STATIC", L"Window", SS_LEFT, 12, y, 260, 16, 0); y += 20;
+    add(L"BUTTON", L"F11  Full screen", BS_PUSHBUTTON, 12, y, 128, 26, DC_FULL);
+    add(L"BUTTON", L"F2  Help in picture", BS_PUSHBUTTON, 146, y, 128, 26, DC_HELP); y += 36;
+    a.dcStatus = add(L"STATIC", L"", SS_LEFT, 12, y, 270, 34, 0); y += 40;
+    add(L"STATIC", L"F1 shows / hides this window. Streaming: capture only\nthe \"Project Arena - Spectator\" window; this one\nstays off the stream.",
+        SS_LEFT, 12, y, 270, 48, 0);
+    ShowWindow(a.dcPanel, SW_SHOWNOACTIVATE);
+}
+
+static Pose desktopControls(App& a, double t, float dt) {
+    std::vector<SpecMatch>& ms = a.net.matches();
+    // keys and the Spectator Controls window's buttons give the same commands
+    int cmd = a.dcCmd;
+    a.dcCmd = 0;
+    if (dcPressed(a, VK_TAB)) cmd = DC_NEXT;
+    if (dcPressed(a, 'H')) cmd = DC_HUB;
+    for (int v = 1; v <= 5; ++v) if (dcPressed(a, '0' + v)) cmd = DC_VIEW + v;
+    const bool freeKey = dcPressed(a, 'F'), zeroKey = dcPressed(a, '0');
+    if (freeKey || zeroKey) cmd = DC_FREE;
+    if (a.dcView != 0 && dcPressed(a, 'A')) cmd = DC_AUTO;   // (A moves left in the free camera)
+    if (dcPressed(a, VK_F1)) cmd = DC_PANEL;
+    if (dcPressed(a, VK_F2)) cmd = DC_HELP;
+    if (dcPressed(a, VK_F11)) cmd = DC_FULL;
+    if (dcPressed(a, VK_ESCAPE) && a.dcFull) cmd = DC_FULL;
+    if (cmd == DC_NEXT && !ms.empty()) {   // next live match
+        size_t k = 0;
+        for (size_t i = 0; i < ms.size(); ++i) if (ms[i].ip == a.watchIp) k = i + 1;
+        a.watchIp = ms[k % ms.size()].ip;
+        a.dcHubPinned = false;
+        LOGI("desktop: watching %s", ms[k % ms.size()].name);
+    }
+    if (cmd == DC_HUB) { a.watchIp = 0; a.dcHubPinned = true; LOGI("desktop: hub"); }
+    if (cmd > DC_VIEW && cmd <= DC_VIEW + 5) { a.dcView = cmd - DC_VIEW; a.dcAuto = false; }
+    if (cmd == DC_FREE) {   // free camera from where the camera is now
+        const Pose cur = desktopPreset(a, a.dcView);
+        if (a.dcView != 0) {
+            const Vec3 f = cur.q.rotate({0, 0, -1});
+            a.dcPos = cur.p; a.dcYaw = std::atan2(-f.x, -f.z); a.dcPitch = std::asin(clampf(f.y, -1.f, 1.f));
+        }
+        a.dcView = 0; a.dcAuto = false;
+    }
+    if (cmd == DC_AUTO) { a.dcAuto = !a.dcAuto; a.dcAutoAt = t + 8.0; if (a.dcAuto && a.dcView == 0) a.dcView = 1; }
+    if (cmd == DC_HELP) a.dcHelp = !a.dcHelp;
+    if (cmd == DC_FULL) desktopFullscreen(a, !a.dcFull);
+    if (cmd == DC_PANEL && a.dcPanel) ShowWindow(a.dcPanel, IsWindowVisible(a.dcPanel) ? SW_HIDE : SW_SHOWNOACTIVATE);
+    // nobody chosen: the first live match after a moment (a stream should show play, not the hub)
+    if (a.watchIp == 0 && !a.dcHubPinned && !ms.empty()) {
+        if (a.dcWatchAt == 0) a.dcWatchAt = t + 2.0;
+        if (t > a.dcWatchAt) { a.watchIp = ms[0].ip; a.dcWatchAt = 0; LOGI("desktop: watching %s", ms[0].name); }
+    }
+    if (a.dcAuto && a.watchIp && t > a.dcAutoAt) {   // auto director: side, blue end, high, orange end
+        static const int order[4] = {1, 3, 2, 4};
+        int k = 0;
+        for (int i = 0; i < 4; ++i) if (order[i] == a.dcView) k = (i + 1) % 4;
+        a.dcView = order[k];
+        a.dcAutoAt = t + 9.0;
+    }
+    a.dcFov = clampf(a.dcFov - a.dcWheel * 4.f, 25.f, 100.f);
+    a.dcWheel = 0;
+    POINT m;
+    GetCursorPos(&m);
+    if (a.dcView == 0) {   // free camera: right mouse button looks, WASD / Q E move, Shift faster
+        if (dcDown(a, VK_RBUTTON)) {
+            a.dcYaw -= (m.x - a.dcMouse.x) * 0.004f;
+            a.dcPitch = clampf(a.dcPitch - (m.y - a.dcMouse.y) * 0.004f, -1.5f, 1.5f);
+        }
+        const Quat q = Quat::axisAngle({0, 1, 0}, a.dcYaw) * Quat::axisAngle({1, 0, 0}, a.dcPitch);
+        const Vec3 f = q.rotate({0, 0, -1}), r = q.rotate({1, 0, 0});
+        const float sp = (dcDown(a, VK_SHIFT) ? 9.f : 3.f) * dt;
+        if (dcDown(a, 'W')) a.dcPos += f * sp;
+        if (dcDown(a, 'S')) a.dcPos -= f * sp;
+        if (dcDown(a, 'D')) a.dcPos += r * sp;
+        if (dcDown(a, 'A')) a.dcPos -= r * sp;
+        if (dcDown(a, 'E')) a.dcPos.y += sp;
+        if (dcDown(a, 'Q')) a.dcPos.y -= sp;
+        a.dcMouse = m;
+        return {q, a.dcPos};
+    }
+    a.dcMouse = m;
+    return desktopPreset(a, a.dcView);
+}
+
+static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
+    const float white[4] = {1, 1, 1, 1}, grey[4] = {0.65f, 0.7f, 0.78f, 1}, cyan[4] = {0.3f, 0.85f, 1.0f, 1};
+    const float blue[4] = {0.35f, 0.75f, 1.0f, 1}, orange[4] = {1.0f, 0.6f, 0.25f, 1}, bar[4] = {0.0f, 0.01f, 0.03f, 0.72f};
+    auto txt = [&](const std::string& s, float x, float y, float h, const float* c) {   // x, y in -1..1 of the view
+        a.gfx.drawText(s, {eye.q, eye.transform({x * tx, y * ty, -1.f})}, h * ty, c);
+    };
+    auto panel = [&](float x, float y, float w, float h) {
+        a.gfx.drawPanel(Mat4::fromPose({eye.q, eye.transform({x * tx, y * ty, -1.002f})}, {w * tx, h * ty, 1}), bar);
+    };
+    glDisable(GL_DEPTH_TEST);
+    char buf[128];
+    std::vector<SpecMatch>& ms = a.net.matches();
+    const SpecMatch* w = nullptr;
+    for (const SpecMatch& m : ms) if (m.ip == a.watchIp) w = &m;
+    if (w) {
+        const Game& g = a.game;
+        auto who = [&](int p) -> std::string {
+            const uint32_t id = a.watchRoom.slot[p];
+            if (p == 1 && a.watchRoom.bot) return "BOT";
+            if (const char* n = a.watchRoom.nameOf(id)) return n;
+            return p == 0 ? "BLUE" : "ORANGE";
+        };
+        panel(0, 0.88f, 1.15f, 0.2f);
+        txt(who(0), -0.30f, 0.90f, 0.06f, blue);
+        txt(who(1), 0.30f, 0.90f, 0.06f, orange);
+        snprintf(buf, sizeof buf, "%d  -  %d", g.pl[0].score, g.pl[1].score);
+        txt(buf, 0, 0.90f, 0.08f, white);
+        const int secs = (int)std::ceil(std::max(0.f, g.roundClock));
+        if (g.tun.advanced) snprintf(buf, sizeof buf, "ADVANCED  -  ROUND %d  (%d - %d)", std::max(1, g.round), g.pl[0].roundWins, g.pl[1].roundWins);
+        else snprintf(buf, sizeof buf, "BASIC  -  %d:%02d%s", secs / 60, secs % 60, g.overtime ? "  SUDDEN DEATH" : "");
+        txt(buf, 0, 0.815f, 0.032f, grey);
+        snprintf(buf, sizeof buf, "%s%s", w->name[0] ? w->name : "LIVE MATCH", ms.size() > 1 ? "   (TAB: NEXT MATCH)" : "");
+        txt(buf, -0.62f, -0.93f, 0.028f, grey);
+        snprintf(buf, sizeof buf, "%s%s", kDcViewName[a.dcView % 6], a.dcAuto ? "  (AUTO)" : "");
+        txt(buf, 0.70f, -0.93f, 0.028f, grey);
+    } else {
+        txt("PROJECT ARENA  -  SPECTATOR", 0, 0.88f, 0.07f, cyan);
+        if (!a.net.online()) txt("ON YOUR HOME NETWORK", 0, 0.79f, 0.035f, grey);
+        else if (!a.net.onlineReady()) txt("CONNECTING TO THE COMMUNITY SERVER...", 0, 0.79f, 0.035f, grey);
+        else if (ms.empty()) txt("NO LIVE MATCHES YET  -  THEY APPEAR HERE WHEN SOMEONE PLAYS", 0, 0.79f, 0.035f, grey);
+        else {
+            snprintf(buf, sizeof buf, "%d LIVE MATCH%s  -  TAB TO WATCH", (int)ms.size(), ms.size() == 1 ? "" : "ES");
+            txt(buf, 0, 0.79f, 0.035f, white);
+        }
+    }
+    if (!a.dcHelp && nowSeconds() < a.dcHintUntil) txt("F1: CONTROLS", 0.82f, 0.93f, 0.028f, grey);
+    if (a.dcHelp) {
+        panel(0, -0.80f, 1.96f, 0.13f);
+        txt("1-5 CAMERAS   A AUTO   F FREE (RIGHT MOUSE + WASD / Q E)   WHEEL ZOOM   TAB NEXT MATCH   H HUB   F11 FULL SCREEN   F2 HIDE",
+            0, -0.80f, 0.026f, white);
+    }
+    if (const char* note = a.net.noticeText()) txt(note, 0, 0.66f, 0.04f, orange);
+    glEnable(GL_DEPTH_TEST);
+}
+
+static void desktopFrame(App& a) {
+    const double t = nowSeconds();
+    static double statusAt = 0;
+    if (a.dcStatus && t > statusAt) {   // what is on screen, in the controls window
+        statusAt = t + 0.5;
+        const SpecMatch* w = nullptr;
+        for (const SpecMatch& m : a.net.matches()) if (m.ip == a.watchIp) w = &m;
+        char b[160];
+        snprintf(b, sizeof b, "Now: %s\nCamera: %s%s", w ? (w->name[0] ? w->name : "live match") : "the spectator hub",
+                 kDcViewName[a.dcView % 6], a.dcAuto ? " (auto)" : "");
+        SetWindowTextA(a.dcStatus, b);
+    }
+    const float dt = a.lastTime > 0 ? std::min(0.1f, float(t - a.lastTime)) : 0.f;
+    a.lastTime = t;
+    if (a.net.mode() != Net::Mode::Spectate) { a.net.spectate(); a.watchIp = 0; }   // always watching
+    const Pose eye = desktopControls(a, t, dt);
+    const int L = a.net.localIndex();
+    PlayerInput in[2];
+    in[L].headTracked = true;
+    in[L].head = eye;   // no hands: nothing to grab, no menus; the camera is the spectator
+    a.menuOpen = false;
+    stepFrame(a, in, L, t, dt);
+    a.viewHead = eye;
+    const int W = std::max(64, a.winW), H = std::max(64, a.winH);
+    if (W != a.dW || H != a.dH) {   // the frame in an sRGB texture, blitted to the window like the headset mirror
+        if (a.dFbo) { glDeleteFramebuffers(1, &a.dFbo); glDeleteTextures(1, &a.dCol); glDeleteRenderbuffers(1, &a.dDep); }
+        glGenTextures(1, &a.dCol);
+        glBindTexture(GL_TEXTURE_2D, a.dCol);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_SRGB8_ALPHA8, W, H);
+        glGenRenderbuffers(1, &a.dDep);
+        glBindRenderbuffer(GL_RENDERBUFFER, a.dDep);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, W, H);
+        glGenFramebuffers(1, &a.dFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, a.dFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, a.dCol, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, a.dDep);
+        a.dW = W; a.dH = H;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, a.dFbo);
+    glViewport(0, 0, W, H);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glClearColor(0.01f, 0.012f, 0.02f, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    const float ty = std::tan(deg2rad(a.dcFov) * 0.5f), tx = ty * W / H;
+    a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(tx), std::atan(tx), std::atan(ty), -std::atan(ty), 0.05f, 2000.f), eye.p);
+    drawWorld(a, 0);
+    drawWorld(a, 1);
+    desktopHud(a, eye, ty, tx);
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, a.dFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glViewport(0, 0, a.winW, a.winH);
+    glBlitFramebuffer(0, 0, W, H, 0, 0, a.winW, a.winH, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glEnable(GL_FRAMEBUFFER_SRGB);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+static int desktopMain(App& a, bool asked) {
+    a.desktop = true;
+    LOGI("desktop spectator (%s)", asked ? "--spectate" : "no headset found");
+    startUp(a);
+    a.startTitle = false; a.firstHelp = false; a.menuOpen = false; a.titleOpen = false;
+    SetWindowTextW(a.hwnd, L"Project Arena - Spectator");
+    typedef BOOL(WINAPI * SwapInterval)(int);
+    if (auto si = (SwapInterval)wglGetProcAddress("wglSwapIntervalEXT")) si(1);   // the monitor paces frames here
+    GetCursorPos(&a.dcMouse);
+    desktopPanel(a);
+    a.dcHintUntil = nowSeconds() + 8.0;
+    while (!a.quit) {
+        MSG m;
+        while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); }
+        if (a.quit) break;
+        desktopFrame(a);
+        SwapBuffers(a.hdc);
+    }
+    shutDown(a);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     App a;
     const char* selftestOut = nullptr;
@@ -4319,6 +5145,8 @@ int main(int argc, char** argv) {
     const char* probeName = nullptr;
     double probeSeconds = 60;
     bool noDialog = false;
+    bool spectateArg = false;   // --spectate: the desktop spectator window even with a headset connected
+    const char* serverArg = nullptr;
     ShotView view;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--selftest") && i + 1 < argc) selftestOut = argv[++i];
@@ -4335,11 +5163,14 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--menu") && i + 1 < argc) view.menu = argv[++i];
         else if (!strcmp(argv[i], "--scene") && i + 1 < argc) view.scene = argv[++i];
         else if (!strcmp(argv[i], "--lobby")) view.lobby = true;
+        else if (!strcmp(argv[i], "--tune") && i + 1 < argc) view.tunePart = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--bug-report") && i + 2 < argc) { bugServer = argv[i + 1]; bugNoteArg = argv[i + 2]; i += 2; }
         else if (!strcmp(argv[i], "--player-report") && i + 2 < argc) { bugServer = argv[i + 1]; bugNoteArg = argv[i + 2]; i += 2; playerReport = true; }
         else if (!strcmp(argv[i], "--xc-probe") && i + 2 < argc) { probeAddr = argv[i + 1]; probeName = argv[i + 2]; i += 2; }
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) probeSeconds = atof(argv[++i]);
         else if (!strcmp(argv[i], "--no-dialog")) noDialog = true;
+        else if (!strcmp(argv[i], "--spectate")) spectateArg = true;
+        else if (!strcmp(argv[i], "--server") && i + 1 < argc) serverArg = argv[++i];   // this session's community server
     }
     a.resumed = true;
     wchar_t exe[MAX_PATH];
@@ -4407,12 +5238,16 @@ int main(int argc, char** argv) {
         a.sparc.disconnect("PROBE DONE");
         return joined ? 0 : 3;
     }
-    if (!initGraphics(a) || !initInstance(a) || !initActions(a) || !initSession(a) || !initContent(a)) {
-        LOGE("initialisation failed");
-        if (!noDialog) MessageBoxA(a.hwnd, "Project Arena could not start VR.\n\nConnect your headset, start SteamVR (or Meta Quest Link), "
-                            "then try again.\n\nDetails: %APPDATA%\\ProjectArena\\projectarena_log.txt", "Project Arena", MB_ICONERROR);
+    // no headset (or --spectate): the desktop spectator window instead of an error
+    if (!initGraphics(a)) {
+        if (!noDialog) MessageBoxA(a.hwnd, "Project Arena needs an OpenGL 4.3 graphics driver.\n\nDetails: %APPDATA%\\ProjectArena\\projectarena_log.txt",
+                                   "Project Arena", MB_ICONERROR);
         return 1;
     }
+    const bool vr = !spectateArg && initInstance(a) && initActions(a) && initSession(a);
+    if (!initContent(a)) { LOGE("initialisation failed"); return 1; }
+    a.serverOverride = serverArg ? serverArg : "";
+    if (!vr) return desktopMain(a, spectateArg);
     startUp(a);
     bool exitRequested = false;
     while (!(a.quit && !a.running)) {

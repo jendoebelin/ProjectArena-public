@@ -54,6 +54,13 @@ struct Quat {
         return v + t * w + cross(u, t);
     }
 };
+// A grip-space rotation from pitch (about X), yaw (Y) and roll (Z) in degrees, applied yaw * pitch * roll. left: its
+// mirror image across grip X (left-hand parts are the right hand's mirrored: yaw and roll change sign).
+inline Quat gripEuler(const Vec3& deg, bool left) {
+    const float s = left ? -1.f : 1.f;
+    return Quat::axisAngle({0, 1, 0}, deg2rad(s * deg.y)) * Quat::axisAngle({1, 0, 0}, deg2rad(deg.x)) *
+           Quat::axisAngle({0, 0, 1}, deg2rad(s * deg.z));
+}
 inline Quat nlerp(const Quat& a, Quat b, float t) {
     if (a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w < 0) b = {-b.x, -b.y, -b.z, -b.w};
     Quat r{lerpf(a.x, b.x, t), lerpf(a.y, b.y, t), lerpf(a.z, b.z, t), lerpf(a.w, b.w, t)};

@@ -26,6 +26,11 @@ The release page has a step-by-step `README-Quest.txt` for both ways.
 
 Quest and PC players meet in the same rooms online.
 
+**No headset? Watch instead.** Without a headset connected (or with `ProjectArena.exe --spectate`) the PC version
+opens a spectator window: it finds a live match on the community server and shows it with names and the score.
+Keys: **1-5** cameras, **A** auto camera, **F** free camera (right mouse + WASD), **Tab** next match, **H** hub,
+**F11** full screen. Streamers: capture the window in OBS.
+
 ## Playing
 
 - Stand in a clear space of about 2 x 2 m. The first launch shows **HOW TO PLAY**.

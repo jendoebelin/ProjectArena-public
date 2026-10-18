@@ -140,7 +140,8 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         CHECK(r.arm[0] && r.arm[1], "both arms solved for tracked hands");
         bool ends = true;
         for (int k = 0; k < 2; ++k) {
-            Vec3 w = in.hand[k].grip.transform({k == 1 ? 0.0267f : -0.0267f, 0.0382f, 0.0876f});   // plate gauntlet wrist
+            const Vec3 fe = avatar::rigTuning().forearmEnd;   // plate gauntlet wrist, inside the (tuned) cuff
+            Vec3 w = in.hand[k].grip.transform(avatar::cuffPose(k == 0).transform({k == 1 ? fe.x : -fe.x, fe.y, fe.z}));
             if (length(r.fore[k].b - w) > 1e-4f || length(r.upper[k].b - r.fore[k].a) > 1e-6f) ends = false;
         }
         CHECK(ends, "forearm ends inside the gauntlet; the elbow joins both bones");
@@ -165,6 +166,46 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         in.head.q = in.head.q * Quat::axisAngle({1, 0, 0}, deg2rad(-40));   // look down
         avatar::Rig r2 = avatar::solveRig(in, d);
         CHECK(std::fabs(dot(r2.torso.q.rotate({0, 1, 0}), {0, 1, 0}) - 1) < 1e-4f, "torso stays upright when the head nods");
+        {   // developer tuning (SETTINGS > TUNING): the rig's values change it, the defaults are the shipped rig
+            avatar::RigTuning& T = avatar::rigTuning();
+            const avatar::RigTuning keep = T;
+            auto mx = [](Vec3 v) { v.x = -v.x; return v; };
+            T.cuffRot = {10, -15, 20};
+            T.cuffPos = {0.004f, 0.01f, -0.006f};
+            const Pose cr = avatar::cuffPose(false), cl = avatar::cuffPose(true);
+            CHECK(length(cr.transform(avatar::kCuffPivot) - (avatar::kCuffPivot + T.cuffPos)) < 1e-6f, "the cuff turns about the wrist pivot");
+            const Vec3 v{0.03f, -0.02f, 0.09f};
+            CHECK(length(cl.transform(mx(v)) - mx(cr.transform(v))) < 1e-6f, "the left cuff is the right one mirrored");
+            avatar::Rig r3 = avatar::solveRig(in, d);
+            const Vec3 w3 = in.hand[1].grip.transform(cr.transform(T.forearmEnd));
+            CHECK(length(r3.fore[1].b - w3) < 1e-4f, "a moved cuff carries the forearm's end with it");
+            T = keep;
+            T.upperLen = 1.15f;
+            in.hand[1].grip.p = in.head.p + Vec3{0.25f, -0.55f, 0.25f};   // well within reach
+            avatar::Rig r4 = avatar::solveRig(in, d);
+            const avatar::BodyBind& K = avatar::bodyBind(0);
+            CHECK(std::fabs(length(r4.upper[1].b - r4.upper[1].a) - 1.15f * length(K.elbow[1] - K.shoulder[1])) < 2e-3f,
+                  "UPPER ARM LENGTH scales the upper arm");
+            T = keep;
+        }
+    }
+    {
+        std::printf("[tuning: the shield's back-of-hand pose]\n");
+        Game g;
+        g.tun.shieldPlacement = 1;
+        const Pose s1 = g.shieldLocal(1), s0 = g.shieldLocal(0);
+        // the owner's export (2026-10-18): pitch -12, yaw 17, roll -90 = yaw * pitch * roll about the grip axes
+        const Quat qr = Quat::axisAngle({0, 1, 0}, deg2rad(17)) * Quat::axisAngle({1, 0, 0}, deg2rad(-12)) * Quat::axisAngle({0, 0, 1}, deg2rad(-90));
+        auto same = [](const Quat& a, const Quat& b) { return std::fabs(std::fabs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w) - 1) < 1e-5f; };
+        CHECK(same(s1.q, qr) && length(s1.p - Vec3{0.076f, -0.024f, -0.122f}) < 1e-6f, "default right shield: the owner's tuned pose");
+        auto mx0 = [](Vec3 v) { v.x = -v.x; return v; };
+        const Vec3 u{0.1f, 0.2f, -0.3f};
+        CHECK(length(s0.q.rotate(mx0(u)) - mx0(s1.q.rotate(u))) < 1e-5f && length(s0.p - mx0(s1.p)) < 1e-6f, "default left shield: its mirror image");
+        g.tun.shieldBackRot = {12, -30, -75};
+        const Pose t1 = g.shieldLocal(1), t0 = g.shieldLocal(0);
+        auto mx = [](Vec3 v) { v.x = -v.x; return v; };
+        const Vec3 v{0.1f, 0.2f, -0.3f};
+        CHECK(length(t0.q.rotate(mx(v)) - mx(t1.q.rotate(v))) < 1e-5f, "a tuned shield stays mirrored between the hands");
     }
     {
         std::printf("[avatar: looks and avatar.cfg]\n");

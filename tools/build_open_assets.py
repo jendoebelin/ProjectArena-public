@@ -207,6 +207,7 @@ PROP_FRAMES = {
     'gauntlet_0': lambda p, n: frames.to_model(frames.LANCER, p, n),
     'gauntlet_1': lambda p, n: frames.to_model(frames.LANCER, p, n),
     'gauntlet_2': lambda p, n: frames.to_model(frames.LANCER, p, n),
+    **{'gauntlet_%d_%s' % (k, part): (lambda p, n: frames.to_model(frames.LANCER, p, n)) for k in range(3) for part in ('hand', 'cuff')},
     'knuckleguard': lambda p, n: frames.to_model(frames.KNUCKLE, p, n),
     'shield': lambda p, n: frames.to_model(frames.PLATE, p, n),
     'head': frames.head_to_model,

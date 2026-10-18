@@ -289,12 +289,15 @@ WRIST_SWING_AXIS = (-0.502, 0.772, 0.390)
 WRIST_RAISE = 0.045
 
 
-def gauntlet(b, style):
+def gauntlet(b_out, style, part='all'):
     """A medieval plate gauntlet closed round the (hidden) controller, in the lancer's grip frame: overlapping lames
     on every finger with domed joint plates, a knuckle plate, a plate over the back of the hand and a flared bell cuff
     with rolled edges, over a leather glove. style: 0 STRIKER (gothic: fluted back plate, pointed finger tips and cuff,
     small gadlings), 1 TITAN (heavy: thick plates, a raised ridge, spiked knuckles, wide cuff), 2 PHANTOM (sleek:
-    thin plates, glowing inlays)."""
+    thin plates, glowing inlays).
+    part: 'all', 'hand' (without the wrist pieces) or 'cuff' (the wrist pieces alone): the app draws the cuff on its
+    own so the developer tuning tool can move it against the hand (app/src/main.cpp, TUNING > WRIST CUFF)."""
+    b = b_out if part != 'cuff' else common.Builder('_hand_unused')
     U = Vector((0, 0.5, 0.866))
     F = Vector((0, 0.866, -0.5))
     R = Vector((1, 0, 0))
@@ -428,6 +431,9 @@ def gauntlet(b, style):
     b.sphere(plate if style != 0 else core, tuple(th_pts[3]), trs[3] + (0.0011 if style != 0 else 0.0), segs=10, rings=6)
 
     # ---- wrist: leather sleeve, two lames over the wrist, a flared bell cuff with rolled rims
+    if part == 'hand':
+        return
+    b = b_out
     # The cuff pointed further down than the forearm that enters it (a wrist cocked ~30 deg against the forearm and the
     # suit's bracer: owner, P10-P12, 2026-10-17): the wrist pieces turn up WRIST_TILT about the wrist joint, nearer
     # a straight wrist round the handle. app/src/avatar.cpp attaches the forearm along the same direction.
@@ -468,6 +474,10 @@ def gauntlet_1(b):
 
 def gauntlet_2(b):
     gauntlet(b, 2)
+
+
+def _gauntlet_part(style, part):
+    return lambda b: gauntlet(b, style, part)
 
 
 def knuckleguard(b):
@@ -533,6 +543,9 @@ def torso(b):
 
 PROPS = [('projectile', ball), ('projectile_shell', shell), ('spawner', spawner), ('strikezone', strikezone),
          ('lancer', lancer), ('gauntlet_0', gauntlet_0), ('gauntlet_1', gauntlet_1), ('gauntlet_2', gauntlet_2),
+         ('gauntlet_0_hand', _gauntlet_part(0, 'hand')), ('gauntlet_0_cuff', _gauntlet_part(0, 'cuff')),
+         ('gauntlet_1_hand', _gauntlet_part(1, 'hand')), ('gauntlet_1_cuff', _gauntlet_part(1, 'cuff')),
+         ('gauntlet_2_hand', _gauntlet_part(2, 'hand')), ('gauntlet_2_cuff', _gauntlet_part(2, 'cuff')),
          ('knuckleguard', knuckleguard), ('shield', shield), ('head', head), ('torso', torso)]
 
 

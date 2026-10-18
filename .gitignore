@@ -24,3 +24,6 @@
 __pycache__/
 tools/UassetDump/bin/
 tools/UassetDump/obj/
+
+# Steam upload settings (tools/steam_upload.sh): app / depot IDs, build account, steamcmd path
+/steam.local.cfg

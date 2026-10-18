@@ -85,14 +85,16 @@ struct Tunables {
     float catchRadius = 0.125f, catchHalfHeight = 0.25f;   // BrawlCatcher.Collision capsule 12.5 / 25 cm
     Vec3 catcherOffset = {-0.01f, 0.0f, -0.22f};           // CatcherTransform (22,-1,0) cm
     Vec3 launcherOffset = {-0.02f, 0.02f, -0.25f};         // LauncherTransform (25,-2,2) cm (throw physics)
-    Vec3 holdOffset = {-0.015f, 0.005f, -0.15f};          // where a held ball sits: in the fist (owner: it showed at
-                                                          // the shield's tip when held at the launcher point)
+    Vec3 holdOffset = {-0.069f, 0.007f, -0.042f};         // where a held ball sits: in the fist (owner's TUNING export,
+                                                          // 2026-10-18; was 15 cm out, before that the launcher point)
     Vec3 shieldOffset = {0.0f, 0.10f, -0.20f};             // ShieldTransform (20,0,10) cm, roll 180
     Vec3 shieldHalfExtents = {0.20f, 0.02f, 0.32f};        // BrawlShieldBP.SweepCollisionBoxDimensions (32,20,2) cm
     // Knuckle bumper = box fitted to the KnuckleShield_01 mesh as placed by KnuckleGuardTransform (10.5,0,0) +
     // BrawlKnuckleGuardVisual_BP.TempMesh (-9,0,0) right-hand grip-space centre / half extents below
-    // (x is mirrored for the left hand). The face normal is grip -Z (the front of the fist).
-    Vec3 knuckleOffset = {-0.022f, 0.010f, -0.137f};
+    // (x is mirrored for the left hand). The face normal is grip -Z (the front of the fist). Sparc's centre was
+    // (-0.022, 0.010, -0.137); the owner moved the glass onto the fist with the TUNING tool (2026-10-18), and the
+    // bumper goes with it (what you see is what hits).
+    Vec3 knuckleOffset = {0.006f, -0.020f, -0.057f};
     Vec3 knuckleHalf = {0.064f, 0.048f, 0.029f};
     float knuckleRadius = 0.07f;                           // used for glow rendering only
     // Deflections treat the guard / shield as a moving surface: v_out = reflect(v_in - v_hand) * restitution + v_hand,
@@ -109,6 +111,10 @@ struct Tunables {
     float shotClockSeconds = 10.0f;
     // shield placement on the hand (cycled live for on-device tuning; 0 = BrawlLancerBP ShieldTransform mapping)
     int shieldPlacement = 1;   // user report on Quest 3: placement 0 (above) is on the wrong side of the gauntlet
+    // placement 1 (the default): on the back of the hand, right-hand grip space (left mirrored); pitch / yaw / roll in
+    // degrees (gripEuler). The owner's TUNING export (2026-10-18; was (0.07, 0, 0.01), roll -90 only). Live in
+    // developer mode: SETTINGS > TUNING.
+    Vec3 shieldBackPos = {0.076f, -0.024f, -0.122f}, shieldBackRot = {-12.0f, 17.0f, -90.0f};
 
     // ---- match flow
     float countdown = 3.0f;

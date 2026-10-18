@@ -29,6 +29,9 @@
     X(glFrontFace, PFNGLFRONTFACEPROC) \
     X(glGenBuffers, PFNGLGENBUFFERSPROC) \
     X(glGenFramebuffers, PFNGLGENFRAMEBUFFERSPROC) \
+    X(glDeleteFramebuffers, PFNGLDELETEFRAMEBUFFERSPROC) \
+    X(glDeleteRenderbuffers, PFNGLDELETERENDERBUFFERSPROC) \
+    X(glDeleteTextures, PFNGLDELETETEXTURESPROC) \
     X(glGenRenderbuffers, PFNGLGENRENDERBUFFERSPROC) \
     X(glGenTextures, PFNGLGENTEXTURESPROC) \
     X(glGenVertexArrays, PFNGLGENVERTEXARRAYSPROC) \

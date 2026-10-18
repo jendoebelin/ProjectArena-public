@@ -95,7 +95,7 @@ Pose Game::shieldLocal(int h) const {
     case 0: return {Quat{}, tun.shieldOffset};                                                // above, ahead (ShieldTransform)
     // on the back of the hand, standing out from the outside of the arm and running back along the forearm (plate
     // normal = grip X, long side along the forearm), as in the owner's reference from the original (2026-10-17)
-    case 1: return {Quat::axisAngle({0, 0, 1}, -side * kPi * 0.5f), {side * 0.07f, 0.0f, 0.01f}};   // nudged 5 cm forward (owner)
+    case 1: return {gripEuler(tun.shieldBackRot, h == 0), {side * tun.shieldBackPos.x, tun.shieldBackPos.y, tun.shieldBackPos.z}};
     case 2: return {Quat::axisAngle({0, 0, 1}, -side * kPi * 0.5f), {side * 0.10f, 0.0f, -0.08f}};   // back of the hand
     case 3: return {Quat::axisAngle({0, 0, 1}, side * kPi * 0.5f), {-side * 0.10f, 0.0f, -0.08f}};   // palm side
     }

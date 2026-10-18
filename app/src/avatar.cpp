@@ -303,16 +303,27 @@ static Mat4 affineInverse(const Mat4& m) {
     return r;
 }
 
+RigTuning& rigTuning() { static RigTuning t; return t; }
+
+Pose cuffPose(bool left) {
+    const RigTuning& T = rigTuning();
+    const float s = left ? -1.f : 1.f;
+    const Quat q = gripEuler(T.cuffRot, left);
+    const Vec3 piv{s * kCuffPivot.x, kCuffPivot.y, kCuffPivot.z};
+    return {q, piv + Vec3{s * T.cuffPos.x, T.cuffPos.y, T.cuffPos.z} - q.rotate(piv)};
+}
+
 Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
     Rig r;
+    const RigTuning& T = rigTuning();
     const Pose& h = in.head;
     const Build B = buildOf(d.build);
     const BodyBind& K = bodyBind(d.body);
     // the head carries the neck top as in the bind pose; the torso hangs upright below it, so nodding or tilting the
     // head never swings the body
-    const Vec3 neckTop = h.transform(K.neckTop - K.eye);
+    const Vec3 neckTop = h.transform(K.neckTop - K.eye + T.neck);
     // facing: the head's heading pulled toward the hands (looking aside while throwing keeps the chest on the
-    // throw), never more than 50 degrees from where the head looks
+    // throw), never more than 50 degrees from where the head looks (RigTuning torsoFollow / torsoLimitDeg)
     const Vec3 hf = flat(h.q.rotate({0, 0, -1}));
     const Vec3 base0 = neckTop + Vec3{0, -K.neckTop.y, 0};
     Vec3 f = hf;
@@ -323,8 +334,8 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
     if (nt) {
         Vec3 th = mid / float(nt) - base0;
         th.y = 0;
-        if (length(th) > 0.12f) f = normalize(hf + normalize(th) * 0.6f);
-        const float c50 = 0.6428f, s50 = 0.7660f;
+        if (length(th) > 0.12f) f = normalize(hf + normalize(th) * T.torsoFollow);
+        const float c50 = std::cos(deg2rad(T.torsoLimitDeg)), s50 = std::sin(deg2rad(T.torsoLimitDeg));
         if (dot(f, hf) < c50) {
             Vec3 perp = f - hf * dot(f, hf);
             perp = length(perp) > 1e-5f ? normalize(perp) : Vec3{-hf.z, 0, hf.x};
@@ -343,8 +354,12 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
     r.skin[BONE_HEAD] = Mat4::fromPose(h) * Mat4::fromPose({Quat{}, Vec3{0, 0, 0} - K.eye});
     r.skin[BONE_NECK] = boneMatrix(r.neck, false, 1.f) * affineInverse(boneMatrix(bindNeck, false, 1.f));
     for (int k = 0; k < 2; ++k) {
+        const float side = k == 1 ? 1.f : -1.f;
+        // natural (bind) lengths for the meshes; the IK uses the tuned ones (the meshes stretch to match)
         const float L1 = length(K.elbow[k] - K.shoulder[k]), L2 = length(K.wrist[k] - K.elbow[k]);
-        Vec3 S = r.torso.transform({K.shoulder[k].x * scale.x, K.shoulder[k].y, K.shoulder[k].z * scale.z});
+        const float L1t = L1 * T.upperLen, L2t = L2 * T.foreLen;
+        Vec3 S = r.torso.transform({K.shoulder[k].x * scale.x + side * T.shoulder.x, K.shoulder[k].y + T.shoulder.y,
+                                    K.shoulder[k].z * scale.z + T.shoulder.z});
         const Bone bu = {K.shoulder[k], K.elbow[k], (K.wrist[k] - K.elbow[k]) + Vec3{0, 0, -0.3f}, L1};
         const Bone bf = {K.elbow[k], K.wrist[k], K.thumb[k] - K.wrist[k], L2};
         const HandInput& hi = in.hand[k];
@@ -353,29 +368,30 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
             r.fore[k] = {r.upper[k].b, r.torso.transform(K.wrist[k]), yaw.rotate(bf.front), L2};
         } else {
             r.arm[k] = true;
-            const float side = k == 1 ? 1.f : -1.f;
             // the forearm ends inside the gauntlet's bracer (tools/blender/make_props.py lancer: wrist ring at grip
             // (0.004, -0.040, 0.050), bracer to z = 0.135). The plate gauntlets' cuffs turn up 30 deg and swing 32 deg
             // about that wrist ring (WRIST_TILT / WRIST_SWING there): the forearm ends inside the new cuff, but the
             // elbow is still placed the natural way (straight back from the controller, below the hand): placing it
             // along the cuff lifted the elbows out whenever the hands were held low.
             const bool plate = in.avatar.gauntlet < 3;
-            const Vec3 W = hi.grip.transform(plate ? Vec3{side * 0.0267f, 0.0382f, 0.0876f} : Vec3{side * 0.004f, -0.042f, 0.105f});
+            // (RigTuning forearmEnd, carried with the cuff when the tuning tool moves it)
+            const Vec3 fe{side * T.forearmEnd.x, T.forearmEnd.y, T.forearmEnd.z};
+            const Vec3 W = hi.grip.transform(plate ? cuffPose(k == 0).transform(fe) : Vec3{side * 0.004f, -0.042f, 0.105f});
             const Vec3 back = hi.grip.q.rotate(normalize(Vec3{0, -0.047f, 1.f}));
             // elbow: where a straight wrist would put it, nudged down / out / back so the IK stays stable
-            const Vec3 pole = W + back * L2 + yaw.rotate({side * 0.35f, -1.0f, 0.25f}) * 0.12f;
+            const Vec3 pole = W + back * L2t + yaw.rotate({side * T.elbowPole.x, T.elbowPole.y, T.elbowPole.z}) * T.elbowPull;
             // a hand beyond the arm's reach draws the shoulder after it (up to 7 cm, as a real shoulder blade
             // slides) before the arm has to stretch
             const Vec3 SW = W - S;
-            const float over = length(SW) - (L1 + L2) * 0.97f;
-            if (over > 0) S += normalize(SW) * std::min(over, 0.07f);
-            const Vec3 E = elbowIK(S, W, L1, L2, pole);
+            const float over = length(SW) - (L1t + L2t) * T.reachStart;
+            if (over > 0) S += normalize(SW) * std::min(over, T.reach);
+            const Vec3 E = elbowIK(S, W, L1t, L2t, pole);
             r.upper[k] = {S, E, (W - E) + fwd * 0.3f, L1};   // the inner elbow faces the forearm
             r.fore[k] = {E, W, hi.grip.q.rotate({0, 1, 0}), L2};   // thumb side (controller top) is the front
         }
         const bool mir = k == 0;
-        r.skin[BONE_UPPER_L + k] = boneMatrix(r.upper[k], mir, B.arm) * affineInverse(boneMatrix(bu, mir, 1.f));
-        r.skin[BONE_FORE_L + k] = boneMatrix(r.fore[k], mir, B.arm) * affineInverse(boneMatrix(bf, mir, 1.f));
+        r.skin[BONE_UPPER_L + k] = boneMatrix(r.upper[k], mir, B.arm * T.armThick) * affineInverse(boneMatrix(bu, mir, 1.f));
+        r.skin[BONE_FORE_L + k] = boneMatrix(r.fore[k], mir, B.arm * T.armThick) * affineInverse(boneMatrix(bf, mir, 1.f));
     }
     return r;
 }

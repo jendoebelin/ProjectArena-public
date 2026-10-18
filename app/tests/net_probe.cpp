@@ -48,6 +48,7 @@ int main(int argc, char** argv) {
         if (net.exchange(local, in, g, 1.f / 90.f)) { g.step(1.f / 90.f, in); net.sendState(g); }
         const int L = net.localIndex();
         if (role == "queue" && joined && net.localWaiting() && net.localQueuePos() < 0 && t > 3) net.queue(true);
+        if (role == "host" && hosting && net.localWaiting() && net.localQueuePos() < 0 && t > 1) net.queue(true);   // play the bot
         if (t - lastPrint > 2.0) {
             lastPrint = t;
             const PlayerInput& other = g.pl[1 - L].in;

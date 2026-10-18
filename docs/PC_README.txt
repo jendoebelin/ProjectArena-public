@@ -37,3 +37,19 @@ If the game does not start, open %APPDATA%\ProjectArena\projectarena_log.txt (it
 Quest players can play standalone too: see README-Quest.txt on the release page.
 Project Arena is free and open source (MIT; art CC BY 4.0): https://github.com/jendoebelin/ProjectArena-public
 Questions: vrsportsfan@gmail.com
+
+
+Watching without a headset (spectator / streaming)
+--------------------------------------------------
+  Run ProjectArena.exe with no headset connected (or with --spectate) and it opens a spectator window instead: it
+  connects to the community server, finds a live match by itself and shows it with player names and the score.
+  A "Spectator Controls" window opens beside it with a button for everything below (F1 shows / hides it). The
+  picture itself stays clean for streaming; F2 puts a help bar in the picture if you want one.
+    1-5        cameras: side, high side, blue end, orange end, top          A   auto camera (cycles them)
+    F          free camera: hold the right mouse button to look, W A S D to move, Q / E down / up, Shift faster
+    Wheel      zoom          Tab   next live match          H   the spectator hub
+    F11        full screen   F1    controls window   F2  help bar in the picture   Esc  leave full screen
+  Streaming: capture only the "Project Arena - Spectator" window in OBS (Window Capture); the controls window stays
+  off the stream. Your microphone is never sent.
+  Another community server for this session: ProjectArena.exe --spectate --server host:port
+

@@ -10,6 +10,9 @@ sound.
 - Rooms with a waiting area and a queue, spectating (a hub of live miniature arenas), voice chat
 - An avatar builder: two body types, outfits, hair, headgear, face shields, masks, gauntlets, patterns and colours
 - Runs natively on Quest (OpenXR + OpenGL ES, no engine) and on PC through SteamVR or Quest Link
+- **For streamers:** the PC version without a headset (or `ProjectArena.exe --spectate`) opens a spectator window
+  that finds a live match by itself: five cameras, an auto camera, a free camera, and a separate controls window that
+  stays off the stream (from 0.3.2)
 
 | | |
 |---|---|
