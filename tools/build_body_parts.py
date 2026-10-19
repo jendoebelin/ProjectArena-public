@@ -9,7 +9,10 @@ B = white accents) evaluated in 3D on the body and stored in the MPFB UV layout,
 
 Writes (app/assets_open):
   av_bhead_<b>          head skin, eyes, brows, lips                     (<b> = m | f)
-  av_top_<N>_<b>        suit N: torso, neck and arms (skin + garment + bracers), N = 0..9
+  av_top_<N>_<b>        suit N: torso, neck and arms (skin + garment + bracers), N = 0..10
+  av_tpulse_10_<b>      CIRCUIT RUNNER (suit 10): the glow strips on its raised traces, where the moving pulses run
+  av_tpulse_<N>_<b>     the LIVE suits (11 GRID RUNNER, 12 ECHO SUIT, 13 CIRCUIT VEST): their glow lines as raised
+                        piping (in av_top_N) with the same moving pulses
   av_bottom_<K>_<b>     LOWER BODY K = 1..3: hips and thighs (skin + shorts) with the thigh fade
   av_wfade_<b>          the energy fade where a waist-up body ends (LOWER BODY = NONE)
   tex/open_design_*.tex garment designs; tex/open_pat_*.tex the PATTERN masks in the same UV layout
@@ -30,7 +33,7 @@ from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, 'build', 'open_src', 'body')
-OUT = os.path.join(ROOT, 'app', 'assets_open')
+OUT = os.environ.get('PA_PARTS_OUT') or os.path.join(ROOT, 'app', 'assets_open')   # (a trial build elsewhere)
 sys.path.insert(0, os.path.join(ROOT, 'tools', 'blender'))
 import palette  # noqa: E402
 
@@ -45,7 +48,8 @@ TEX = 512
 # ================================================================ body
 class Body:
     def __init__(self, key):
-        d = np.load(os.path.join(SRC, 'body_%s.npz' % {'m': 'masc', 'f': 'fem'}[key]))
+        # key 'm' / 'f', or a FACE variant 'm1'.. (tools/blender/make_body.py: the same body, another face)
+        d = np.load(os.path.join(SRC, 'body_%s%s.npz' % ({'m': 'masc', 'f': 'fem'}[key[0]], '_face' + key[1:] if len(key) > 1 else '')))
         self.key = key
         self.P = d['pos'].astype(np.float64)
         self.N = d['nrm'].astype(np.float64)
@@ -351,7 +355,10 @@ def f_plate(b, which):
 
 # ---------------------------------------------------------------- designs (per texel: X positions, dom bones)
 def design(name, b, X, dom, at, phi):
-    """(R trim, G glow, B white) at body points X."""
+    """(R trim, G glow, B white) at body points X. '<name>_live': the same without the glow (raised piping instead)."""
+    if name.endswith('_live'):
+        R, G, Bw = design(name[:-5], b, X, dom, at, phi)
+        return R, np.zeros_like(G), Bw
     n = len(X)
     R, G, Bw = np.zeros(n), np.zeros(n), np.zeros(n)
     u = b.torso_u(X)
@@ -408,10 +415,7 @@ def design(name, b, X, dom, at, phi):
         G += smooth_line(r, 0.010) * torso
         G += arm_line(0.6, 0.05, 0.95) + smooth_line(np.abs(at - 1.30), 0.012) * arm
         R += (at > 1.86) * arm
-    elif name == 'pilot':       # PILOT: harness straps, belt, chest light
-        for c in (0.05, 0.45):
-            R += (np.abs(au - c) < 0.016) * (y < sy + 0.06) * torso
-        R += (np.abs(y - (wy + 0.12)) < 0.018) * torso
+    elif name == 'pilot':       # PILOT: chest light (the harness straps and the belt are modelled: build_details)
         G += (np.abs(u) < 0.03) * (np.abs(y - (sy - 0.08)) < 0.012) * torso
         R += (at > 1.86) * arm
         R += ((at > 0.20) & (at < 0.40) & (np.abs(phi) < 0.6)) * arm
@@ -846,7 +850,7 @@ def add_shell(mesh, S, thick, key, rimkey, rim_low=None, low_y=None, max_lift=0.
     mesh.add(key, out)
     be = boundary_edges(S)
     if not len(be):
-        return
+        return out
     a, c = be[:, 0], be[:, 1]
     pa_o, pc_o, pa_i, pc_i = out.P[a], out.P[c], S.P[a], S.P[c]
     nrm = np.cross(pc_o - pa_o, S.N[a])
@@ -860,6 +864,7 @@ def add_shell(mesh, S, thick, key, rimkey, rim_low=None, low_y=None, max_lift=0.
         mesh.add(rimkey, rim.take(np.nonzero(~low)[0]))
     else:
         mesh.add(rimkey, rim)
+    return out
 
 
 def add_fade(mesh, S, down=0.10, out=0.014, below=None):
@@ -957,6 +962,610 @@ def ray_mesh(o, d, P, T):
     return out
 
 
+def ray_hits(o, d, P):
+    """First hits of rays o + t d on a triangle soup P ([3n, 3]): t, triangle index and barycentrics (nan / -1 = miss)."""
+    v0, v1, v2 = P[0::3], P[1::3], P[2::3]
+    e1, e2 = v1 - v0, v2 - v0
+    n = len(o)
+    T, F, U, V = np.full(n, np.nan), np.full(n, -1), np.zeros(n), np.zeros(n)
+    for i in range(n):
+        pv = np.cross(d[i], e2)
+        det = (e1 * pv).sum(1)
+        ok = np.abs(det) > 1e-12
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1), 0)
+        tv = o[i] - v0
+        uu = (tv * pv).sum(1) * inv
+        qv = np.cross(tv, e1)
+        vv = (d[i] * qv).sum(1) * inv
+        tt = (e2 * qv).sum(1) * inv
+        hit = ok & (uu >= 0) & (vv >= 0) & (uu + vv <= 1) & (tt > 0)
+        if hit.any():
+            k = np.nonzero(hit)[0][np.argmin(tt[hit])]
+            T[i], F[i], U[i], V[i] = tt[k], k, uu[k], vv[k]
+    return T, F, U, V
+
+
+# CIRCUIT RUNNER (suit 10): the CIRCUIT pattern built as real geometry. Traces run on a coarser grid than the painted
+# pattern (about 6.5 cm cells, 6 mm wide, 2.2 mm high) so they read across the court, as random right-angle runs with
+# a pad at each end; a thin additive strip on top of each trace carries the moving pulses (av_tpulse, scrolled by the
+# game). Everything is skinned with the weights of the suit surface it sits on.
+TRACE_W, TRACE_H, PAD_R, PULSE_W, PULSE_PER_M = 0.006, 0.0022, 0.0075, 0.0058, 3.0
+
+
+def circuit_traces(b, shell, mesh, pulse_mesh, seed=11):
+    rng = np.random.RandomState(seed)
+    P = shell.P
+    tri_dom = shell.Wd.reshape(-1, 3, 7).mean(1).argmax(1)
+
+    def surf(o, d, doms):
+        """Cast rays; keep hits on triangles of the given bones: position, normal, weights (or None)."""
+        t, f, u, v = ray_hits(o, d, P)
+        out = []
+        for i in range(len(o)):
+            if f[i] < 0 or tri_dom[f[i]] not in doms:
+                out.append(None)
+                continue
+            c = f[i] * 3 + np.arange(3)
+            w = np.array([1 - u[i] - v[i], u[i], v[i]])
+            n = (shell.N[c] * w[:, None]).sum(0)
+            out.append(((P[c] * w[:, None]).sum(0), n / np.linalg.norm(n), (shell.Wd[c] * w[:, None]).sum(0)))
+        return out
+
+    # ---- parameter grids: torso (angle round the body, height), each arm (along the bone, angle round it)
+    grids = []
+    ty = P[:, 1][np.isin(tri_dom.repeat(3), [TORSO])]
+    y0, y1 = ty.min() + 0.045, ty.max() - 0.05
+    rows = int((y1 - y0) / 0.065) + 1
+    cols = 26                                        # ~6.5 cm round a ~1.7 m-ish chest + back at the widest
+    def torso_ray(i, j):
+        a = (i + 0.5) / cols * 2 * math.pi
+        y = y0 + j * (y1 - y0) / max(1, rows - 1)
+        return np.array([0.0, y, 0.0]), np.array([math.sin(a), 0.0, -math.cos(a)])
+    grids.append(('torso', cols, rows, torso_ray, (TORSO, NECK), True))
+    for side, up, fo in (('l', UPL, FOL), ('r', UPR, FOR)):
+        S_, E_, W_ = b.J['shoulder_' + side], b.J['elbow_' + side], b.J['wrist_' + side]
+        L1, L2 = np.linalg.norm(E_ - S_), np.linalg.norm(W_ - E_)
+        nal = int((L1 + L2) * 0.88 / 0.065) + 1
+        def arm_ray(i, j, S_=S_, E_=E_, W_=W_, L1=L1, L2=L2, nal=nal, side=side):
+            s_ = 0.10 * (L1 + L2) + j * (L1 + L2) * 0.80 / max(1, nal - 1)   # skip the shoulder seam and the cuff
+            a_, b_ = (S_, E_) if s_ < L1 else (E_, W_)
+            t_ = s_ / L1 if s_ < L1 else (s_ - L1) / L2
+            u_ = (b_ - a_) / np.linalg.norm(b_ - a_)
+            ref = np.array([0.0, 1.0, 0.0]) - u_ * u_[1]
+            ref /= np.linalg.norm(ref)
+            oth = np.cross(u_, ref)
+            ang = (i + 0.5) / 5 * 2 * math.pi
+            return a_ + (b_ - a_) * t_, ref * math.cos(ang) + oth * math.sin(ang)
+        grids.append(('arm_' + side, 5, nal, arm_ray, (up, fo), True))
+
+    n_tr = n_pad = 0
+    for name, ni, nj, ray, doms, wrap in grids:
+        # nodes
+        O, D = zip(*[ray(i, j) for j in range(nj) for i in range(ni)])
+        hits = surf(np.array(O), np.array(D), doms)
+        node = {(i, j): hits[j * ni + i] for j in range(nj) for i in range(ni)}
+        used = set()
+        free = [k for k, v in node.items() if v is not None]
+        rng.shuffle(free)
+        target = int(len(free) * 0.65)
+        for start in free:
+            if len(used) >= target:
+                break
+            if start in used:
+                continue
+            path = [start]
+            dirn = [(1, 0), (-1, 0), (0, 1), (0, -1)][rng.randint(4)]
+            steps = rng.randint(2, 6)
+            while len(path) <= steps:
+                if rng.rand() < 0.3:
+                    dirn = (dirn[1], dirn[0]) if rng.rand() < 0.5 else (-dirn[1], -dirn[0])
+                i, j = path[-1]
+                ni_, nj_ = i + dirn[0], j + dirn[1]
+                if wrap:
+                    ni_ %= ni
+                nxt = (ni_, nj_)
+                if nxt not in node or node[nxt] is None or nxt in used or nxt in path:
+                    break
+                path.append(nxt)
+            if len(path) < 2:
+                continue
+            used.update(path)
+            # the polyline over the surface: the nodes and two points between each pair (also cast on the surface)
+            pts = []
+            for k in range(len(path) - 1):
+                (i0, j0), (i1, j1) = path[k], path[k + 1]
+                if wrap and abs(i1 - i0) > 1:   # across the wrap seam
+                    i1 = i0 + (1 if i1 < i0 else -1)
+                sub = []
+                for f in (1 / 3, 2 / 3):
+                    oa, da = ray(i0, j0)
+                    ob, db = ray(i1, j1)
+                    d = da * (1 - f) + db * f
+                    sub.append((oa * (1 - f) + ob * f, d / np.linalg.norm(d)))
+                mids = surf(np.array([x[0] for x in sub]), np.array([x[1] for x in sub]), doms)
+                pts.append(node[path[k]])
+                pts.extend(mids)
+            pts.append(node[path[-1]])
+            if any(q is None for q in pts):
+                continue
+            n_tr += 1
+            add_trace(mesh, pulse_mesh, pts, rng.rand())
+            for q in (pts[0], pts[-1]):
+                add_pad(mesh, q)
+                n_pad += 1
+    return n_tr, n_pad
+
+
+# LIVE suits: an outfit's own glow lines (design()) as vector paths, built as raised piping with moving pulses.
+# Torso paths are in (u, y): u = turn round the body (0 front, +-0.5 back, as torso_u), y = height; 'mirror' adds the
+# path at -u too, 'back' gives u as distance from the spine (both sides). Arm paths: (phi, at0, at1) along both arms,
+# 'cuff' / 'armring' rings round both arms at `at`. Rings round the torso / neck at a height.
+PIPE_W, PIPE_H, PIPE_PULSE_W = 0.005, 0.0025, 0.0048
+
+
+def live_paths(name, b):
+    sy, wy, ay = b.sy, b.waist_y, b.armpit_y
+    T, A, R = [], [], []   # torso paths (list of (u, y)), arm lines (phi, at0, at1), rings ('torso'|'neck'|'arm', value)
+
+    def tor(pts, mirror=False, back=False):
+        if back:
+            for sgn in ((1,) if all(abs(q[0]) < 1e-9 for q in pts) else (1, -1)):
+                T.append([(sgn * (0.5 - uu), y) for uu, y in pts if uu >= 0])
+        else:
+            T.append(list(pts))
+            if mirror:
+                T.append([(-uu, y) for uu, y in pts])
+    if name == 'grid':
+        tor([(-0.10, sy + 0.05), (0.0, sy - 0.10), (0.10, sy + 0.05)])
+        tor([(0.0, sy - 0.10), (0.0, wy)])
+        tor([(0.25, ay + 0.02), (0.25, wy)], mirror=True)
+        tor([(0.0, sy + 0.06), (0.0, wy)], back=True)
+        tor([(0.11, sy - 0.20), (0.11, sy - 0.27), (0.17, sy - 0.29), (0.17, wy)], mirror=True)
+        R += [('torso', wy + 0.02), ('neck', 0.040), ('arm', 1.90)]
+        A += [(0.0, 0.0, 1.92)]
+    elif name == 'vest':
+        tor([(-0.12, sy + 0.07), (-0.04, sy - 0.03), (0.0, sy - 0.06), (0.04, sy - 0.03), (0.12, sy + 0.07)])
+        tor([(0.0, sy - 0.06), (0.0, sy - 0.12)])
+        tor([(-0.03, sy - 0.015), (0.0, sy - 0.035), (0.03, sy - 0.015)])
+        tor([(0.19, ay), (0.165, ay - 0.10), (0.12, ay - 0.17), (0.12, wy)], mirror=True)
+        tor([(0.27, ay - 0.01), (0.27, wy)], mirror=True)
+        tor([(0.0, sy + 0.06), (0.0, sy - 0.10)], back=True)
+        T.append([(0.5, sy - 0.10), (0.5 - 0.065, sy - 0.17), (0.5 - 0.10, wy + 0.06)])     # the back fork, both ways
+        T.append([(-0.5, sy - 0.10), (-0.5 + 0.065, sy - 0.17), (-0.5 + 0.10, wy + 0.06)])
+        for c in (0.09, 0.03):
+            tor([(c - 0.014, wy + 0.015), (c + 0.014, wy + 0.015)], mirror=True)
+        R += [('neck', 0.052)]
+    elif name == 'echo':
+        tor([(-0.18, sy + 0.05), (0.0, sy - 0.17), (0.18, sy + 0.05)])
+        tor([(-0.11, sy - 0.17), (0.0, sy - 0.30), (0.11, sy - 0.17)])
+        tor([(0.26, sy + 0.04), (0.26, sy - 0.23)], mirror=True)
+        th = np.linspace(0, 2 * math.pi, 41)   # the identity ring on the back (r = 0.06 with u stretched 1.9)
+        T.append([(0.5 + 0.06 / 1.9 * math.cos(a), sy - 0.07 + 0.06 * math.sin(a)) for a in th])
+        A += [(0.6, 0.05, 0.95)]
+        R += [('arm', 1.30)]
+    return T, A, R
+
+
+def build_live(b, shell, mesh, pulse_mesh, name, seed=5):
+    rng = np.random.RandomState(seed)
+    T, A, R = live_paths(name, b)
+    paths = surface_paths(b, shell, T, A, R)
+    for pts in paths:
+        add_trace(mesh, pulse_mesh, pts, rng.rand(), width=PIPE_W, height=PIPE_H, pulse_w=PIPE_PULSE_W)
+    return len(paths)
+
+
+def surface_paths(b, shell, T, A=(), R=(), step=0.015):
+    """Torso paths in (u, y), arm lines (phi, at0, at1) and rings ('torso' | 'neck' y, 'arm' at) cast onto the shell:
+    lists of surface points (position, normal, weights); a path splits where it leaves the shell."""
+    P = shell.P
+    tri_dom = shell.Wd.reshape(-1, 3, 7).mean(1).argmax(1)
+
+    def cast(o, d, doms):
+        t, f, uu, vv = ray_hits(np.array(o), np.array(d), P)
+        out = []
+        for i in range(len(o)):
+            if f[i] < 0 or tri_dom[f[i]] not in doms:
+                out.append(None)
+                continue
+            c = f[i] * 3 + np.arange(3)
+            w = np.array([1 - uu[i] - vv[i], uu[i], vv[i]])
+            n = (shell.N[c] * w[:, None]).sum(0)
+            out.append(((P[c] * w[:, None]).sum(0), n / np.linalg.norm(n), (shell.Wd[c] * w[:, None]).sum(0)))
+        return out
+
+    def torso_ray(u, y):
+        a = u * 2 * math.pi
+        return np.array([0.0, y, 0.0]), np.array([math.sin(a), 0.0, -math.cos(a)])
+
+    def arm_ray(side, at, phi):
+        S_, E_, W_ = b.J['shoulder_' + side], b.J['elbow_' + side], b.J['wrist_' + side]
+        a_, b_, t_ = (S_, E_, at) if at < 1 else (E_, W_, at - 1)
+        u_ = (b_ - a_) / np.linalg.norm(b_ - a_)
+        out = np.array([-1.0 if side == 'l' else 1.0, 0, 0])
+        ref = out - u_ * (out @ u_)
+        ref /= np.linalg.norm(ref)
+        q = np.cross(u_, ref) * (1 if side == 'r' else -1)   # the same phi as arm_params / the painted design
+        return a_ + (b_ - a_) * t_, ref * math.cos(phi) + q * math.sin(phi)
+
+    def runs(samples):
+        """Cast the samples and split the path where a ray misses: lists of surface points."""
+        hits = cast([o for o, d, _ in samples], [d for o, d, _ in samples], samples[0][2])
+        out, cur = [], []
+        for h in hits:
+            if h is None:
+                if len(cur) > 1:
+                    out.append(cur)
+                cur = []
+            else:
+                cur.append(h)
+        if len(cur) > 1:
+            out.append(cur)
+        return out
+
+    paths = []
+    for pts in T:   # torso, about every 1.5 cm
+        sm = []
+        for (u0, y0), (u1, y1) in zip(pts[:-1], pts[1:]):
+            n = max(2, int(math.hypot((u1 - u0) * 0.9, y1 - y0) / step))
+            for k in range(n):
+                f = k / n
+                o, d = torso_ray(u0 + (u1 - u0) * f, y0 + (y1 - y0) * f)
+                sm.append((o, d, (TORSO, NECK)))
+        o, d = torso_ray(*pts[-1])
+        sm.append((o, d, (TORSO, NECK)))
+        paths += runs(sm)
+    for kind, val in R:
+        if kind in ('torso', 'neck'):
+            sm = [torso_ray(u, val) + ((TORSO,) if kind == 'torso' else (NECK, TORSO),) for u in np.linspace(-0.5, 0.5, 61)]
+            paths += runs(sm)
+        else:
+            for side, doms in (('l', (UPL, FOL)), ('r', (UPR, FOR))):
+                sm = [arm_ray(side, val, ph) + (doms,) for ph in np.linspace(-math.pi, math.pi, 21)]
+                paths += runs(sm)
+    for phi0, a0, a1 in A:
+        for side, doms in (('l', (UPL, FOL)), ('r', (UPR, FOR))):
+            sm = [arm_ray(side, at, phi0) + (doms,) for at in np.linspace(a0, a1, max(3, int((a1 - a0) * 0.28 / step)))]
+            paths += runs(sm)
+    return paths
+
+
+# ---- modelled details (suits without glow lines): panels cut from the cloth, bands along paths, rolled edge
+# bindings, small blocks and tubes. Everything sits on the garment's outer surface and is skinned with its weights.
+def uy_field(b, fn):
+    """A coverage field from fn(u, y, dom, at, phi) over the corners of a soup (u = turn round the torso)."""
+    def f(S):
+        X, Wd, dom, at = ctx(b, S)
+        _, phi = b.arm_params(X, dom)
+        return fn(b.torso_u(X), X[:, 1], dom, at, phi)
+    return f
+
+
+def add_panel(mesh, shell, field, thick, key, rimkey):
+    sel, _ = clip(shell, field)
+    if len(sel):
+        add_shell(mesh, sel, thick, key, rimkey)
+    return len(sel)
+
+
+def add_bindings(mesh, shell, width, height, key):
+    """A rolled binding along every edge of the garment (collar, cuffs, hems, armholes)."""
+    be = boundary_edges(shell)
+    out = ([], [], [], [])
+    for a, c in be:
+        pa, pc = shell.P[a], shell.P[c]
+        na, nc = shell.N[a], shell.N[c]
+        d = pc - pa
+        if np.linalg.norm(d) < 1e-6:
+            continue
+        n = na + nc
+        n /= np.linalg.norm(n)
+        side = np.cross(n, d)
+        side /= np.linalg.norm(side)
+        hw = width / 2
+        wa, wc = shell.Wd[a], shell.Wd[c]
+        tla, tra = pa + side * hw + na * height, pa - side * hw + na * height
+        tlc, trc = pc + side * hw + nc * height, pc - side * hw + nc * height
+        bla, bra, blc, brc = pa + side * hw - na * 0.001, pa - side * hw - na * 0.001, pc + side * hw - nc * 0.001, pc - side * hw - nc * 0.001
+        _quad(out, (tla, wa, None), (tra, wa, None), (trc, wc, None), (tlc, wc, None), n, None)
+        _quad(out, (bla, wa, None), (tla, wa, None), (tlc, wc, None), (blc, wc, None), side, None)
+        _quad(out, (tra, wa, None), (bra, wa, None), (brc, wc, None), (trc, wc, None), -side, None)
+    mesh.add(key, _soup(out[0], out[1], out[2]))
+    return len(be)
+
+
+def add_box(mesh, q, w, h, depth, key):
+    """A small block on the surface at q: w across, h up the body, depth out of it (zipper pull, buckle, aglet)."""
+    p, n, wt = q
+    up = np.array([0.0, 1.0, 0.0]) - n * n[1]
+    up = up / np.linalg.norm(up) if np.linalg.norm(up) > 1e-6 else np.array([0.0, 0.0, 1.0])
+    rt = np.cross(up, n)
+    c = [p + rt * sx * w / 2 + up * sy_ * h / 2 + n * dz for dz in (-0.001, depth) for sy_ in (-1, 1) for sx in (-1, 1)]
+    out = ([], [], [], [])
+    faces = [((4, 5, 7, 6), n), ((0, 1, 5, 4), -up), ((2, 6, 7, 3), up), ((0, 4, 6, 2), -rt), ((1, 3, 7, 5), rt)]
+    for (i0, i1, i2, i3), fn in faces:
+        _quad(out, (c[i0], wt, None), (c[i1], wt, None), (c[i2], wt, None), (c[i3], wt, None), fn, None)
+    mesh.add(key, _soup(out[0], out[1], out[2]))
+
+
+def add_tube(mesh, pts, radius, key, segs=8):
+    """A soft roll lying on the surface along pts (the hood bunched behind the neck)."""
+    P = np.array([q[0] for q in pts]); N = np.array([q[1] for q in pts]); W = np.array([q[2] for q in pts])
+    D = np.gradient(P, axis=0)
+    D /= np.maximum(np.linalg.norm(D, axis=1, keepdims=True), 1e-9)
+    Bn = np.cross(D, N)
+    Bn /= np.maximum(np.linalg.norm(Bn, axis=1, keepdims=True), 1e-9)
+    C = P + N * radius * 0.85
+    ring = lambda k, j: C[k] + (N[k] * math.cos(2 * math.pi * j / segs) + Bn[k] * math.sin(2 * math.pi * j / segs)) * radius
+    out = ([], [], [], [])
+    for k in range(len(P) - 1):
+        for j in range(segs):
+            a0, a1, b0, b1 = ring(k, j), ring(k, j + 1), ring(k + 1, j), ring(k + 1, j + 1)
+            nrm = (a0 + a1 + b0 + b1) / 4 - (C[k] + C[k + 1]) / 2
+            _quad(out, (a0, W[k], None), (a1, W[k], None), (b1, W[k + 1], None), (b0, W[k + 1], None), nrm, None)
+    mesh.add(key, _soup(out[0], out[1], out[2]))
+
+
+# Tops made from a fitted garment mesh instead of the body shell: suit -> npz pattern ({b} = masc / fem), e.g. a
+# MakeHuman garment fitted by tools/blender/make_mh_clothes.py. Trial builds: PA_GARMENT_<n>=<pattern>.
+GARMENTS = {int(k[11:]): v for k, v in os.environ.items() if k.startswith('PA_GARMENT_')}
+
+
+def garment_soup(b, pattern):
+    """The garment's pieces above the waist (MakeHuman suits come with their trousers) as a soup on this body."""
+    d = np.load(pattern.format(b={'m': 'masc', 'f': 'fem'}[b.key]))
+    P, N, T = d['pos'].astype(np.float64), d['nrm'].astype(np.float64), d['tris'].astype(np.int64)
+    par = np.arange(len(P))
+    def find(x):
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+    for t in T:
+        a = find(t[0])
+        for c in (1, 2):
+            par[find(t[c])] = a
+    root = np.array([find(i) for i in range(len(P))])
+    top = {r for r in np.unique(root) if P[root == r, 1].max() > b.waist_y + 0.15}
+    keep = np.isin(root[T[:, 0]], list(top))
+    T, UV = T[keep], d['uv'][keep]
+    Wd = np.zeros((len(P), 7))
+    if 'bone' in d.files:   # weighted already (MPFB copies the body's weights onto its clothes)
+        for k in range(4):
+            np.add.at(Wd, (np.arange(len(P)), d['bone'][:, k].astype(np.int64)), d['weight'][:, k])
+    else:   # draped cloth: the 4 nearest body vertices' weights, then smoothed along the cloth (no jagged armpits)
+        for i in range(0, len(P), 400):
+            d2 = ((P[i:i + 400, None] - b.P[None]) ** 2).sum(-1)
+            nn = np.argsort(d2, 1)[:, :4]
+            w = 1.0 / (np.sqrt(np.take_along_axis(d2, nn, 1)) + 0.004)
+            Wd[i:i + 400] = (b.Wd[nn] * (w / w.sum(1, keepdims=True))[..., None]).sum(1)
+        E = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+        deg = np.bincount(E.reshape(-1), minlength=len(P)).astype(float)
+        for _ in range(4):
+            acc = np.zeros_like(Wd)
+            np.add.at(acc, E[:, 0], Wd[E[:, 1]])
+            np.add.at(acc, E[:, 1], Wd[E[:, 0]])
+            Wd = np.where(deg[:, None] > 0, 0.5 * Wd + 0.5 * acc / np.maximum(deg, 1)[:, None], Wd)
+        Wd /= Wd.sum(1, keepdims=True)
+    ao = np.empty(len(P))   # the body's occlusion under each garment vertex (creases at the armpits, under the chest)
+    for i in range(0, len(P), 500):
+        ao[i:i + 500] = b.ao[np.argmin(((P[i:i + 500, None] - b.P[None]) ** 2).sum(-1), 1)]
+    if 'part' in d.files:   # draped cloth: flatten where the kangaroo pocket goes (it holds the cloth flat there)
+        u = b.torso_u(P)
+        y0 = b.hip_y + 0.09
+        front = (Wd[:, 0] + Wd[:, 1] > 0.6)
+        mask = front * np.clip((0.13 - np.abs(u)) / 0.04, 0, 1) * np.clip((P[:, 1] - (y0 - 0.03)) / 0.03, 0, 1) * \
+            np.clip(((y0 + 0.14) - P[:, 1]) / 0.03, 0, 1)
+        E = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+        deg = np.bincount(E.reshape(-1), minlength=len(P)).astype(float)
+        Q = P.copy()
+        for _ in range(25):
+            acc = np.zeros_like(Q)
+            np.add.at(acc, E[:, 0], Q[E[:, 1]])
+            np.add.at(acc, E[:, 1], Q[E[:, 0]])
+            Q = np.where(deg[:, None] > 0, 0.5 * Q + 0.5 * acc / np.maximum(deg, 1)[:, None], Q)
+        P = P + (Q - P) * mask[:, None]
+        N = np.zeros_like(P)
+        fn = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+        for c in range(3):
+            np.add.at(N, T[:, c], fn)
+        N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-12)
+    i = T.reshape(-1)
+    S = Soup(P[i], N[i], UV.reshape(-1, 2).astype(np.float64), np.minimum(1.0, ao[i] * 0.97 + 0.03), Wd[i])
+    S.garment = True
+    S.part = d['part'][keep] if 'part' in d.files else np.zeros(len(T), np.uint8)
+    S.has_hood = bool((S.part == 1).any())
+    return S
+
+
+def smoothed(S, iters=10):
+    """A soup with its folds ironed out (Laplacian smoothing over the welded surface): what a sewn-on panel follows."""
+    keys = weld_keys(S.P)
+    _, inv = np.unique(keys, axis=0, return_inverse=True)
+    inv = inv.reshape(-1)
+    n = inv.max() + 1
+    P = np.zeros((n, 3))
+    np.add.at(P, inv, S.P)
+    P /= np.bincount(inv, minlength=n)[:, None]
+    T = inv.reshape(-1, 3)
+    E = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    deg = np.bincount(E.reshape(-1), minlength=n).astype(float)
+    for _ in range(iters):
+        acc = np.zeros_like(P)
+        np.add.at(acc, E[:, 0], P[E[:, 1]])
+        np.add.at(acc, E[:, 1], P[E[:, 0]])
+        P = 0.5 * P + 0.5 * acc / np.maximum(deg, 1)[:, None]
+    N = np.zeros_like(P)
+    fn = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+    for c in range(3):
+        np.add.at(N, T[:, c], fn)
+    N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-12)
+    out = Soup(P[inv], N[inv], S.UV, S.AO, S.Wd)
+    out.part = getattr(S, 'part', None)
+    return out
+
+
+def build_details(b, n, shell, mesh, mats):
+    """The modelled details of suit n (DETAILS). Returns a short summary for the log."""
+    sy, wy, ay = b.sy, b.waist_y, b.armpit_y
+    def key(pal, cloth=True):
+        k = 'd:' + pal
+        if k not in mats:
+            mats[k] = mat(pal, extra_flags=CLOTH if cloth else 0)
+        if 'rim:' + pal not in mats:
+            mats['rim:' + pal] = mat(pal, twosided=True)
+        return k
+    torso = lambda dom: (dom == TORSO) | (dom == NECK)
+    arm = lambda dom: dom >= UPL
+    bands = lambda T, w, h, k, A=(), R=(): [add_trace(mesh, None, q, 0.0, width=w, height=h, key=k) for q in surface_paths(b, shell, T, A, R)]
+    first = lambda T: (surface_paths(b, shell, T) or [[None]])[0]
+    did = []
+    if n == 1:   # ARENA JERSEY: ribbed bands, side seams, a blank number panel on the back
+        add_bindings(mesh, shell, 0.016, 0.0032, key('av_secondary')); did.append('ribbed bands')
+        bands([[(0.25, ay - 0.01), (0.25, wy + 0.03)], [(-0.25, ay - 0.01), (-0.25, wy + 0.03)]], 0.006, 0.0016, key('av_secondary'))
+        add_panel(mesh, shell, uy_field(b, lambda u, y, d, at, ph: np.where(torso(d), np.minimum.reduce(
+            [np.abs(u) - 0.41, y - (sy - 0.30), (sy - 0.07) - y]), -1.0)), 0.0025, key('av_secondary'), 'rim:av_secondary_dk')
+        did += ['side seams', 'number panel']
+    elif n == 3:  # STREET JACKET: zipper (tape, teeth, pull), waistband, cuffs, chest pocket welts
+        zip_path = [[(0.0, 0.055), (0.0, sy - 0.02), (0.0, wy + 0.045)]]
+        bands(zip_path, 0.016, 0.0022, key('av_secondary_dk'))
+        bands(zip_path, 0.0045, 0.0034, key('av_trim', cloth=False))
+        q = first([[(0.0, sy - 0.07), (0.0, sy - 0.071)]])
+        if q[0] is not None:
+            add_box(mesh, q[0], 0.012, 0.028, 0.0055, key('av_trim', cloth=False))
+        add_panel(mesh, shell, uy_field(b, lambda u, y, d, at, ph: np.where(torso(d), (wy + 0.045) - y, -1.0)), 0.0035,
+                  key('av_secondary_dk'), 'rim:av_secondary_dk')
+        add_panel(mesh, shell, uy_field(b, lambda u, y, d, at, ph: np.where(arm(d), (at - 1.85) * 0.3, -1.0)), 0.0035,
+                  key('av_secondary_dk'), 'rim:av_secondary_dk')
+        bands([[(0.07, wy + 0.17), (0.16, wy + 0.15)], [(-0.07, wy + 0.17), (-0.16, wy + 0.15)]], 0.012, 0.0025, key('av_secondary_dk'))
+        did += ['zipper', 'waistband', 'cuffs', 'pocket welts']
+    elif n == 4:  # HOODIE: kangaroo pocket, waistband, cuffs, drawstrings with tips, the hood behind the neck
+        draped = getattr(shell, 'garment', False)   # draped cloth: its hem sits lower, its edges get ribbing
+        pw = (b.hip_y + 0.09) if draped else (wy + 0.045)   # (draped: above the taller hem band)
+        npk = add_panel(mesh, shell, uy_field(b, lambda u, y, d, at, ph: np.where(torso(d), np.minimum.reduce(
+            [0.085 - np.abs(u) - np.clip((y - (pw - 0.015)) * 0.25, 0, 0.03), y - pw, (pw + 0.105) - y]), -1.0)),
+            0.0080 if draped else 0.0045, key('av_primary_dk' if draped else 'av_primary'), 'rim:av_secondary_dk')
+        print('  hoodie pocket: %d triangles' % npk)
+        if not draped:   # (draped cloth: its tight edge bands are the ribbing)
+            add_panel(mesh, shell, uy_field(b, lambda u, y, d, at, ph: np.where(torso(d), (wy + 0.04) - y, -1.0)), 0.004,
+                      key('av_secondary_dk'), 'rim:av_secondary_dk')
+            add_panel(mesh, shell, uy_field(b, lambda u, y, d, at, ph: np.where(arm(d), (at - 1.85) * 0.3, -1.0)), 0.004,
+                      key('av_secondary_dk'), 'rim:av_secondary_dk')
+        for sx in (0.022, -0.022):   # from the collar (the neck base is y = 0)
+            path = [[(sx, -0.012), (sx * 1.3, sy - 0.12)]]
+            bands(path, 0.006, 0.0045, key('av_secondary_dk'))
+            q = first([[(sx * 1.3, sy - 0.125), (sx * 1.3, sy - 0.126)]])
+            if q[0] is not None:
+                add_box(mesh, q[0], 0.008, 0.02, 0.008, key('av_trim', cloth=False))
+        # the hood, bunched round the back of the neckline: lowest at the spine, up to the neck base at the sides
+        if not getattr(shell, 'has_hood', False):   # (a draped hood is part of the cloth)
+            hood = surface_paths(b, shell, [[(u, -0.004 - 0.026 * max(0.0, 1 - abs(u - 0.5) / 0.22)) for u in np.linspace(0.28, 0.72, 27)]])
+            for h in hood:
+                add_tube(mesh, h, 0.030, key('av_primary'))
+        did += ['pocket', 'waistband', 'cuffs', 'drawstrings', 'hood']
+    elif n == 6:  # TANK TOP: rolled binding round the armholes, the neckline and the hem
+        add_bindings(mesh, shell, 0.012, 0.0028, key('av_primary_dk')); did.append('bindings')
+    elif n == 7:  # PILOT: harness straps with buckles, belt with buckle, shoulder patches, cuffs, chest light housing
+        # harness straps (front and back, over the shoulders) and the belt as smooth bands (cut panels came out ragged)
+        straps = [[(sx * 0.05, -0.01), (sx * 0.05, wy + 0.12)] for sx in (1, -1)] +                  [[(sx * 0.45, -0.01), (sx * 0.45, wy + 0.12)] for sx in (1, -1)]
+        bands(straps, 0.030, 0.0040, key('av_secondary'))
+        bands([], 0.034, 0.0050, key('av_secondary'), R=[('torso', wy + 0.12)])
+        add_panel(mesh, shell, uy_field(b, lambda u, y, d, at, ph: np.where(arm(d), np.minimum.reduce(
+            [at - 0.20, 0.40 - at, 0.6 - np.abs(ph)]) * 0.3, -1.0)), 0.003, key('av_secondary'), 'rim:av_secondary')
+        add_panel(mesh, shell, uy_field(b, lambda u, y, d, at, ph: np.where(arm(d), (at - 1.86) * 0.3, -1.0)), 0.0035,
+                  key('av_secondary'), 'rim:av_secondary')
+        for u_, y_, w_, h_ in ((0.0, wy + 0.12, 0.045, 0.034), (0.05, sy - 0.14, 0.03, 0.024), (-0.05, sy - 0.14, 0.03, 0.024)):
+            q = first([[(u_, y_), (u_, y_ - 0.001)]])
+            if q[0] is not None:
+                add_box(mesh, q[0], w_, h_, 0.0085, key('av_trim', cloth=False))
+        th = np.linspace(0, 2 * math.pi, 25)
+        bands([[(0.022 / 0.9 * math.cos(a) / (2 * math.pi) * 6.3, sy - 0.08 + 0.022 * math.sin(a)) for a in th]], 0.006, 0.003,
+              key('av_trim', cloth=False))
+        did += ['harness', 'belt', 'patches', 'cuffs', 'buckles', 'light housing']
+    elif n == 9:  # TRAINING TEE: raglan and side seams, bound collar and hems
+        rag = [[(0.06, sy + 0.08), (0.20, ay + 0.02)], [(-0.06, sy + 0.08), (-0.20, ay + 0.02)],
+               [(0.5 - 0.07, sy + 0.08), (0.5 - 0.20, ay + 0.02)], [(-0.5 + 0.07, sy + 0.08), (-0.5 + 0.20, ay + 0.02)],
+               [(0.25, ay), (0.25, wy + 0.02)], [(-0.25, ay), (-0.25, wy + 0.02)]]
+        bands(rag, 0.005, 0.0016, key('av_primary_dk'))
+        add_bindings(mesh, shell, 0.010, 0.0022, key('av_primary_dk'))
+        did += ['seams', 'bindings']
+    return did
+
+
+DETAILS = (1, 3, 4, 6, 7, 9)   # the suits that get modelled details (the glow suits have LIVE versions instead)
+
+
+def _soup(Pl, Nl, Wl, UVl=None):
+    P = np.array(Pl, float)
+    return Soup(P, np.array(Nl, float), np.array(UVl, float) if UVl is not None else np.zeros((len(P), 2)),
+                np.full(len(P), 0.95), np.array(Wl, float))
+
+
+def _quad(out, a, b_, c, d, n, w, uv=None):
+    """Two triangles (a, b, c), (a, c, d), wound so their face normal points along n."""
+    tri = [(a, b_, c), (a, c, d)]
+    if np.dot(np.cross(np.array(b_[0]) - a[0], np.array(c[0]) - a[0]), n) < 0:
+        tri = [(a, c, b_), (a, d, c)]
+    for t3 in tri:
+        for v in t3:
+            out[0].append(v[0]); out[1].append(n); out[2].append(v[1]); out[3].append(v[2] if uv else (0.0, 0.0))
+
+
+def add_trace(mesh, pulse_mesh, pts, phase, width=None, height=None, pulse_w=None, key='g:av_dark:'):
+    tw = TRACE_W if width is None else width
+    th = TRACE_H if height is None else height
+    pw = PULSE_W if pulse_w is None else pulse_w
+    P = np.array([q[0] for q in pts]); N = np.array([q[1] for q in pts]); W = np.array([q[2] for q in pts])
+    D = np.gradient(P, axis=0)
+    D /= np.maximum(np.linalg.norm(D, axis=1, keepdims=True), 1e-9)
+    B_ = np.cross(N, D)
+    B_ /= np.maximum(np.linalg.norm(B_, axis=1, keepdims=True), 1e-9)
+    hw = tw / 2
+    top_l, top_r = P + B_ * hw + N * th, P - B_ * hw + N * th
+    bot_l, bot_r = P + B_ * hw - N * 0.0012, P - B_ * hw - N * 0.0012
+    body = ([], [], [], [])
+    for k in range(len(P) - 1):
+        wa, wb = W[k], W[k + 1]
+        nk = N[k] + N[k + 1]
+        _quad(body, (top_l[k], wa, None), (top_r[k], wa, None), (top_r[k + 1], wb, None), (top_l[k + 1], wb, None), nk, None)
+        _quad(body, (bot_l[k], wa, None), (top_l[k], wa, None), (top_l[k + 1], wb, None), (bot_l[k + 1], wb, None), B_[k] + B_[k + 1], None)
+        _quad(body, (top_r[k], wa, None), (bot_r[k], wa, None), (bot_r[k + 1], wb, None), (top_r[k + 1], wb, None), -(B_[k] + B_[k + 1]), None)
+    mesh.add(key, _soup(body[0], body[1], body[2]))   # (traces: dark channels, so the glow on top pops)
+    if pulse_mesh is None:
+        return
+    # the pulse strip: just above the top, v = distance along the trace (pulses per metre) + a random phase
+    arc = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
+    v = phase + arc * PULSE_PER_M
+    ph = pw / 2
+    sl, sr = P + B_ * ph + N * (th + 0.0005), P - B_ * ph + N * (th + 0.0005)
+    strip = ([], [], [], [])
+    for k in range(len(P) - 1):
+        wa, wb = W[k], W[k + 1]
+        _quad(strip, (sl[k], wa, (0.0, v[k])), (sr[k], wa, (1.0, v[k])), (sr[k + 1], wb, (1.0, v[k + 1])), (sl[k + 1], wb, (0.0, v[k + 1])),
+              N[k] + N[k + 1], None, uv=True)
+    pulse_mesh.add('pulse', _soup(strip[0], strip[1], strip[2], strip[3]))
+
+
+def add_pad(mesh, q, segs=6):
+    p, n, w = q
+    a = np.cross(n, [0.0, 1.0, 0.0] if abs(n[1]) < 0.9 else [1.0, 0.0, 0.0])
+    a /= np.linalg.norm(a)
+    c = np.cross(n, a)
+    h = TRACE_H + 0.0008
+    ring = [p + (a * math.cos(2 * math.pi * k / segs) + c * math.sin(2 * math.pi * k / segs)) * PAD_R for k in range(segs)]
+    out = ([], [], [], [])
+    top = p + n * h
+    for k in range(segs):
+        r0, r1 = ring[k], ring[(k + 1) % segs]
+        t0, t1 = r0 + n * h, r1 + n * h
+        tri = (top, t0, t1) if np.dot(np.cross(t0 - top, t1 - top), n) > 0 else (top, t1, t0)
+        for v in tri:
+            out[0].append(v); out[1].append(n); out[2].append(w); out[3].append((0.0, 0.0))
+        side = (r0 + r1) / 2 - p
+        _quad(out, (r0 - n * 0.0012, w, None), (r1 - n * 0.0012, w, None), (t1, w, None), (t0, w, None), side, None)
+    mesh.add('g:av_trim:', _soup(out[0], out[1], out[2]))
+
+
 def add_head_extras(mesh, b, head_tris):
     J = b.J
     hw = np.zeros(7)
@@ -1019,7 +1628,7 @@ def add_head_extras(mesh, b, head_tris):
 # ================================================================ outfits
 # how far cloth may stand off the body (m) and how tightly it may curve inward (bend radius, m): suits hug, tees hang
 DRAPE_TOP = {0: (0.012, 0.15), 1: (0.050, 1.2), 2: (0.010, 0.15), 3: (0.055, 1.0), 4: (0.060, 1.2), 5: (0.012, 0.15),
-             6: (0.050, 1.0), 7: (0.040, 0.6), 8: (0.040, 0.6), 9: (0.050, 1.2)}
+             6: (0.050, 1.0), 7: (0.040, 0.6), 8: (0.040, 0.6), 9: (0.050, 1.2), 10: (0.012, 0.15)}
 DRAPE_BOTTOM = (0.025, 0.4)
 TOPS = {   # N: (coverage style, thickness, material, rim, design, bracer, plates)
     0: (dict(sleeve=1.95, collar=0.045), 0.0028, 'av_primary', 'av_secondary', 'grid', None, ()),
@@ -1032,7 +1641,13 @@ TOPS = {   # N: (coverage style, thickness, material, rim, design, bracer, plate
     7: (dict(sleeve=1.95, collar=0.040), 0.0070, 'av_primary', 'av_secondary_dk', 'pilot', None, ()),
     8: (dict(armhole=(0.88, 0.68), collar=0.060), 0.0040, 'av_primary', 'av_primary_np', 'vest', 'circuit', ()),
     9: (dict(sleeve=0.45), 0.0040, 'av_primary', 'av_primary_dk', 'tee', 'gray', ()),
+    10: (dict(sleeve=1.95, collar=0.045), 0.0028, 'av_primary', 'av_secondary', None, None, ()),   # CIRCUIT RUNNER (+ traces)
 }
+LIVE = {11: (0, 'grid'), 12: (5, 'echo'), 13: (8, 'vest')}   # LIVE suit: (base suit, its glow design, now raised piping)
+for _n, (_base, _d) in LIVE.items():
+    _t = TOPS[_base]
+    TOPS[_n] = (_t[0], _t[1], _t[2], _t[3], _d + '_live', _t[5], _t[6])
+    DRAPE_TOP[_n] = DRAPE_TOP[_base]
 BOTTOMS = {1: ('dolphin', 0.0100, 'av_secondary', 'av_piping', 'dolphin'),
            2: ('circuit', 0.0055, 'av_primary', 'av_primary_np', 'circuit_shorts'),
            3: ('bike', 0.0045, 'av_primary', 'av_primary_dk', 'bike')}
@@ -1050,6 +1665,24 @@ def materials():
                 'av_armor', 'av_secondary'):
         m['rim:' + pal] = mat(pal, twosided=True)
     return m
+
+
+def build_head(b, mats):
+    """av_bhead_<key>: the head's skin, lips, eyes and brows."""
+    whole = Soup.of(b, b.T)
+    headS, rest = clip(whole, lambda S: S.Wd[:, HEAD] - 0.5)
+    mesh = Mesh()
+    lip_keys = set(map(tuple, weld_keys(b.P[b.region == 1])))
+    is_lip = np.array([tuple(k) in lip_keys for k in weld_keys(headS.P)]).reshape(-1, 3).all(1)
+    tri = np.arange(len(headS))
+    corners_of = lambda sel: (tri[sel][:, None] * 3 + np.arange(3)).reshape(-1)
+    mesh.add('lips', headS.take(corners_of(is_lip)))
+    mesh.add('skin', headS.take(corners_of(~is_lip)))
+    add_head_extras(mesh, b, b.T[b.fdom == HEAD])
+    return mesh.write('av_bhead_' + b.key, mats)
+
+
+FACE_KEYS = ('m1', 'm2', 'm3', 'f1', 'f2', 'f3')   # FACE 2..4 (FACE 1 is the base body's own head)
 
 
 def build_body(b, raster, design_tex):
@@ -1081,7 +1714,38 @@ def build_body(b, raster, design_tex):
             add_shell(mesh, br, 0.011, bkey, 'rim:av_armor')
         mesh.add('skin', skin)
         lift, bend = DRAPE_TOP.get(n, (0.0, 0.6))
-        add_shell(mesh, cov, thick, gkey, 'rim:' + rim, max_lift=lift, bend=bend, arms_too=style.get('sleeve', 0) > 1)
+        if n in GARMENTS:   # a fitted garment instead of the body shell (its own uv: no design mask)
+            gkey = 'g:%s:garment' % gmat
+            mats[gkey] = mat(gmat, extra_flags=CLOTH, twosided=True)
+            shell = garment_soup(b, GARMENTS[n])
+            corners = lambda t: (t[:, None] * 3 + np.arange(3)).reshape(-1)
+            mesh.add(gkey, shell.take(corners(np.nonzero((shell.part == 0) | (shell.part == 1))[0])))
+            lkey = 'g:%s:lining' % rim   # the hood's lining (where its rolled edge shows) and the ribbing: the rim colour
+            mats[lkey] = mat(rim, extra_flags=CLOTH, twosided=True)
+            trim = np.nonzero(shell.part >= 2)[0]
+            if len(trim):
+                mesh.add(lkey, shell.take(corners(trim)))
+            print('  garment for suit %d: %d triangles' % (n, len(shell)))
+        else:
+            shell = add_shell(mesh, cov, thick, gkey, 'rim:' + rim, max_lift=lift, bend=bend, arms_too=style.get('sleeve', 0) > 1)
+        if n in DETAILS:   # modelled details: pockets, zippers, straps, seams, bindings
+            print('  details:', ', '.join(build_details(b, n, shell, mesh, mats)))
+        if n in LIVE:   # LIVE suits: the glow lines as raised piping with pulses
+            mats['g:av_trim:'] = mat('av_trim')
+            mats['g:av_dark:'] = mat('av_dark')
+            pulse = Mesh()
+            npath = build_live(b, shell, mesh, pulse, LIVE[n][1])
+            pm = dict(mat('av_fade'), diffuse='open_pipe_pulse', tint=(2.4, 2.4, 2.4, 1.0))
+            pulse.write('av_tpulse_%d_%s' % (n, b.key), {'pulse': pm})
+            print('  %s live: %d paths' % (LIVE[n][1], npath))
+        if n == 10:   # CIRCUIT RUNNER: raised traces on the suit, and their pulse strips
+            mats['g:av_trim:'] = mat('av_trim')
+            mats['g:av_dark:'] = mat('av_dark')
+            pulse = Mesh()
+            ntr, npad = circuit_traces(b, shell, mesh, pulse)
+            pm = dict(mat('av_fade'), diffuse='open_trace_pulse', tint=(2.4, 2.4, 2.4, 1.0))   # bright: additive glow
+            pulse.write('av_tpulse_10_' + b.key, {'pulse': pm})
+            print('  circuit runner: %d traces, %d pads' % (ntr, npad))
         for pl in plate_list:
             sel, _ = clip(cov, f_plate(b, pl))
             pkey = 'g:av_primary_np:'
@@ -1136,6 +1800,9 @@ def main():
     for b in bodies:
         print('body', b.key, 'waist %.3f armpit %.3f hips %.3f cut %.3f' % (b.waist_y, b.armpit_y, b.hip_y, b.cut))
         total += build_body(b, raster, None)
+    for key in FACE_KEYS:   # the other faces: their heads only (bodies, outfits and the rig are the base body's)
+        if os.path.exists(os.path.join(SRC, 'body_%s_face%s.npz' % ({'m': 'masc', 'f': 'fem'}[key[0]], key[1:]))):
+            total += build_head(Body(key), materials())
     write_bind(bodies)
     print('done: %d vertices in all parts' % total)
 

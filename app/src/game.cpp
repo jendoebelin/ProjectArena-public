@@ -573,7 +573,9 @@ void Game::stepPlayer(int p, float dt) {
             if (holding && released) {
                 Vec3 v = handVelocity(p, h, now);
                 float sp = length(v);
-                if (sp < tun.throwMinHandSpeed || match != MatchState::InProgress) {
+                // throws count in a match, and as warm-up while waiting for an opponent (scoring needs a match)
+                const bool canThrow = match == MatchState::InProgress || match == MatchState::WaitingForPlayers;
+                if (sp < tun.throwMinHandSpeed || !canThrow) {
                     // dropped: the spawner's damped spring pulls the ball back to its idle point
                     b.state = BallState::Idle;
                     b.heldHand = -1;

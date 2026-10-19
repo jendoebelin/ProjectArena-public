@@ -1,0 +1,11 @@
+# av_hair_5_f: hair swing rig (tools/build_open_assets.py; the game: app/src/main.cpp swingBones)
+centre 0.00000 0.01750 0.07300
+chain 420 9 1 10
+-0.00200 0.10062 0.02826
+0.00038 0.13640 0.02011
+chain 420 9 1 10
+0.00416 0.08612 0.12934
+-0.00007 0.13243 0.15063
+chain 420 9 1 10
+-0.01015 0.10646 0.06296
+0.00365 0.14589 0.08981

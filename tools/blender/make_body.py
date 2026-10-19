@@ -30,6 +30,34 @@ BODIES = {
     'masc': dict(gender=1.0, age=0.5, muscle=0.96, weight=0.48, proportions=0.80, height=0.58, cupsize=0.5, firmness=0.5),
     'fem': dict(gender=0.0, age=0.5, muscle=0.80, weight=0.46, proportions=0.80, height=0.50, cupsize=0.45, firmness=0.75),   # rounded and lifted (low firmness hangs the bust low on the torso)
 }
+# FACE 2..4 for each body: an ancestry blend and a few features from MPFB's targets, kept to the face only (the
+# cranium, the forehead above the brows, the ears and the neck seam stay the base body's, so hair and helmets fit
+# every face; face shields and masks are fitted per face). The eyes stay where the base body's are (the player's
+# real eyes). Written as body_<name>_face<k>.npz (the whole body, only the face moved).
+FACES = {
+    'masc': [
+        (dict(race={'african': 1.0, 'asian': 0.0, 'caucasian': 0.0}),
+         [('nose-flaring-incr', 0.6), ('nose-scale-horiz-incr', 0.4), ('mouth-lowerlip-volume-incr', 0.6),
+          ('mouth-upperlip-volume-incr', 0.4), ('chin-width-incr', 0.6), ('mouth-scale-horiz-incr', 0.3)]),
+        (dict(race={'african': 0.0, 'asian': 1.0, 'caucasian': 0.0}),
+         [('l-cheek-bones-incr', 0.8), ('r-cheek-bones-incr', 0.8), ('nose-scale-horiz-decr', 0.35), ('nose-scale-depth-decr', 0.3),
+          ('chin-prominent-decr', 0.4), ('chin-width-decr', 0.25)]),
+        (dict(race={'african': 0.0, 'asian': 0.0, 'caucasian': 1.0}),
+         [('chin-prominent-incr', 0.9), ('chin-width-incr', 0.7), ('chin-height-incr', 0.4), ('nose-hump-incr', 0.6),
+          ('nose-scale-vert-incr', 0.4), ('l-cheek-bones-incr', 0.5), ('r-cheek-bones-incr', 0.5), ('eyebrows-trans-down', 0.4)]),
+    ],
+    'fem': [
+        (dict(race={'african': 1.0, 'asian': 0.0, 'caucasian': 0.0}),
+         [('mouth-upperlip-volume-incr', 0.6), ('mouth-lowerlip-volume-incr', 0.5), ('nose-flaring-incr', 0.5),
+          ('nose-scale-horiz-incr', 0.3), ('l-cheek-volume-incr', 0.3), ('r-cheek-volume-incr', 0.3)]),
+        (dict(race={'african': 0.0, 'asian': 1.0, 'caucasian': 0.0}),
+         [('l-cheek-bones-incr', 0.7), ('r-cheek-bones-incr', 0.7), ('chin-height-decr', 0.4), ('chin-width-decr', 0.3),
+          ('nose-scale-horiz-decr', 0.3), ('mouth-scale-horiz-decr', 0.2)]),
+        (dict(race={'african': 0.0, 'asian': 0.0, 'caucasian': 1.0}),
+         [('nose-point-up', 0.6), ('nose-scale-horiz-decr', 0.3), ('chin-prominent-incr', 0.5), ('l-cheek-volume-decr', 0.6),
+          ('r-cheek-volume-decr', 0.6), ('l-cheek-bones-incr', 0.4), ('r-cheek-bones-incr', 0.4)]),
+    ],
+}
 GAME_BONE = {'neck_01': 1, 'head': 2, 'upperarm_l': 3, 'upperarm_r': 4, 'lowerarm_l': 5, 'lowerarm_r': 6}
 
 
@@ -127,12 +155,20 @@ def bake_ao(obj, path, size=1024):
     img.save()
 
 
-def build(name, macro_vals):
+def smoothstep(a, b, x):
+    t = np.clip((x - a) / (b - a), 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def build(name, macro_vals, targets=(), base=None, write=True):
+    """One body. With base (the base build's {'co', 'J'}): a FACE variant - its face, masked onto the base body."""
     clear()
     macro = TargetService.get_default_macro_info_dict()
     for k, v in macro_vals.items():
         macro[k] = v
     h = HumanService.create_human(macro_detail_dict=macro)
+    for tname, w in targets:
+        TargetService.load_target(h, TargetService.target_full_path(tname), weight=w)
     rig = HumanService.add_builtin_rig(h, 'game_engine')
     for m in list(h.modifiers):   # rest shape only: masks and the armature off
         h.modifiers.remove(m)
@@ -149,6 +185,31 @@ def build(name, macro_vals):
                 member.setdefault(gname, []).append(v.index)
             elif g.weight > 0 and gname in rig.data.bones:
                 bw[v.index, game_bone(gname)] += g.weight
+
+    me = h.data
+    if base is not None:   # FACE variant: the face's change only, the eyes kept in place
+        bco = base['co']
+        eye_b = (bco[member['joint-l-eye']].mean(0) + bco[member['joint-r-eye']].mean(0)) * 0.5
+        eye_v = (co[member['joint-l-eye']].mean(0) + co[member['joint-r-eye']].mean(0)) * 0.5
+        delta = co - bco - (eye_v - eye_b)
+        fwd = -(bco[:, 1] - eye_b[1])                 # Blender: -y is forward, z up
+        up = bco[:, 2] - eye_b[2]
+        side = np.abs(bco[:, 0] - eye_b[0])
+        mask = (smoothstep(-0.110, -0.060, fwd)       # in front of the ears, the jaw angle included
+                * smoothstep(0.065, 0.035, up)         # below the hairline (the brows included)
+                * smoothstep(0.085, 0.066, side)       # inside the ears (they stay: headphones and helmets fit)
+                * smoothstep(0.50, 0.90, bw[:, 2]))    # the head itself (the neck seam stays)
+        # soften the mask along the surface (an abrupt fade left a crease under the jaw, where the head meets the neck)
+        E = np.array([e.vertices[:] for e in me.edges])
+        deg = np.bincount(E.reshape(-1), minlength=len(mask)).astype(float)
+        for _ in range(25):
+            acc = np.zeros_like(mask)
+            np.add.at(acc, E[:, 0], mask[E[:, 1]])
+            np.add.at(acc, E[:, 1], mask[E[:, 0]])
+            mask = np.where(deg > 0, 0.5 * mask + 0.5 * acc / np.maximum(deg, 1), mask)
+        mask *= smoothstep(0.30, 0.70, bw[:, 2])   # still nothing on the neck seam itself
+        co = bco + delta * mask[:, None]
+        print('FACE', name, 'max move %.4f m, mean %.4f m (masked)' % (np.abs(delta * mask[:, None]).max(), (np.linalg.norm(delta, axis=1) * mask).mean()))
 
     def centroid(gname):
         return co[member[gname]].mean(0)
@@ -229,16 +290,29 @@ def build(name, macro_vals):
     origin = J['neck']
     Papp = to_app(P - origin)
     Napp = to_app(N[out_v])
-    joints = {k: to_app(v - origin).tolist() for k, v in J.items()}
+    if base is not None:   # the joints (eyes, neck...) are the base body's: the rig and the head placement don't change
+        J, eye_r, origin = base['J'], base['eye_r'], base['origin']
+        joints = {k: to_app(v - origin).tolist() for k, v in J.items()}
+        joints['thigh_cut'] = base['thigh_cut']
+    else:
+        joints = {k: to_app(v - origin).tolist() for k, v in J.items()}
     joints['eye_mid'] = to_app((J['eye_l'] + J['eye_r']) * 0.5 - origin).tolist()
     joints['eye_radius'] = eye_r
-    joints['thigh_cut'] = float(cut_z - origin[2])
-    np.savez_compressed(os.path.join(OUT, 'body_%s.npz' % name), pos=Papp.astype(np.float32), nrm=Napp.astype(np.float32),
+    if base is None:
+        joints['thigh_cut'] = float(cut_z - origin[2])
+    (np.savez_compressed if write else (lambda *a_, **k_: None))(os.path.join(OUT, 'body_%s.npz' % name), pos=Papp.astype(np.float32), nrm=Napp.astype(np.float32),
                         uv=np.array(out_uv, np.float32), tris=T.astype(np.int32), bone=order.astype(np.uint8),
                         weight=top.astype(np.float32), region=region, ao=ao.astype(np.float32), joints=json.dumps(joints))
     print('BODY', name, 'verts', len(out_v), 'tris', len(T), 'eye_r %.4f' % eye_r, 'neck->eyes', joints['eye_mid'])
     print('AO', name, 'mean %.3f' % ao.mean())
+    return dict(co=co, J=J, eye_r=eye_r, origin=origin, thigh_cut=joints['thigh_cut'])
 
 
-for name, vals in BODIES.items():
-    build(name, vals)
+if __name__ == '__main__':   # (make_mh_clothes.py imports the bodies and helpers)
+    ONLY_FACES = '--faces' in sys.argv   # just the FACE variants (the base bodies are rebuilt, but not written over)
+    for name, vals in BODIES.items():
+        base = build(name, vals, write=not ONLY_FACES)
+        for k, (macro_extra, targets) in enumerate(FACES.get(name, []), start=1):
+            mv = dict(vals)
+            mv.update(macro_extra)
+            build('%s_face%d' % (name, k), mv, targets, base=base)

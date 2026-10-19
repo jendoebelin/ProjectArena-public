@@ -19,7 +19,12 @@ enum Channel { CH_NONE = 0, CH_PRIMARY, CH_SECONDARY, CH_GLOW, CH_SKIN, CH_VISOR
 
 // builder rows, in display order
 enum Field { F_SUIT, F_BUILD, F_PATTERN, F_PRIMARY, F_SECONDARY, F_GLOW, F_HAIR, F_HAIRCOLOR, F_HEADGEAR, F_VISOR,
-             F_VISORTINT, F_MASK, F_SKIN, F_LOWER, F_BODY, F_GAUNTLET, F_COUNT };
+             F_VISORTINT, F_MASK, F_SKIN, F_LOWER, F_BODY, F_GAUNTLET, F_FACE, F_COUNT };
+// FACE shares AvatarDesc::body (sent raw, no spare byte): bit 0 = the body type, bits 1-2 = the face. Older builds wrap
+// body % 2, so they still see the right body type (with its first face).
+constexpr int kFaces = 4;
+inline int bodyType(const AvatarDesc& d) { return d.body & 1; }
+inline int faceOf(const AvatarDesc& d) { return (d.body >> 1) % kFaces; }
 Field rowField(int row);                       // builder display order (BODY TYPE first)
 
 int fieldCount(Field f);                       // number of options
@@ -40,7 +45,6 @@ AvatarDesc randomLook(uint32_t seed);          // a random but coherent look (bo
 // colours for every channel, linear rgb + 1 (out[CH_NONE] = white)
 void channelColors(const AvatarDesc& d, const float team[3], float out[CH_COUNT][4]);
 bool neonHair(const AvatarDesc& d);            // hair glows (HAIR COLOUR = NEON)
-bool hidesHair(int headgear);                  // full helmets and the hood cover the hair
 const char* patternTexture(int pattern);       // "open_pat_..." or nullptr
 
 std::string toText(const AvatarDesc& d);       // "suit=0\nbuild=1\n..." (avatar.cfg)
@@ -90,7 +94,7 @@ struct RigTuning {
     Vec3 forearmEnd{0.0247f, 0.0382f, 0.0876f};
     // the cuff against the hand: the owner's TUNING export (2026-10-18, second): 1.6 right, 2.2 up, 2.6 back (cm),
     // pitched 17 deg, yaw and roll -1
-    Vec3 cuffPos{0.016f, 0.022f, 0.026f}, cuffRot{17, -1, -1};
+    Vec3 cuffPos{0.016f, 0.022f, 0.026f}, cuffRot{17.0f, -2.0f, -1.3f};   // owner's export 2026-10-19
 };
 RigTuning& rigTuning();
 constexpr Vec3 kCuffPivot{0.004f, 0.005f, 0.050f};   // the wrist joint of the plate gauntlets (make_props.py, grip space)
@@ -106,7 +110,10 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d);
 Mat4 boneMatrix(const Bone& b, bool mirrorX, float thick = 1.f);
 
 // What to draw for one avatar (hands / gauntlets are drawn by the caller): model name, world matrix, winding.
-enum : uint8_t { PART_NEON = 1, PART_SKINNED = 2 };   // part glows (neon hair); skinned body part (uses the rig's skin)
+// part glows (neon hair); skinned body part (uses the rig's skin); its texture scrolls along v (CIRCUIT RUNNER pulses)
+// PART_HAIR: hair (head space). The game swings the styles that move (their spring chains: av_hair_*.swing) and tucks
+// hair inside the headgear and face shield worn (av_gear_* / av_visor_*.tuck)
+enum : uint8_t { PART_NEON = 1, PART_SKINNED = 2, PART_PULSE = 4, PART_HAIR = 8 };
 struct PartDraw { char model[24]; Mat4 m; bool mirrored; uint8_t flags; };
 void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& d, std::vector<PartDraw>& out, bool lod = false);
 

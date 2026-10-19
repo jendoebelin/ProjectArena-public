@@ -19,6 +19,9 @@ uniform int uSkinned;
 uniform mat4 uBones[7];
 uniform int uUV;
 uniform vec4 uUVRect;
+uniform int uTuck;          // hair under headgear: kept inside it (uTuckTex: per direction from uTuckC, the radius)
+uniform vec3 uTuckC;
+uniform sampler2D uTuckTex;
 out vec3 vN;
 out vec3 vW;
 out vec2 vUV;
@@ -26,9 +29,20 @@ out vec4 vCol;
 void main() {
     vec4 p = vec4(aPos, 1.0);
     vec3 nrm = aNrm;
+    float pin = 0.0;
+    if (uTuck == 1) {   // pulled in (smoothly, from 6 mm short of the radius) and, where the gear covers it, held still
+        vec3 d = aPos - uTuckC;
+        float r = max(length(d), 1e-4);
+        vec2 tc = vec2(atan(d.x, d.z) * 0.1591549 + 0.5, asin(clamp(d.y / r, -1.0, 1.0)) * 0.3183099 + 0.5);
+        float lim = 0.05 + 0.5 * textureLod(uTuckTex, tc, 0.0).r;
+        float x = r - (lim - 0.006);
+        if (x > 0.0) p.xyz = uTuckC + d * ((lim - 0.006 + 0.006 * (1.0 - exp(-x / 0.006))) / r);
+        pin = clamp((0.45 - lim) * 4.0, 0.0, 1.0);
+    }
     if (uSkinned == 1) {   // linear blend skinning over the avatar's 7 bones
         mat4 S = uBones[int(aBone.x)] * aWeight.x + uBones[int(aBone.y)] * aWeight.y +
                  uBones[int(aBone.z)] * aWeight.z + uBones[int(aBone.w)] * aWeight.w;
+        if (uTuck == 1) S = S * (1.0 - pin) + mat4(1.0) * pin;   // (hair rigs: bone 0 is the head)
         p = S * p;
         nrm = mat3(S) * aNrm;
     }
@@ -192,6 +206,20 @@ static GLuint compile(GLenum type, const char* src) {
         LOGE("shader compile failed: %s", buf);
     }
     return s;
+}
+
+GLuint Renderer::tuckTexture(int w, int h, const uint8_t* v) {
+    std::vector<uint8_t> px((size_t)w * h * 4);
+    for (int i = 0; i < w * h; ++i) px[i * 4] = px[i * 4 + 1] = px[i * 4 + 2] = px[i * 4 + 3] = v[i];
+    GLuint t = 0;
+    glGenTextures(1, &t);
+    glBindTexture(GL_TEXTURE_2D, t);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);          // round the head
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);   // straight down .. straight up
+    return t;
 }
 
 // ------------------------------------------------------------------ asset helpers
@@ -374,6 +402,8 @@ bool Renderer::init() {
     uPatCol_ = glGetUniformLocation(prog_, "uPatCol");
     uPatGlow_ = glGetUniformLocation(prog_, "uPatGlow");
     uSkinned_ = glGetUniformLocation(prog_, "uSkinned");
+    uTuck_ = glGetUniformLocation(prog_, "uTuck");
+    uTuckC_ = glGetUniformLocation(prog_, "uTuckC");
     uBones_ = glGetUniformLocation(prog_, "uBones");
     uDesign_ = glGetUniformLocation(prog_, "uDesign");
     uDesCol_ = glGetUniformLocation(prog_, "uDesCol");
@@ -385,6 +415,8 @@ bool Renderer::init() {
     glUniform1i(glGetUniformLocation(prog_, "uMask"), 1);
     glUniform1i(glGetUniformLocation(prog_, "uPatternTex"), 2);
     glUniform1i(glGetUniformLocation(prog_, "uFabric"), 3);
+    glUniform1i(glGetUniformLocation(prog_, "uTuckTex"), 4);
+    glUniform1i(uTuck_, 0);
     uChar_ = glGetUniformLocation(prog_, "uChar");
     uCloth_ = glGetUniformLocation(prog_, "uCloth");
     glUniform1i(uPattern_, 0);
@@ -482,6 +514,11 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
     const bool skin = m.skinned && dp.bones;
     glUniform1i(uSkinned_, skin ? 1 : 0);
     if (skin) glUniformMatrix4fv(uBones_, 7, GL_FALSE, dp.bones[0].m);
+    glUniform1i(uTuck_, dp.tuck ? 1 : 0);
+    if (dp.tuck) {
+        glUniform3fv(uTuckC_, 1, dp.tuckC);
+        glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_2D, dp.tuck);
+    }
     glBindVertexArray(m.vao);
     glFrontFace(dp.mirrored ? GL_CW : GL_CCW);
     for (const Section& s : m.sections) {
@@ -527,12 +564,14 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, mt.diffuse ? mt.diffuse : 0);
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, mt.mask ? mt.mask : 0);
         glDrawElements(GL_TRIANGLES, s.count, GL_UNSIGNED_INT, (void*)(uintptr_t)(s.first * 4));
+        trisDrawn += s.count / 3;
     }
     glBindVertexArray(0);
     glFrontFace(GL_CCW);
     glDepthMask(GL_TRUE);
     glUniform2f(uUVOff_, 0, 0);   // text / ribbons don't go through draw(): leave neutral values behind
     glUniform1i(uSkinned_, 0);
+    glUniform1i(uTuck_, 0);
     glUniform1i(uDesign_, 0);
     glUniform1i(uChar_, 0);
     glUniform1i(uCloth_, 0);

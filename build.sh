@@ -67,7 +67,7 @@ fi
 
 echo "== packaging"
 "$BT/aapt2$EXE" link -o "$OUT/base.apk" --manifest "$ROOT/app/AndroidManifest.xml" -I "$PLATFORM" \
-  -A "$ASSET_DIR" --min-sdk-version 32 --target-sdk-version 34 --no-compile-sdk-metadata -0 tex -0 mdl -0 col -0 wav
+  -A "$ASSET_DIR" --min-sdk-version 32 --target-sdk-version 34 --no-compile-sdk-metadata -0 wav   # models, textures and collision compressed (the game reads assets with AAsset_read)
 # add native libs uncompressed (extractNativeLibs=false) then page-align
 python -I "$ROOT/tools/add_libs.py" "$OUT/base.apk" "$OUT/apk" "$OUT/unaligned.apk"
 "$BT/zipalign$EXE" -f -p 4 "$OUT/unaligned.apk" "$OUT/aligned.apk"

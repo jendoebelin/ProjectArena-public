@@ -50,10 +50,14 @@ struct DrawParams {
     float rim[4] = {0, 0, 0, 0};
     GLuint pattern = 0;
     const Mat4* bones = nullptr;   // skinned models: the 7 avatar bone matrices (bind -> world, before `model`)
+    // hair under headgear: a tuckTexture() (per direction from tuckC, model space, the radius the hair stays inside)
+    GLuint tuck = 0;
+    float tuckC[3] = {0, 0, 0};
 };
 
 class Renderer {
 public:
+    uint64_t trisDrawn = 0;   // triangles submitted through draw() (the game logs it per frame: performance checks)
     bool init();
     bool loadModel(const char* name, Model& out);
     // pass 0 = opaque, pass 1 = blended
@@ -73,6 +77,8 @@ public:
     // camera-facing additive light ribbon through pts[0..n) (oldest first); width/alpha taper toward the tail
     void drawRibbon(const Vec3* pts, int n, float width, const float rgba[4]);
     GLuint texture(const char* name, bool srgb) { return loadTexture(name, srgb); }   // tex/<name>.tex, cached
+    // a hair tuck map (w x h radius bytes, rows from straight down; tools/build_open_assets.py write_tuck) as a texture
+    GLuint tuckTexture(int w, int h, const uint8_t* v);
     void drawScreenTexture(GLuint tex, float alpha);   // full-view overlay (cross-fades), bottom-up texture
     void fadeToRoom(float k);   // PASSTHROUGH: the whole image (colour and coverage) times 1 - k: the room shows through
     // PASSTHROUGH > WINDOW with environment depth: on the given quads (the court's walls, just outside the glass), fill
@@ -92,7 +98,7 @@ private:
     GLint dMVP_ = -1, dModel_ = -1, dDepthVP_ = -1, dDepthView_ = -1, dNearFar_ = -1, dLayer_ = -1, dTex_ = -1, dCol_ = -1;
     GLint uUVOff_ = -1, uErode_ = -1, uRim_ = -1, uPattern_ = -1, uPatCol_ = -1, uPatGlow_ = -1;
     GLint uSkinned_ = -1, uBones_ = -1, uDesign_ = -1, uDesCol_ = -1, uDesGlow_ = -1;
-    GLint uChar_ = -1, uCloth_ = -1;
+    GLint uChar_ = -1, uCloth_ = -1, uTuck_ = -1, uTuckC_ = -1;
     GLuint fabricTex_ = 0;   // open_fabric: the knit for MAT_CLOTH
     GLint uMVP_, uModel_, uShader_, uTint_, uEmissive_, uUV_, uHasDiffuse_, uHasMask_, uTeam0_, uTeam1_, uEye_, uLightDir_;
     Mat4 view_, proj_, viewProj_;

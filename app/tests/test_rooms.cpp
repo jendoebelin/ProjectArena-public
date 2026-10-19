@@ -61,6 +61,7 @@ int main() {
     bool ready = true;
     for (auto& n : ns) ready &= n->net.onlineReady();
     CHECK(ready, "everyone is connected to the relay");
+    CHECK(std::strcmp(ns[0]->net.latestVersion(), "9.9.9") == 0, "the relay's welcome says the current release (UPDATE AVAILABLE)");
     Node& H = *ns[0];
     H.net.host();
     pump(ns, 0.3);
@@ -81,6 +82,11 @@ int main() {
     pump(ns, 1.0);
     CHECK(H.net.room().slot[0] == H.net.session() && H.net.room().slot[1] == ns[1]->net.session(), "their JOIN QUEUE takes the bot's place in the tank");
     CHECK(ns[1]->net.localSlot() == 1, "the visitor knows it plays slot 1");
+    std::printf("[ping between the host and a player]\n");
+    pump(ns, 2.5);
+    CHECK(ns[1]->net.pingMs() >= 0.f && ns[1]->net.pingMs() < 250.f, "the player measures its round trip to the host (PING / PONG)");
+    CHECK(H.net.pingMs() >= 0.f && H.net.pingMs() < 250.f, "and the host its round trip to the player");
+    std::printf("    ping: player -> host %.1f ms, host -> player %.1f ms (local relay)\n", ns[1]->net.pingMs(), H.net.pingMs());
     std::printf("[fist bump over the network]\n");
     {
         Node& V = *ns[1];

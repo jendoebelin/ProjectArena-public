@@ -339,6 +339,30 @@ def patterns():
     _save_pattern('bands', R, G)
 
 
+def trace_pulse():
+    """CIRCUIT RUNNER traces: a faint steady glow along the whole trace, and a pulse with a long tail (the game scrolls
+    v). Wider across than pulse() (the strips are only 6 mm wide)."""
+    w, h = 32, 256
+    u, v = grid(w, h)
+    across = np.exp(-((u - 0.5) / 0.34) ** 2)
+    f = np.mod(v, 1.0)
+    head = np.exp(-((f - 0.88) / 0.03) ** 2)
+    tail = np.where(f < 0.88, np.exp(-(0.88 - f) * 7.0), 0.0)
+    a = across * np.clip(0.34 + head + 0.6 * tail, 0, 1)   # (sRGB: 0.34 shows as a steady dim glow; the pulse ~5 cm)
+    save('trace_pulse', np.dstack([a] * 3))
+
+
+def pipe_pulse():
+    """LIVE suits: their piping glows as brightly as the painted neon it replaces (base 0.62), with the same pulses."""
+    w, h = 32, 256
+    u, v = grid(w, h)
+    across = np.exp(-((u - 0.5) / 0.38) ** 2)
+    f = np.mod(v, 1.0)
+    head = np.exp(-((f - 0.88) / 0.03) ** 2)
+    tail = np.where(f < 0.88, np.exp(-(0.88 - f) * 7.0), 0.0)
+    save('pipe_pulse', np.dstack([across * np.clip(0.62 + head + 0.5 * tail, 0, 1)] * 3))
+
+
 def main():
     print('textures ->', TEX)
     patterns()
@@ -351,6 +375,8 @@ def main():
     sky()
     twinkle()
     pulse()
+    trace_pulse()
+    pipe_pulse()
     veins()
     emblem()
     screen()

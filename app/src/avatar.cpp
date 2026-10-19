@@ -11,10 +11,12 @@ namespace {
 struct Swatch { const char* name; uint8_t r, g, b; };   // sRGB
 
 const char* kSuit[] = {"GRID RUNNER", "ARENA JERSEY", "VANGUARD", "STREET JACKET", "HOODIE", "ECHO SUIT", "TANK TOP", "PILOT",
-                       "CIRCUIT VEST", "TRAINING TEE"};
+                       "CIRCUIT VEST", "TRAINING TEE", "CIRCUIT RUNNER",   // 10: modelled traces with moving pulses
+                       "GRID RUNNER LIVE", "ECHO SUIT LIVE", "CIRCUIT VEST LIVE"};   // 11-13: their glow lines raised, pulsing
 const char* kLower[] = {"NONE", "ATHLETIC SHORTS", "CIRCUIT SHORTS", "BIKE SHORTS"};
 const char* kBody[] = {"MASCULINE", "FEMININE"};
 const char* kGauntlet[] = {"STRIKER", "TITAN", "PHANTOM", "CONTROLLER"};
+const char* kFace[] = {"FACE 1", "FACE 2", "FACE 3", "FACE 4"};   // tools/blender/make_body.py FACES (FACE 1 = the base)
 const char* kBuild[] = {"SLIM", "STANDARD", "BROAD", "ATHLETIC"};
 const char* kPattern[] = {"NONE", "CIRCUIT", "STRIPES", "CHEVRON", "HEX", "SPLIT", "PIXEL", "BANDS"};
 const char* kPatternTex[] = {nullptr, "open_pat_circuit", "open_pat_stripes", "open_pat_chevron", "open_pat_hex",
@@ -50,9 +52,9 @@ const Swatch kSkin[] = {{"PORCELAIN", 246, 222, 206}, {"FAIR", 238, 200, 176}, {
 template <class T, size_t N> constexpr int count(T (&)[N]) { return (int)N; }
 
 const char* kFieldName[F_COUNT] = {"SUIT", "BUILD", "PATTERN", "MAIN COLOR", "TRIM COLOR", "GLOW", "HAIR", "HAIR COLOR",
-                                   "HEADGEAR", "FACE SHIELD", "SHIELD TINT", "MASK", "SKIN", "LOWER BODY", "BODY TYPE", "GAUNTLET"};
+                                   "HEADGEAR", "FACE SHIELD", "SHIELD TINT", "MASK", "SKIN", "LOWER BODY", "BODY TYPE", "GAUNTLET", "FACE"};
 const char* kKey[F_COUNT] = {"suit", "build", "pattern", "primary", "secondary", "glow", "hair", "haircolor",
-                             "headgear", "visor", "visortint", "mask", "skin", "lower", "body", "gauntlet"};
+                             "headgear", "visor", "visortint", "mask", "skin", "lower", "body", "gauntlet", "face"};
 
 float lin(uint8_t c) { return std::pow(c / 255.f, 2.2f); }
 void swatchLin(const Swatch& s, float out[3]) { out[0] = lin(s.r); out[1] = lin(s.g); out[2] = lin(s.b); }
@@ -65,7 +67,7 @@ uint8_t* ref(AvatarDesc& d, Field f) {
     case F_VISOR: return &d.visor;         case F_VISORTINT: return &d.visorTint; case F_MASK: return &d.mask;
     case F_SKIN: return &d.skin;           case F_LOWER: return &d.lower;       case F_BODY: return &d.body;
     case F_GAUNTLET: return &d.gauntlet;
-    default: return &d.gauntlet;
+    default: return &d.gauntlet;   // (F_FACE lives in body's bits 1-2: get / set handle it)
     }
 }
 
@@ -103,8 +105,8 @@ const Preset kPresets[] = {
 }  // namespace
 
 Field rowField(int row) {
-    static const Field k[F_COUNT] = {F_BODY, F_SUIT, F_BUILD, F_LOWER, F_GAUNTLET, F_PATTERN, F_PRIMARY, F_SECONDARY, F_GLOW,
-                                     F_HAIR, F_HAIRCOLOR, F_HEADGEAR, F_VISOR, F_VISORTINT, F_MASK, F_SKIN};
+    static const Field k[F_COUNT] = {F_BODY, F_FACE, F_SUIT, F_BUILD, F_LOWER, F_GAUNTLET, F_PATTERN, F_PRIMARY, F_SECONDARY,
+                                     F_GLOW, F_HAIR, F_HAIRCOLOR, F_HEADGEAR, F_VISOR, F_VISORTINT, F_MASK, F_SKIN};
     return row >= 0 && row < F_COUNT ? k[row] : F_SUIT;
 }
 
@@ -116,6 +118,7 @@ int fieldCount(Field f) {
     case F_HEADGEAR: return count(kHeadgear);  case F_VISOR: return count(kVisor);     case F_VISORTINT: return count(kTint);
     case F_MASK: return count(kMask);          case F_SKIN: return count(kSkin);       case F_LOWER: return count(kLower);    case F_BODY: return count(kBody);
     case F_GAUNTLET: return count(kGauntlet);
+    case F_FACE: return kFaces;
     default: return 1;
     }
 }
@@ -131,15 +134,23 @@ const char* optionName(Field f, int i) {
     case F_HEADGEAR: return kHeadgear[i];    case F_VISOR: return kVisor[i];        case F_VISORTINT: return kTint[i].name;
     case F_MASK: return kMask[i];            case F_SKIN: return kSkin[i].name;     case F_LOWER: return kLower[i];        case F_BODY: return kBody[i];
     case F_GAUNTLET: return kGauntlet[i];
+    case F_FACE: return kFace[i];
     default: return "?";
     }
 }
 
-uint8_t get(const AvatarDesc& d, Field f) { return *ref(const_cast<AvatarDesc&>(d), f); }
+uint8_t get(const AvatarDesc& d, Field f) {
+    if (f == F_BODY) return (uint8_t)bodyType(d);
+    if (f == F_FACE) return (uint8_t)faceOf(d);
+    return *ref(const_cast<AvatarDesc&>(d), f);
+}
 
 void set(AvatarDesc& d, Field f, int v) {
     int n = fieldCount(f);
-    *ref(d, f) = (uint8_t)(((v % n) + n) % n);
+    v = ((v % n) + n) % n;
+    if (f == F_BODY) d.body = (uint8_t)((d.body & ~1) | v);
+    else if (f == F_FACE) d.body = (uint8_t)((d.body & 1) | (v << 1));
+    else *ref(d, f) = (uint8_t)v;
 }
 
 bool isColor(Field f) {
@@ -165,9 +176,11 @@ void optionColor(Field f, int i, const float team[3], float out[3]) {
 
 void sanitize(AvatarDesc& d) {
     for (int f = 0; f < F_COUNT; ++f) {
+        if (f == F_BODY || f == F_FACE) continue;
         uint8_t* v = ref(d, (Field)f);
         if (*v >= fieldCount((Field)f)) *v = 0;
     }
+    d.body = (uint8_t)(bodyType(d) | ((d.body >> 1) < kFaces ? (d.body & ~1) : 0));   // a face out of range: FACE 1
 }
 
 int presetCount() { return count(kPresets); }
@@ -201,7 +214,7 @@ AvatarDesc randomLook(uint32_t seed) {
     d.mask = (uint8_t)(pick(s, 10) < 6 ? 0 : pick(s, count(kMask)));
     d.skin = (uint8_t)(pick(s, 10) == 0 ? 8 + pick(s, 4) : pick(s, 8));
     d.lower = (uint8_t)(pick(s, 2) == 0 ? 0 : 1 + pick(s, count(kLower) - 1));
-    d.body = (uint8_t)pick(s, 2);
+    d.body = (uint8_t)(pick(s, 2) | (pick(s, kFaces) << 1));
     d.gauntlet = (uint8_t)pick(s, 3);
     return d;
 }
@@ -225,7 +238,6 @@ void channelColors(const AvatarDesc& in, const float team[3], float out[CH_COUNT
 }
 
 bool neonHair(const AvatarDesc& d) { return d.hairColor == count(kHairCol) - 1; }
-bool hidesHair(int headgear) { return headgear >= 1 && headgear <= 4; }   // helmets, hood
 const char* patternTexture(int pattern) { return pattern > 0 && pattern < count(kPattern) ? kPatternTex[pattern] : nullptr; }
 
 std::string toText(const AvatarDesc& d) {
@@ -251,7 +263,7 @@ bool fromText(const std::string& s, AvatarDesc& d) {
         std::string k = line.substr(0, eq);
         int v = std::atoi(line.c_str() + eq + 1);
         for (int f = 0; f < F_COUNT; ++f)
-            if (k == kKey[f] && v >= 0 && v < fieldCount((Field)f)) { *ref(d, (Field)f) = (uint8_t)v; any = true; }
+            if (k == kKey[f] && v >= 0 && v < fieldCount((Field)f)) { set(d, (Field)f, v); any = true; }
     }
     sanitize(d);
     return any;
@@ -318,7 +330,7 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
     const RigTuning& T = rigTuning();
     const Pose& h = in.head;
     const Build B = buildOf(d.build);
-    const BodyBind& K = bodyBind(d.body);
+    const BodyBind& K = bodyBind(bodyType(d));
     // the head carries the neck top as in the bind pose; the torso hangs upright below it, so nodding or tilting the
     // head never swings the body
     const Vec3 neckTop = h.transform(K.neckTop - K.eye + T.neck);
@@ -415,7 +427,10 @@ Mat4 boneMatrix(const Bone& b, bool mirrorX, float thick) {
 void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& din, std::vector<PartDraw>& out, bool lod) {
     AvatarDesc d = din;
     sanitize(d);
-    const char bk = d.body ? 'f' : 'm';
+    const char bk = bodyType(d) ? 'f' : 'm';
+    const int face = faceOf(d);
+    char fk[4] = {bk, 0, 0, 0};   // the face's own parts (head, face shields, masks): m / m1 / m2 / m3
+    if (face) fk[1] = char('0' + face);
     char name[32];
     auto add = [&](const char* model, const Mat4& m, bool mirrored, uint8_t flags = 0) {
         PartDraw p;
@@ -429,21 +444,31 @@ void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& din, std::v
     const Mat4 I = Mat4::identity();
     std::snprintf(name, sizeof name, "av_top_%d_%c", d.suit, bk);
     add(name, I, false, PART_SKINNED);
-    std::snprintf(name, sizeof name, "av_bhead_%c", bk);
+    std::snprintf(name, sizeof name, "av_bhead_%s", fk);
     add(name, I, false, PART_SKINNED);
     if (d.lower) { std::snprintf(name, sizeof name, "av_bottom_%d_%c", d.lower, bk); add(name, I, false, PART_SKINNED); }
     else { std::snprintf(name, sizeof name, "av_wfade_%c", bk); add(name, I, false, PART_SKINNED); }
     if (d.headgear) { std::snprintf(name, sizeof name, "av_gear_%d_%c", d.headgear, bk); add(name, head, false); }
     else if (lod && d.hair) { std::snprintf(name, sizeof name, "av_hair_%d_%c", d.hair, bk); add(name, head, false, neonHair(d) ? PART_NEON : 0); }
     if (lod) return;   // miniatures: the silhouette is enough
-    int hair = hidesHair(d.headgear) ? 0 : d.hair;
-    if (hair && d.headgear == 6) hair = 1;   // under the cap: the close-cropped layer (longer styles poke through it)
-    if (hair) {
-        std::snprintf(name, sizeof name, "av_hair_%d_%c", hair, bk);
-        add(name, head, false, neonHair(d) ? PART_NEON : 0);
+    if (d.suit >= 10) {   // CIRCUIT RUNNER and the LIVE suits: the pulses along their raised traces (scrolled by the game)
+        std::snprintf(name, sizeof name, "av_tpulse_%d_%c", d.suit, bk);
+        add(name, I, false, PART_SKINNED | PART_PULSE);
     }
-    if (d.visor) { std::snprintf(name, sizeof name, "av_visor_%d_%c", d.visor, bk); add(name, head, false); }
-    if (d.mask) { std::snprintf(name, sizeof name, "av_mask_%d_%c", d.mask, bk); add(name, head, false); }
+    // hair under every headgear: the game keeps it inside the helmet, hood or cap, so what shows is what would (a
+    // ponytail from under a helmet's rim, a fringe in a hood)
+    if (d.hair) {
+        const uint8_t hf = uint8_t(PART_HAIR | (neonHair(d) ? PART_NEON : 0));
+        std::snprintf(name, sizeof name, "av_hair_%d_%c", d.hair, bk);
+        add(name, head, false, hf);
+        if (d.hair == 3 || d.hair == 7) {   // PONYTAIL's tail, TOP KNOT's loose ends: parts of their own (they swing)
+            std::snprintf(name, sizeof name, "av_hair_%dt_%c", d.hair, bk);
+            add(name, head, false, hf);
+        }
+    }
+    // face shields and masks are fitted to each face (the game falls back to the base head's if one is missing)
+    if (d.visor) { std::snprintf(name, sizeof name, "av_visor_%d_%s", d.visor, fk); add(name, head, false); }
+    if (d.mask) { std::snprintf(name, sizeof name, "av_mask_%d_%s", d.mask, fk); add(name, head, false); }
 }
 
 }  // namespace avatar

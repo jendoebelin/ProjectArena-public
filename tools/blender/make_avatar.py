@@ -108,7 +108,9 @@ if HEAD_KEY:
     from mathutils import Vector
     from mathutils.bvhtree import BVHTree
     _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    _bd = np.load(os.path.join(_ROOT, 'build', 'open_src', 'body', 'body_%s.npz' % {'m': 'masc', 'f': 'fem'}[HEAD_KEY]))
+    # 'm' / 'f', or a FACE variant 'm1'.. (the same body with another face: body_<masc|fem>_face<k>.npz)
+    _bd = np.load(os.path.join(_ROOT, 'build', 'open_src', 'body', 'body_%s%s.npz' % (
+        {'m': 'masc', 'f': 'fem'}[HEAD_KEY[0]], '_face' + HEAD_KEY[1:] if len(HEAD_KEY) > 1 else '')))
     import json as _json
     _J = _json.loads(str(_bd['joints']))
     _eye = np.array(_J['eye_mid'])
@@ -579,6 +581,33 @@ def lock(p, path_dirs, offsets, widths, mat='av_hair_lock', arch=0.0035, nx=5):
     p.grid(mat, P, flip=True)
 
 
+def tuft(p, mat, pts, width, thick, side, segs=10):
+    """A flat tapered tuft along pts (root buried, a pointed tip): `width` across in the plane of the path and `side`'s
+    normal, `thick` along `side` (scalars or per point)."""
+    pts = np.asarray(pts, float)
+    n = len(pts)
+    w = np.broadcast_to(np.asarray(width, float), (n,))
+    t = np.broadcast_to(np.asarray(thick, float), (n,))
+    T = np.gradient(pts, axis=0)
+    T /= np.maximum(np.linalg.norm(T, axis=-1, keepdims=True), 1e-12)
+    S = np.asarray(side, float)
+    ang = np.linspace(0, 2 * math.pi, segs, endpoint=False)
+    P = np.zeros((n, segs, 3))
+    Nn = np.zeros((n, segs, 3))
+    for k in range(n):
+        a = S - T[k] * (S @ T[k])
+        a /= max(np.linalg.norm(a), 1e-12)
+        b = np.cross(T[k], a)
+        for i, th in enumerate(ang):
+            P[k, i] = pts[k] + a * t[k] * math.cos(th) + b * w[k] * math.sin(th)
+            nn = a * math.cos(th) / max(t[k], 1e-4) + b * math.sin(th) / max(w[k], 1e-4)
+            Nn[k, i] = nn / max(np.linalg.norm(nn), 1e-12)
+    L = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=-1))])
+    uu, vv = np.meshgrid(np.arange(segs) / segs, L / max(L[-1], 1e-6))
+    p.grid(mat, P, np.stack([uu, vv], -1), closed_u=True, normals=Nn)
+    p.fan(mat, P[-1], pts[-1] + T[-1] * max(w[-1], t[-1]) * 0.6, apex_n=T[-1])
+
+
 def clumps(p, n, thickness, start_el=74.0, end_lift=-2.0, curl=0.0, flow=None, reach=0.006, r0=0.0062, seed=3, sel=None):
     """Tapered strand clumps lying on the hair shell, from near the crown to past the hairline (a soft, broken
     edge instead of a helmet rim). flow(theta) -> start azimuth offset; sel(theta) -> keep this clump."""
@@ -634,24 +663,36 @@ def make_hair(k):
             lock(p, D, 0.0035 + 0.0035 * grow + 0.0025 * np.sin(math.pi * u),
                  ((0.017 + 0.004 * rng.random()) * (1 - 0.6 * u) + 0.003) * (0.35 + 0.65 * grow), arch=0.0016)
         nt = 20
+        tail = Part('av_hair_3t')   # the tail is its own part: the game swings it (uv1.x = distance down the tail)
+        tail.pivot, tail.tail_len = tie, 0.25
+        p.extra = tail
         for kk in range(11):   # the tail: a bundle of wavy strands that splay toward the ends
             ang = 2 * math.pi * kk / 11
             off = np.array([0.008 * math.cos(ang), 0.006 * math.sin(ang), 0])
             ph = rng.random() * 6.28
             pts = np.array([tie + off * (1 + 1.6 * t) + np.array([0.010 * math.sin(5.5 * t + ph), -0.018 * t - 0.05 * t * t, -0.21 * t])
                             for t in np.linspace(0, 1, nt)])
-            p.tube('av_hair', pts, 0.0135 * (1 - np.linspace(0, 1, nt)) ** 0.75 + 0.0020, segs=8)
+            tail.tube('av_hair', pts, 0.0135 * (1 - np.linspace(0, 1, nt)) ** 0.75 + 0.0020, segs=8)
         p.tube('av_secondary', [tie + np.array([0, 0.006, 0.004]), tie + np.array([0, -0.006, -0.004])], 0.0135, segs=16)
-    elif k == 4:    # MOHAWK: buzz sides, a crest fin front to back
+    elif k == 4:    # MOHAWK: buzz sides, a crest of flat tapered tufts from the hairline to the crown, raked back
         hair_shell(p, 0.0022, ridges=0.0004)
         a0 = float(np.degrees(hairline(np.array(math.pi / 2)))) + 4.0     # start at the hairline, not on the forehead
-        a = np.radians(np.linspace(a0, 160, 30))
-        base = [project(sd_skull, np.array([[0, math.cos(t), math.sin(t)]]), 0.002)[0] for t in a]
-        height = 0.055 * np.sin(np.linspace(0.1, math.pi - 0.25, 30)) ** 0.6 + 0.012
-        # crest: stacked thin tubes from the scalp outward give a solid fin with soft edges
-        for f in np.linspace(0.0, 1.0, 6):
-            pts = [base[i] + (base[i] - HEAD_C) / np.linalg.norm(base[i] - HEAD_C) * height[i] * f for i in range(30)]
-            p.tube('av_hair', pts, 0.0065 * (1 - 0.6 * f), segs=8)
+        n_t = 26
+        ts = np.radians(np.linspace(a0, 158, n_t))
+        height = 0.058 * np.sin(np.linspace(0.12, math.pi - 0.30, n_t)) ** 0.6 + 0.014
+        rng = np.random.default_rng(44)
+        u = np.linspace(0, 1, 9)
+        for i, t in enumerate(ts):   # overlapping blades: a solid fin, its top edge broken into raked points
+            base = project(sd_skull, np.array([[0, math.cos(t), math.sin(t)]]), -0.002)[0]   # rooted under the buzz
+            out = (base - HEAD_C) / np.linalg.norm(base - HEAD_C)
+            back = np.array([0, -math.sin(t), math.cos(t)])                                # along the crest, to the nape
+            d = out + (0.55 + 0.15 * rng.normal()) * back
+            d /= np.linalg.norm(d)
+            h = height[i] * (0.92 + 0.16 * rng.random())
+            x = rng.normal(0, 0.0012)
+            pts = [base + np.array([x, 0, 0]) + d * h * s + back * 0.22 * h * s * s for s in u]
+            tuft(p, 'av_hair', pts, (0.0135 + 0.003 * rng.random()) * (1 - u) ** 0.8 + 0.0008,
+                 0.0085 * (1 - 0.75 * u) + 0.0008, (1, 0, 0))
     elif k == 5:    # SPIKES
         hair_shell(p, 0.007, ridges=0.0012)
         rng = np.random.default_rng(5)
@@ -696,7 +737,7 @@ def make_hair(k):
                 off = th_(np.full(12, th_end), 1 - u) + 0.004 + 0.003 * layer + 0.006 * u ** 2
                 w = (0.019 + 0.006 * rng.random()) * (1 - 0.7 * u ** 2)
                 lock(p, dirs(TH, EL), off, w)
-    elif k == 7:    # TOP KNOT
+    elif k == 7:    # TOP KNOT: a bun on the crown, its two loose ends hanging down the back (they swing)
         hair_shell(p, 0.0045, ridges=0.0008)
         top = project(sd_skull, dirs(np.array(-math.pi / 2), np.array(math.radians(72)))[None], 0.004)[0]
 
@@ -704,6 +745,23 @@ def make_hair(k):
             b.sphere('av_hair', tuple(top + np.array([0, 0, 0.022])), 0.026, segs=20, rings=12, scale=(1, 1, 0.85))
             b.torus('av_secondary', tuple(top + np.array([0, 0, 0.004])), 0.015, 0.004, segs=20, tsegs=6)
         p.builder(bun)
+        ends = Part('av_hair_7t')   # its own part: the game swings each end (uv1 = how far down it, which end)
+        ends.lines = []
+        p.extra = ends
+        rng = np.random.default_rng(71)
+        m = 12
+        u = np.linspace(0, 1, m)
+        for e, s_ in enumerate((-1, 1)):
+            th = -math.pi / 2 + s_ * (0.10 + 0.22 * u)   # fanning a little apart down the back of the head
+            el = np.radians(64 - 34 * u)
+            line = project(sd_skull, dirs(th, el), 0.020 - 0.007 * u)
+            line[0] = top + np.array([s_ * 0.007, -0.016, 0.010])   # out of the bun's back
+            ends.lines.append(line)
+            for kk in range(4):   # a few strands per end, tapering to points
+                o = rng.normal(0, 0.0022, 3)
+                ph = rng.random() * 6.28
+                pts = line + o * (0.4 + u[:, None]) + np.stack([0.0018 * np.sin(7 * u + ph), np.zeros(m), np.zeros(m)], -1)
+                ends.tube('av_hair', pts, 0.0058 * (1 - u) ** 0.8 + 0.0010, segs=7)
     elif k == 8:    # TOUSLED: short-medium, layered and messy, volume on top, a fringe falling to one side
         hair_shell(p, 0.006, ridges=0.0010)
         rng = np.random.default_rng(8)
@@ -1689,7 +1747,31 @@ def export(parts, out):
             pos.append(np.stack([P[idx, 0], P[idx, 2], -P[idx, 1]], -1))
             nrm.append(np.stack([N[idx, 0], N[idx, 2], -N[idx, 1]], -1))
             uv0.append(np.stack([U[idx, 0], 1.0 - U[idx, 1]], -1))
-            uv1.append(np.zeros((len(idx), 2)))
+            if getattr(p, 'pivot', None) is not None:   # a swinging part: uv1 = (distance from its pivot / length, 1)
+                t = np.linalg.norm(P[idx] - np.asarray(p.pivot), axis=1) / p.tail_len
+                uv1.append(np.stack([np.clip(t, 0, 1), np.ones(len(idx))], -1))
+            elif getattr(p, 'lines', None):   # several swinging ends: uv1 = (how far down its end, 1 + which end)
+                Q = P[idx]
+                best = np.full(len(Q), np.inf)
+                tt = np.zeros(len(Q))
+                which = np.zeros(len(Q))
+                for e, Lk in enumerate(p.lines):
+                    a_, b_ = Lk[:-1], Lk[1:]
+                    ab = b_ - a_
+                    seg = np.linalg.norm(ab, axis=1)
+                    cum = np.concatenate([[0], np.cumsum(seg)])
+                    f = np.clip(np.einsum('nsd,sd->ns', Q[:, None, :] - a_[None], ab) / np.maximum(seg ** 2, 1e-12), 0, 1)
+                    dist = np.linalg.norm(Q[:, None, :] - (a_[None] + f[..., None] * ab[None]), axis=2)
+                    j = dist.argmin(1)
+                    dj = dist[np.arange(len(Q)), j]
+                    s_along = (cum[j] + f[np.arange(len(Q)), j] * seg[j]) / cum[-1]
+                    nearer = dj < best
+                    best = np.where(nearer, dj, best)
+                    tt = np.where(nearer, s_along, tt)
+                    which = np.where(nearer, e, which)
+                uv1.append(np.stack([np.clip(tt, 0, 1), 1.0 + which], -1))
+            else:
+                uv1.append(np.zeros((len(idx), 2)))
             mat.append(np.full(len(idx), mi))
         print('  %-14s %6d tris' % (p.name, len(M)))
     np.savez_compressed(out, pos=np.concatenate(pos).astype(np.float32), nrm=np.concatenate(nrm).astype(np.float32),
@@ -1711,6 +1793,8 @@ def main():
         for k in range(1, 9):
             if want('av_hair_%d' % k):
                 parts.append(make_hair(k))
+                if getattr(parts[-1], 'extra', None) is not None:
+                    parts.append(parts[-1].extra)   # the ponytail's tail, the top knot's ends: they swing
         PROJ[0] = 'env'
         for k in range(1, 7):
             if want('av_gear_%d' % k):

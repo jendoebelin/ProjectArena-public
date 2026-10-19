@@ -90,6 +90,9 @@ anyone may use it with credit to you.
 | You are making | Start from | Notes |
 |---|---|---|
 | A top / outfit / shorts | `body_masculine.glb` and `body_feminine.glb` | Model on the body in its bind pose (arms out). Keep the armature: the game bends the outfit with the same 7 bones, so every vertex needs weights (copy them from the body with Blender's Data Transfer modifier). Make one version per body. Max ~8,000 triangles each. |
+| (top: what it covers) | | The top **replaces the body from the waist up**: chest, back and both arms to the wrists (the gauntlets cover the hands, the game draws the head). Any skin it leaves bare is part of your file (material `av_skin`, follow the template body's surface). It ends at the waist: Y = -0.417 m (feminine) / -0.478 m (masculine). |
+| (shorts: what they cover) | | The shorts **replace the body from the waist down**: they start at the same waist line and carry the legs on to where the avatar's legs end, Y = -0.864 m (feminine) / -0.991 m (masculine), finished with the glowing fade ring (material `av_fade`). Bare leg below the hem is part of your file (`av_skin`). Without the legs the avatar stops at the hem. Copy the legs and the fade ring from `examples/av_bottom_1_f.glb` / `av_bottom_1_m.glb`. |
+| (fit) | | Cloth follows the body's surface closely (3-15 mm off the skin, shrinkwrap it); hard plates up to ~25 mm. Fit each version to its own body (the feminine and masculine bodies differ in shape, not only in size). Use the template's coordinates exactly as they are: numbers from the game's source code are in other spaces. |
 | A pattern or design on an outfit | `uv_layout_*.png` | Paint over the layout at 512 or 1024 px. Design masks use channels: **red** = the trim colour, **green** = glowing lines, **blue** = white accents. |
 | Hair, a helmet, a cap, glasses, a face shield, a mask | `head_masculine.glb` / `head_feminine.glb` | Head space: the origin is between the eyes. Leave 3-6 mm between the part and the skin so nothing pokes through. One version per head. Max ~8,000 triangles. |
 | A gauntlet / glove | `gauntlet_grip.glb` | The controller held in a glove, in the hand frame. Your gauntlet must enclose the controller (players hold a real one there). Right hand only; the game mirrors it for the left. Max ~8,000 triangles. |
@@ -102,7 +105,8 @@ are set up.
 Avatars: `av_primary` (player's main colour, takes patterns), `av_primary_np` (main colour, no pattern),
 `av_primary_dk` (darker main), `av_secondary`, `av_secondary_dk`, `av_glow` (glows in the glow colour), `av_trim`
 (metallic trim colour), `av_skin`, `av_hair`, `av_hair_lock` (thin two-sided hair strands), `av_visor` (glass, takes
-the visor tint), `av_dark`, `av_armor`, `av_armor_white`, `av_piping`, `av_cloth` / `av_cloth_dk` (matte fabric).
+the visor tint), `av_dark`, `av_armor`, `av_armor_white`, `av_piping`, `av_cloth` / `av_cloth_dk` (matte fabric),
+`av_fade` (the glowing ring where the avatar's legs end: shorts only).
 
 Gauntlets: `gaunt_shell` (main colour plates), `gaunt_trim`, `gaunt_dark`, `gaunt_glow`, `glove`.
 
@@ -127,7 +131,8 @@ def main():
         E.export('av_bhead_' + key, os.path.join(out, 'head_%s.glb' % nm), offset=-eye_of(body), rigid=True)
         print('  body + head', nm)
     E.export('lancer', os.path.join(out, 'gauntlet_grip.glb'))
-    for m in ('av_top_9_f', 'av_bottom_1_m', 'av_hair_8_m', 'av_gear_6_f', 'av_visor_4_m', 'av_mask_4_f', 'gauntlet_0'):
+    for m in ('av_top_9_f', 'av_top_9_m', 'av_bottom_1_f', 'av_bottom_1_m', 'av_hair_8_m', 'av_gear_6_f', 'av_visor_4_m',
+              'av_mask_4_f', 'gauntlet_0'):
         E.export(m, os.path.join(out, 'examples', m + '.glb'))
     open(os.path.join(out, 'README.md'), 'w', encoding='utf-8', newline='\n').write(README)
     print('wrote', out)

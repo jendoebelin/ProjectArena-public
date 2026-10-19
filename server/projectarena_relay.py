@@ -12,7 +12,8 @@ Protocol (little endian), client -> server: magic 'OARL' (u32), type (u8), token
   PING   4  keep-alive (every ~2 s; clients silent for 10 s are dropped); answered with a PING
   BYE    5
 server -> client: magic, type, body
-  WELCOME 2  body: token (16), virtual address (u32)
+  WELCOME 2  body: token (16), virtual address (u32), then the current release: length (u8) + version (ASCII, e.g.
+             "0.3.4"; --latest file, empty when there is none). Builds before 0.3.4 read only the first 20 bytes.
   DELIVER 6  body: source virtual address (u32), game packet
   ERROR   7  body: message (48 bytes, upper-case ASCII)
 
@@ -63,6 +64,26 @@ class Client:
         self.bucket = RATE
 
 
+class Latest:
+    """The current release's version (one line, e.g. 0.3.4) from a text file, re-read when it changes; games older
+    than it say UPDATE AVAILABLE."""
+
+    def __init__(self, path):
+        self.path, self.mtime, self.version = path, None, b''
+
+    def get(self):
+        try:
+            m = os.path.getmtime(self.path)
+        except OSError:
+            return b''
+        if m != self.mtime:
+            self.mtime = m
+            with open(self.path, 'rb') as f:
+                v = f.read(64).decode('ascii', 'ignore').strip()
+            self.version = ''.join(c for c in v if c.isdigit() or c == '.')[:15].encode()
+        return self.version
+
+
 class Bans:
     """--bans FILE: IP addresses and name:PLAYERNAME lines, re-read whenever the file changes."""
 
@@ -97,7 +118,8 @@ class Bans:
 
 
 class Relay(asyncio.DatagramProtocol):
-    def __init__(self, max_clients, log=print, lag=0.0, jitter=0.0, loss=0.0, bans=None):
+    def __init__(self, max_clients, log=print, lag=0.0, jitter=0.0, loss=0.0, bans=None, latest=None):
+        self.latest = latest
         self.max_clients = max_clients
         self.bans = bans
         self.lag, self.jitter, self.loss = lag / 1000.0, jitter / 1000.0, loss / 100.0
@@ -174,7 +196,8 @@ class Relay(asyncio.DatagramProtocol):
                 self.by_vip[c.vip] = c
                 self.log('join   %-16s v%d (%d online)' % (name, version, len(self.by_addr)))
             c.version, c.name, c.seen = version, name, now
-            self.send(addr, WELCOME, c.token + struct.pack('<I', c.vip))
+            v = self.latest.get() if self.latest else b''
+            self.send(addr, WELCOME, c.token + struct.pack('<I', c.vip) + bytes([len(v)]) + v)
             return
         c = self.by_addr.get(addr)
         if c is None or token != c.token:      # unknown sender or forged token: ask it to say hello again
@@ -291,13 +314,14 @@ async def main():
     ap.add_argument('--max-clients', type=int, default=200)
     ap.add_argument('--reports', default='bug_reports', help='folder for bug reports sent from the game')
     ap.add_argument('--bans', default='bans.txt', help='moderation: banned IP addresses and name:PLAYERNAME lines')
+    ap.add_argument('--latest', default='latest_version.txt', help='the current release (e.g. 0.3.4): older games say UPDATE AVAILABLE')
     ap.add_argument('--lag', type=float, default=0.0, help='testing: extra one-way delay per forwarded packet (ms)')
     ap.add_argument('--jitter', type=float, default=0.0, help='testing: up to this much more delay at random (ms)')
     ap.add_argument('--loss', type=float, default=0.0, help='testing: percent of forwarded packets dropped')
     args = ap.parse_args()
     loop = asyncio.get_running_loop()
     stamp = lambda m: print(time.strftime('%H:%M:%S ') + m, flush=True)
-    relay = Relay(args.max_clients, stamp, args.lag, args.jitter, args.loss, Bans(args.bans, stamp))
+    relay = Relay(args.max_clients, stamp, args.lag, args.jitter, args.loss, Bans(args.bans, stamp), Latest(args.latest))
     await loop.create_datagram_endpoint(lambda: relay, local_addr=(args.bind, args.port))
     stamp('Project Arena relay listening on UDP %s:%d' % (args.bind, args.port))
     reports = Reports(args.reports, stamp, relay)

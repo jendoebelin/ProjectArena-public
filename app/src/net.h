@@ -82,8 +82,10 @@ public:
     uint32_t session() const { return session_; }
     std::vector<LanGame> games() const;   // hosts seen in the last 2 s
     const char* noticeText() const;       // short-lived banner ("PLAYER JOINED", "HOST LOST", ...) or null
+    const char* latestVersion() const { return latest_; }   // the current release, as the relay says ("" = not told)
     void noticeLocal(const char* msg) { notice(msg); }
     uint32_t peerIp() const { return peerIp_; }
+    float pingMs() const { return inRoom() ? lastPingMs_ : -1.f; }   // the latest round trip to the host / a player; -1 none
     // Online: the community relay makes the internet look like the LAN; addresses become virtual ones.
     bool goOnline(const char* hostPort);   // "host[:port]"; false if the address does not resolve
     void goOffline();
@@ -161,6 +163,7 @@ private:
     Mode mode_ = Mode::Offline;
     double now_ = 0, searchStart_ = 0, lastBeacon_ = 0, peerSeen_ = 0, lastRoomSent_ = 0, rotateAt_ = 0, lastSlowState_ = 0;
     uint32_t peerIp_ = 0;                 // client: the host; host: unused
+    char latest_[16] = {};
     uint32_t peerSession_ = 0;            // client: the host's session id: packets from anyone else are ignored
     uint32_t forfeit_ = 0;                // host: a tank player who gave up (handled on the next exchange)
     bool online_ = false;
@@ -175,8 +178,11 @@ private:
     double otherVerSeen_ = -10;
     uint32_t seq_ = 0, lastRecvSeq_ = 0, lastRoomSeq_ = 0;
     uint32_t statRecv_ = 0, statLost_ = 0, statLate_ = 0;
+    float pingMin_ = 0, pingMax_ = 0, lastPingMs_ = -1;   // round trips (ms) since the last stats line; the latest
+    double pingSum_ = 0, lastPingSent_ = 0;
+    uint32_t pingN_ = 0;
     double statStart_ = 0;
-    void resetStats() { statRecv_ = statLost_ = statLate_ = 0; statStart_ = now_; }
+    void resetStats() { statRecv_ = statLost_ = statLate_ = 0; pingSum_ = 0; pingN_ = 0; statStart_ = now_; }
     void countSeq(uint32_t seq) {
         if (lastRecvSeq_ && seq > lastRecvSeq_ + 1) statLost_ += seq - lastRecvSeq_ - 1;
         ++statRecv_; lastRecvSeq_ = seq;

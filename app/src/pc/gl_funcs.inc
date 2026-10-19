@@ -24,6 +24,7 @@
     X(glDrawArrays, PFNGLDRAWARRAYSPROC) \
     X(glDrawElements, PFNGLDRAWELEMENTSPROC) \
     X(glEnable, PFNGLENABLEPROC) \
+    X(glScissor, PFNGLSCISSORPROC) \
     X(glEnableVertexAttribArray, PFNGLENABLEVERTEXATTRIBARRAYPROC) \
     X(glFramebufferRenderbuffer, PFNGLFRAMEBUFFERRENDERBUFFERPROC) \
     X(glFramebufferTexture2D, PFNGLFRAMEBUFFERTEXTURE2DPROC) \
@@ -53,6 +54,7 @@
     X(glUniform1i, PFNGLUNIFORM1IPROC) \
     X(glUniform2f, PFNGLUNIFORM2FPROC) \
     X(glUniform3f, PFNGLUNIFORM3FPROC) \
+    X(glUniform3fv, PFNGLUNIFORM3FVPROC) \
     X(glUniform4f, PFNGLUNIFORM4FPROC) \
     X(glUniform4fv, PFNGLUNIFORM4FVPROC) \
     X(glUniformMatrix4fv, PFNGLUNIFORMMATRIX4FVPROC) \

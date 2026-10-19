@@ -49,6 +49,18 @@ Watching without a headset (spectator / streaming)
     F          free camera: hold the right mouse button to look, W A S D to move, Q / E down / up, Shift faster
     Wheel      zoom          Tab   next live match          H   the spectator hub
     F11        full screen   F1    controls window   F2  help bar in the picture   Esc  leave full screen
+  A game controller works too: an Xbox controller, or a PlayStation 4 controller over USB or Bluetooth
+  (cross = A, circle = B, square = X, triangle = Y, L1 / R1 = LB / RB, Share = View, Options = Menu):
+    A  next live match   B  the hub   X  auto camera   Y  free camera   D-pad left / right  cameras
+    Triggers  zoom       View  help bar in the picture   Menu  full screen
+    Free camera: left stick moves, right stick looks, LB / RB down / up, click the left stick to go faster
+  V          view layers: FULL, NO WALLS (the court's outline instead of its glass), MINIMAL (no stadium, strike
+             zones, spawners or scoreboard), KEY (only the players and the balls, on a solid key colour)
+  K          the key colour: green, magenta or blue (pick one nobody's glow colour uses)
+  (controller: D-pad up / down cycles the view layers)
+  Green screen in OBS: VIEW LAYERS > KEY, then on the Window Capture source add Filters > Chroma Key with the same key
+  colour. Behind the key colour the picture is also transparent, for a Game Capture source with Allow Transparency.
+  When a match is won the preset cameras show the winner and the loser side by side, each alone in a close-up.
   Streaming: capture only the "Project Arena - Spectator" window in OBS (Window Capture); the controls window stays
   off the stream. Your microphone is never sent.
   Another community server for this session: ProjectArena.exe --spectate --server host:port

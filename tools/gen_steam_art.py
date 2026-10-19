@@ -10,6 +10,7 @@ small_capsule 462x174, main_capsule 1232x706, vertical_capsule 748x896, page_bac
 screenshots.
 """
 import os
+import shutil
 import sys
 
 import numpy as np
@@ -95,7 +96,7 @@ def main():
     meta.icon(os.path.join(OUT, 'icon_512.png'))
     big = Image.open(os.path.join(OUT, 'icon_1024.png')).convert('RGB')
     big.resize((184, 184), Image.LANCZOS).save(os.path.join(OUT, 'community_icon.jpg'), quality=92)
-    big.save(os.path.join(OUT, 'client_icon.ico'), sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (256, 256)])
+    shutil.copyfile(os.path.join(meta.ROOT, 'app', 'src', 'pc', 'ProjectArena.ico'), os.path.join(OUT, 'client_icon.ico'))   # the exe's own icon
     for f in ('tile_background.png', 'tile_foreground.png'):   # Meta-only
         p = os.path.join(OUT, f)
         if os.path.exists(p):

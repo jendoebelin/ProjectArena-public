@@ -33,8 +33,10 @@ static const uint32_t kMagic = 0x43525053;   // 'SPRC'
 // 3: event log in STATE; 4: named beacons, LEAVE; 5: SpawnRise; 6: spectators; 7: avatars; 8: rooms (waiting players,
 // queue, rotation, spectator presence)
 static const uint8_t kVersion = 8;
+// PING / PONG: the round trip between a host and each player (logged with the net stats). Builds without them ignore
+// both, so the protocol version stays.
 enum : uint8_t { MSG_BEACON = 1, MSG_JOIN = 2, MSG_INPUT = 3, MSG_STATE = 4, MSG_LEAVE = 5, MSG_SPECTATE = 6,
-                 MSG_REJECT = 7, MSG_QUEUE = 8, MSG_ROOM = 9, MSG_VOICE = 10, MSG_CAMERAS = 11 };
+                 MSG_REJECT = 7, MSG_QUEUE = 8, MSG_ROOM = 9, MSG_VOICE = 10, MSG_CAMERAS = 11, MSG_PING = 12, MSG_PONG = 13 };
 // community relay (server/projectarena_relay.py)
 static const uint32_t kRelayMagic = 0x4C52414F;   // 'OARL'
 static const uint16_t kRelayPort = 47780;
@@ -688,6 +690,14 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                 if (rr.e - rr.p < 20) continue;
                 std::memcpy(token_, rr.p, 16); std::memcpy(&vip_, rr.p + 16, 4);
                 LOGI("net: online (relay %s)", serverName_);
+                if (rr.e - rr.p >= 21) {   // the current release (relays from 2026-10-19 on)
+                    const size_t n = std::min<size_t>(15, std::min<size_t>(rr.p[20], (size_t)(rr.e - rr.p - 21)));
+                    std::memset(latest_, 0, sizeof latest_);
+                    for (size_t i = 0; i < n; ++i) {
+                        const char c = (char)rr.p[21 + i];
+                        latest_[i] = (c >= '0' && c <= '9') || c == '.' ? c : 0;
+                    }
+                }
                 continue;
             }
             if (t == R_ERROR) {
@@ -790,6 +800,22 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             notice("A PLAYER IS WAITING");
             peerSeen_ = now_;
             LOGI("net: %s entered the room (%d people)", ipStr(fromIp), (int)members_.size());
+        } else if (type == MSG_PING && (fromHost || fromMember)) {   // answer at once with the sender's own clock
+            const double t = r.get<double>();
+            if (r.ok) {
+                Writer w; header(w, MSG_PONG, session_, 0); w.put(t);
+                sendTo(w.b.data(), (int)w.b.size(), fromIp, kPort);
+            }
+        } else if (type == MSG_PONG && (fromHost || fromMember)) {
+            const double t = r.get<double>();
+            const float ms = float((now_ - t) * 1000.0);
+            if (r.ok && ms >= 0.f && ms < 5000.f) {
+                if (!pingN_ || ms < pingMin_) pingMin_ = ms;
+                if (!pingN_ || ms > pingMax_) pingMax_ = ms;
+                pingSum_ += ms;
+                ++pingN_;
+                lastPingMs_ = ms;
+            }
         } else if (type == MSG_INPUT && fromMember) {
             fromMember->seen = now_;
             peerSeen_ = now_;
@@ -864,11 +890,21 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
         }
         if (now_ - lastRelayHeard_ > 12.0 && vip_) { vip_ = 0; notice("SERVER NOT RESPONDING"); LOGW("net: relay silent"); }
     }
+    if (inRoom() && now_ - lastPingSent_ > 2.0) {   // the round trip: the client to its host, the host to each player
+        lastPingSent_ = now_;
+        Writer w; header(w, MSG_PING, session_, 0); w.put(now_);
+        if (mode_ == Mode::Client && peerIp_) sendTo(w.b.data(), (int)w.b.size(), peerIp_, kPort);
+        if (mode_ == Mode::Host)
+            for (const Member& m : members_)
+                if (!m.local && m.ip) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
+    }
     if (inRoom() && peerSeen_ > 0 && now_ - statStart_ > 10.0) {
         double secs = now_ - statStart_;
+        char ping[64] = "";
+        if (pingN_) std::snprintf(ping, sizeof ping, ", ping %.0f ms (%.0f - %.0f)", pingSum_ / pingN_, pingMin_, pingMax_);
         if (statRecv_)
-            LOGI("net stats: %s recv %.0f pkt/s, lost %u of %u (%.1f%%), late/dup %u", mode_ == Mode::Host ? "host" : "client",
-                 statRecv_ / secs, statLost_, statRecv_ + statLost_, 100.0 * statLost_ / std::max(1u, statRecv_ + statLost_), statLate_);
+            LOGI("net stats: %s recv %.0f pkt/s, lost %u of %u (%.1f%%), late/dup %u%s", mode_ == Mode::Host ? "host" : "client",
+                 statRecv_ / secs, statLost_, statRecv_ + statLost_, 100.0 * statLost_ / std::max(1u, statRecv_ + statLost_), statLate_, ping);
         resetStats();
     }
     spectators_.erase(std::remove_if(spectators_.begin(), spectators_.end(), [&](const Spectator& sp) { return now_ - sp.seen > 4.0; }),

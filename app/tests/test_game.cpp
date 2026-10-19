@@ -194,8 +194,8 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         Game g;
         g.tun.shieldPlacement = 1;
         const Pose s1 = g.shieldLocal(1), s0 = g.shieldLocal(0);
-        // the owner's export (2026-10-18): pitch -12, yaw 17, roll -90 = yaw * pitch * roll about the grip axes
-        const Quat qr = Quat::axisAngle({0, 1, 0}, deg2rad(17)) * Quat::axisAngle({1, 0, 0}, deg2rad(-12)) * Quat::axisAngle({0, 0, 1}, deg2rad(-90));
+        // the owner's export (2026-10-19): pitch -20, yaw 19.1, roll -90.6 = yaw * pitch * roll about the grip axes
+        const Quat qr = Quat::axisAngle({0, 1, 0}, deg2rad(19.1f)) * Quat::axisAngle({1, 0, 0}, deg2rad(-20)) * Quat::axisAngle({0, 0, 1}, deg2rad(-90.6f));
         auto same = [](const Quat& a, const Quat& b) { return std::fabs(std::fabs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w) - 1) < 1e-5f; };
         CHECK(same(s1.q, qr) && length(s1.p - Vec3{0.076f, -0.024f, -0.122f}) < 1e-6f, "default right shield: the owner's tuned pose");
         auto mx0 = [](Vec3 v) { v.x = -v.x; return v; };
@@ -206,6 +206,46 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         auto mx = [](Vec3 v) { v.x = -v.x; return v; };
         const Vec3 v{0.1f, 0.2f, -0.3f};
         CHECK(length(t0.q.rotate(mx(v)) - mx(t1.q.rotate(v))) < 1e-5f, "a tuned shield stays mirrored between the hands");
+    }
+    {
+        std::printf("[avatar: FACE shares the body byte]\n");
+        AvatarDesc d;
+        avatar::set(d, avatar::F_BODY, 1);
+        avatar::set(d, avatar::F_FACE, 2);
+        CHECK(avatar::get(d, avatar::F_BODY) == 1 && avatar::get(d, avatar::F_FACE) == 2, "body type and face read back separately");
+        CHECK(d.body % 2 == 1, "an older build (body % 2) still sees the right body type");
+        avatar::set(d, avatar::F_BODY, 0);
+        CHECK(avatar::get(d, avatar::F_FACE) == 2, "changing the body type keeps the face");
+        AvatarDesc c;
+        CHECK(avatar::fromText(avatar::toText(d), c) && c.body == d.body, "avatar.cfg keeps the face");
+        AvatarDesc bad = d;
+        bad.body = 0xFF;   // from the network: a face out of range
+        avatar::sanitize(bad);
+        CHECK(avatar::get(bad, avatar::F_FACE) < avatar::kFaces && avatar::get(bad, avatar::F_BODY) == 1, "a bad face from the network is repaired");
+    }
+    {
+        std::printf("[avatar: hair under headgear, swinging parts]\n");
+        PlayerInput in;
+        in.headTracked = true;
+        in.head = {Quat{}, {0, 1.6f, 0}};
+        auto hairParts = [&](int hair, int headgear) {
+            AvatarDesc d;
+            d.hair = (uint8_t)hair;
+            d.headgear = (uint8_t)headgear;
+            std::vector<avatar::PartDraw> list;
+            avatar::drawList(avatar::solveRig(in, d), in, d, list);
+            std::string names;
+            for (const avatar::PartDraw& p : list)
+                if (p.flags & avatar::PART_HAIR) names += std::string(p.model) + " ";
+            return names;
+        };
+        bool under = true;
+        for (int g = 0; g < avatar::fieldCount(avatar::F_HEADGEAR); ++g)
+            if (hairParts(6, g) != "av_hair_6_m ") under = false;
+        CHECK(under, "the chosen hair is drawn under every headgear (the game tucks it in), the cap too");
+        CHECK(hairParts(3, 2) == "av_hair_3_m av_hair_3t_m ", "a ponytail under a helmet keeps its tail");
+        CHECK(hairParts(7, 0) == "av_hair_7_m av_hair_7t_m ", "the top knot's loose ends are a part of their own");
+        CHECK(hairParts(0, 1).empty(), "no hair: nothing drawn under the helmet");
     }
     {
         std::printf("[avatar: looks and avatar.cfg]\n");
@@ -364,6 +404,24 @@ int main(int argc, char** argv) {
         CHECK(g.pl[0].ball.state == BallState::Idle, "slow and short of the foul line: back to the spawner");
         run(g, in, 1.5f, &log);
         CHECK(length(g.pl[0].ball.pos - g.idlePoint(0)) < 0.10f, "it settles on the spawner again");
+    }
+    {
+        std::printf("[warm-up throws while waiting for an opponent]\n");
+        PlayerInput in[2]; Game g = makeGame(tris, in);
+        in[1].headTracked = false;   // nobody at the other end yet
+        g.reset(false);
+        run(g, in, 2.0f);
+        CHECK(g.match == MatchState::WaitingForPlayers, "alone: still waiting for an opponent");
+        grabBall(g, in);
+        std::vector<GameEvent> log;
+        swingAndRelease(g, in, {1, 0, 0}, 5.0f, log);
+        CHECK(hasEvent(log, EventType::Throw), "a fast release throws while waiting (warm-up)");
+        run(g, in, 4.0f, &log);
+        CHECK(g.pl[0].score == 0 && g.pl[1].score == 0 && g.pl[1].strikesAgainst == 0, "warm-up throws score nothing");
+        CHECK(g.pl[0].ball.state == BallState::Idle || g.pl[0].ball.state == BallState::Held, "the ball comes back to its spawner");
+        in[1].headTracked = true;
+        run(g, in, 0.2f);
+        CHECK(g.match != MatchState::WaitingForPlayers, "an opponent arrives: the match starts as before");
     }
     {
         std::printf("[direct hit]\n");

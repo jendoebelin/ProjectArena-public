@@ -85,8 +85,8 @@ struct Tunables {
     float catchRadius = 0.125f, catchHalfHeight = 0.25f;   // BrawlCatcher.Collision capsule 12.5 / 25 cm
     Vec3 catcherOffset = {-0.01f, 0.0f, -0.22f};           // CatcherTransform (22,-1,0) cm
     Vec3 launcherOffset = {-0.02f, 0.02f, -0.25f};         // LauncherTransform (25,-2,2) cm (throw physics)
-    Vec3 holdOffset = {-0.069f, 0.007f, -0.042f};         // where a held ball sits: in the fist (owner's TUNING export,
-                                                          // 2026-10-18; was 15 cm out, before that the launcher point)
+    Vec3 holdOffset = {-0.079f, 0.011f, -0.010f};         // where a held ball sits: in the fist (owner's TUNING export,
+                                                          // 2026-10-19; was 15 cm out, before that the launcher point)
     Vec3 shieldOffset = {0.0f, 0.10f, -0.20f};             // ShieldTransform (20,0,10) cm, roll 180
     Vec3 shieldHalfExtents = {0.20f, 0.02f, 0.32f};        // BrawlShieldBP.SweepCollisionBoxDimensions (32,20,2) cm
     // Knuckle bumper = box fitted to the KnuckleShield_01 mesh as placed by KnuckleGuardTransform (10.5,0,0) +
@@ -114,7 +114,7 @@ struct Tunables {
     // placement 1 (the default): on the back of the hand, right-hand grip space (left mirrored); pitch / yaw / roll in
     // degrees (gripEuler). The owner's TUNING export (2026-10-18; was (0.07, 0, 0.01), roll -90 only). Live in
     // developer mode: SETTINGS > TUNING.
-    Vec3 shieldBackPos = {0.076f, -0.024f, -0.122f}, shieldBackRot = {-12.0f, 17.0f, -90.0f};
+    Vec3 shieldBackPos = {0.076f, -0.024f, -0.122f}, shieldBackRot = {-20.0f, 19.1f, -90.6f};   // owner's export 2026-10-19
 
     // ---- match flow
     float countdown = 3.0f;
