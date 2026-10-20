@@ -48,6 +48,9 @@ the relay, which drops everyone for a few seconds (players reconnect by themselv
   address (`203.0.113.7`) or `name:PLAYERNAME`, save. It takes effect within a few seconds, no restart. Delete the
   line to lift the ban. An address ban is stronger (a name can be changed), but a home address can change too.
 - Check the folder regularly (a few times a week) once strangers play together; act on reports quickly.
+- After each release, set the current version so older games (0.3.4 on) say UPDATE AVAILABLE:
+  `ssh -i oracle.key ubuntu@PUBLIC_IP "echo 0.3.5 | sudo tee /opt/projectarena/latest_version.txt"` (the relay
+  re-reads it on its own; no restart).
 
 ## Any other Ubuntu server
 

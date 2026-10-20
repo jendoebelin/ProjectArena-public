@@ -766,6 +766,50 @@ void Renderer::drawRibbon(const Vec3* pts, int n, float width, const float rgba[
     glDepthMask(GL_TRUE);
 }
 
+static const char* kAlphaVS = R"(#version 300 es
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));   // one triangle over the view
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+)";
+static const char* kAlphaFS = R"(#version 300 es
+precision highp float;
+uniform sampler2D uTex;
+out vec4 oColor;
+vec3 toSrgb(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
+void main() {
+    vec4 c = texelFetch(uTex, ivec2(gl_FragCoord.xy), 0);   // linear, premultiplied
+    float a = clamp(max(c.a, max(c.r, max(c.g, c.b))), 0.0, 1.0);   // light added over nothing counts as cover
+    vec3 s = a > 0.0 ? clamp(c.rgb / a, 0.0, 1.0) : vec3(0.0);
+    oColor = vec4(toSrgb(s), a);
+}
+)";
+
+void Renderer::transparentOut(GLuint srgbTex) {
+    if (!alphaProg_) {
+        GLuint vs = compile(GL_VERTEX_SHADER, kAlphaVS), fs = compile(GL_FRAGMENT_SHADER, kAlphaFS);
+        alphaProg_ = glCreateProgram();
+        glAttachShader(alphaProg_, vs);
+        glAttachShader(alphaProg_, fs);
+        glLinkProgram(alphaProg_);
+        GLint ok = 0;
+        glGetProgramiv(alphaProg_, GL_LINK_STATUS, &ok);
+        if (!ok) LOGE("transparent output: shader link failed");
+    }
+    glUseProgram(alphaProg_);
+    glUniform1i(glGetUniformLocation(alphaProg_, "uTex"), 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, srgbTex);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glBindVertexArray(quad.vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(prog_);
+    glEnable(GL_DEPTH_TEST);
+}
+
 void Renderer::drawScreenTexture(GLuint tex, float alpha) {
     if (!tex || alpha <= 0) return;
     Mat4 m = Mat4::identity();

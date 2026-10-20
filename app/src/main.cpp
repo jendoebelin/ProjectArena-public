@@ -112,7 +112,9 @@ struct App {
     float dcEventMix = 0;
     double dcEventT0 = 0;
     Vec3 dcWinT{0, 0, 0};
-    int dcKeyCol = 0;               // the key colour for VIEW LAYERS > KEY: 0 green, 1 magenta, 2 blue
+    int dcKeyCol = 0;               // the key colour for VIEW LAYERS > KEY: 0 green, 1 magenta, 2 blue, 3 transparent
+    int dcWinStyle = 0;             // WIN SCREEN: 0 split (winner and loser side by side), 1 the winner up close, 2 your camera
+    std::string dcTag;              // --tag NAME: "Project Arena - Spectator - NAME", so OBS can tell several windows apart
     Vec3 dcClose[2];                // the win screen's close-ups: each player's head, smoothed
     double dcCloseT = 0;
     bool dcKey[256] = {};
@@ -525,9 +527,13 @@ static bool initGraphics(App& a) {
     pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
     pfd.iPixelType = PFD_TYPE_RGBA;
     pfd.cColorBits = 32;
+    pfd.cAlphaBits = 8;   // the spectator's TRANSPARENT key: the window keeps an alpha channel for OBS
     pfd.iLayerType = PFD_MAIN_PLANE;
     int pf = ChoosePixelFormat(a.hdc, &pfd);
     if (!pf || !SetPixelFormat(a.hdc, pf, &pfd)) { LOGE("SetPixelFormat failed"); return false; }
+    PIXELFORMATDESCRIPTOR got{};
+    DescribePixelFormat(a.hdc, pf, sizeof got, &got);
+    LOGI("window: %d-bit colour, %d-bit alpha", got.cColorBits, got.cAlphaBits);
     HGLRC tmp = wglCreateContext(a.hdc);
     if (!tmp || !wglMakeCurrent(a.hdc, tmp)) { LOGE("wglCreateContext failed"); return false; }
     typedef HGLRC(WINAPI * CreateCtxAttribs)(HDC, HGLRC, const int*);
@@ -855,7 +861,9 @@ static void updateDepth(App& a, XrTime t) {
 }
 
 static void updatePassthrough(App& a) {
-    const bool want = a.ptMode != PT_OFF && a.ptLayer != XR_NULL_HANDLE && !a.ptFailed;
+    // PEEK (hold Y) in any mode, OFF included: the room runs while Y is held and until the game has faded back in
+    const bool peek = a.ptPeekOn && !a.spectating && (a.peekHeld || a.ptReveal > 0.f);
+    const bool want = (a.ptMode != PT_OFF || peek) && a.ptLayer != XR_NULL_HANDLE && !a.ptFailed;
     if (want && a.ptRunning && a.ptStyleDirty && a.xrPassthroughLayerSetStyleFB_) {   // ROOM brightness, grey, edges
         a.ptStyleDirty = false;
         XrPassthroughBrightnessContrastSaturationFB bcs{XR_TYPE_PASSTHROUGH_BRIGHTNESS_CONTRAST_SATURATION_FB};
@@ -881,7 +889,7 @@ static void updatePassthrough(App& a) {
     }
     a.ptRunning = want;
     a.ptStyleDirty = true;
-    LOGI("passthrough: %s", want ? "running" : "paused");
+    LOGI("passthrough: %s%s", want ? "running" : "paused", a.ptMode == PT_OFF ? " (peek)" : "");
 }
 
 static bool initSession(App& a) {
@@ -1167,7 +1175,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.4";
+static const char* kAppVersion = "0.3.5";
 
 // "0.3.4" newer than "0.3.3" (dotted numbers, compared part by part)
 static bool versionNewer(const char* a, const char* b) {
@@ -5097,15 +5105,24 @@ static bool renderFrame(App& a) {
                 const bool smallBounds = a.hasBounds && std::min(a.stageExt.width, a.stageExt.height) < 1.8f;
                 const float th = smallBounds ? 0.f : clampf((0.35f - dh) / 0.25f, 0.f, 1.f);
                 const float tk = clampf(-dk / 0.15f, 0.f, 1.f);
-                target = std::max(th, tk) * 0.85f;
+                // the head itself outside the boundary: it does not describe where you play (owner, 2026-10-19: a
+                // 1.2 m stationary boundary, the head 0.58 m outside it, kept the room at 85% all the time); the Quest
+                // shows your room itself when you really leave it
+                const bool outside = a.hasBounds && dh < 0.f;
+                target = outside ? 0.f : std::max(th, tk) * 0.85f;
+                if (outside && t > a.ptRevealLogAt) {
+                    a.ptRevealLogAt = t + 30.0;
+                    LOGI("room at edges: the head is %.2f m outside the boundary (%.2f x %.2f m), ignored", -dh,
+                         a.stageExt.width, a.stageExt.height);
+                }
                 if (target > 0 && t > a.ptRevealLogAt) {   // why the room showed (bug reports carry the log)
                     a.ptRevealLogAt = t + 5.0;
                     LOGI("room at edges: head %.2f m, hand %.2f m from the edge (%s %.2f x %.2f m)", dh, dk,
                          a.hasBounds ? "boundary" : "circle", a.stageExt.width, a.stageExt.height);
                 }
             }
-            if (a.ptPeekOn && a.peekHeld && !a.menuOpen) target = 0.95f;
         }
+        if (a.hasPassthrough && !a.ptFailed && !a.spectating && a.ptPeekOn && a.peekHeld) target = 0.95f;   // PEEK (Y)
         a.ptReveal += (target - a.ptReveal) * std::min(1.f, dt * (target > a.ptReveal ? 10.f : 4.f));
         if (a.ptReveal < 0.003f) a.ptReveal = 0.f;
     }
@@ -5562,7 +5579,7 @@ void android_main(android_app* app) {
 #else
 // --selftest out.ppm: no headset needed. Loads everything, draws the court from player 1's spot into a 1280x720
 // image and exits (0 = every shader, model and texture loaded). Checks the PC renderer on any machine.
-static Pose eventCamera(App& a, const Pose& base, double t, float dt);   // (the desktop spectator, below)
+static Pose eventCamera(App& a, const Pose& base, double t, float dt, bool freeCam);   // (the desktop spectator, below)
 static Pose desktopPreset(const App& a, int v);
 static void desktopHud(App& a, const Pose& eye, float ty, float tx);
 static void desktopRender(App& a, const Pose& eye, int W, int H, float dt);
@@ -5581,7 +5598,8 @@ struct ShotView {
     int face = -1;      // --face B F: blue's body type (0 / 1) and face (0..3)
     std::string look;   // --look "visor=1,mask=3,headgear=2": avatar.cfg keys for blue (accessory checks)
     std::string dcshot;       // --dcshot meet|bump|win|play: the desktop spectator's broadcast moment (its camera and overlay)
-    int layer = 0, keyCol = 0;  // --layer 0-3, --keycol 0-2: its VIEW LAYERS and key colour
+    int layer = 0, keyCol = 0;  // --layer 0-3, --keycol 0-3: its VIEW LAYERS and key colour
+    int winStyle = 0;           // --winscreen split|winner|camera (or 0-2): its WIN SCREEN
     bool swingTest = false;   // --swingtest: the head snaps round just before the picture (the hair mid-swing)
     float swingDeg = 60.f, swingHold = 0.1f;   // --swingdeg D, --swinghold S: how far it turned, how long ago (action scene)
     bool passthrough = false;   // --passthrough MODE (1 ARENA, 2 WINDOW, 3 OUTLINE): drawn over a stand-in room (a checkerboard)
@@ -5739,9 +5757,10 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         }
         if (v.dcshot == "bump") a.bumpFlash = 0.9f;
         a.viewLayer = v.layer & 3;
-        a.dcKeyCol = v.keyCol % 3;
+        a.dcKeyCol = v.keyCol % 4;
+        a.dcWinStyle = v.winStyle % 3;
         if (v.custom && v.dcshot == "play") a.dcView = 0;   // (the given camera, no broadcast moment)
-        else for (int f = 0; f <= 90; ++f) eye = eventCamera(a, desktopPreset(a, a.dcView), 1000.0 + f / 60.0, 1.f / 60.f);
+        else for (int f = 0; f <= 90; ++f) eye = eventCamera(a, desktopPreset(a, a.dcView), 1000.0 + f / 60.0, 1.f / 60.f, false);
         a.viewHead = eye;
         a.dcFov = v.fovY;
         desktopRender(a, eye, W, H, 1.f / 60.f);
@@ -5789,6 +5808,22 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         }
         glEnable(GL_DEPTH_TEST);
     }
+    // the TRANSPARENT key: the window's final pass into a plain RGBA8 target, as OBS would capture it; the picture is that
+    // over a checkerboard, and OUT.alpha.pgm is its alpha channel (white = solid)
+    const bool alphaOut = !v.dcshot.empty() && a.viewLayer >= 3 && a.dcKeyCol == 3;
+    GLuint aFbo = 0, aCol = 0;
+    if (alphaOut) {
+        glGenTextures(1, &aCol);
+        glBindTexture(GL_TEXTURE_2D, aCol);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, W, H);
+        glGenFramebuffers(1, &aFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, aFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, aCol, 0);
+        glDisable(GL_FRAMEBUFFER_SRGB);
+        glViewport(0, 0, W, H);
+        a.gfx.transparentOut(col);
+        glEnable(GL_FRAMEBUFFER_SRGB);
+    }
     glFinish();
     std::vector<uint8_t> px((size_t)W * H * 4);
     glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -5796,9 +5831,22 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
     FILE* f = fopen(out, "wb");
     if (!f) return 3;
     fprintf(f, "P6\n%d %d\n255\n", W, H);
+    FILE* fa = nullptr;
+    if (alphaOut) {
+        fa = fopen((std::string(out) + ".alpha.pgm").c_str(), "wb");
+        if (fa) fprintf(fa, "P5\n%d %d\n255\n", W, H);
+    }
+    size_t solid = 0, clear = 0;
     for (int y = H - 1; y >= 0; --y)
         for (int x = 0; x < W; ++x) {
             uint8_t* c = &px[((size_t)y * W + x) * 4];
+            if (alphaOut) {   // straight alpha over a grey checkerboard
+                if (fa) fputc(c[3], fa);
+                solid += c[3] >= 250;
+                clear += c[3] == 0;
+                const int bg = (((x / 32) + (y / 32)) & 1) ? 160 : 96;
+                for (int k = 0; k < 3; ++k) c[k] = (uint8_t)((c[k] * c[3] + bg * (255 - c[3])) / 255);
+            }
             if (v.passthrough) {   // premultiplied over the stand-in room, as the compositor does
                 const int room = (((x / 48) + (y / 48)) & 1) ? 150 : 105;
                 const int warm[3] = {int((room + 12) * v.ptRoom), int(room * v.ptRoom), int((room - 14) * v.ptRoom)};
@@ -5807,6 +5855,8 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             fwrite(c, 1, 3, f);
         }
     fclose(f);
+    if (fa) fclose(fa);
+    if (alphaOut) LOGI("selftest: alpha %.1f%% solid, %.1f%% clear", 100.0 * solid / ((double)W * H), 100.0 * clear / ((double)W * H));
     LOGI("selftest: wrote %s (GL error 0x%x)", out, err);
     shutDown(a);
     return err == GL_NO_ERROR ? 0 : 4;
@@ -5823,21 +5873,25 @@ static Pose lookFrom(const Vec3& pos, const Vec3& target) {
 
 static const char* kDcViewName[6] = {"FREE CAMERA", "SIDE", "HIGH SIDE", "BLUE END", "ORANGE END", "TOP"};
 static const char* kDcLayerName[4] = {"FULL", "NO WALLS", "MINIMAL", "KEY"};
-static const char* kDcKeyName[3] = {"GREEN", "MAGENTA", "BLUE"};
-static const float kDcKeyRgb[3][3] = {{0, 1, 0}, {1, 0, 1}, {0, 0, 1}};
-// the win screen: the winner on the left, the loser on the right, each alone in a close-up (the preset cameras)
+// TRANSPARENT: no colour at all behind the players (OBS Game Capture with Allow Transparency; no colour can clash)
+static const char* kDcKeyName[4] = {"GREEN", "MAGENTA", "BLUE", "TRANSPARENT"};
+static const float kDcKeyRgb[4][3] = {{0, 1, 0}, {1, 0, 1}, {0, 0, 1}, {0, 0, 0}};
+// WIN SCREEN, per window (a stream with several spectator windows can show each): SPLIT the winner on the left and the
+// loser on the right, each alone in a close-up; WINNER the camera flies to the winner, their name over it; YOUR CAMERA
+// the camera stays where it is, the winner's name over it
+static const char* kDcWinName[3] = {"SPLIT", "WINNER", "YOUR CAMERA"};
 static bool dcWinSplit(const App& a) {
-    return a.watchIp && a.dcView != 0 && a.game.match == MatchState::MatchSummary && a.game.matchWinner >= 0 && a.game.matchWinner < 2;
+    return a.watchIp && a.dcWinStyle == 0 && a.game.match == MatchState::MatchSummary && a.game.matchWinner >= 0 && a.game.matchWinner < 2;
 }
 
-// Broadcast moments, over the preset cameras (never the free camera): at the fist bump a close side view of the two
-// players' fists, pushing in; when the match is won the winner up close, the camera drifting round them. It eases in
-// and back to the chosen camera over half a second.
-static Pose eventCamera(App& a, const Pose& base, double t, float dt) {
+// Broadcast moments: at the fist bump (the preset cameras, never the free camera) a close side view of the two
+// players' fists, pushing in; when the match is won with WIN SCREEN > WINNER (any camera) the winner up close, the
+// camera drifting round them. It eases in and back to the chosen camera over half a second.
+static Pose eventCamera(App& a, const Pose& base, double t, float dt, bool freeCam) {
     const Game& g = a.game;
     int kind = 0;
-    if (a.watchIp && g.match == MatchState::Meet) kind = 1;
-    else if (a.watchIp && g.match == MatchState::MatchSummary && g.matchWinner >= 0 && g.matchWinner < 2) kind = 2;
+    if (a.watchIp && g.match == MatchState::Meet && !freeCam) kind = 1;
+    else if (a.watchIp && a.dcWinStyle == 1 && g.match == MatchState::MatchSummary && g.matchWinner >= 0 && g.matchWinner < 2) kind = 2;
     if (kind && (kind != a.dcEventKind || a.dcEventMix <= 0)) { a.dcEventKind = kind; a.dcEventT0 = t; }
     a.dcEventMix = clampf(a.dcEventMix + (kind ? dt : -dt) * 2.f, 0.f, 1.f);
     if (a.dcEventMix <= 0) { a.dcEventKind = 0; return base; }
@@ -6049,7 +6103,7 @@ static void desktopFullscreen(App& a, bool on) {
 }
 
 // keyboard / mouse: which match, which camera; returns the eye pose
-enum { DC_VIEW = 100, DC_AUTO = 110, DC_FREE, DC_NEXT, DC_HUB, DC_FULL, DC_HELP, DC_PANEL, DC_LAYER, DC_LAYERBACK, DC_KEYCOL };
+enum { DC_VIEW = 100, DC_AUTO = 110, DC_FREE, DC_NEXT, DC_HUB, DC_FULL, DC_HELP, DC_PANEL, DC_LAYER, DC_LAYERBACK, DC_KEYCOL, DC_WINSTYLE };
 
 static LRESULT CALLBACK dcPanelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     App* a = (App*)GetWindowLongPtrW(h, GWLP_USERDATA);
@@ -6071,7 +6125,7 @@ static void desktopPanel(App& a) {
     RECT r;
     GetWindowRect(a.hwnd, &r);
     a.dcPanel = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Spectator Controls", WS_CAPTION | WS_SYSMENU,
-                                r.right + 8, r.top, 300, 646, a.hwnd, nullptr, wc.hInstance, nullptr);
+                                r.right + 8, r.top, 300, 726, a.hwnd, nullptr, wc.hInstance, nullptr);
     if (!a.dcPanel) return;
     SetWindowLongPtrW(a.dcPanel, GWLP_USERDATA, (LONG_PTR)&a);
     HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
@@ -6098,11 +6152,13 @@ static void desktopPanel(App& a) {
     add(L"STATIC", L"View layers (streaming)", SS_LEFT, 12, y, 260, 16, 0); y += 20;
     add(L"BUTTON", L"V  Next layer", BS_PUSHBUTTON, 12, y, 128, 26, DC_LAYER);
     add(L"BUTTON", L"K  Key colour", BS_PUSHBUTTON, 146, y, 128, 26, DC_KEYCOL); y += 30;
-    add(L"STATIC", L"Full, no walls (the outline stays), minimal, or key: the\nplayers and balls alone on green / magenta / blue.", SS_LEFT, 12, y, 276, 32, 0); y += 38;
+    add(L"STATIC", L"Full, no walls (the outline stays), minimal, or key: the\nplayers and balls alone on green / magenta / blue /\ntransparent (OBS Game Capture, Allow Transparency).", SS_LEFT, 12, y, 276, 46, 0); y += 50;
+    add(L"BUTTON", L"R  Win screen", BS_PUSHBUTTON, 12, y, 128, 26, DC_WINSTYLE);
+    add(L"STATIC", L"split, the winner up\nclose, or your camera", SS_LEFT, 146, y - 2, 140, 30, 0); y += 34;
     add(L"STATIC", L"Game controller (Xbox or PlayStation 4)", SS_LEFT, 12, y, 270, 16, 0); y += 18;
-    add(L"STATIC", L"A / cross next match, B / circle hub, X / square auto,\nY / triangle free camera, D-pad left / right cameras,\nup / down view layers, triggers zoom, View help, Menu\nfull screen. Free camera: sticks, LB / RB down / up.",
-        SS_LEFT, 12, y, 276, 62, 0); y += 68;
-    a.dcStatus = add(L"STATIC", L"", SS_LEFT, 12, y, 270, 34, 0); y += 40;
+    add(L"STATIC", L"A / cross next match, B / circle hub, X / square auto,\nY / triangle free camera, D-pad left / right cameras,\nup / down view layers, triggers zoom, View help, Menu\nfull screen, click the right stick: win screen.\nFree camera: sticks, LB / RB down / up.",
+        SS_LEFT, 12, y, 276, 76, 0); y += 82;
+    a.dcStatus = add(L"STATIC", L"", SS_LEFT, 12, y, 270, 48, 0); y += 54;
     add(L"STATIC", L"F1 shows / hides this window. Streaming: capture only\nthe \"Project Arena - Spectator\" window; this one\nstays off the stream.",
         SS_LEFT, 12, y, 270, 48, 0);
     ShowWindow(a.dcPanel, SW_SHOWNOACTIVATE);
@@ -6125,6 +6181,7 @@ static Pose desktopControls(App& a, double t, float dt) {
     if (dcPressed(a, VK_ESCAPE) && a.dcFull) cmd = DC_FULL;
     if (dcPressed(a, 'V')) cmd = DC_LAYER;
     if (dcPressed(a, 'K')) cmd = DC_KEYCOL;
+    if (dcPressed(a, 'R')) cmd = DC_WINSTYLE;
     // a game controller: A next match, B hub, X auto camera, Y free camera, d-pad left / right the cameras,
     // triggers zoom, View the help bar, Menu full screen (the free camera: below)
     const DcPad pad = dcPad(a);
@@ -6143,6 +6200,7 @@ static Pose desktopControls(App& a, double t, float dt) {
         if (b & XINPUT_GAMEPAD_DPAD_UP) cmd = DC_LAYER;
         if (b & XINPUT_GAMEPAD_DPAD_DOWN) cmd = DC_LAYERBACK;
         if (b & XINPUT_GAMEPAD_START) cmd = DC_FULL;
+        if (b & XINPUT_GAMEPAD_RIGHT_THUMB) cmd = DC_WINSTYLE;
         a.dcFov -= (pad.rt - pad.lt) * 45.f * dt;
     }
     if (cmd == DC_NEXT && !ms.empty()) {   // next live match
@@ -6168,7 +6226,11 @@ static Pose desktopControls(App& a, double t, float dt) {
         a.viewLayer = (a.viewLayer + (cmd == DC_LAYER ? 1 : 3)) % 4;
         LOGI("desktop: view layers %s", kDcLayerName[a.viewLayer]);
     }
-    if (cmd == DC_KEYCOL) a.dcKeyCol = (a.dcKeyCol + 1) % 3;
+    if (cmd == DC_KEYCOL) a.dcKeyCol = (a.dcKeyCol + 1) % 4;
+    if (cmd == DC_WINSTYLE) {
+        a.dcWinStyle = (a.dcWinStyle + 1) % 3;
+        LOGI("desktop: win screen %s", kDcWinName[a.dcWinStyle]);
+    }
     if (cmd == DC_FULL) desktopFullscreen(a, !a.dcFull);
     if (cmd == DC_PANEL && a.dcPanel) ShowWindow(a.dcPanel, IsWindowVisible(a.dcPanel) ? SW_HIDE : SW_SHOWNOACTIVATE);
     // nobody chosen: the first live match after a moment (a stream should show play, not the hub)
@@ -6210,10 +6272,10 @@ static Pose desktopControls(App& a, double t, float dt) {
         if (dcDown(a, 'E')) a.dcPos.y += sp;
         if (dcDown(a, 'Q')) a.dcPos.y -= sp;
         a.dcMouse = m;
-        return {q, a.dcPos};
+        return eventCamera(a, {q, a.dcPos}, t, dt, true);
     }
     a.dcMouse = m;
-    return eventCamera(a, desktopPreset(a, a.dcView), t, dt);
+    return eventCamera(a, desktopPreset(a, a.dcView), t, dt, false);
 }
 
 static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
@@ -6308,7 +6370,7 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
 // the picture: the world from `eye` (VIEW LAYERS > KEY: on the key colour, alpha 0 behind for OBS transparency), or the
 // win screen: the winner and the loser side by side, each alone in a close-up on a dark backdrop in their colour
 static void desktopRender(App& a, const Pose& eye, int W, int H, float dt) {
-    const float* key = kDcKeyRgb[a.dcKeyCol % 3];
+    const float* key = kDcKeyRgb[a.dcKeyCol % 4];
     glViewport(0, 0, W, H);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
@@ -6397,10 +6459,10 @@ static void desktopFrame(App& a) {
         statusAt = t + 0.5;
         const SpecMatch* w = nullptr;
         for (const SpecMatch& m : a.net.matches()) if (m.ip == a.watchIp) w = &m;
-        char b[160];
-        snprintf(b, sizeof b, "Now: %s\nCamera: %s%s, layers: %s%s%s", w ? (w->name[0] ? w->name : "live match") : "the spectator hub",
+        char b[200];
+        snprintf(b, sizeof b, "Now: %s\nCamera: %s%s, layers: %s%s%s\nWin screen: %s", w ? (w->name[0] ? w->name : "live match") : "the spectator hub",
                  kDcViewName[a.dcView % 6], a.dcAuto ? " (auto)" : "", kDcLayerName[a.viewLayer & 3], a.viewLayer == 3 ? " " : "",
-                 a.viewLayer == 3 ? kDcKeyName[a.dcKeyCol % 3] : "");
+                 a.viewLayer == 3 ? kDcKeyName[a.dcKeyCol % 4] : "", kDcWinName[a.dcWinStyle % 3]);
         SetWindowTextA(a.dcStatus, b);
     }
     const float dt = a.lastTime > 0 ? std::min(0.1f, float(t - a.lastTime)) : 0.f;
@@ -6432,10 +6494,16 @@ static void desktopFrame(App& a) {
     glBindFramebuffer(GL_FRAMEBUFFER, a.dFbo);
     desktopRender(a, eye, W, H, dt);
     glDisable(GL_FRAMEBUFFER_SRGB);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, a.dFbo);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glViewport(0, 0, a.winW, a.winH);
-    glBlitFramebuffer(0, 0, W, H, 0, 0, a.winW, a.winH, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    if (a.viewLayer >= 3 && a.dcKeyCol == 3) {   // TRANSPARENT: straight alpha into the window (it has an alpha channel)
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, a.winW, a.winH);
+        a.gfx.transparentOut(a.dCol);
+    } else {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, a.dFbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glViewport(0, 0, a.winW, a.winH);
+        glBlitFramebuffer(0, 0, W, H, 0, 0, a.winW, a.winH, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    }
     glEnable(GL_FRAMEBUFFER_SRGB);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
@@ -6445,7 +6513,9 @@ static int desktopMain(App& a, bool asked) {
     LOGI("desktop spectator (%s)", asked ? "--spectate" : "no headset found");
     startUp(a);
     a.startTitle = false; a.firstHelp = false; a.menuOpen = false; a.titleOpen = false;
-    SetWindowTextW(a.hwnd, L"Project Arena - Spectator");
+    std::wstring title = L"Project Arena - Spectator";
+    if (!a.dcTag.empty()) title += L" - " + std::wstring(a.dcTag.begin(), a.dcTag.end());   // (ASCII, from --tag)
+    SetWindowTextW(a.hwnd, title.c_str());
     typedef BOOL(WINAPI * SwapInterval)(int);
     if (auto si = (SwapInterval)wglGetProcAddress("wglSwapIntervalEXT")) si(1);   // the monitor paces frames here
     GetCursorPos(&a.dcMouse);
@@ -6498,6 +6568,10 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--dcshot") && i + 1 < argc) view.dcshot = argv[++i];
         else if (!strcmp(argv[i], "--layer") && i + 1 < argc) view.layer = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--keycol") && i + 1 < argc) view.keyCol = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--winscreen") && i + 1 < argc) {
+            const char* w = argv[++i];
+            view.winStyle = !strcmp(w, "winner") ? 1 : !strcmp(w, "camera") ? 2 : !strcmp(w, "split") ? 0 : std::max(0, atoi(w)) % 3;
+        }
         else if (!strcmp(argv[i], "--swingdeg") && i + 1 < argc) view.swingDeg = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--swinghold") && i + 1 < argc) view.swingHold = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--look") && i + 1 < argc) view.look = argv[++i];
@@ -6510,6 +6584,10 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) probeSeconds = atof(argv[++i]);
         else if (!strcmp(argv[i], "--no-dialog")) noDialog = true;
         else if (!strcmp(argv[i], "--spectate")) spectateArg = true;
+        else if (!strcmp(argv[i], "--tag") && i + 1 < argc) {   // a name for this spectator window's title
+            for (const char* c = argv[++i]; *c && a.dcTag.size() < 24; ++c)
+                if (*c >= 32 && *c < 127) a.dcTag += (char)std::toupper((unsigned char)*c);
+        }
         else if (!strcmp(argv[i], "--server") && i + 1 < argc) serverArg = argv[++i];   // this session's community server
     }
     a.resumed = true;
@@ -6587,7 +6665,12 @@ int main(int argc, char** argv) {
     const bool vr = !spectateArg && initInstance(a) && initActions(a) && initSession(a);
     if (!initContent(a)) { LOGE("initialisation failed"); return 1; }
     a.serverOverride = serverArg ? serverArg : "";
-    if (!vr) return desktopMain(a, spectateArg);
+    if (!vr) {
+        a.viewLayer = view.layer & 3;   // --layer 0-3 / --keycol 0-3: start in a view layer (an OBS key / transparency setup)
+        a.dcKeyCol = view.keyCol % 4;
+        a.dcWinStyle = view.winStyle;   // --winscreen split|winner|camera
+        return desktopMain(a, spectateArg);
+    }
     startUp(a);
     bool exitRequested = false;
     while (!(a.quit && !a.running)) {

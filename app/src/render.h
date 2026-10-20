@@ -80,6 +80,9 @@ public:
     // a hair tuck map (w x h radius bytes, rows from straight down; tools/build_open_assets.py write_tuck) as a texture
     GLuint tuckTexture(int w, int h, const uint8_t* v);
     void drawScreenTexture(GLuint tex, float alpha);   // full-view overlay (cross-fades), bottom-up texture
+    // a finished frame (sRGB texture, premultiplied, transparent behind) to the bound framebuffer as straight alpha for a
+    // capture that keeps transparency (OBS Game Capture > Allow Transparency); additive glows become see-through light
+    void transparentOut(GLuint srgbTex);
     void fadeToRoom(float k);   // PASSTHROUGH: the whole image (colour and coverage) times 1 - k: the room shows through
     // PASSTHROUGH > WINDOW with environment depth: on the given quads (the court's walls, just outside the glass), fill
     // in rgba *under* what is drawn wherever the real surface there (depth texture array, layer = eye) is nearer
@@ -94,7 +97,7 @@ public:
 private:
     GLuint loadTexture(const std::string& rel, bool srgb);
     GLuint prog_ = 0;
-    GLuint depthProg_ = 0;
+    GLuint depthProg_ = 0, alphaProg_ = 0;
     GLint dMVP_ = -1, dModel_ = -1, dDepthVP_ = -1, dDepthView_ = -1, dNearFar_ = -1, dLayer_ = -1, dTex_ = -1, dCol_ = -1;
     GLint uUVOff_ = -1, uErode_ = -1, uRim_ = -1, uPattern_ = -1, uPatCol_ = -1, uPatGlow_ = -1;
     GLint uSkinned_ = -1, uBones_ = -1, uDesign_ = -1, uDesCol_ = -1, uDesGlow_ = -1;

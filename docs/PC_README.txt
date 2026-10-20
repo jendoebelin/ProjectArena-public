@@ -56,11 +56,24 @@ Watching without a headset (spectator / streaming)
     Free camera: left stick moves, right stick looks, LB / RB down / up, click the left stick to go faster
   V          view layers: FULL, NO WALLS (the court's outline instead of its glass), MINIMAL (no stadium, strike
              zones, spawners or scoreboard), KEY (only the players and the balls, on a solid key colour)
-  K          the key colour: green, magenta or blue (pick one nobody's glow colour uses)
+  K          the key colour: green, magenta, blue or TRANSPARENT
   (controller: D-pad up / down cycles the view layers)
-  Green screen in OBS: VIEW LAYERS > KEY, then on the Window Capture source add Filters > Chroma Key with the same key
-  colour. Behind the key colour the picture is also transparent, for a Game Capture source with Allow Transparency.
-  When a match is won the preset cameras show the winner and the loser side by side, each alone in a close-up.
+  OBS, best: VIEW LAYERS > KEY with TRANSPARENT, and a Game Capture source (Mode: Capture specific window, Window:
+  [ProjectArena.exe] Project Arena - Spectator) with "Allow Transparency" ticked. Nothing behind the players, so no
+  outfit or glow colour can clash with a key; the score panels and glows stay see-through over your background.
+  (The window itself looks black behind the players in this mode; OBS sees the transparency.)
+  Or a colour key: VIEW LAYERS > KEY with green, magenta or blue, and Filters > Chroma Key with the same colour on a
+  Window Capture source (pick a colour nobody's outfit or glow uses).
+  R          the win screen (controller: click the right stick), on any camera:
+             SPLIT        the winner and the loser side by side, each alone in a close-up
+             WINNER       the camera flies to the winner, their name and WINS! over the picture
+             YOUR CAMERA  the camera stays where it is, the winner's name and WINS! over it
+  Each spectator window has its own settings, so a stream can run several (one per OBS source), e.g.
+    ProjectArena.exe --spectate --layer 3 --keycol 3 --winscreen split
+    ProjectArena.exe --spectate --layer 3 --keycol 3 --winscreen winner
+  (--layer 0-3 FULL / NO WALLS / MINIMAL / KEY, --keycol 0-3 green / magenta / blue / transparent,
+  --winscreen split / winner / camera). Add --tag NAME to each so its window is "Project Arena - Spectator - NAME"
+  and each OBS source can pick its own window.
   Streaming: capture only the "Project Arena - Spectator" window in OBS (Window Capture); the controls window stays
   off the stream. Your microphone is never sent.
   Another community server for this session: ProjectArena.exe --spectate --server host:port
