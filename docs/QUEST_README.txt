@@ -52,7 +52,10 @@ Playing
   - MENU button (left controller): menus. B or a thumbstick click (or holding the Meta button) re-centres you.
   - Two players start a match face to face in the centre: hold your trigger and bump fists (or wait 10 seconds).
   - Hold the left grip to talk. MENU > REPORT BUG sends us a note and the game's recent log; MENU > REPORT PLAYER
-    reports or mutes someone in your room.
+    reports or mutes someone in your room, or votes to remove them from the arena (more than half the room).
+  - CUSTOMIZE > PRESET > COUNTRY FLAG: play for your country (a team kit, and your end of the court in its colours).
+  - MENU > MY STATS: your career from online matches against other players (public in the game; DELETE MY STATS
+    erases it). Privacy: https://github.com/jendoebelin/ProjectArena-public/blob/main/docs/PRIVACY.md
 
 Project Arena is free and open source: https://github.com/jendoebelin/ProjectArena-public
 Questions: vrsportsfan@gmail.com

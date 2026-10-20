@@ -27,3 +27,7 @@ tools/UassetDump/obj/
 
 # Steam upload settings (tools/steam_upload.sh): app / depot IDs, build account, steamcmd path
 /steam.local.cfg
+
+# player statistics tables and their salts (server/projectarena_relay.py --stats): private, never in git
+*.db
+*.db.salt

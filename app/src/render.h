@@ -11,7 +11,8 @@
 // arena: emissive.rgb = specular colour F0, emissive.a = gloss strength.
 enum ShaderKind : uint32_t { SH_LIT = 0, SH_COURTMASK = 1, SH_ADDITIVE = 2, SH_UNLIT = 3, SH_TRANSLUCENT = 4, SH_LIGHTMAP = 5 };
 // material flags: bit 0 two-sided; bit 4 avatar pattern (SH_LIT: the DrawParams pattern mask on uv0);
-// bits 8..11 avatar colour channel (1 primary, 2 secondary, 3 glow, 4 skin, 5 visor, 6 hair, 7 trim; 0 = none)
+// bits 8..11 avatar colour channel (1 primary, 2 secondary, 3 glow, 4 skin, 5 visor, 6 hair, 7 trim; 0 = none),
+// or a team end's light / glow / glass (8 the blue end, 9 the orange end: NATIONS recolours them, setSideColors)
 enum : uint32_t { MAT_TWOSIDED = 1, MAT_PATTERN = 16, MAT_DESIGN = 32, MAT_CLOTH = 64 };   // CLOTH: garment fabric   // DESIGN: mask texture R trim, G glow, B white
 inline uint32_t matChannel(uint32_t flags) { return (flags >> 8) & 15u; }
 // SH_LIT: emissive.a = gloss (reflections of the arena; visors, polished armour)
@@ -64,6 +65,8 @@ public:
     void draw(const Model& m, const Mat4& model, const DrawParams& dp, int pass);
     void beginEye(const Mat4& view, const Mat4& proj, const Vec3& eyePos);
     void setTeamColors(const float c0[4], const float c1[4], float glow0, float glow1);
+    // NATIONS: the two ends' colours for the arena's team-marked materials (channels 8 / 9); off = as built
+    void setSideColors(bool on, const float c0[3], const float c1[3]);
     // simple geometry
     void drawSphere(const Vec3& c, float r, const float rgba[4], bool additive);
     void drawBox(const Mat4& model, const float rgba[4], bool additive);
@@ -98,6 +101,8 @@ private:
     GLuint loadTexture(const std::string& rel, bool srgb);
     GLuint prog_ = 0;
     GLuint depthProg_ = 0, alphaProg_ = 0;
+    bool sidesOn_ = false;
+    float side_[2][3] = {{0.1f, 0.7f, 1.0f}, {1.0f, 0.4f, 0.1f}};
     GLint dMVP_ = -1, dModel_ = -1, dDepthVP_ = -1, dDepthView_ = -1, dNearFar_ = -1, dLayer_ = -1, dTex_ = -1, dCol_ = -1;
     GLint uUVOff_ = -1, uErode_ = -1, uRim_ = -1, uPattern_ = -1, uPatCol_ = -1, uPatGlow_ = -1;
     GLint uSkinned_ = -1, uBones_ = -1, uDesign_ = -1, uDesCol_ = -1, uDesGlow_ = -1;

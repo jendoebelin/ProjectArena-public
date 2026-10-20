@@ -5,6 +5,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -87,6 +88,41 @@ int main() {
     CHECK(ns[1]->net.pingMs() >= 0.f && ns[1]->net.pingMs() < 250.f, "the player measures its round trip to the host (PING / PONG)");
     CHECK(H.net.pingMs() >= 0.f && H.net.pingMs() < 250.f, "and the host its round trip to the player");
     std::printf("    ping: player -> host %.1f ms, host -> player %.1f ms (local relay)\n", ns[1]->net.pingMs(), H.net.pingMs());
+    std::printf("[player statistics on the server]\n");
+    {
+        uint8_t k0[16], k1[16];
+        std::memset(k0, 0x11, 16); std::memset(k1, 0x22, 16);
+        H.net.setStatsKey(k0); ns[1]->net.setStatsKey(k1);
+        pump(ns, 3.5);   // the keys go to the relay; the host names its tank (every 3 s)
+        Net::MatchStats st[2];
+        st[0].throws = 10; st[0].onTarget = 6; st[0].hits = 3; st[0].blocks = 2; st[0].faced = 5; st[0].catches = 1; st[0].topSpeed = 22.5f;
+        st[1].throws = 8; st[1].onTarget = 4; st[1].hits = 2; st[1].blocks = 1; st[1].faced = 4; st[1].topSpeed = 19.f;
+        const uint8_t score[4] = {7, 4, 0, 0};
+        H.net.reportMatch(0, st, score);
+        ns[1]->net.confirmMatch(0, score);   // the other player's game agrees (the host's result alone counts for nobody)
+        pump(ns, 0.4);
+        Node& W = *ns[7];
+        const uint32_t hv = H.net.roomHostVip();
+        W.net.requestStats(hv);
+        pump(ns, 0.5);
+        Net::CareerStats c[2];
+        const bool got = W.net.statsFor(hv, c);
+        CHECK(got && c[0].known && c[0].matches == 1 && c[0].wins == 1 && c[0].throws == 10 && c[0].onTarget == 6 &&
+              c[1].matches == 1 && c[1].wins == 0 && c[1].hits == 2, "a reported match reaches the players' careers, and anyone can read them");
+        CHECK(got && std::fabs(c[0].topSpeed - 22.5f) < 0.02f && !std::strcmp(c[0].name, "HOST") && !std::strcmp(c[1].name, "ONE"),
+              "with the top speed and the names");
+        CHECK(ns[1]->net.roomHostVip() == hv, "a player in the room asks for the same host's players");
+        ns[1]->net.requestMyStats();   // MENU > MY STATS
+        pump(ns, 0.4);
+        Net::CareerStats me[2];
+        CHECK(ns[1]->net.statsFor(Net::kMyStats, me) && me[0].matches == 1 && me[0].hits == 2 && !std::strcmp(me[0].name, "ONE"),
+              "a player reads their own career (MY STATS)");
+        ns[1]->net.deleteMyStats();
+        pump(ns, 0.7);
+        ns[1]->net.requestMyStats();
+        pump(ns, 0.4);
+        CHECK(ns[1]->net.statsFor(Net::kMyStats, me) && me[0].matches == 0, "DELETE MY STATS erases them on the server");
+    }
     std::printf("[fist bump over the network]\n");
     {
         Node& V = *ns[1];
@@ -264,6 +300,22 @@ int main() {
         ns[3]->net.join(ip2, false);   // JOIN ROOM: waits, not queued
         pump(ns, 1.0);
         CHECK(ns[3]->net.localWaiting() && ns[3]->net.localQueuePos() < 0, "JOIN ROOM waits outside without queuing");
+        std::printf("[vote to remove]\n");
+        const uint32_t target = ns[3]->net.session();
+        CHECK(!ns[4]->net.voteKick(B.net.session()), "nobody can vote the host out of its own arena");
+        CHECK(ns[4]->net.voteKick(target), "a waiting player votes to remove someone");
+        pump(ns, 0.6);
+        CHECK(ns[3]->net.inRoom(), "one vote of the two needed (4 people: more than half of the other 3) is not enough");
+        CHECK(!ns[4]->net.voteKick(target), "one vote each");
+        CHECK(ns[5]->net.voteKick(target), "a second person votes");
+        pump(ns, 1.0);
+        bool gone = !ns[3]->net.inRoom();
+        for (const RoomInfo::Member& m : B.net.room().members) gone &= m.id != target;
+        CHECK(gone, "two votes: removed from the arena");
+        ns[3]->net.join(ip2, false);   // back again in the same session: turned away
+        pump(ns, 1.0);
+        CHECK(!ns[3]->net.inRoom(), "a removed player can't come back to that arena this session");
+        CHECK(ns[4]->net.inRoom() && ns[5]->net.inRoom(), "everyone else stays");
     }
     for (auto& n : ns) { if (n->net.online()) n->net.goOffline(); n->net.shutdown(); }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);

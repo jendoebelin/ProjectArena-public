@@ -36,11 +36,14 @@ static const uint8_t kVersion = 8;
 // PING / PONG: the round trip between a host and each player (logged with the net stats). Builds without them ignore
 // both, so the protocol version stays.
 enum : uint8_t { MSG_BEACON = 1, MSG_JOIN = 2, MSG_INPUT = 3, MSG_STATE = 4, MSG_LEAVE = 5, MSG_SPECTATE = 6,
-                 MSG_REJECT = 7, MSG_QUEUE = 8, MSG_ROOM = 9, MSG_VOICE = 10, MSG_CAMERAS = 11, MSG_PING = 12, MSG_PONG = 13 };
+                 MSG_REJECT = 7, MSG_QUEUE = 8, MSG_ROOM = 9, MSG_VOICE = 10, MSG_CAMERAS = 11, MSG_PING = 12, MSG_PONG = 13,
+                 MSG_KICKVOTE = 14 };   // (14: VOTE TO REMOVE, body: the target's id; older hosts ignore it)
 // community relay (server/projectarena_relay.py)
 static const uint32_t kRelayMagic = 0x4C52414F;   // 'OARL'
 static const uint16_t kRelayPort = 47780;
-enum : uint8_t { R_HELLO = 1, R_WELCOME = 2, R_SEND = 3, R_PING = 4, R_BYE = 5, R_DELIVER = 6, R_ERROR = 7 };
+enum : uint8_t { R_HELLO = 1, R_WELCOME = 2, R_SEND = 3, R_PING = 4, R_BYE = 5, R_DELIVER = 6, R_ERROR = 7,
+                 R_KEY = 8, R_TANK = 9, R_MATCH = 10, R_STATSREQ = 11, R_STATS = 12, R_CONFIRM = 13, R_DELETE = 14,
+                 R_MYSTATS = 15 };   // (8-15: player statistics)
 static const double kRotateDelay = 6.0;          // match summary -> both players out, the queue in
 static const double kMemberTimeout = 4.0;
 
@@ -246,6 +249,58 @@ void Net::rawSend(const void* d, int n, uint32_t ip, uint16_t port) {
     sockaddr_in a{};
     a.sin_family = AF_INET; a.sin_port = htons(port); a.sin_addr.s_addr = ip;
     sendto(sock_, (const char*)d, n, 0, (sockaddr*)&a, sizeof a);
+}
+
+void Net::relaySend(uint8_t type, const void* body, int n) {
+    if (!online_ || !vip_ || n < 0 || n > 200) return;
+    uint8_t b[221] = {};
+    std::memcpy(b, &kRelayMagic, 4); b[4] = type; std::memcpy(b + 5, token_, 16);
+    if (n) std::memcpy(b + 21, body, n);
+    rawSend(b, 21 + n, serverIp_, serverPort_);
+}
+
+uint32_t Net::roomHostVip() const {
+    if (!online_ || !vip_) return 0;
+    if (mode_ == Mode::Host) return vip_;
+    if (mode_ == Mode::Client) return peerIp_;
+    return 0;
+}
+
+void Net::reportMatch(int winner, const MatchStats st[2], const uint8_t score[4]) {
+    if (mode_ != Mode::Host || !online_ || !vip_ || winner < 0 || winner > 1 || !slot_[0] || !slot_[1]) return;
+    uint8_t b[33];
+    std::memcpy(b + 29, score, 4);
+    b[0] = (uint8_t)winner;
+    for (int k = 0; k < 2; ++k) {
+        const uint16_t v[7] = {st[k].throws, st[k].onTarget, st[k].hits, st[k].blocks, st[k].faced, st[k].catches,
+                               (uint16_t)std::min(6000.f, std::max(0.f, st[k].topSpeed * 100.f))};
+        std::memcpy(b + 1 + 14 * k, v, 14);
+    }
+    relaySend(R_MATCH, b, sizeof b);
+    LOGI("stats: match reported (winner slot %d)", winner);
+}
+
+void Net::confirmMatch(int winner, const uint8_t score[4]) {
+    if (mode_ != Mode::Client || !online_ || !vip_ || !peerIp_ || winner < 0 || winner > 1) return;
+    uint8_t b[9];
+    std::memcpy(b, &peerIp_, 4);
+    b[4] = (uint8_t)winner;
+    std::memcpy(b + 5, score, 4);
+    relaySend(R_CONFIRM, b, sizeof b);
+    LOGI("stats: match confirmed (winner slot %d)", winner);
+}
+
+void Net::requestMyStats() { relaySend(R_MYSTATS, nullptr, 0); }
+void Net::deleteMyStats() { relaySend(R_DELETE, nullptr, 0); LOGI("stats: delete requested"); }
+
+void Net::requestStats(uint32_t hostVip) {
+    if (hostVip) relaySend(R_STATSREQ, &hostVip, 4);
+}
+
+bool Net::statsFor(uint32_t hostVip, CareerStats out[2]) const {
+    if (!hostVip || hostVip != statsHost_) return false;
+    out[0] = stats_[0]; out[1] = stats_[1];
+    return true;
 }
 
 void Net::relayHello() {
@@ -537,6 +592,8 @@ void Net::rotate(Game& g) {
 void Net::removeMember(uint32_t id, Game& g) {
     auto it = std::find_if(members_.begin(), members_.end(), [&](const Member& m) { return m.id == id && !m.local; });
     if (it == members_.end()) return;
+    kickVotes_.erase(std::remove_if(kickVotes_.begin(), kickVotes_.end(),
+                                    [&](const std::pair<uint32_t, uint32_t>& v) { return v.first == id || v.second == id; }), kickVotes_.end());
     LOGI("net: %s left the room", ipStr(it->ip));
     members_.erase(it);
     queue_.erase(std::remove(queue_.begin(), queue_.end(), id), queue_.end());
@@ -607,6 +664,43 @@ void Net::sendRoom() {
     for (const Spectator& sp : spectators_) sendTo(w.b.data(), (int)w.b.size(), sp.ip, kPort);
 }
 
+int Net::kickVotesNeeded() const {
+    const int people = (int)members_.size();   // everyone in the room, the host included
+    const int others = people - 1;              // all but the one being voted on
+    const int need = std::max(2, others / 2 + 1);
+    return need <= others ? need : 0;
+}
+
+void Net::countKickVote(uint32_t target, uint32_t voter) {
+    if (mode_ != Mode::Host || target == session_ || target == voter) return;   // (the host can't be removed)
+    if (!member(target) || !member(voter)) return;
+    for (const auto& v : kickVotes_) if (v.first == target && v.second == voter) return;
+    kickVotes_.push_back({target, voter});
+    int n = 0;
+    for (const auto& v : kickVotes_) if (v.first == target && member(v.second)) ++n;
+    const int need = kickVotesNeeded();
+    const Member* t = member(target);
+    LOGI("net: a vote to remove %s (%d of %d needed)", t->name[0] ? t->name : ipStr(t->ip), n, need);
+    char msg[48];
+    if (need && n >= need) {
+        kickNow_ = target;
+    } else {
+        std::snprintf(msg, sizeof msg, "VOTE TO REMOVE %s  %d OF %d", t->name[0] ? t->name : "A PLAYER", n, need ? need : 2);
+        notice(msg);
+    }
+}
+
+bool Net::voteKick(uint32_t target) {
+    if (!inRoom() || !target || target == session_ || target == hostSession()) return false;
+    if (std::find(myKickVotes_.begin(), myKickVotes_.end(), target) != myKickVotes_.end()) return false;
+    myKickVotes_.push_back(target);
+    if (mode_ == Mode::Host) { countKickVote(target, session_); return true; }
+    Writer w; header(w, MSG_KICKVOTE, session_, 0); w.put(target);
+    sendTo(w.b.data(), (int)w.b.size(), peerIp_, kPort);
+    LOGI("net: voted to remove %08x", target);
+    return true;
+}
+
 void Net::reject(uint32_t ip, const char* why) {
     Writer w; header(w, MSG_REJECT, session_, 0);
     char t[32] = {};
@@ -669,6 +763,19 @@ bool Net::takeCameras(char team[17], std::vector<uint8_t>& blob) {
 
 // ------------------------------------------------------------------ per-frame
 bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float dt) {
+    if (kickNow_ && mode_ == Mode::Host) {   // VOTE TO REMOVE passed: out of the room, and not back this session
+        if (Member* m = member(kickNow_)) {
+            Removed x; x.id = m->id; x.ip = m->ip; std::memcpy(x.name, m->name, 16);
+            removed_.push_back(x);
+            char msg[48];
+            std::snprintf(msg, sizeof msg, "%s WAS REMOVED BY VOTE", m->name[0] ? m->name : "A PLAYER");
+            LOGI("net: %s removed by vote", m->name[0] ? m->name : ipStr(m->ip));
+            reject(m->ip, "REMOVED BY VOTE");
+            removeMember(kickNow_, g);
+            notice(msg);
+        }
+        kickNow_ = 0;
+    }
     now_ = monoNow();
     bool gotState = false;
     uint8_t buf[2048];
@@ -689,6 +796,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             if (t == R_WELCOME) {
                 if (rr.e - rr.p < 20) continue;
                 std::memcpy(token_, rr.p, 16); std::memcpy(&vip_, rr.p + 16, 4);
+                keySent_ = false;   // (a new session on the relay: name our stats key again)
                 LOGI("net: online (relay %s)", serverName_);
                 if (rr.e - rr.p >= 21) {   // the current release (relays from 2026-10-19 on)
                     const size_t n = std::min<size_t>(15, std::min<size_t>(rr.p[20], (size_t)(rr.e - rr.p - 21)));
@@ -697,6 +805,25 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                         const char c = (char)rr.p[21 + i];
                         latest_[i] = (c >= '0' && c <= '9') || c == '.' ? c : 0;
                     }
+                }
+                continue;
+            }
+            if (t == R_STATS) {   // a host's two players' careers
+                if (rr.e - rr.p < 4 + 2 * 51) continue;
+                std::memcpy(&statsHost_, rr.p, 4);
+                for (int k = 0; k < 2; ++k) {
+                    const uint8_t* q = rr.p + 4 + 51 * k;
+                    CareerStats& c = stats_[k];
+                    c = CareerStats{};
+                    c.known = q[0] != 0;
+                    for (int i = 0; i < 16; ++i) c.name[i] = (q[1 + i] >= 32 && q[1 + i] < 127) ? (char)q[1 + i] : 0;
+                    uint32_t v[8];
+                    std::memcpy(v, q + 17, 32);
+                    c.matches = v[0]; c.wins = v[1]; c.throws = v[2]; c.onTarget = v[3];
+                    c.hits = v[4]; c.blocks = v[5]; c.faced = v[6]; c.catches = v[7];
+                    uint16_t top;
+                    std::memcpy(&top, q + 49, 2);
+                    c.topSpeed = top / 100.f;
                 }
                 continue;
             }
@@ -795,6 +922,9 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             m.ip = fromIp; m.id = session; m.seen = now_;
             r.get<uint8_t>();   // "play now" from older builds: everyone now starts in the room's waiting area
             if (r.e - r.p >= 16) readName(r, m.name);   // 0.3.1+
+            bool out = false;   // voted out of this arena for this session: by session, address or name
+            for (const Removed& x : removed_) out |= x.id == session || x.ip == fromIp || (x.name[0] && !std::strcmp(x.name, m.name));
+            if (out) { reject(fromIp, "REMOVED FROM THIS ARENA"); continue; }
             members_.push_back(m);
             compactTank(g, false);   // ... and gets into the tank through the queue (owner request)
             notice("A PLAYER IS WAITING");
@@ -824,6 +954,9 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                 readInput(r, fromMember->in);
                 if (fromMember->id == slot_[0] || fromMember->id == slot_[1]) countSeq(seq);
             }
+        } else if (type == MSG_KICKVOTE && fromMember) {
+            const uint32_t target = r.get<uint32_t>();
+            if (r.ok) countKickVote(target, session);
         } else if (type == MSG_QUEUE && fromMember) {
             const uint8_t v = r.get<uint8_t>();
             if (v == 2) { forfeit_ = session; continue; }
@@ -889,6 +1022,18 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             rawSend(b, sizeof b, serverIp_, serverPort_);
         }
         if (now_ - lastRelayHeard_ > 12.0 && vip_) { vip_ = 0; notice("SERVER NOT RESPONDING"); LOGW("net: relay silent"); }
+        bool anyKey = false;
+        for (uint8_t k : statsKey_) anyKey |= k != 0;
+        if (vip_ && anyKey && !keySent_) { relaySend(R_KEY, statsKey_, 16); keySent_ = true; }
+        if (vip_ && mode_ == Mode::Host && now_ - lastTank_ > 3.0) {   // who is in the tank (stats go to them)
+            lastTank_ = now_;
+            uint32_t v[2] = {0, 0};
+            for (int k = 0; k < 2; ++k) {
+                if (!slot_[k]) continue;
+                for (const Member& m : members_) if (m.id == slot_[k]) v[k] = m.local ? vip_ : m.ip;
+            }
+            relaySend(R_TANK, v, 8);
+        }
     }
     if (inRoom() && now_ - lastPingSent_ > 2.0) {   // the round trip: the client to its host, the host to each player
         lastPingSent_ = now_;

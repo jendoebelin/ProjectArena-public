@@ -39,7 +39,10 @@ Keys: **1-5** cameras, **A** auto camera, **F** free camera (right mouse + WASD)
   **QUIT GAME** is at its bottom.
 - **MENU** (left controller) opens the menus. **B** or a thumbstick click re-centres you; holding the Meta button
   does too.
-- **PLAY PRACTICE**: you against the bot. **CUSTOMIZE AVATAR**: your look, which other players see.
+- **PLAY PRACTICE**: you against the bot. **CUSTOMIZE AVATAR**: your look, which other players see. Its **PRESET**
+  row ends in **COUNTRY FLAG**: a team kit in your country's colours, chosen in the **COUNTRY** row under it.
+- **MY STATS** (side menu): your career from online matches against other players. Other players and spectators see
+  these numbers too; **DELETE MY STATS** erases them (`docs/PRIVACY.md`).
 - **MULTIPLAYER**:
   - **ONLINE: ON** shows rooms on the community server (the game connects to it by default); **ONLINE: OFF**
     shows rooms on your home Wi-Fi.
@@ -49,7 +52,8 @@ Keys: **1-5** cameras, **A** auto camera, **F** free camera (right mouse + WASD)
   - **FORFEIT MATCH** takes you back to the waiting area. **SPECTATE GAMES** shows every live match.
 - Voice chat in a room: hold the **left grip** to talk (SETTINGS → VOICE AND MUTES for open mic and mutes).
 - Something wrong? **MENU → REPORT BUG** sends a short note and the game's recent log to us. Someone behaving
-  badly? **MENU → REPORT PLAYER** (report or mute them).
+  badly? **MENU → REPORT PLAYER** (report or mute them, or **VOTE TO REMOVE** them from your arena: it takes more than
+  half of the other people in the room).
 
 ## Updating and uninstalling
 

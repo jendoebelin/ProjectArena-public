@@ -224,6 +224,64 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         CHECK(avatar::get(bad, avatar::F_FACE) < avatar::kFaces && avatar::get(bad, avatar::F_BODY) == 1, "a bad face from the network is repaired");
     }
     {
+        std::printf("[avatar: NATION in spare bits, the team kit, the ends' colours]\n");
+        CHECK(avatar::nationCount() >= 31 && avatar::nationCount() <= 255 && !avatar::nation(0) && avatar::nation(avatar::nationCount()) &&
+              !avatar::nation(avatar::nationCount() + 1), "the country table: 1..count, 0 = none");
+        AvatarDesc d;
+        avatar::set(d, avatar::F_BODY, 1);
+        avatar::set(d, avatar::F_FACE, 3);
+        avatar::set(d, avatar::F_GAUNTLET, 2);
+        avatar::set(d, avatar::F_NATION, 7);
+        CHECK(avatar::get(d, avatar::F_NATION) == 7 && avatar::get(d, avatar::F_BODY) == 1 && avatar::get(d, avatar::F_FACE) == 3 &&
+              avatar::get(d, avatar::F_GAUNTLET) == 2, "country, body type, face and gauntlet read back separately");
+        avatar::set(d, avatar::F_FACE, 1);
+        avatar::set(d, avatar::F_GAUNTLET, 0);
+        CHECK(avatar::nationOf(d) == 7, "changing the face or the gauntlet keeps the country");
+        const int big = std::min(45, avatar::nationCount());
+        avatar::set(d, avatar::F_NATION, big);
+        CHECK(avatar::nationOf(d) == big && avatar::gauntletOf(d) == 0 && avatar::faceOf(d) == 1, "a country above 31 uses the gauntlet's spare bits");
+        AvatarDesc c;
+        CHECK(avatar::fromText(avatar::toText(d), c) && avatar::nationOf(c) == big, "avatar.cfg keeps the country");
+        AvatarDesc s = d;
+        avatar::sanitize(s);
+        CHECK(avatar::nationOf(s) == big && avatar::gauntletOf(s) == 0, "sanitize (network) keeps a valid country");
+        // what 0.3.5 and older make of it (their sanitize): the body type stays; FACE 1; the first gauntlet over 31
+        auto oldSanitize = [](AvatarDesc o) {
+            if (o.gauntlet >= 4) o.gauntlet = 0;
+            o.body = (uint8_t)((o.body & 1) | ((o.body >> 1) < 4 ? (o.body & ~1) : 0));
+            return o;
+        };
+        AvatarDesc small = d;
+        avatar::set(small, avatar::F_GAUNTLET, 2);
+        avatar::set(small, avatar::F_NATION, 7);
+        const AvatarDesc o1 = oldSanitize(small), o2 = oldSanitize(d);
+        CHECK((o1.body & 1) == 1 && o1.gauntlet == 2, "an older build: the body type and (countries 1-31) the gauntlet stay");
+        CHECK((o2.body & 1) == 1 && o2.gauntlet < 4, "an older build: a country above 31 still gives a valid gauntlet");
+        const AvatarDesc u = avatar::uniform(small);
+        CHECK(u.suit == 1 && u.pattern == 0 && u.lower == 1 && avatar::nationOf(u) == 7, "a country wears the team kit (jersey, shorts)");
+        AvatarDesc plain = avatar::preset(3);
+        const AvatarDesc up = avatar::uniform(plain);
+        CHECK(up.suit == plain.suit && up.pattern == plain.pattern && up.primary == plain.primary, "no country: the look is unchanged");
+        float ch[avatar::CH_COUNT][4];
+        const float team[3] = {1, 1, 1};
+        avatar::channelColors(small, team, ch);
+        const avatar::Nation* N = avatar::nation(7);
+        CHECK(std::fabs(ch[avatar::CH_PRIMARY][2] - std::pow(N->kit[0][2] / 255.f, 2.2f)) < 1e-4f, "the kit is in the flag's own colours");
+        float sc[2][3];
+        avatar::sideColors(0, 0, sc);
+        CHECK(sc[0][0] == 0.1f && sc[0][2] == 1.0f && sc[1][0] == 1.0f && sc[1][2] == 0.1f, "no countries: the blue and orange ends");
+        int fra = 0, usa = 0;
+        for (int n = 1; n <= avatar::nationCount(); ++n) {
+            if (!std::strcmp(avatar::nation(n)->code, "FRA")) fra = n;
+            if (!std::strcmp(avatar::nation(n)->code, "USA")) usa = n;
+        }
+        avatar::sideColors(0, fra, sc);
+        CHECK(sc[1][0] > sc[1][2], "FRANCE against the blue end takes its red");
+        avatar::sideColors(usa, usa, sc);
+        auto apart = [&]() { float s2 = 0; for (int k = 0; k < 3; ++k) s2 += (sc[0][k] - sc[1][k]) * (sc[0][k] - sc[1][k]); return std::sqrt(s2); };
+        CHECK(apart() > 0.5f, "the same country at both ends: two different colours");
+    }
+    {
         std::printf("[avatar: hair under headgear, swinging parts]\n");
         PlayerInput in;
         in.headTracked = true;

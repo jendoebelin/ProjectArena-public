@@ -8,7 +8,9 @@
 #include <thread>
 #include <cstring>
 #include <deque>
+#include <array>
 #include <map>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -268,6 +270,27 @@ struct App {
     // scoreboard), 3 KEY (only the players and the balls, on the key colour). onlyPlayer >= 0: that player alone
     int viewLayer = 0;
     int onlyPlayer = -1;
+    // NATIONS (country presets): each end's country (the player's avatar; 0 = none) and colour, set every frame by
+    // updateSides(); with no country anywhere the ends stay blue / orange and everything looks as before
+    // player statistics (the community server keeps them per player key, net.h CareerStats): this match's counts on
+    // the host, and the two players' careers as the server last answered (careersOk) for statsHost
+    Net::MatchStats matchStats[2];
+    Net::CareerStats careers[2];
+    bool careersOk = false;
+    uint32_t statsHost = 0;
+    double statsAskAt = 0;
+    // the PC spectator's VS screen (two portraits, VS, their stats) at the fist bump and the countdown; M toggles,
+    // and shows it any time
+    bool statsOpen = false;         // MENU > MY STATS: the player's own career as a dashboard
+    Net::CareerStats myCareer;
+    bool myCareerOk = false;
+    double myStatsAskAt = 0, deleteArmedUntil = 0;
+    int dcMatchup = 1;
+    bool dcMatchupForce = false;
+    double dcVsT = 0;
+    int sideNation[2] = {0, 0};
+    float sideRGB[2][3] = {{0.1f, 0.7f, 1.0f}, {1.0f, 0.4f, 0.1f}};
+    bool nationsOn = false;
     double meetTick = 0;            // the meeting's reminder buzz, and the closeness buzz as the fists come together
     // hit fireworks (PORT stand-in for the original's hit VFX): sparks + delayed shells that burst above the court
     struct HitFx { Vec3 pos, dir; float t; int team, victim; uint32_t seed; };
@@ -311,6 +334,9 @@ struct App {
     Pose builderPose;
     Vec3 mirrorPoint, mirrorNormal;
     int builderHover = -1, presetIdx = 0;
+    int lastNation = 1;             // PRESET > COUNTRY FLAG: the country it picks first (the last one chosen)
+    std::vector<uint32_t> kickVoted;   // REPORT PLAYER > VOTE TO REMOVE: who we voted on (this session)
+    bool statsNoticeOpen = false, statsNoticeSeen = false;   // the one-time notice about statistics (settings.cfg)
     Vec3 builderHit;
     bool builderHitValid = false;
     PlayerInput viewIn[2];         // what is drawn for each player (remote ones smoothed)
@@ -1175,7 +1201,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.5";
+static const char* kAppVersion = "0.3.6";
 
 // "0.3.4" newer than "0.3.3" (dotted numbers, compared part by part)
 static bool versionNewer(const char* a, const char* b) {
@@ -1748,7 +1774,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
         in.hand[h].squeeze = getFloat(a, a.squeeze, a.handPath[h]);
     }
     in.buttonA = getBool(a, a.buttonA);
-    in.avatar = a.myAvatar;
+    in.avatar = avatar::uniform(a.myAvatar);   // (with a country: the team kit, which older builds can show too)
     a.ptt = in.hand[0].squeeze > 0.6f;
     a.pttGripMax = std::max(a.pttGripMax, in.hand[0].squeeze);
     if (a.ptt) ++a.pttHeldFrames;
@@ -1783,8 +1809,8 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 }
 
 // ------------------------------------------------------------------ lobby menu
-enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute,
-                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek };
+enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute, ReportKick, StatsNoticeOk,
+                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek };
 struct MenuItem {
     std::string label;
     float x, y, w, h;
@@ -1796,17 +1822,18 @@ struct MenuItem {
 static void haptic(App& a, int hand, float amp, float seconds);
 
 // side menu (left of the panel): the areas of the game, the current one lit
-enum { NAV_LOBBY, NAV_HOME, NAV_PRACTICE, NAV_MULTI, NAV_SPECTATE, NAV_AVATAR, NAV_SETTINGS, NAV_REPORT, NAV_BUG, NAV_HELP,
-       NAV_QUIT, kNavCount };
-static const char* kNavLabels[kNavCount] = {"LOBBY", "MAIN MENU", "PRACTICE", "MULTIPLAYER", "SPECTATE", "AVATAR", "SETTINGS",
-                                            "REPORT PLAYER", "REPORT BUG", "HOW TO PLAY", "QUIT GAME"};
-static const float kNavX = -0.67f, kNavTop = 0.30f, kNavStep = 0.081f;
+enum { NAV_LOBBY, NAV_HOME, NAV_PRACTICE, NAV_MULTI, NAV_SPECTATE, NAV_AVATAR, NAV_STATS, NAV_SETTINGS, NAV_REPORT, NAV_BUG,
+       NAV_HELP, NAV_QUIT, kNavCount };
+static const char* kNavLabels[kNavCount] = {"LOBBY", "MAIN MENU", "PRACTICE", "MULTIPLAYER", "SPECTATE", "AVATAR", "MY STATS",
+                                            "SETTINGS", "REPORT PLAYER", "REPORT BUG", "HOW TO PLAY", "QUIT GAME"};
+static const float kNavX = -0.67f, kNavTop = 0.30f, kNavStep = 0.0745f;
 
 static int navCurrent(const App& a) {
     if (a.titleOpen || a.xpOpen) return NAV_HOME;
     if (inLobby(a) && !a.menuOpen) return NAV_LOBBY;
     if (a.rulesOpen) return a.rulesForHost ? NAV_MULTI : NAV_PRACTICE;
     if (a.settingsOpen) return NAV_SETTINGS;
+    if (a.statsOpen) return NAV_STATS;
     if (a.reportOpen) return NAV_REPORT;
     if (a.bugOpen) return NAV_BUG;
     if (a.helpOpen) return NAV_HELP;
@@ -1835,6 +1862,16 @@ static std::vector<MenuItem> menuItems(App& a) {
 
 static std::vector<MenuItem> menuItemsBase(App& a) {
     std::vector<MenuItem> v;
+    if (a.statsNoticeOpen && !a.nameEdit) {   // the one-time notice before the first online match
+        v.push_back({"OK", 0, -0.33f, 0.30f, 0.07f, MenuAct::StatsNoticeOk, 0, true});
+        return v;
+    }
+    if (a.statsOpen && !a.nameEdit) {   // MY STATS: the dashboard is drawn by drawStats; here its one button
+        const bool armed = nowSeconds() < a.deleteArmedUntil;
+        v.push_back({armed ? "PRESS AGAIN TO DELETE" : "DELETE MY STATS", 0.24f, -0.495f, 0.40f, 0.055f, MenuAct::DeleteStats, 0,
+                     a.net.onlineReady() && a.myCareerOk && a.myCareer.known});
+        return v;
+    }
     if (a.bugOpen && !a.nameEdit) {
         for (int i = 0; i < 6; ++i)
             v.push_back({kBugCats[i], (i % 2) ? 0.21f : -0.21f, 0.13f - 0.085f * (i / 2), 0.40f, 0.07f, MenuAct::BugCat, (uint32_t)i, true});
@@ -1866,10 +1903,16 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         std::string note = a.reportNote.empty() ? std::string("ADD A NOTE (OPTIONAL)") : "NOTE: " + a.reportNote;
         if (note.size() > 40) note = note.substr(0, 39) + ".";
         v.push_back({note, 0, -0.30f, 0.82f, 0.06f, MenuAct::ReportNote, 0, here});
-        v.push_back({here && isMuted(a, a.reportWho) ? "UNMUTE" : "MUTE", -0.28f, -0.39f, 0.25f, 0.07f, MenuAct::ReportMute, 0, here});
-        v.push_back({a.bugSending ? "SENDING..." : "SEND REPORT", 0, -0.39f, 0.25f, 0.07f, MenuAct::ReportSend, 0,
+        v.push_back({here && isMuted(a, a.reportWho) ? "UNMUTE" : "MUTE", -0.375f, -0.39f, 0.17f, 0.07f, MenuAct::ReportMute, 0, here});
+        // VOTE TO REMOVE: people in this arena room only (not spectators), never the host
+        const bool voted = std::find(a.kickVoted.begin(), a.kickVoted.end(), a.reportWho) != a.kickVoted.end();
+        bool inRoomHere = false;
+        if (a.net.inRoom()) for (const Net::Person& p : people) inRoomHere |= p.id == a.reportWho && p.role != Net::VOICE_SPECTATOR;
+        v.push_back({voted ? "VOTED" : "VOTE TO REMOVE", -0.135f, -0.39f, 0.29f, 0.07f, MenuAct::ReportKick, 0,
+                     here && inRoomHere && !voted && a.reportWho != a.net.hostSession()});
+        v.push_back({a.bugSending ? "SENDING..." : "SEND REPORT", 0.135f, -0.39f, 0.23f, 0.07f, MenuAct::ReportSend, 0,
                      here && a.reportWhy >= 0 && !a.bugSending});
-        v.push_back({"BACK", 0.28f, -0.39f, 0.25f, 0.07f, MenuAct::ReportBack, 0, true});
+        v.push_back({"BACK", 0.365f, -0.39f, 0.17f, 0.07f, MenuAct::ReportBack, 0, true});
         return v;
     }
     if (a.helpOpen) {
@@ -2043,6 +2086,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         break;
     case MenuAct::Nav: {
         a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen = a.helpOpen = false;
+        a.statsOpen = false;
         a.nameEdit = false;
         auto go = [&](MenuAct act) { MenuItem x{"", 0, 0, 0, 0, act, 0, true}; menuActivate(a, x); };
         switch ((int)it.ip) {
@@ -2057,6 +2101,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         case NAV_SPECTATE: if (a.net.mode() != Net::Mode::Spectate) go(MenuAct::Spectate); break;
         case NAV_AVATAR: go(MenuAct::Avatar); break;
         case NAV_SETTINGS: a.settingsOpen = true; break;
+        case NAV_STATS: a.statsOpen = true; a.myStatsAskAt = 0; a.deleteArmedUntil = 0; break;
         case NAV_REPORT: go(MenuAct::Report); break;
         case NAV_BUG: go(MenuAct::Bug); break;
         case NAV_HELP: a.helpOpen = true; break;
@@ -2065,6 +2110,18 @@ static void menuActivate(App& a, const MenuItem& it) {
         break;
     }
     case MenuAct::MainMenu: a.titleOpen = true; a.settingsOpen = false; break;
+    case MenuAct::DeleteStats:   // two presses within 4 s
+        if (nowSeconds() < a.deleteArmedUntil) {
+            a.net.deleteMyStats();
+            a.deleteArmedUntil = 0;
+            a.myCareer = Net::CareerStats{};
+            a.myCareerOk = false;
+            a.myStatsAskAt = nowSeconds() + 1.0;
+            a.net.noticeLocal("YOUR STATS ARE DELETED");
+        } else {
+            a.deleteArmedUntil = nowSeconds() + 4.0;
+        }
+        break;
     case MenuAct::Bug:
         a.bugReturnTitle = a.titleOpen; a.titleOpen = false; a.settingsOpen = false; a.xpOpen = false;
         a.bugOpen = true; a.bugCat = -1; a.bugNote.clear();
@@ -2089,6 +2146,15 @@ static void menuActivate(App& a, const MenuItem& it) {
         else if (a.reportWho) a.mutedIds.push_back(a.reportWho);
         LOGI("voice: %s %s", a.reportName, isMuted(a, a.reportWho) ? "muted" : "unmuted");
         break;
+    case MenuAct::ReportKick:
+        if (a.net.voteKick(a.reportWho)) {
+            a.kickVoted.push_back(a.reportWho);
+            char m[48];
+            std::snprintf(m, sizeof m, "YOUR VOTE TO REMOVE %s IS IN", a.reportName);
+            a.net.noticeLocal(m);
+        }
+        break;
+    case MenuAct::StatsNoticeOk: a.statsNoticeOpen = false; a.statsNoticeSeen = true; a.menuOpen = false; saveSettings(a); break;
     case MenuAct::ReportSend: playerReportSubmit(a); a.reportOpen = false; break;
     case MenuAct::ReportBack: a.reportOpen = false; break;
     case MenuAct::Forfeit: a.net.forfeit(); a.menuOpen = false; break;
@@ -2260,6 +2326,74 @@ static void updateMenu(App& a, PlayerInput& in) {
     for (int h = 0; h < 2; ++h) { in.hand[h].trigger = 0; in.hand[h].squeeze = 0; }   // no grabbing / shields in the menu
 }
 
+// MENU > MY STATS: the player's career from the community server as a dashboard: three rings (win rate, throw
+// accuracy, blocks), four number tiles, the top speed on a bar. Asked again every 5 s while open.
+static void drawStats(App& a) {
+    auto at = [&](float x, float y, float z) { return a.menuPose.transform({x, y, z}); };
+    auto quad = [&](float x, float y, float w, float h, float z, const float* c, float ang = 0.f) {
+        a.gfx.drawPanel(Mat4::fromPose({a.menuPose.q * Quat::axisAngle({0, 0, 1}, ang), at(x, y, z)}, {w, h, 1}), c);
+    };
+    auto text = [&](const std::string& s, float x, float y, float h, const float* c) {
+        a.gfx.drawText(s, {a.menuPose.q, at(x, y, 0.006f)}, h, c);
+    };
+    const float white[4] = {1, 1, 1, 1}, grey[4] = {0.45f, 0.5f, 0.56f, 1}, cyan[4] = {0.3f, 0.85f, 1.0f, 1};
+    const float dim[4] = {0.06f, 0.09f, 0.13f, 1}, tile[4] = {0.02f, 0.04f, 0.07f, 1};
+    char buf_stats[64];
+    const double t = nowSeconds();
+    if (a.net.onlineReady() && t > a.myStatsAskAt) { a.myStatsAskAt = t + 5.0; a.net.requestMyStats(); }
+    Net::CareerStats mine[2];
+    if (a.net.statsFor(Net::kMyStats, mine)) { a.myCareer = mine[0]; a.myCareerOk = true; }
+    text("MY STATS", 0, 0.29f, 0.055f, cyan);
+    text(a.net.name(), 0, 0.235f, 0.026f, white);
+    const Net::CareerStats& c = a.myCareer;
+    if (!a.net.onlineReady() && !a.myCareerOk) { text("CONNECT TO THE COMMUNITY SERVER TO SEE YOUR STATS", 0, 0.05f, 0.022f, white); return; }
+    if (!a.myCareerOk) { text("ASKING THE SERVER...", 0, 0.05f, 0.022f, grey); return; }
+    if (!c.matches) {
+        text("NO MATCHES YET", 0, 0.08f, 0.032f, white);
+        text("PLAY AN ONLINE MATCH AGAINST ANOTHER PLAYER TO START YOUR STATS", 0, 0.02f, 0.019f, grey);
+    }
+    // the rings: a background track, the filled share clockwise from the top, the number in the middle
+    struct Ring { const char* label; float frac; const float* col; };
+    const float green[4] = {0.25f, 0.95f, 0.55f, 1}, gold[4] = {1.0f, 0.78f, 0.25f, 1};
+    const Ring rings[3] = {{"WIN RATE", c.matches ? float(c.wins) / c.matches : 0.f, cyan},
+                           {"THROW ACCURACY", c.throws ? float(c.onTarget) / c.throws : 0.f, green},
+                           {"BLOCKS", c.faced ? float(c.blocks) / c.faced : 0.f, gold}};
+    const int N = 48;
+    for (int r = 0; r < 3 && c.matches; ++r) {
+        const float cx = -0.32f + 0.32f * r, cy = 0.075f, R = 0.085f;
+        for (int i = 0; i < N; ++i) {
+            const float ang = kPi * 0.5f - (i + 0.5f) * 2.f * kPi / N;
+            const bool on = (i + 0.5f) / N <= rings[r].frac;
+            quad(cx + R * std::cos(ang), cy + R * std::sin(ang), 2.f * kPi * R / N * 1.08f, 0.018f, on ? 0.003f : 0.002f,
+                 on ? rings[r].col : dim, ang - kPi * 0.5f);
+        }
+        std::snprintf(buf_stats, sizeof buf_stats, "%d%%", (int)std::lround(rings[r].frac * 100.f));
+        text(buf_stats, cx, cy, 0.040f, white);
+        text(rings[r].label, cx, cy - 0.125f, 0.018f, grey);
+    }
+    if (!c.matches) return;
+    // the tiles
+    const char* tl[4] = {"MATCHES", "WINS", "HITS", "CATCHES"};
+    const uint32_t tv[4] = {c.matches, c.wins, c.hits, c.catches};
+    for (int k = 0; k < 4; ++k) {
+        const float x = -0.36f + 0.24f * k, y = -0.17f;
+        quad(x, y, 0.22f, 0.10f, 0.002f, tile);
+        std::snprintf(buf_stats, sizeof buf_stats, "%u", tv[k]);
+        text(buf_stats, x, y + 0.012f, 0.040f, white);
+        text(tl[k], x, y - 0.033f, 0.015f, grey);
+    }
+    // the top speed on a 0-100 km/h bar
+    const float kmh = c.topSpeed * 3.6f, fr = std::min(1.f, kmh / 100.f), y = -0.31f, w = 0.80f;
+    quad(0, y, w, 0.026f, 0.002f, dim);
+    quad(-w * 0.5f + w * fr * 0.5f, y, w * fr, 0.026f, 0.003f, gold);
+    std::snprintf(buf_stats, sizeof buf_stats, "TOP THROW SPEED  %d KM/H", (int)std::lround(kmh));
+    text(buf_stats, 0, y + 0.04f, 0.020f, white);
+    text("0", -w * 0.5f, y - 0.035f, 0.014f, grey);
+    text("100 KM/H", w * 0.5f - 0.04f, y - 0.035f, 0.014f, grey);
+    text("YOUR STATS ARE SHOWN TO OTHER PLAYERS AND SPECTATORS", -0.16f, -0.475f, 0.0125f, grey);
+    text("DELETE ERASES THEM FROM THE SERVER", -0.16f, -0.505f, 0.0125f, grey);
+}
+
 static void drawMenu(App& a) {
     if (!a.menuOpen) return;
     auto at = [&](float x, float y, float z) { return a.menuPose.transform({x, y, z}); };
@@ -2285,7 +2419,19 @@ static void drawMenu(App& a) {
         quad(kNavX, -0.09f, 0.28f, 0.94f, 0, bg);
     }
     char buf[96];
-    if (a.bugOpen && !a.nameEdit) {
+    if (a.statsNoticeOpen && !a.nameEdit) {
+        text("ONLINE MATCH STATISTICS", 0, 0.27f, 0.045f, cyan);
+        text("WHEN YOU PLAY AN ONLINE MATCH AGAINST ANOTHER PLAYER,", 0, 0.16f, 0.021f, white);
+        text("THE COMMUNITY SERVER KEEPS YOUR CAREER STATISTICS:", 0, 0.12f, 0.021f, white);
+        text("MATCHES, WINS, THROWS, HITS, BLOCKS, CATCHES, TOP SPEED", 0, 0.07f, 0.019f, grey);
+        text("THEY ARE SHOWN TO OTHER PLAYERS AND SPECTATORS WITH YOUR NAME", 0, 0.01f, 0.021f, white);
+        text("NO ACCOUNT, NO EMAIL: THEY ARE TIED TO A RANDOM KEY YOUR GAME MADE", 0, -0.04f, 0.019f, grey);
+        text("SEE OR DELETE THEM ANY TIME IN MENU - MY STATS", 0, -0.11f, 0.021f, white);
+        text("TO PLAY WITHOUT THEM: MULTIPLAYER - ONLINE: OFF", 0, -0.16f, 0.019f, grey);
+        text("PRIVACY POLICY: GITHUB.COM/JENDOEBELIN/PROJECTARENA-PUBLIC", 0, -0.22f, 0.016f, grey);
+    } else if (a.statsOpen && !a.nameEdit) {
+        drawStats(a);
+    } else if (a.bugOpen && !a.nameEdit) {
         text("REPORT A BUG", 0, 0.29f, 0.055f, cyan);
         text("WHAT KIND OF PROBLEM? PICK ONE, ADD A NOTE IF YOU LIKE", 0, 0.215f, 0.022f, white);
         text("SENDS THE NOTE, YOUR SETTINGS AND THE GAME'S RECENT LOG - NOTHING ELSE", 0, -0.33f, 0.018f, grey);
@@ -2431,7 +2577,8 @@ static void drawMenu(App& a) {
         if (tw > it.w * 0.90f) th *= it.w * 0.90f / tw;                 // long labels shrink instead of spilling over
         text(it.label, it.x, it.y, th, it.enabled || row ? white : grey);
     }
-    if (games == 0 && !a.nameEdit && !a.helpOpen && !a.titleOpen && !a.settingsOpen && !a.xpOpen && !a.bugOpen && !a.reportOpen && !a.rulesOpen) {
+    if (games == 0 && !a.nameEdit && !a.helpOpen && !a.titleOpen && !a.settingsOpen && !a.xpOpen && !a.bugOpen && !a.reportOpen && !a.rulesOpen &&
+        !a.statsOpen && !a.statsNoticeOpen) {
         if (int ov = a.net.otherVersion()) {
             const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
             snprintf(buf, sizeof buf, "A GAME ON VERSION %d IS NEARBY", ov);
@@ -2444,7 +2591,7 @@ static void drawMenu(App& a) {
         if (!a.net.otherVersion())   // both headsets have to be on the same network to see each other
             text(a.net.online() ? "WITH ONLINE: ON" : "WITH ONLINE: OFF (LAN)", 0.25f, -0.10f, 0.022f, grey);
     }
-    text("POINT AND PULL THE TRIGGER TO SELECT", 0, -0.455f, 0.022f, grey);
+    if (!a.statsOpen) text("POINT AND PULL THE TRIGGER TO SELECT", 0, -0.455f, 0.022f, grey);
     if (a.spectating && a.watchIp && !a.titleOpen && !a.settingsOpen && !a.nameEdit && !a.helpOpen) {
         snprintf(buf, sizeof buf, "STICKS FLY - A SAVE CAMERA - X NEXT - Y AUTO CAMERA   (%d CAMERAS)", (int)a.warps.size());
         text(buf, 0, -0.495f, 0.02f, grey);
@@ -2595,10 +2742,54 @@ static void drawFx(App& a) {
     for (int p = 0; p < 2; ++p) drawSpawnFx(a, p);
 }
 
+// the host counts each match for the community server's statistics: throws, throws on target (a hit, a strike or a
+// block), hits, blocks, on-target balls faced, catches, the top throw speed; sent when a match between two people ends
+static std::array<uint8_t, 4> finalScore(const Game& g) {   // what both players' games agree on (CONFIRM)
+    auto c = [](int v) { return (uint8_t)std::max(0, std::min(255, v)); };
+    return {c(g.pl[0].score), c(g.pl[1].score), c(g.pl[0].roundWins), c(g.pl[1].roundWins)};
+}
+
+static void countStat(App& a, const GameEvent& e) {
+    Net::MatchStats* s = a.matchStats;
+    auto bump = [](uint16_t& v) { if (v < 3000) ++v; };
+    const int p = e.player;
+    switch (e.type) {
+    case EventType::RoundStart:
+        if ((int)e.value <= 1) { s[0] = Net::MatchStats{}; s[1] = Net::MatchStats{}; }
+        break;
+    case EventType::Throw:
+        if (p >= 0 && p < 2) { bump(s[p].throws); s[p].topSpeed = std::max(s[p].topSpeed, e.value); }
+        break;
+    case EventType::HitPlayer: {   // player = the one hit, value = the scorer
+        const int sc = (int)e.value;
+        if (p >= 0 && p < 2 && sc >= 0 && sc < 2 && sc != p) { bump(s[sc].hits); bump(s[sc].onTarget); bump(s[p].faced); }
+        break;
+    }
+    case EventType::Strike:   // player = the one struck against
+        if (p >= 0 && p < 2) { bump(s[1 - p].onTarget); bump(s[p].faced); }
+        break;
+    case EventType::ShieldBlock: case EventType::KnuckleBlock:   // player = the blocker
+        if (p >= 0 && p < 2) { bump(s[p].blocks); bump(s[p].faced); bump(s[1 - p].onTarget); }
+        break;
+    case EventType::Caught:
+        if (p >= 0 && p < 2) bump(s[p].catches);
+        break;
+    case EventType::MatchEnd:
+        if (p >= 0 && p < 2 && !a.game.pl[1].isBot) a.net.reportMatch(p, s, finalScore(a.game).data());
+        s[0] = Net::MatchStats{}; s[1] = Net::MatchStats{};
+        break;
+    default: break;
+    }
+}
+
 static void handleEvents(App& a) {
     const int L = a.net.localIndex();
     for (GameEvent e : a.game.events) {
         bool mine = !a.viewing && e.player == L;
+        if (a.net.mode() == Net::Mode::Host && a.net.online()) countStat(a, e);
+        if (e.type == EventType::MatchEnd && a.net.mode() == Net::Mode::Client && a.net.online() && a.net.localSlot() >= 0 &&
+            e.player >= 0 && e.player < 2)
+            a.net.confirmMatch(e.player, finalScore(a.game).data());   // (the host's result counts once we agree)
         if (e.type != EventType::Bounce && e.type != EventType::Countdown)
             LOGI("event %s player %d hand %d value %.2f pos (%.2f %.2f %.2f) spin %.1f", eventName(e.type), e.player, e.hand, e.value,
                  e.pos.x, e.pos.y, e.pos.z, e.player >= 0 ? length(a.game.pl[e.player].ball.spin) : 0.f);
@@ -2633,14 +2824,116 @@ static const float kTeamRGB[3][3] = {{0.1f, 0.7f, 1.0f}, {1.0f, 0.4f, 0.1f}, {0.
 
 struct AvatarLook { float ch[avatar::CH_COUNT][4]; float rim[4]; GLuint pattern; };
 
-static AvatarLook lookOf(const App& a, const AvatarDesc& d, int team) {
+static AvatarLook lookOf(const App& a, const AvatarDesc& din, int team) {
     AvatarLook L;
+    const AvatarDesc d = avatar::uniform(din);   // (a country: the team kit)
     const int t = team < 0 || team > 2 ? 2 : team;
-    avatar::channelColors(d, kTeamRGB[t], L.ch);
-    for (int k = 0; k < 3; ++k) L.rim[k] = kTeamRGB[t][k];
-    L.rim[3] = 0.5f;   // the team-colour rim light that marks every player (like the original's)
+    const float* tc = t < 2 ? a.sideRGB[t] : kTeamRGB[2];   // the end's colour (a country's, with NATIONS)
+    avatar::channelColors(d, tc, L.ch);
+    for (int k = 0; k < 3; ++k) L.rim[k] = tc[k];
+    L.rim[3] = avatar::nationOf(d) ? 0.25f : 0.5f;   // the team-colour rim light that marks every player (like the
+                                                     // original's); softer over a country's kit, which marks them already
     L.pattern = d.pattern < 8 ? a.patternTex[d.pattern] : 0;
     return L;
+}
+
+// NATIONS: each end's country and colour from the players' avatars (as drawn), and the arena's team lights with them
+static void updateSides(App& a) {
+    const int L = a.net.localIndex();
+    for (int p = 0; p < 2; ++p) {
+        const AvatarDesc& d = (p == L && !a.viewing) ? a.myAvatar : a.viewIn[p].avatar;
+        a.sideNation[p] = a.net.slotFilled(p) || a.spectating || a.viewing ? avatar::nationOf(d) : 0;
+    }
+    avatar::sideColors(a.sideNation[0], a.sideNation[1], a.sideRGB);
+    a.nationsOn = a.sideNation[0] || a.sideNation[1];
+    a.gfx.setSideColors(a.nationsOn, a.sideRGB[0], a.sideRGB[1]);
+}
+
+// the two players' careers from the community server: the room we are in, or the match we watch (every 5 s)
+static void updateStats(App& a) {
+    if (!a.statsNoticeSeen && !a.statsNoticeOpen && a.net.online() && a.net.inRoom() && !a.menuOpen && !a.viewing) {
+        // the one-time notice about statistics: the first time you are in an online arena room
+        a.statsNoticeOpen = true;
+        a.menuOpen = true;
+        a.titleOpen = a.settingsOpen = a.statsOpen = a.reportOpen = a.bugOpen = a.helpOpen = a.rulesOpen = false;
+        a.menuPose = {a.viewHead.q, a.viewHead.transform({0, -0.05f, -0.95f})};
+    }
+    const uint32_t hv = a.watchIp ? a.watchIp : a.net.roomHostVip();   // (watchIp: spectating a match)
+    const double t = nowSeconds();
+    if (hv != a.statsHost) { a.statsHost = hv; a.careersOk = false; a.statsAskAt = 0; }
+    if (hv && a.net.onlineReady() && t > a.statsAskAt) { a.statsAskAt = t + 5.0; a.net.requestStats(hv); }
+    if (hv && a.net.statsFor(hv, a.careers)) a.careersOk = true;
+}
+
+// one player's career as display lines ("62%" etc.); n = how many lines
+static int careerLines(const App& a, int p, char out[5][48]) {
+    const Net::CareerStats& c = a.careers[p];
+    if (!a.careersOk || !c.known) { std::snprintf(out[0], 48, "NO STATS YET"); return 1; }
+    if (!c.matches) { std::snprintf(out[0], 48, "FIRST ONLINE MATCH"); return 1; }
+    std::snprintf(out[0], 48, "%u WINS  /  %u MATCHES", c.wins, c.matches);
+    std::snprintf(out[1], 48, "THROW ACCURACY %d%%", c.throws ? (int)std::lround(100.0 * c.onTarget / c.throws) : 0);
+    std::snprintf(out[2], 48, "BLOCKS %d%%", c.faced ? (int)std::lround(100.0 * c.blocks / c.faced) : 0);
+    std::snprintf(out[3], 48, "TOP SPEED %d KM/H", (int)std::lround(c.topSpeed * 3.6f));
+    std::snprintf(out[4], 48, "%u HITS  -  %u CATCHES", c.hits, c.catches);
+    return 5;
+}
+
+static void drawFlag(App& a, int nation, const Pose& at, float w, const float* rgba = nullptr);
+static const char* sideName(const App& a, int p);
+
+// the screen block over centre court (four faces, 1.705 m out, 8 m up): each player's name, flag or team colour,
+// the score and their career stats; the blue end's player on the side nearer the blue end
+static void drawJumbotron(App& a) {
+    const Game& g = a.game;
+    const float white[4] = {1, 1, 1, 1}, grey[4] = {0.70f, 0.74f, 0.80f, 1}, board[4] = {0.004f, 0.008f, 0.02f, 0.92f};
+    char lines[2][5][48];
+    const int nl[2] = {careerLines(a, 0, lines[0]), careerLines(a, 1, lines[1])};
+    std::string names[2];
+    for (int p = 0; p < 2; ++p) {
+        names[p] = sideName(a, p);
+        const uint32_t id = a.watchIp != 0 ? a.watchRoom.slot[p] : a.net.room().slot[p];
+        const RoomInfo& rm = a.watchIp != 0 ? a.watchRoom : a.net.room();
+        if (const char* n = rm.nameOf(id)) names[p] = n;
+        else if (a.careersOk && a.careers[p].name[0]) names[p] = a.careers[p].name;
+        if (p == 1 && g.pl[1].isBot) names[p] = "BOT";
+    }
+    for (int f = 0; f < 4; ++f) {
+        const Quat q = Quat::axisAngle({0, 1, 0}, f * kPi * 0.5f);
+        const Vec3 n = q.rotate({0, 0, 1}), c = Vec3{0, 8.f, 0} + n * 1.712f;
+        const bool flip = q.rotate({1, 0, 0}).x < -0.5f;   // (this face's left is the orange end)
+        auto at = [&](float u, float v, float w = 0.f) { return Pose{q, c + q.rotate({u, v, w})}; };
+        a.gfx.drawPanel(Mat4::fromPose(at(0, 0), {3.15f, 1.55f, 1}), board);
+        char buf[48];
+        a.gfx.drawText("-", at(0, 0.42f, 0.004f), 0.22f, grey);
+        for (int s = 0; s < 2; ++s) {
+            const int p = flip ? 1 - s : s;
+            const float u = s ? 0.98f : -0.98f;
+            std::snprintf(buf, sizeof buf, "%d", g.pl[p].score);
+            a.gfx.drawText(buf, at(s ? 0.30f : -0.30f, 0.42f, 0.004f), 0.30f, white);
+            const float col[4] = {0.65f * a.sideRGB[p][0] + 0.35f, 0.65f * a.sideRGB[p][1] + 0.35f, 0.65f * a.sideRGB[p][2] + 0.35f, 1};
+            a.gfx.drawText(names[p], at(u, 0.58f, 0.004f), names[p].size() > 10 ? 0.10f : 0.13f, col);
+            if (a.sideNation[p]) drawFlag(a, a.sideNation[p], at(u, 0.30f, 0.003f), 0.42f);
+            else {
+                const float bar[4] = {a.sideRGB[p][0], a.sideRGB[p][1], a.sideRGB[p][2], 0.95f};
+                a.gfx.drawPanel(Mat4::fromPose(at(u, 0.33f, 0.002f), {0.62f, 0.05f, 1}), bar);
+            }
+            for (int k = 0; k < nl[p]; ++k) a.gfx.drawText(lines[p][k], at(u, 0.05f - 0.15f * k, 0.004f), 0.070f, k ? grey : white);
+        }
+    }
+}
+
+// a country's flag (w x h metres, centred on the pose, facing its +Z); nothing for no country
+static void drawFlag(App& a, int nation, const Pose& at, float w, const float* rgba) {
+    const avatar::Nation* N = avatar::nation(nation);
+    if (!N) return;
+    const float white[4] = {1, 1, 1, 1};
+    a.gfx.drawTexturedPanel(Mat4::fromPose(at, {w, w / 1.5f, 1}), a.gfx.texture(N->flag, true), rgba ? rgba : white, false);
+}
+
+// the name a side goes by on banners: the country (UNITED STATES) or the end's colour
+static const char* sideName(const App& a, int p) {
+    if (const avatar::Nation* N = avatar::nation(a.sideNation[p])) return N->name;
+    return a.sideRGB[p][2] > a.sideRGB[p][0] ? "BLUE" : "ORANGE";   // (the colour it shows: next to a country it can swap)
 }
 
 static void applyLook(DrawParams& dp, const AvatarLook& L) {
@@ -2791,6 +3084,21 @@ static void preSwing(App& a, int key, const PlayerInput& in, float deg, float tu
 static void drawAvatarBody(App& a, const PlayerInput& in, int team, int pass, const Mat4& pre, bool preMirror, bool lod,
                            float flash, int swingKey = -1) {
     avatar::Rig rig = avatar::solveRig(in, in.avatar);
+    if (pass == 1 && !lod && avatar::nationOf(in.avatar)) {
+        // NATIONS: the country's flag on the upper half of the jersey's back number panel, leaning with the back
+        // (bind pose, measured from av_top_1_m / _f: the panel's surface)
+        const bool fem = avatar::bodyType(in.avatar) == 1;
+        const Pose at{Quat::axisAngle({1, 0, 0}, deg2rad(fem ? 8.5f : 5.f)), fem ? Vec3{0, -0.23f, 0.068f} : Vec3{0, -0.25f, 0.114f}};
+        const avatar::Nation* N = avatar::nation(avatar::nationOf(in.avatar));
+        const float white[4] = {1, 1, 1, 1};
+        a.gfx.drawTexturedPanel(pre * rig.skin[avatar::BONE_TORSO] * Mat4::fromPose(at, {0.13f, 0.13f / 1.5f, 1}),
+                                a.gfx.texture(N->flag, true), white, false);
+        // and a small emblem on the left chest, facing forward (-Z), leaning with the chest (measured on av_top_1)
+        const Pose crest{Quat::axisAngle({0, 1, 0}, kPi) * Quat::axisAngle({1, 0, 0}, -deg2rad(fem ? 45.f : 18.f)),
+                         fem ? Vec3{-0.08f, -0.118f, -0.147f} : Vec3{-0.08f, -0.150f, -0.131f}};
+        a.gfx.drawTexturedPanel(pre * rig.skin[avatar::BONE_TORSO] * Mat4::fromPose(crest, {0.055f, 0.055f / 1.5f, 1}),
+                                a.gfx.texture(N->flag, true), white, false);
+    }
     static std::vector<avatar::PartDraw> list;
     list.clear();
     avatar::drawList(rig, in, in.avatar, list, lod);
@@ -2894,12 +3202,19 @@ static void loadAvatar(App& a) {
 
 // ---- builder panel layout (panel space: metres, +Z toward the player)
 static const float kBRow0 = 0.36f, kBRowH = 0.046f, kBPrev = -0.03f, kBNext = 0.33f, kBValue = 0.15f, kBLabel = -0.25f;
-static float builderPresetY() { return kBRow0 - avatar::F_COUNT * kBRowH - 0.014f; }
-static float builderButtonsY() { return builderPresetY() - 0.08f; }
+static float builderPresetY() { return kBRow0 - avatar::kRowCount * kBRowH - 0.014f; }
+static float builderCountryY() { return builderPresetY() - kBRowH; }   // PRESET > COUNTRY FLAG: the country under it
+static float builderButtonsY(const App& a) { return (avatar::nationOf(a.myAvatar) ? builderCountryY() : builderPresetY()) - 0.08f; }
+// the PRESET row: the presets, then COUNTRY FLAG (the team kit of a country, chosen in the row below)
+static int presetSlots() { return avatar::presetCount() + 1; }
+static int presetSlot(const App& a) { return ((a.presetIdx % presetSlots()) + presetSlots()) % presetSlots(); }
+static const char* presetLabel(const App& a) {
+    return presetSlot(a) == avatar::presetCount() ? "COUNTRY FLAG" : avatar::presetName(presetSlot(a));
+}
 
-// hit codes: field * 2 (+1 = next), 100 / 101 preset prev / next, 102 random, 103 done
-static int builderHitTest(float lx, float ly) {
-    for (int f = 0; f < avatar::F_COUNT; ++f) {
+// hit codes: field * 2 (+1 = next), 100 / 101 preset prev / next, 102 random, 103 done, 104 / 105 country prev / next
+static int builderHitTest(const App& a, float lx, float ly) {
+    for (int f = 0; f < avatar::kRowCount; ++f) {
         float y = kBRow0 - f * kBRowH;
         if (std::fabs(ly - y) < kBRowH * 0.46f) {
             if (std::fabs(lx - kBPrev) < 0.03f) return f * 2;
@@ -2911,7 +3226,11 @@ static int builderHitTest(float lx, float ly) {
         if (std::fabs(lx - kBPrev) < 0.03f) return 100;
         if (std::fabs(lx - kBNext) < 0.03f) return 101;
     }
-    float yb = builderButtonsY();
+    if (avatar::nationOf(a.myAvatar) && std::fabs(ly - builderCountryY()) < kBRowH * 0.46f) {
+        if (std::fabs(lx - kBPrev) < 0.03f) return 104;
+        if (std::fabs(lx - kBNext) < 0.03f) return 105;
+    }
+    float yb = builderButtonsY(a);
     if (std::fabs(ly - yb) < 0.032f) {
         if (std::fabs(lx + 0.17f) < 0.15f) return 102;
         if (std::fabs(lx - 0.17f) < 0.15f) return 103;
@@ -2934,7 +3253,7 @@ static void openBuilder(App& a, const PlayerInput& in) {
     a.builderOpen = true;
     a.menuOpen = false;
     a.prevBuilderTrig = true;
-    a.presetIdx = 0;
+    a.presetIdx = avatar::nationOf(a.myAvatar) ? avatar::presetCount() : 0;   // (wearing a country: COUNTRY FLAG)
     LOGI("avatar builder: open");
 }
 
@@ -2952,9 +3271,19 @@ static void builderActivate(App& a, int hit) {
         avatar::set(d, f, avatar::get(d, f) + ((hit & 1) ? 1 : -1));
         LOGI("avatar: %s -> %s", avatar::fieldName(f), avatar::optionName(f, avatar::get(d, f)));
     } else if (hit == 100 || hit == 101) {
-        a.presetIdx += hit == 101 ? 1 : -1;
-        d = avatar::preset(a.presetIdx);
-        LOGI("avatar: preset %s", avatar::presetName(a.presetIdx));
+        a.presetIdx = presetSlot(a) + (hit == 101 ? 1 : -1);
+        if (presetSlot(a) == avatar::presetCount()) {   // COUNTRY FLAG: the look stays, the country's kit goes on
+            avatar::set(d, avatar::F_NATION, std::max(1, std::min(avatar::nationCount(), a.lastNation)));
+        } else {
+            d = avatar::preset(presetSlot(a));
+        }
+        LOGI("avatar: preset %s", presetLabel(a));
+    } else if (hit == 104 || hit == 105) {   // the country (1..count, wrapping)
+        const int n = avatar::nationCount();
+        const int v = (avatar::nationOf(d) - 1 + (hit == 105 ? 1 : n - 1)) % n + 1;
+        avatar::setNation(d, v);
+        a.lastNation = v;
+        LOGI("avatar: country %s", avatar::nation(v)->name);
     } else if (hit == 102) {
         d = avatar::randomLook((uint32_t)(nowSeconds() * 1000.0));
     } else if (hit == 103) {
@@ -2976,8 +3305,8 @@ static void updateBuilder(App& a, PlayerInput& in) {
             if (t > 0 && t < 4) {
                 Vec3 p = o + d * t;
                 Vec3 lp = a.builderPose.q.conj().rotate(p - a.builderPose.p);
-                if (std::fabs(lp.x) < 0.44f && lp.y < 0.52f && lp.y > builderButtonsY() - 0.06f) { a.builderHit = p; a.builderHitValid = true; }
-                a.builderHover = builderHitTest(lp.x, lp.y);
+                if (std::fabs(lp.x) < 0.44f && lp.y < 0.52f && lp.y > builderButtonsY(a) - 0.06f) { a.builderHit = p; a.builderHitValid = true; }
+                a.builderHover = builderHitTest(a, lp.x, lp.y);
                 if (trig && !a.prevBuilderTrig && a.builderHover >= 0) {
                     builderActivate(a, a.builderHover);
                     haptic(a, a.pointerHand, 0.35f, 0.025f);
@@ -2991,13 +3320,14 @@ static void updateBuilder(App& a, PlayerInput& in) {
 
 // the player's GAUNTLET style (the classic controller-in-glove when the style is missing)
 static const Model& gauntletOf(const App& a, const AvatarDesc& d) {
-    return d.gauntlet < 3 && a.gauntlets[d.gauntlet].valid() ? a.gauntlets[d.gauntlet] : a.lancer;
+    const int k = avatar::gauntletOf(d);
+    return k < 3 && a.gauntlets[k].valid() ? a.gauntlets[k] : a.lancer;
 }
 
 // a gauntlet: gm = (pre *) grip * the hand's mirror. Plate gauntlets are drawn as the hand and the cuff, the cuff in
 // its tuned pose against the hand (avatar::cuffPose; identity unless the TUNING tool moved it)
 static void drawGauntlet(App& a, const AvatarDesc& d, const Mat4& gm, const DrawParams& dp, int pass) {
-    const int k = d.gauntlet;
+    const int k = avatar::gauntletOf(d);
     if (k < 3 && a.gauntletHand[k].valid() && a.gauntletCuff[k].valid()) {
         a.gfx.draw(a.gauntletHand[k], gm * g_lancerLocal, dp, pass);
         a.gfx.draw(a.gauntletCuff[k], gm * Mat4::fromPose(avatar::cuffPose(false)) * g_lancerLocal, dp, pass);
@@ -3100,13 +3430,27 @@ static void drawBuilder(App& a, int pass) {
     const float bg[4] = {0.004f, 0.007f, 0.016f, std::max(ua, 0.90f)}, frame[4] = {edge[0] * 0.6f, edge[1] * 0.6f, edge[2] * 0.6f, std::max(ua, 0.9f)};
     const float btn[4] = {0.03f, 0.05f, 0.08f, 0.95f}, hov[4] = {0.05f, 0.40f, 0.75f, 0.98f};
     const float white[4] = {1, 1, 1, 1}, grey[4] = {0.45f, 0.5f, 0.56f, 1}, cyan[4] = {0.3f, 0.85f, 1.0f, 1};
-    const float top = 0.52f, bottom = builderButtonsY() - 0.06f;
+    const float top = 0.52f, bottom = builderButtonsY(a) - 0.06f;
     quad(0, (top + bottom) * 0.5f, 0.90f, top - bottom + 0.03f, -0.002f, frame);
     quad(0, (top + bottom) * 0.5f, 0.87f, top - bottom, 0, bg);
     text("CUSTOMIZE AVATAR", 0, 0.455f, 0.042f, cyan);
     const AvatarDesc& d = a.myAvatar;
-    for (int f = 0; f < avatar::F_COUNT + 1; ++f) {
-        const bool presetRow = f == avatar::F_COUNT;
+    const int nat = avatar::nationOf(d);
+    for (int f = 0; f < avatar::kRowCount + 2; ++f) {
+        if (f == avatar::kRowCount + 1) {   // PRESET > COUNTRY FLAG: the country, with its flag
+            if (!nat) break;
+            const float y = builderCountryY();
+            text("COUNTRY", kBLabel, y, 0.024f, grey);
+            quad(kBPrev, y, 0.05f, 0.044f, 0.003f, a.builderHover == 104 ? hov : btn);
+            quad(kBNext, y, 0.05f, 0.044f, 0.003f, a.builderHover == 105 ? hov : btn);
+            text("<", kBPrev, y, 0.028f, white);
+            text(">", kBNext, y, 0.028f, white);
+            const float nh = std::min(0.024f, 0.24f / (0.75f * (float)std::strlen(avatar::nation(nat)->name)));   // (long names fit)
+            text(avatar::nation(nat)->name, kBValue, y, nh, white);
+            drawFlag(a, nat, {a.builderPose.q, at(0.395f, y, 0.004f)}, 0.048f);
+            continue;
+        }
+        const bool presetRow = f == avatar::kRowCount;
         const float y = presetRow ? builderPresetY() : kBRow0 - f * kBRowH;
         const int hp = presetRow ? 100 : f * 2;
         text(presetRow ? "PRESET" : avatar::fieldName(avatar::rowField(f)), kBLabel, y, 0.024f, grey);
@@ -3115,10 +3459,13 @@ static void drawBuilder(App& a, int pass) {
         text("<", kBPrev, y, 0.028f, white);
         text(">", kBNext, y, 0.028f, white);
         if (presetRow) {
-            text(avatar::presetName(a.presetIdx), kBValue, y, 0.024f, white);
+            text(presetLabel(a), kBValue, y, 0.024f, white);
             continue;
         }
         const avatar::Field fld = avatar::rowField(f);
+        const bool kit = nat && (fld == avatar::F_SUIT || fld == avatar::F_PATTERN || fld == avatar::F_PRIMARY ||
+                                 fld == avatar::F_SECONDARY || fld == avatar::F_GLOW || fld == avatar::F_LOWER);
+        if (kit) { text("TEAM KIT", kBValue, y, 0.024f, grey); continue; }   // (the country's jersey decides these)
         text(avatar::optionName(fld, avatar::get(d, fld)), kBValue, y, 0.024f, white);
         if (avatar::isColor(fld)) {
             float c3[3];
@@ -3127,7 +3474,7 @@ static void drawBuilder(App& a, int pass) {
             quad(0.395f, y, 0.032f, 0.032f, 0.003f, sw);
         }
     }
-    const float yb = builderButtonsY();
+    const float yb = builderButtonsY(a);
     quad(-0.17f, yb, 0.30f, 0.06f, 0.003f, a.builderHover == 102 ? hov : btn);
     quad(0.17f, yb, 0.30f, 0.06f, 0.003f, a.builderHover == 103 ? hov : btn);
     text("RANDOM", -0.17f, yb, 0.03f, white);
@@ -4581,6 +4928,8 @@ static void drawWorld(App& a, int pass) {
     const int only = a.onlyPlayer;   // the win screen's close-ups: one player alone
     const bool keyBg = a.viewLayer >= 3 || only >= 0, minimal = a.viewLayer >= 2 || only >= 0, noWalls = a.viewLayer >= 1;
     const bool outline = ((ptm == PT_OUTLINE) || noWalls) && a.courtOutline.valid();
+    updateSides(a);
+    updateStats(a);
     // the match won: bursts of confetti over the winner, in their team colour and gold (fewer with softer effects)
     if (g.match == MatchState::MatchSummary && g.matchWinner >= 0 && g.matchWinner < 2 && (only < 0 || only == g.matchWinner)) {
         if (a.winAt <= 0) a.winAt = nowSeconds();
@@ -4589,7 +4938,8 @@ static void drawWorld(App& a, int pass) {
         if (pass == 1 && n && age < 6.5f) {
             const int wn = g.matchWinner;
             const Vec3 o = a.viewIn[wn].head.p + Vec3{0, 0.45f, 0};
-            const float tcol[2][3] = {{0.25f, 0.75f, 1.0f}, {1.0f, 0.55f, 0.2f}};
+            float tcol[2][3] = {{0.25f, 0.75f, 1.0f}, {1.0f, 0.55f, 0.2f}};
+            if (a.nationsOn) for (int p = 0; p < 2; ++p) for (int k = 0; k < 3; ++k) tcol[p][k] = 0.83f * a.sideRGB[p][k] + 0.17f;
             for (int burst = 0; burst < 3; ++burst) {
                 const float bt = age - burst * 1.6f;
                 if (bt < 0 || bt > 2.6f) continue;
@@ -4616,7 +4966,7 @@ static void drawWorld(App& a, int pass) {
         if (!minimal) a.gfx.draw(a.floorReflect, Mat4::identity(), rp, 1);   // (MINIMAL: no stadium in the floor either)
         if (!a.mrView && !minimal && a.floorReflectEnv.valid()) a.gfx.draw(a.floorReflectEnv, Mat4::identity(), rp, 1);
         const Vec3 eye = a.viewHead.p;
-        const float tcol[2][3] = {{0.1f, 0.7f, 1.0f}, {1.0f, 0.4f, 0.1f}};
+        const float (*tcol)[3] = a.sideRGB;
         for (int p = 0; p < 2; ++p) {
             const Ball& b = g.pl[p].ball;
             if (b.state == BallState::Dead || b.pos.y < 0.f) continue;
@@ -4679,7 +5029,21 @@ static void drawWorld(App& a, int pass) {
         pp.uvOff[1] = -now * 0.9f;
         if (!keyBg) a.gfx.draw(a.courtPulse, Mat4::identity(), pp, 1);
     }
-    const float teamCol[2][4] = {{0.1f, 0.7f, 1.0f, 1}, {1.0f, 0.4f, 0.1f, 1}};
+    const float teamCol[2][4] = {{a.sideRGB[0][0], a.sideRGB[0][1], a.sideRGB[0][2], 1}, {a.sideRGB[1][0], a.sideRGB[1][1], a.sideRGB[1][2], 1}};
+    if (pass == 1 && a.nationsOn && !minimal && !a.mrView) {
+        // NATIONS: each country's flag over its end, along the front of the stands on its half, and on the screen
+        // over centre court (both, side by side)
+        for (int p = 0; p < 2; ++p) {
+            if (!a.sideNation[p]) continue;
+            const float sx = p == 0 ? -1.f : 1.f;
+            // on the light-slat walls outside the tank: the end wall (13.6 m out, behind the end cameras) and one on
+            // each side wall on this country's half (owner, 2026-10-20: one flag a wall, none in front of the tank)
+            drawFlag(a, a.sideNation[p], {Quat::axisAngle({0, 1, 0}, deg2rad(-90.f * sx)), {13.45f * sx, 2.1f, 0}}, 3.2f);
+            for (int s = -1; s <= 1; s += 2)
+                drawFlag(a, a.sideNation[p], {Quat::axisAngle({0, 1, 0}, s < 0 ? 0.f : kPi), {sx * 6.f, 2.1f, 7.45f * s}}, 2.6f);
+        }
+    }
+    if (pass == 1 && !minimal && !a.mrView) drawJumbotron(a);   // the screen over centre court: names, score, stats
     for (int p = 0; p < 2 && !minimal; ++p) {
         const BallState st = g.pl[p].ball.state;
         float glow = (st == BallState::Spawning || st == BallState::Dead) ? 0.55f : 0.16f;
@@ -4854,6 +5218,8 @@ static void drawWorld(App& a, int pass) {
         txt(buf, -0.80f, 0.04f, 0.36f, myC);
         snprintf(buf, sizeof buf, "%d", g.pl[1 - L].score);
         txt(buf, 0.80f, 0.04f, 0.36f, opC);
+        drawFlag(a, a.sideNation[L], {faceP0, at(-0.50f, 0.04f, 0.003f)}, 0.21f);   // NATIONS: each side's flag
+        drawFlag(a, a.sideNation[1 - L], {faceP0, at(0.50f, 0.04f, 0.003f)}, 0.21f);
         if (g.tun.advanced) {
             snprintf(buf, sizeof buf, "ROUND %d", std::max(1, g.round));
             txt(buf, 0, 0.12f, 0.12f, white);
@@ -4878,8 +5244,10 @@ static void drawWorld(App& a, int pass) {
         case MatchState::Countdown: snprintf(buf, sizeof buf, "ROUND %d   %d", g.round, (int)std::ceil(g.stateTimer)); banner = buf; break;
         case MatchState::RoundSummary: banner = g.lastRoundWinner == L ? "ROUND WON" : "ROUND LOST"; break;
         case MatchState::MatchSummary:
-            banner = (inLobby(a) || a.spectating || a.net.localWaiting()) ? (g.matchWinner == 0 ? "BLUE WINS" : "ORANGE WINS")
-                     : g.matchWinner == L ? "YOU WIN  -  PRESS A" : "YOU LOSE  -  PRESS A";
+            if (inLobby(a) || a.spectating || a.net.localWaiting()) {   // BLUE WINS, or the country: UNITED STATES WINS
+                snprintf(buf, sizeof buf, "%s WINS", sideName(a, g.matchWinner == 1 ? 1 : 0));
+                banner = buf;
+            } else banner = g.matchWinner == L ? "YOU WIN  -  PRESS A" : "YOU LOSE  -  PRESS A";
             break;
         default: break;
         }
@@ -5365,12 +5733,12 @@ static void saveSettings(App& a) {
     std::string f = std::string(ext) + "/settings.cfg";
     if (FILE* fp = fopen(f.c_str(), "w")) {
         fprintf(fp, "cfgver=8\n");
-        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nsparcserver=%s\n",
+        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nsparcserver=%s\nstatsnotice=%d\n",
                 a.game.tun.advanced ? 1 : 0, a.game.tun.shieldPlacement, a.tunePitchDeg, a.tuneFwd, a.tuneUp, a.volume,
                 a.pointerHand, a.fxLevel, a.hideOutside ? 1 : 0, a.voiceMode, a.muteSpectators ? 1 : 0, a.mutePlayers ? 1 : 0,
                 a.muteAll ? 1 : 0, a.onlinePref ? 1 : 0, a.botFill ? 1 : 0, a.ptMode, a.ptFloor, a.ptGlass, a.ptRoom, a.ptMono ? 1 : 0, a.ptEdges ? 1 : 0, a.ptEdgeReveal ? 1 : 0, a.ptPeekOn ? 1 : 0, a.team.c_str(),
                 (a.serverOverride.empty() ? a.serverAddr : a.serverSaved).c_str(),
-                a.sparcAddr.c_str());
+                a.sparcAddr.c_str(), a.statsNoticeSeen ? 1 : 0);
         fclose(fp);
     }
 }
@@ -5421,6 +5789,7 @@ static void loadSettings(App& a) {
         else if (k == "ptedges") a.ptEdges = v != 0;
         else if (k == "ptreveal") a.ptEdgeReveal = v != 0;
         else if (k == "ptpeek") a.ptPeekOn = v != 0;
+        else if (k == "statsnotice") a.statsNoticeSeen = v != 0;
         else if (k == "voice") a.voiceMode = std::max(0, std::min(2, (int)v));
         else if (k == "mutespec") a.muteSpectators = v != 0;
         else if (k == "muteplayers") a.mutePlayers = v != 0;
@@ -5472,11 +5841,34 @@ static bool isPrivateHost(const std::string& hp) {
     return b0 == 10 || b0 == 127 || (b0 == 192 && b1 == 168) || (b0 == 172 && b1 >= 16 && b1 <= 31);
 }
 
+// the private key the community server keeps this player's statistics under (made once, files/stats_key.bin)
+static void loadStatsKey(App& a) {
+    uint8_t k[16] = {};
+    const char* dir = dataDir(a);
+    const std::string f = dir ? std::string(dir) + "/stats_key.bin" : std::string();
+    bool ok = false;
+    if (dir)
+        if (FILE* fp = fopen(f.c_str(), "rb")) { ok = fread(k, 1, 16, fp) == 16; fclose(fp); }
+    if (!ok) {
+        std::random_device rd;
+        const uint64_t t = (uint64_t)std::chrono::high_resolution_clock::now().time_since_epoch().count();
+        for (int i = 0; i < 16; i += 4) {
+            const uint32_t r = rd() ^ (uint32_t)(t >> (i * 2)) * 2654435761u;
+            std::memcpy(k + i, &r, 4);
+        }
+        if (dir)
+            if (FILE* fp = fopen(f.c_str(), "wb")) { fwrite(k, 1, 16, fp); fclose(fp); }
+        LOGI("stats: a new player key");
+    }
+    a.net.setStatsKey(k);
+}
+
 static void startUp(App& a) {
     logOpenFile(dataDir(a));
     a.net.init();
     loadPlayerName(a);
     loadAvatar(a);
+    loadStatsKey(a);
     a.game.tun.advanced = true;   // the default rules (owner: Advanced is the most played); settings.cfg advanced= wins
     loadSettings(a);
     if (a.serverAddr.empty() && PA_DEFAULT_SERVER[0]) a.serverAddr = PA_DEFAULT_SERVER;   // the community server of this build
@@ -5599,6 +5991,7 @@ struct ShotView {
     std::string look;   // --look "visor=1,mask=3,headgear=2": avatar.cfg keys for blue (accessory checks)
     std::string dcshot;       // --dcshot meet|bump|win|play: the desktop spectator's broadcast moment (its camera and overlay)
     int layer = 0, keyCol = 0;  // --layer 0-3, --keycol 0-3: its VIEW LAYERS and key colour
+    std::string nations[2];     // --nations USA FRA: the two players' countries (NATIONS; "-" = none)
     int winStyle = 0;           // --winscreen split|winner|camera (or 0-2): its WIN SCREEN
     bool swingTest = false;   // --swingtest: the head snaps round just before the picture (the hair mid-swing)
     float swingDeg = 60.f, swingHold = 0.1f;   // --swingdeg D, --swinghold S: how far it turned, how long ago (action scene)
@@ -5741,6 +6134,24 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         b1.pos = g.launcherPoint(1, 1);
         g.pl[1].hands[1].shieldUp = true;
     }
+    for (int p = 0; p < 2; ++p) {   // --nations: the players' countries
+        for (int n = 1; n <= avatar::nationCount(); ++n)
+            if (v.nations[p] == avatar::nation(n)->code) {
+                avatar::setNation(a.viewIn[p].avatar, n);
+                avatar::setNation(a.game.pl[p].in.avatar, n);
+            }
+    }
+    if (v.scene == "builder") {   // the avatar builder and its mirror in front of you (--nations: your country)
+        PlayerInput in;
+        in.headTracked = true;
+        in.head = eye;
+        for (int n = 1; n <= avatar::nationCount(); ++n)
+            if (v.nations[0] == avatar::nation(n)->code) avatar::setNation(a.myAvatar, n);
+        in.avatar = a.myAvatar;
+        a.localIn = in;
+        a.viewHead = eye;
+        openBuilder(a, in);
+    }
     if (!v.dcshot.empty()) {   // the desktop spectator watching this match: its side camera eased into the moment
         SpecMatch fake;
         fake.ip = 1;
@@ -5756,6 +6167,21 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             a.winAt = nowSeconds() - 1.2;
         }
         if (v.dcshot == "bump") a.bumpFlash = 0.9f;
+        if (v.dcshot == "vs") {   // the VS screen, with made-up careers
+            a.dcMatchupForce = true;
+            a.careersOk = true;
+            a.watchIp = a.statsHost = 1;
+            const char* nm[2] = {"MOJO", "FRIEND"};
+            const uint32_t m[2][8] = {{24, 15, 410, 262, 120, 88, 160, 31}, {9, 3, 150, 81, 40, 30, 72, 9}};
+            for (int p = 0; p < 2; ++p) {
+                Net::CareerStats& c = a.careers[p];
+                c.known = true;
+                std::snprintf(c.name, sizeof c.name, "%s", nm[p]);
+                c.matches = m[p][0]; c.wins = m[p][1]; c.throws = m[p][2]; c.onTarget = m[p][3];
+                c.hits = m[p][4]; c.blocks = m[p][5]; c.faced = m[p][6]; c.catches = m[p][7];
+                c.topSpeed = p ? 21.4f : 24.8f;
+            }
+        }
         a.viewLayer = v.layer & 3;
         a.dcKeyCol = v.keyCol % 4;
         a.dcWinStyle = v.winStyle % 3;
@@ -5779,6 +6205,13 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         a.helpOpen = v.menu == "help";
         if (v.menu == "name") { a.nameEdit = true; a.editTarget = 0; a.nameBuf = "MOJO"; }
         if (v.menu == "spectate") a.net.spectate();
+        if (v.menu == "statsnotice") a.statsNoticeOpen = true;
+        if (v.menu == "stats") {   // MY STATS with a made-up career
+            a.statsOpen = true; a.myCareerOk = true;
+            Net::CareerStats& c = a.myCareer;
+            c.known = true; c.matches = 24; c.wins = 15; c.throws = 410; c.onTarget = 262; c.hits = 120; c.blocks = 88;
+            c.faced = 160; c.catches = 31; c.topSpeed = 24.8f;
+        }
         if (v.menu == "bug") { a.bugOpen = true; a.bugCat = 1; a.bugNote = "BALL WENT THROUGH THE WALL"; }
         if (v.menu == "rules") { a.rulesOpen = true; a.rulesForHost = true; a.game.tun.advanced = true; }
         if (v.menu == "report") {   // a room of example people (pictures of the page only)
@@ -5876,6 +6309,15 @@ static const char* kDcLayerName[4] = {"FULL", "NO WALLS", "MINIMAL", "KEY"};
 // TRANSPARENT: no colour at all behind the players (OBS Game Capture with Allow Transparency; no colour can clash)
 static const char* kDcKeyName[4] = {"GREEN", "MAGENTA", "BLUE", "TRANSPARENT"};
 static const float kDcKeyRgb[4][3] = {{0, 1, 0}, {1, 0, 1}, {0, 0, 1}, {0, 0, 0}};
+// the VS screen (MATCHUP): at the fist bump and the countdown (or any time with M), two portraits facing each other,
+// VS between them, each player's name, flag and career stats under them
+static bool dcVsScreen(const App& a) {
+    const Game& g = a.game;
+    if (!a.watchIp) return false;
+    if (a.dcMatchupForce) return true;
+    return a.dcMatchup && (g.match == MatchState::Meet || g.match == MatchState::Countdown);
+}
+
 // WIN SCREEN, per window (a stream with several spectator windows can show each): SPLIT the winner on the left and the
 // loser on the right, each alone in a close-up; WINNER the camera flies to the winner, their name over it; YOUR CAMERA
 // the camera stays where it is, the winner's name over it
@@ -6103,7 +6545,7 @@ static void desktopFullscreen(App& a, bool on) {
 }
 
 // keyboard / mouse: which match, which camera; returns the eye pose
-enum { DC_VIEW = 100, DC_AUTO = 110, DC_FREE, DC_NEXT, DC_HUB, DC_FULL, DC_HELP, DC_PANEL, DC_LAYER, DC_LAYERBACK, DC_KEYCOL, DC_WINSTYLE };
+enum { DC_VIEW = 100, DC_AUTO = 110, DC_FREE, DC_NEXT, DC_HUB, DC_FULL, DC_HELP, DC_PANEL, DC_LAYER, DC_LAYERBACK, DC_KEYCOL, DC_WINSTYLE, DC_MATCHUP };
 
 static LRESULT CALLBACK dcPanelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     App* a = (App*)GetWindowLongPtrW(h, GWLP_USERDATA);
@@ -6154,7 +6596,9 @@ static void desktopPanel(App& a) {
     add(L"BUTTON", L"K  Key colour", BS_PUSHBUTTON, 146, y, 128, 26, DC_KEYCOL); y += 30;
     add(L"STATIC", L"Full, no walls (the outline stays), minimal, or key: the\nplayers and balls alone on green / magenta / blue /\ntransparent (OBS Game Capture, Allow Transparency).", SS_LEFT, 12, y, 276, 46, 0); y += 50;
     add(L"BUTTON", L"R  Win screen", BS_PUSHBUTTON, 12, y, 128, 26, DC_WINSTYLE);
-    add(L"STATIC", L"split, the winner up\nclose, or your camera", SS_LEFT, 146, y - 2, 140, 30, 0); y += 34;
+    add(L"BUTTON", L"M  VS screen", BS_PUSHBUTTON, 146, y + 30, 128, 26, DC_MATCHUP);
+    add(L"STATIC", L"split, the winner up\nclose, or your camera", SS_LEFT, 146, y - 2, 140, 30, 0); y += 30;
+    add(L"STATIC", L"VS: portraits + stats", SS_LEFT, 12, y + 4, 130, 20, 0); y += 34;
     add(L"STATIC", L"Game controller (Xbox or PlayStation 4)", SS_LEFT, 12, y, 270, 16, 0); y += 18;
     add(L"STATIC", L"A / cross next match, B / circle hub, X / square auto,\nY / triangle free camera, D-pad left / right cameras,\nup / down view layers, triggers zoom, View help, Menu\nfull screen, click the right stick: win screen.\nFree camera: sticks, LB / RB down / up.",
         SS_LEFT, 12, y, 276, 76, 0); y += 82;
@@ -6182,6 +6626,7 @@ static Pose desktopControls(App& a, double t, float dt) {
     if (dcPressed(a, 'V')) cmd = DC_LAYER;
     if (dcPressed(a, 'K')) cmd = DC_KEYCOL;
     if (dcPressed(a, 'R')) cmd = DC_WINSTYLE;
+    if (dcPressed(a, 'M')) cmd = DC_MATCHUP;
     // a game controller: A next match, B hub, X auto camera, Y free camera, d-pad left / right the cameras,
     // triggers zoom, View the help bar, Menu full screen (the free camera: below)
     const DcPad pad = dcPad(a);
@@ -6227,6 +6672,11 @@ static Pose desktopControls(App& a, double t, float dt) {
         LOGI("desktop: view layers %s", kDcLayerName[a.viewLayer]);
     }
     if (cmd == DC_KEYCOL) a.dcKeyCol = (a.dcKeyCol + 1) % 4;
+    if (cmd == DC_MATCHUP) {   // the VS screen: shown now (and at every fist bump), or off
+        a.dcMatchupForce = !a.dcMatchupForce;
+        a.dcMatchup = a.dcMatchupForce ? 1 : 0;
+        LOGI("desktop: VS screen %s", a.dcMatchupForce ? "on" : "off");
+    }
     if (cmd == DC_WINSTYLE) {
         a.dcWinStyle = (a.dcWinStyle + 1) % 3;
         LOGI("desktop: win screen %s", kDcWinName[a.dcWinStyle]);
@@ -6280,9 +6730,14 @@ static Pose desktopControls(App& a, double t, float dt) {
 
 static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
     const float white[4] = {1, 1, 1, 1}, grey[4] = {0.65f, 0.7f, 0.78f, 1}, cyan[4] = {0.3f, 0.85f, 1.0f, 1};
-    const float blue[4] = {0.35f, 0.75f, 1.0f, 1}, orange[4] = {1.0f, 0.6f, 0.25f, 1}, bar[4] = {0.0f, 0.01f, 0.03f, 0.72f};
+    float blue[4] = {0.35f, 0.75f, 1.0f, 1}, orange[4] = {1.0f, 0.6f, 0.25f, 1};
+    const float bar[4] = {0.0f, 0.01f, 0.03f, 0.72f};
+    if (a.nationsOn) for (int k = 0; k < 3; ++k) { blue[k] = 0.65f * a.sideRGB[0][k] + 0.35f; orange[k] = 0.65f * a.sideRGB[1][k] + 0.35f; }
     auto txt = [&](const std::string& s, float x, float y, float h, const float* c) {   // x, y in -1..1 of the view
         a.gfx.drawText(s, {eye.q, eye.transform({x * tx, y * ty, -1.f})}, h * ty, c);
+    };
+    auto flag = [&](int p, float x, float y, float h) {   // a side's flag, h tall (in -1..1 of the view)
+        drawFlag(a, a.sideNation[p], {eye.q, eye.transform({x * tx, y * ty, -1.001f})}, h * ty * 1.5f);
     };
     auto panel = [&](float x, float y, float w, float h) {
         a.gfx.drawPanel(Mat4::fromPose({eye.q, eye.transform({x * tx, y * ty, -1.002f})}, {w * tx, h * ty, 1}), bar);
@@ -6298,9 +6753,11 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
             const uint32_t id = a.watchRoom.slot[p];
             if (p == 1 && a.watchRoom.bot) return "BOT";
             if (const char* n = a.watchRoom.nameOf(id)) return n;
-            return p == 0 ? "BLUE" : "ORANGE";
+            return sideName(a, p);
         };
-        panel(0, 0.88f, 1.15f, 0.2f);
+        panel(0, 0.88f, a.nationsOn ? 1.50f : 1.15f, 0.2f);
+        flag(0, -0.66f, 0.88f, 0.10f);   // NATIONS: the flags at the banner's ends
+        flag(1, 0.66f, 0.88f, 0.10f);
         txt(who(0), -0.30f, 0.90f, 0.06f, blue);
         txt(who(1), 0.30f, 0.90f, 0.06f, orange);
         snprintf(buf, sizeof buf, "%d  -  %d", g.pl[0].score, g.pl[1].score);
@@ -6315,12 +6772,26 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
                  a.viewLayer ? kDcLayerName[a.viewLayer & 3] : "");
         if (!(a.viewLayer >= 3 && !a.dcHelp)) txt(buf, 0.70f, -0.93f, 0.028f, grey);   // (KEY: a clean picture unless F2)
         const float gold[4] = {1.0f, 0.85f, 0.3f, 1};
-        if (a.bumpFlash > 0) {   // the fist bump: FIST BUMP! pops in
+        if (dcVsScreen(a)) {
+            // (the VS screen: no FIST BUMP text over the portraits, owner 2026-10-20)
+        } else if (a.bumpFlash > 0) {   // the fist bump: FIST BUMP! pops in
             const float s = 1.f + 0.5f * std::max(0.f, (a.bumpFlash - 0.8f) / 0.2f);
             const float gc[4] = {gold[0], gold[1], gold[2], std::min(1.f, a.bumpFlash * 2.f)};
             txt("FIST BUMP!", 0, 0.66f, 0.09f * s, gc);
         } else if (g.match == MatchState::Meet) {
             txt("FIST BUMP TO START", 0, 0.66f, 0.05f, white);
+        }
+        if (a.nationsOn && !dcVsScreen(a) && (g.match == MatchState::Meet || g.match == MatchState::WaitingForPlayers || a.bumpFlash > 0)) {
+            // the matchup card: UNITED STATES  VS  FRANCE, flag over flag
+            panel(0, 0.42f, 1.30f, 0.34f);
+            const Vec3 r = eye.q.rotate({1, 0, 0});
+            const bool swap = dot(a.viewIn[0].head.p - a.viewIn[1].head.p, r) > 0;   // blue stands on the right here
+            for (int p = 0; p < 2; ++p) {
+                const float x = (p != swap) ? 0.36f : -0.36f;
+                flag(p, x, 0.47f, 0.17f);
+                txt(sideName(a, p), x, 0.33f, 0.035f, p ? orange : blue);
+            }
+            txt("VS", 0, 0.42f, 0.07f, gold);
         }
         if (g.match == MatchState::MatchSummary && g.matchWinner >= 0 && g.matchWinner < 2 && !dcWinSplit(a)) {   // the win splash
             const int wn = g.matchWinner;
@@ -6329,6 +6800,10 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
             const float pulse = 0.85f + 0.15f * std::sin(age * 4.f);
             const float* tc = wn == 0 ? blue : orange;
             const float glow[4] = {tc[0], tc[1], tc[2], 0.35f * pulse};
+            if (a.sideNation[wn]) {   // NATIONS: the winner's flag over the lower third, and the country under the score
+                flag(wn, 0, -0.24f, 0.17f * std::min(1.f, age / 0.25f + 0.3f));
+                txt(sideName(a, wn), 0, -0.785f, 0.035f, tc);
+            }
             panel(0, -0.55f, 1.40f * std::min(1.f, age / 0.25f + 0.2f), 0.40f);   // the lower third (the winner stays in view)
             panel(0, -0.55f, 1.46f * std::min(1.f, age / 0.25f + 0.2f), 0.44f);
             std::string nm = who(wn);
@@ -6378,6 +6853,76 @@ static void desktopRender(App& a, const Pose& eye, int W, int H, float dt) {
     else glClearColor(0.01f, 0.012f, 0.02f, 1);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     const float ty = std::tan(deg2rad(a.dcFov) * 0.5f), tx = ty * W / H;
+    if (dcVsScreen(a) && !dcWinSplit(a)) {
+        const double t = nowSeconds();
+        if (a.dcVsT == 0) a.dcVsT = t;
+        const float age = float(t - a.dcVsT);
+        const int pH = H * 58 / 100;   // the portraits: the top 58 %, the stats panels below
+        for (int half = 0; half < 2; ++half) {
+            const int p = half;   // blue on the left, facing right (the camera on their left), orange mirrored
+            const int x0 = half * (W / 2), hw = half ? W - W / 2 : W / 2;
+            glViewport(x0, H - pH, hw, pH);
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(x0, H - pH, hw, pH);
+            if (a.viewLayer >= 3) glClearColor(key[0], key[1], key[2], 0);
+            else glClearColor(0.07f * a.sideRGB[p][0] + 0.005f, 0.07f * a.sideRGB[p][1] + 0.005f, 0.07f * a.sideRGB[p][2] + 0.005f, 1);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDisable(GL_SCISSOR_TEST);
+            const Pose hd = a.viewIn[p].head;
+            Vec3 fwd = hd.q.rotate({0, 0, -1});
+            fwd.y = 0;
+            fwd = length(fwd) > 1e-3f ? normalize(fwd) : Vec3{p ? -1.f : 1.f, 0, 0};
+            const Vec3 right = cross(fwd, Vec3{0, 1, 0});
+            const float s = half ? 1.f : -1.f;   // (the camera to the player's left on the left: they look across)
+            a.dcClose[p] = age < 0.05f ? hd.p : a.dcClose[p] + (hd.p - a.dcClose[p]) * std::min(1.f, dt * 4.f);
+            const Vec3 aim = a.dcClose[p] - Vec3{0, 0.14f, 0};
+            const float push = 0.95f - 0.12f * std::min(1.f, age / 3.f);
+            const Pose e = lookFrom(aim + fwd * push + right * (s * 0.34f) + Vec3{0, 0.04f, 0}, aim);
+            const float hty = std::tan(deg2rad(34.f) * 0.5f), htx = hty * hw / pH;
+            a.gfx.beginEye(Mat4::viewFromPose(e), Mat4::projection(-std::atan(htx), std::atan(htx), std::atan(hty), -std::atan(hty), 0.05f, 200.f), e.p);
+            a.viewHead = e;
+            a.onlyPlayer = p;
+            drawWorld(a, 0);
+            drawWorld(a, 1);
+            a.onlyPlayer = -1;
+        }
+        glViewport(0, 0, W, H);
+        a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(tx), std::atan(tx), std::atan(ty), -std::atan(ty), 0.05f, 2000.f), eye.p);
+        a.viewHead = eye;
+        glDisable(GL_DEPTH_TEST);
+        auto txt = [&](const std::string& s, float x, float y, float h, const float* c) {
+            a.gfx.drawText(s, {eye.q, eye.transform({x * tx, y * ty, -1.f})}, h * ty, c);
+        };
+        const float bar[4] = {0.0f, 0.01f, 0.03f, 0.80f}, gold[4] = {1.0f, 0.85f, 0.3f, 1}, goldG[4] = {1.0f, 0.55f, 0.1f, 0.45f};
+        const float white[4] = {1, 1, 1, 1}, grey[4] = {0.70f, 0.74f, 0.80f, 1};
+        const float line[4] = {0.9f, 0.9f, 1.0f, 0.5f};
+        a.gfx.drawPanel(Mat4::fromPose({eye.q, eye.transform({0, 0.16f * ty, -1.001f})}, {0.004f * tx, 1.68f * ty, 1}), line);
+        char lines[2][5][48];
+        for (int p = 0; p < 2; ++p) {
+            const float cx = p ? 0.5f : -0.5f;
+            const float col[4] = {0.65f * a.sideRGB[p][0] + 0.35f, 0.65f * a.sideRGB[p][1] + 0.35f, 0.65f * a.sideRGB[p][2] + 0.35f, 1};
+            a.gfx.drawPanel(Mat4::fromPose({eye.q, eye.transform({cx * tx, -0.58f * ty, -1.002f})}, {0.94f * tx, 0.80f * ty, 1}), bar);
+            std::string nm = sideName(a, p);
+            if (const char* n = a.watchRoom.nameOf(a.watchRoom.slot[p])) nm = n;
+            else if (p == 1 && a.watchRoom.bot) nm = "BOT";
+            for (char& ch : nm) ch = (char)std::toupper((unsigned char)ch);
+            const float fit = std::min(1.f, 9.f / float(std::max<size_t>(1, nm.size())));
+            txt(nm, cx, -0.27f, 0.10f * fit, col);
+            if (a.sideNation[p]) {
+                drawFlag(a, a.sideNation[p], {eye.q, eye.transform({(cx - 0.36f) * tx, -0.27f * ty, -1.001f})}, 0.09f * ty * 1.5f);
+                txt(avatar::nation(a.sideNation[p])->name, cx, -0.355f, 0.032f, grey);
+            }
+            const int n = careerLines(a, p, lines[p]);
+            for (int k = 0; k < n; ++k) txt(lines[p][k], cx, -0.46f - 0.085f * k, 0.042f, k ? grey : white);
+        }
+        const float pop = 1.f + 0.8f * std::pow(std::max(0.f, 1.f - age / 0.35f), 2.f);
+        txt("VS", 0.006f, 0.16f, 0.22f * pop, goldG);
+        txt("VS", 0, 0.165f, 0.20f * pop, gold);
+        glEnable(GL_DEPTH_TEST);
+        desktopHud(a, eye, ty, tx);
+        return;
+    }
+    a.dcVsT = 0;
     if (!dcWinSplit(a)) {
         a.dcCloseT = 0;
         a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(tx), std::atan(tx), std::atan(ty), -std::atan(ty), 0.05f, 2000.f), eye.p);
@@ -6398,7 +6943,8 @@ static void desktopRender(App& a, const Pose& eye, int W, int H, float dt) {
         glViewport(x0, 0, hw, H);
         glEnable(GL_SCISSOR_TEST);
         glScissor(x0, 0, hw, H);
-        const float bg[2][3] = {{0.010f, 0.030f, 0.070f}, {0.070f, 0.028f, 0.010f}};   // a dark blue / orange backdrop
+        float bg[2][3] = {{0.010f, 0.030f, 0.070f}, {0.070f, 0.028f, 0.010f}};   // a dark blue / orange backdrop
+        if (a.nationsOn) for (int k = 0; k < 3; ++k) bg[p][k] = 0.07f * a.sideRGB[p][k] + 0.005f;   // (or the country's)
         if (a.viewLayer >= 3) glClearColor(key[0], key[1], key[2], 0);
         else glClearColor(bg[p][0], bg[p][1], bg[p][2], 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -6421,16 +6967,19 @@ static void desktopRender(App& a, const Pose& eye, int W, int H, float dt) {
         auto txt = [&](const std::string& s, float x, float y, float h, const float* c) {
             a.gfx.drawText(s, {e.q, e.transform({x * htx, y * hty, -1.f})}, h * hty, c);
         };
-        const float blue[4] = {0.35f, 0.75f, 1.0f, 1}, orange[4] = {1.0f, 0.6f, 0.25f, 1}, gold[4] = {1.0f, 0.85f, 0.3f, 1};
+        float blue[4] = {0.35f, 0.75f, 1.0f, 1}, orange[4] = {1.0f, 0.6f, 0.25f, 1};
+        const float gold[4] = {1.0f, 0.85f, 0.3f, 1};
+        if (a.nationsOn) for (int k = 0; k < 3; ++k) { blue[k] = 0.65f * a.sideRGB[0][k] + 0.35f; orange[k] = 0.65f * a.sideRGB[1][k] + 0.35f; }
         const float white[4] = {1, 1, 1, 1}, grey[4] = {0.70f, 0.74f, 0.80f, 1}, bar[4] = {0.0f, 0.01f, 0.03f, 0.72f};
         a.gfx.drawPanel(Mat4::fromPose({e.q, e.transform({0, -0.72f * hty, -1.002f})}, {1.8f * htx, 0.42f * hty, 1}), bar);
-        std::string nm = "BLUE";
+        std::string nm = sideName(a, p);
         if (const char* n = a.watchRoom.nameOf(a.watchRoom.slot[p])) nm = n;
         else if (p == 1 && a.watchRoom.bot) nm = "BOT";
-        else if (p == 1) nm = "ORANGE";
+        drawFlag(a, a.sideNation[p], {e.q, e.transform({-0.70f * htx, -0.72f * hty, -1.001f})}, 0.26f * hty * 1.5f);   // NATIONS
         for (char& c : nm) c = (char)std::toupper((unsigned char)c);
         const float pop = p == wn ? 1.f + 0.6f * std::pow(std::max(0.f, 1.f - age / 0.4f), 2.f) : 1.f;
-        txt(nm, 0, -0.60f, (p == wn ? 0.15f : 0.13f) * pop, p == 0 ? blue : orange);
+        const float fit = std::min(1.f, 7.f / float(std::max<size_t>(1, nm.size())));   // (a long name: smaller)
+        txt(nm, a.sideNation[p] ? 0.12f : 0.f, -0.60f, (p == wn ? 0.15f : 0.13f) * pop * fit, p == 0 ? blue : orange);
         if (p == wn) txt("WINS!", 0, -0.84f, 0.10f * pop * (0.85f + 0.15f * std::sin(age * 4.f)), gold);
         else {
             char sc[48];
@@ -6568,6 +7117,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--dcshot") && i + 1 < argc) view.dcshot = argv[++i];
         else if (!strcmp(argv[i], "--layer") && i + 1 < argc) view.layer = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--keycol") && i + 1 < argc) view.keyCol = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--nations") && i + 2 < argc) { view.nations[0] = argv[++i]; view.nations[1] = argv[++i]; }
         else if (!strcmp(argv[i], "--winscreen") && i + 1 < argc) {
             const char* w = argv[++i];
             view.winStyle = !strcmp(w, "winner") ? 1 : !strcmp(w, "camera") ? 2 : !strcmp(w, "split") ? 0 : std::max(0, atoi(w)) % 3;

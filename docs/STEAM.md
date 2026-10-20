@@ -5,8 +5,8 @@ test releases, later as a free **Early Access** game. Checked against the Steamw
 (Playtest, Early Access, Uploading, Releasing, App fee, VR settings). Valve changes these pages, so re-read a step's
 page if something looks different.
 
-Steam gets the newest release. The first upload is **0.3.2** (versionCode 6), the version that adds the spectator
-window for PCs without a headset.
+Steam gets the newest release (0.3.5 as of 2026-10-19). Any release from 0.3.2 on has the spectator window for PCs
+without a headset.
 
 ## What it costs and how long it takes
 
@@ -48,7 +48,7 @@ window for PCs without a headset.
        Mixed Reality and the simple controller.
      - Choose the input mode that keeps the game's own OpenXR bindings. Don't make SteamVR Input bindings.
    - **Library assets and icons.** These are the only items in the Playtest review checklist. They're ready in
-     `build/steam_art/` (`python -I tools/gen_steam_art.py` after `toolsuild_pc.bat`), rendered by the game
+     `build/steam_art/` (`python -I tools/gen_steam_art.py` after `tools\build_pc.bat`), rendered by the game
      from the same staged rally as the Meta art:
      - library capsule 600x900, library header 920x430, library hero 3840x1240 (no text: Steam puts the logo on it);
      - library logo 1280 wide, transparent; community icon 184x184 JPG; client icon `.ico`;
@@ -91,7 +91,9 @@ window for PCs without a headset.
    The Early Access page doesn't say anything about free games. Pick *Free* on the pricing step and see what
    Steamworks allows.
 3. **Content survey.** Answer it like the Meta IARC questionnaire (docs/STORE_LISTING.md): online play with voice
-   chat, player reporting and mute.
+   chat, player reporting and mute. Link the privacy policy (`docs/PRIVACY.md`'s public URL) wherever Steamworks asks
+   for one (it applies to Steam players too: their statistics go to the same server); the data facts are in
+   `docs/STORE_LISTING.md` > Data use and privacy answers.
    - It also asks about AI-generated content. Read its current wording carefully: the code and the procedural art
      scripts were written with an AI assistant.
 4. Mark the store presence ready for review. Once it's approved, set it to *Coming Soon* for at least 2 weeks. Then
@@ -136,7 +138,7 @@ them.
 
 ## Before the first Steam build goes to testers
 
-- **Test 0.3.2 in a PC VR headset through SteamVR**: start it from Steam's "Play in VR" option. The spectator
+- **Test the release in a PC VR headset through SteamVR**: start it from Steam's "Play in VR" option. The spectator
   window has been tested on this PC without a headset. Quest Link / SteamVR play of this release hasn't been tested
   yet.
 - Test the "Spectator window" launch option from the Steam library.

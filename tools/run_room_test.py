@@ -10,11 +10,15 @@ b = subprocess.run(['cmd.exe', '/c', os.path.join(ROOT, 'tools', 'run_room_test.
 if b.returncode:
     print(b.stdout[-3000:], b.stderr[-2000:])
     sys.exit('build failed')
+stats_db = os.path.join(ROOT, 'build', 'tests', 'room_test_stats.db')   # a fresh statistics table each run
+if os.path.exists(stats_db):
+    os.remove(stats_db)
 latest = os.path.join(ROOT, 'build', 'tests', 'latest_version.txt')   # the relay announces a current release
 with open(latest, 'w') as f:
     f.write('9.9.9')
 relay = subprocess.Popen([sys.executable, '-I', os.path.join(ROOT, 'server', 'projectarena_relay.py'), '--port', '47781',
-                          '--bind', '127.0.0.1', '--latest', latest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                          '--bind', '127.0.0.1', '--latest', latest,
+                          '--stats', os.path.join(ROOT, 'build', 'tests', 'room_test_stats.db')], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 try:
     time.sleep(1.0)
     env = dict(os.environ)

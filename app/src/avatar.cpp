@@ -52,9 +52,14 @@ const Swatch kSkin[] = {{"PORCELAIN", 246, 222, 206}, {"FAIR", 238, 200, 176}, {
 template <class T, size_t N> constexpr int count(T (&)[N]) { return (int)N; }
 
 const char* kFieldName[F_COUNT] = {"SUIT", "BUILD", "PATTERN", "MAIN COLOR", "TRIM COLOR", "GLOW", "HAIR", "HAIR COLOR",
-                                   "HEADGEAR", "FACE SHIELD", "SHIELD TINT", "MASK", "SKIN", "LOWER BODY", "BODY TYPE", "GAUNTLET", "FACE"};
+                                   "HEADGEAR", "FACE SHIELD", "SHIELD TINT", "MASK", "SKIN", "LOWER BODY", "BODY TYPE", "GAUNTLET", "FACE",
+                                   "COUNTRY"};
 const char* kKey[F_COUNT] = {"suit", "build", "pattern", "primary", "secondary", "glow", "hair", "haircolor",
-                             "headgear", "visor", "visortint", "mask", "skin", "lower", "body", "gauntlet", "face"};
+                             "headgear", "visor", "visortint", "mask", "skin", "lower", "body", "gauntlet", "face", "nation"};
+
+const Nation kNations[] = {
+#include "nations.inc"
+};
 
 float lin(uint8_t c) { return std::pow(c / 255.f, 2.2f); }
 void swatchLin(const Swatch& s, float out[3]) { out[0] = lin(s.r); out[1] = lin(s.g); out[2] = lin(s.b); }
@@ -67,7 +72,7 @@ uint8_t* ref(AvatarDesc& d, Field f) {
     case F_VISOR: return &d.visor;         case F_VISORTINT: return &d.visorTint; case F_MASK: return &d.mask;
     case F_SKIN: return &d.skin;           case F_LOWER: return &d.lower;       case F_BODY: return &d.body;
     case F_GAUNTLET: return &d.gauntlet;
-    default: return &d.gauntlet;   // (F_FACE lives in body's bits 1-2: get / set handle it)
+    default: return &d.gauntlet;   // (F_FACE and F_NATION live in spare bits: get / set handle them)
     }
 }
 
@@ -105,9 +110,9 @@ const Preset kPresets[] = {
 }  // namespace
 
 Field rowField(int row) {
-    static const Field k[F_COUNT] = {F_BODY, F_FACE, F_SUIT, F_BUILD, F_LOWER, F_GAUNTLET, F_PATTERN, F_PRIMARY, F_SECONDARY,
-                                     F_GLOW, F_HAIR, F_HAIRCOLOR, F_HEADGEAR, F_VISOR, F_VISORTINT, F_MASK, F_SKIN};
-    return row >= 0 && row < F_COUNT ? k[row] : F_SUIT;
+    static const Field k[kRowCount] = {F_BODY, F_FACE, F_SUIT, F_BUILD, F_LOWER, F_GAUNTLET, F_PATTERN, F_PRIMARY,
+                                       F_SECONDARY, F_GLOW, F_HAIR, F_HAIRCOLOR, F_HEADGEAR, F_VISOR, F_VISORTINT, F_MASK, F_SKIN};
+    return row >= 0 && row < kRowCount ? k[row] : F_SUIT;
 }
 
 int fieldCount(Field f) {
@@ -119,6 +124,7 @@ int fieldCount(Field f) {
     case F_MASK: return count(kMask);          case F_SKIN: return count(kSkin);       case F_LOWER: return count(kLower);    case F_BODY: return count(kBody);
     case F_GAUNTLET: return count(kGauntlet);
     case F_FACE: return kFaces;
+    case F_NATION: return nationCount() + 1;
     default: return 1;
     }
 }
@@ -135,6 +141,7 @@ const char* optionName(Field f, int i) {
     case F_MASK: return kMask[i];            case F_SKIN: return kSkin[i].name;     case F_LOWER: return kLower[i];        case F_BODY: return kBody[i];
     case F_GAUNTLET: return kGauntlet[i];
     case F_FACE: return kFace[i];
+    case F_NATION: return i == 0 ? "NONE" : kNations[i - 1].name;
     default: return "?";
     }
 }
@@ -142,6 +149,8 @@ const char* optionName(Field f, int i) {
 uint8_t get(const AvatarDesc& d, Field f) {
     if (f == F_BODY) return (uint8_t)bodyType(d);
     if (f == F_FACE) return (uint8_t)faceOf(d);
+    if (f == F_NATION) return (uint8_t)nationOf(d);
+    if (f == F_GAUNTLET) return (uint8_t)gauntletOf(d);
     return *ref(const_cast<AvatarDesc&>(d), f);
 }
 
@@ -149,7 +158,9 @@ void set(AvatarDesc& d, Field f, int v) {
     int n = fieldCount(f);
     v = ((v % n) + n) % n;
     if (f == F_BODY) d.body = (uint8_t)((d.body & ~1) | v);
-    else if (f == F_FACE) d.body = (uint8_t)((d.body & 1) | (v << 1));
+    else if (f == F_FACE) d.body = (uint8_t)((d.body & ~6) | (v << 1));
+    else if (f == F_NATION) setNation(d, v);
+    else if (f == F_GAUNTLET) d.gauntlet = (uint8_t)((d.gauntlet & ~31) | v);
     else *ref(d, f) = (uint8_t)v;
 }
 
@@ -176,11 +187,88 @@ void optionColor(Field f, int i, const float team[3], float out[3]) {
 
 void sanitize(AvatarDesc& d) {
     for (int f = 0; f < F_COUNT; ++f) {
-        if (f == F_BODY || f == F_FACE) continue;
+        if (f == F_BODY || f == F_FACE || f == F_NATION || f == F_GAUNTLET) continue;
         uint8_t* v = ref(d, (Field)f);
         if (*v >= fieldCount((Field)f)) *v = 0;
     }
-    d.body = (uint8_t)(bodyType(d) | ((d.body >> 1) < kFaces ? (d.body & ~1) : 0));   // a face out of range: FACE 1
+    int n = nationOf(d), face = (d.body >> 1) & 3;
+    if (n > nationCount()) n = 0;
+    if (face >= kFaces) face = 0;   // a face out of range: FACE 1
+    if (gauntletOf(d) >= fieldCount(F_GAUNTLET)) d.gauntlet = 0;
+    d.body = (uint8_t)(bodyType(d) | (face << 1));
+    d.gauntlet = (uint8_t)gauntletOf(d);
+    setNation(d, n);
+}
+
+int nationCount() { return count(kNations); }
+const Nation* nation(int n) { return n >= 1 && n <= count(kNations) ? &kNations[n - 1] : nullptr; }
+
+void setNation(AvatarDesc& d, int n) {
+    if (n < 0 || n > 255) n = 0;
+    d.body = (uint8_t)((d.body & 7) | ((n & 31) << 3));
+    d.gauntlet = (uint8_t)((d.gauntlet & 31) | ((n >> 5) << 5));
+}
+
+namespace {
+int nearest(const Swatch* s, int n, int from, const uint8_t c[3]) {
+    int best = from;
+    float bd = 1e9f;
+    for (int i = from; i < n; ++i) {
+        const float dr = lin(s[i].r) - lin(c[0]), dg = lin(s[i].g) - lin(c[1]), db = lin(s[i].b) - lin(c[2]);
+        const float dd = dr * dr * 0.3f + dg * dg * 0.59f + db * db * 0.11f;
+        if (dd < bd) { bd = dd; best = i; }
+    }
+    return best;
+}
+// the kit's trim (ribbed collar, sleeve bands, side stripes, number panel, gloves): the flag's accent colour, or its
+// second colour when the accent is the jersey's own (CANADA: red, white, red)
+int kitTrim(const Nation* N) {
+    int d = 0;
+    for (int k = 0; k < 3; ++k) d += std::abs(int(N->kit[2][k]) - int(N->kit[0][k]));
+    return d > 90 ? 2 : 1;
+}
+void glowOf(const uint8_t c[3], const float fallback[3], float out[3]) {   // a kit colour as a glow (brightest 1)
+    float v[3] = {lin(c[0]), lin(c[1]), lin(c[2])};
+    const float m = std::max(v[0], std::max(v[1], v[2]));
+    for (int k = 0; k < 3; ++k) out[k] = m < 0.02f ? fallback[k] : v[k] / m;
+}
+}  // namespace
+
+AvatarDesc uniform(const AvatarDesc& in) {
+    AvatarDesc d = in;
+    sanitize(d);
+    const Nation* N = nation(nationOf(d));
+    if (!N) return d;
+    d.suit = 1;      // ARENA JERSEY
+    d.pattern = 0;
+    if (d.lower != 3) d.lower = 1;   // ATHLETIC SHORTS (BIKE SHORTS stay)
+    d.primary = (uint8_t)nearest(kSuitCol, count(kSuitCol), 0, N->kit[0]);
+    d.secondary = (uint8_t)nearest(kSuitCol, count(kSuitCol), 0, N->kit[kitTrim(N)]);
+    d.glow = (uint8_t)nearest(kGlowCol, count(kGlowCol), 1, N->kit[2]);
+    return d;
+}
+
+void sideColors(int n0, int n1, float out[2][3]) {
+    static const float def[2][3] = {{0.10f, 0.70f, 1.00f}, {1.00f, 0.40f, 0.10f}};
+    const int ns[2] = {n0, n1};
+    float cand[2][2][3];   // each end's first and second choice
+    for (int p = 0; p < 2; ++p) {
+        const Nation* N = nation(ns[p]);
+        for (int k = 0; k < 3; ++k) {
+            cand[p][0][k] = N ? N->team[0][k] : def[p][k];
+            cand[p][1][k] = N ? N->team[1][k] : def[1 - p][k];
+        }
+    }
+    auto dist = [](const float* a, const float* b) {
+        float s = 0;
+        for (int k = 0; k < 3; ++k) s += (a[k] - b[k]) * (a[k] - b[k]);
+        return std::sqrt(s);
+    };
+    for (int k = 0; k < 3; ++k) out[0][k] = cand[0][0][k];
+    const int pick = dist(cand[1][0], out[0]) >= 0.55f ? 0 : dist(cand[1][1], out[0]) > dist(cand[1][0], out[0]) ? 1 : 0;
+    for (int k = 0; k < 3; ++k) out[1][k] = cand[1][pick][k];
+    if (dist(out[0], out[1]) < 0.55f && dist(cand[0][1], out[1]) > dist(out[0], out[1]))   // still close: the first end moves
+        for (int k = 0; k < 3; ++k) out[0][k] = cand[0][1][k];
 }
 
 int presetCount() { return count(kPresets); }
@@ -226,6 +314,11 @@ void channelColors(const AvatarDesc& in, const float team[3], float out[CH_COUNT
     optionColor(F_PRIMARY, d.primary, team, out[CH_PRIMARY]);
     optionColor(F_SECONDARY, d.secondary, team, out[CH_SECONDARY]);
     optionColor(F_GLOW, d.glow, team, out[CH_GLOW]);
+    if (const Nation* N = nation(nationOf(d))) {   // the team kit in the flag's own colours
+        const int t = kitTrim(N);
+        for (int k = 0; k < 3; ++k) { out[CH_PRIMARY][k] = lin(N->kit[0][k]); out[CH_SECONDARY][k] = lin(N->kit[t][k]); }
+        glowOf(N->kit[2], N->team[0], out[CH_GLOW]);
+    }
     optionColor(F_SKIN, d.skin, team, out[CH_SKIN]);
     optionColor(F_VISORTINT, d.visorTint, team, out[CH_VISOR]);
     if (neonHair(d)) for (int k = 0; k < 3; ++k) out[CH_HAIR][k] = out[CH_GLOW][k];
@@ -385,7 +478,7 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
             // about that wrist ring (WRIST_TILT / WRIST_SWING there): the forearm ends inside the new cuff, but the
             // elbow is still placed the natural way (straight back from the controller, below the hand): placing it
             // along the cuff lifted the elbows out whenever the hands were held low.
-            const bool plate = in.avatar.gauntlet < 3;
+            const bool plate = gauntletOf(in.avatar) < 3;
             // (RigTuning forearmEnd, carried with the cuff when the tuning tool moves it)
             const Vec3 fe{side * T.forearmEnd.x, T.forearmEnd.y, T.forearmEnd.z};
             const Vec3 W = hi.grip.transform(plate ? cuffPose(k == 0).transform(fe) : Vec3{side * 0.004f, -0.042f, 0.105f});
@@ -425,8 +518,7 @@ Mat4 boneMatrix(const Bone& b, bool mirrorX, float thick) {
 }
 
 void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& din, std::vector<PartDraw>& out, bool lod) {
-    AvatarDesc d = din;
-    sanitize(d);
+    AvatarDesc d = uniform(din);   // (sanitized; with a country, the team kit)
     const char bk = bodyType(d) ? 'f' : 'm';
     const int face = faceOf(d);
     char fk[4] = {bk, 0, 0, 0};   // the face's own parts (head, face shields, masks): m / m1 / m2 / m3

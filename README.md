@@ -9,10 +9,17 @@ sound.
 - 1-v-1 against a practice bot or another player, on your home network or online through a community server
 - Rooms with a waiting area and a queue, spectating (a hub of live miniature arenas), voice chat
 - An avatar builder: two body types, outfits, hair, headgear, face shields, masks, gauntlets, patterns and colours
+- **Countries:** PRESET > COUNTRY FLAG puts on a team kit in one of 202 countries' colours, with the flag on the back;
+  that end of the court, its strike zone and the balls take the country's colour, and flags hang in the arena
+- **Statistics:** online matches between two people build each player's career (wins, throw accuracy, blocks, top
+  speed...), shown on the screen over the court, in MENU > MY STATS (with DELETE MY STATS) and in the PC spectator's
+  VS screen. What is kept and how it is protected: `docs/PRIVACY.md`, `docs/DATA_AND_SECURITY.md`
 - Runs natively on Quest (OpenXR + OpenGL ES, no engine) and on PC through SteamVR or Quest Link
 - **For streamers:** the PC version without a headset (or `ProjectArena.exe --spectate`) opens a spectator window
   that finds a live match by itself: five cameras, an auto camera, a free camera, and a separate controls window that
   stays off the stream (from 0.3.2)
+- **Streaming kit** (`streaming/`): moving OBS backgrounds, camera guides for making your own, and a step-by-step
+  guide to the transparent spectator view, VS screen and win screens (from 0.3.6)
 
 | | |
 |---|---|
@@ -53,7 +60,7 @@ How to do each: [CONTRIBUTING.md](CONTRIBUTING.md). Please follow the [code of c
 | `tools/` | asset generators (Blender scripts), model export / import (.glb), previews, build helpers |
 | `server/` | the community relay (online play, voice, bug reports) and its setup script |
 | `contrib/` | contributed assets |
-| `docs/` | install, build, server setup, privacy |
+| `docs/` | install, build, server setup, privacy, data and security |
 
 Build: `docs/BUILD.md`. Running a server: `docs/SERVER_SETUP.md`.
 

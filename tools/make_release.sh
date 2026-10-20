@@ -64,6 +64,7 @@ sed "s/<version>/$VER/g" "$ROOT/docs/QUEST_README.txt" > "$OUT/README-Quest.txt"
 # PC VR build (Windows): ProjectArena-<ver>-PC.zip
 cmd.exe //c "$(cygpath -w "$ROOT/tools/build_pc.bat")" | tail -1
 python -I "$ROOT/tools/check_pc_icon.py" "$(cygpath -w "$ROOT/build/pc/ProjectArena/ProjectArena.exe")" || exit 1   # every release has its icon
+rm -rf "$ROOT/build/pc/ProjectArena/streaming" && cp -r "$ROOT/streaming" "$ROOT/build/pc/ProjectArena/streaming"   # backgrounds + OBS guide
 (cd "$ROOT/build/pc" && rm -f "$OUT/ProjectArena-$VER-PC.zip" && powershell.exe -NoProfile -Command \
   "Compress-Archive -Path ProjectArena -DestinationPath '$(cygpath -w "$OUT")\ProjectArena-$VER-PC.zip'")
 (cd "$OUT" && sha256sum ProjectArena-$VER.apk ProjectArena-$VER-PC.zip README-PC.txt README-Quest.txt > SHA256SUMS.txt)

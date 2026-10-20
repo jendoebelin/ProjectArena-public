@@ -12,21 +12,23 @@ exactly as on home Wi-Fi. Players never see each other's IP addresses; the serve
 
 ## Quick start
 
-    python3 server/projectarena_relay.py --port 47780
+    python3 server/projectarena_relay.py --port 47780 --stats player_stats.db
 
-Self-test (runs a local copy and fake players): `python3 server/test_relay.py`.
+Self-tests (run a local copy and fake players): `python3 server/test_relay.py`, `python3 server/test_relay_stats.py`,
+`python3 server/test_relay_moderation.py`.
 
 ## Run it as a service (Linux, systemd)
 
     sudo useradd --system --no-create-home projectarena
     sudo cp server/projectarena_relay.py /opt/projectarena_relay.py
+    sudo install -d -m 700 -o projectarena -g projectarena /opt/projectarena   # its statistics (private)
     sudo tee /etc/systemd/system/projectarena-relay.service >/dev/null <<'UNIT'
     [Unit]
     Description=Project Arena community relay
     After=network-online.target
     [Service]
     User=projectarena
-    ExecStart=/usr/bin/python3 /opt/projectarena_relay.py --port 47780 --max-clients 200
+    ExecStart=/usr/bin/python3 /opt/projectarena_relay.py --port 47780 --max-clients 200 --stats /opt/projectarena/player_stats.db
     Restart=always
     [Install]
     WantedBy=multi-user.target
@@ -48,6 +50,21 @@ and **SPECTATE GAMES** work as on a LAN. Switch back to LAN play with the same b
 - Names are limited to A-Z, 0-9, space, '-' and '.'. The server logs only joins and leaves (no packet contents).
 - `--max-clients` caps load. There are no accounts; matches are host-authoritative, so a modified host could cheat.
   Voice is forwarded live inside a room and never stored.
+
+## Player statistics (from 0.3.6)
+
+With `--stats FILE` the server keeps each player's career (matches, wins, throws and throws on target, hits, blocks,
+balls faced, catches, top speed) in a SQLite file, and the game shows them on the screen over the court, in the PC
+spectator's VS screen and in MENU > MY STATS.
+- The game sends a private random key once per connection; the server stores only HMAC-SHA256(salt, key). The salt
+  is `FILE.salt`, made by the server; the table and the salt are made readable by the server's account only.
+- The host reports a finished match between two people; it counts only when the other player's game confirms the
+  same winner and score within 60 s. Impossible numbers are refused; one result per host every 30 s.
+- Players can delete their own row (MY STATS > DELETE MY STATS); rows unseen for 24 months are removed at start and
+  once a day. One key connected from two places is logged.
+- Back up the table and the salt together, encrypted (`docs/SERVER_SETUP.md`). If you run a public server, publish a
+  privacy policy that says this (the official one: `docs/PRIVACY.md`).
+- The full data list and the known gaps: `docs/DATA_AND_SECURITY.md`.
 
 ## Reports and moderation
 - **REPORT BUG** and **REPORT PLAYER** in the game send text reports over TCP to the same port; they are saved in

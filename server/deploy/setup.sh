@@ -29,7 +29,7 @@ Wants=network-online.target
 [Service]
 User=projectarena
 WorkingDirectory=/opt/projectarena
-ExecStart=/usr/bin/python3 -I /opt/projectarena/projectarena_relay.py --port $PORT --reports /opt/projectarena/bug_reports --bans /opt/projectarena/bans.txt
+ExecStart=/usr/bin/python3 -I /opt/projectarena/projectarena_relay.py --port $PORT --reports /opt/projectarena/bug_reports --bans /opt/projectarena/bans.txt --stats /opt/projectarena/player_stats.db
 Restart=always
 RestartSec=3
 NoNewPrivileges=true

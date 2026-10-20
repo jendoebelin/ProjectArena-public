@@ -83,6 +83,26 @@ public:
     std::vector<LanGame> games() const;   // hosts seen in the last 2 s
     const char* noticeText() const;       // short-lived banner ("PLAYER JOINED", "HOST LOST", ...) or null
     const char* latestVersion() const { return latest_; }   // the current release, as the relay says ("" = not told)
+    // Player statistics, kept by the community server per player key (server/projectarena_relay.py KEY .. STATS).
+    // The host names its two tank players (TANK) and reports each finished match between two people (MATCH);
+    // anyone asks for a host's players' careers (requestStats) and reads the answer with statsFor.
+    struct CareerStats {
+        bool known = false;           // the server has (or will keep) stats for this player
+        char name[17] = {};
+        uint32_t matches = 0, wins = 0, throws = 0, onTarget = 0, hits = 0, blocks = 0, faced = 0, catches = 0;
+        float topSpeed = 0;           // m/s
+    };
+    struct MatchStats { uint16_t throws = 0, onTarget = 0, hits = 0, blocks = 0, faced = 0, catches = 0; float topSpeed = 0; };
+    void setStatsKey(const uint8_t key[16]) { std::memcpy(statsKey_, key, 16); keySent_ = false; }
+    // host, online, two people in the tank; score = points 0, points 1, rounds 0, rounds 1 (the other player confirms)
+    void reportMatch(int winner, const MatchStats st[2], const uint8_t score[4]);
+    void confirmMatch(int winner, const uint8_t score[4]);   // a tank player who is not the host: what it saw
+    void requestMyStats();            // our own career: the answer is statsFor(kMyStats) (slot 0)
+    void deleteMyStats();             // erase our statistics on the server
+    static constexpr uint32_t kMyStats = 0xFFFFFFFFu;
+    void requestStats(uint32_t hostVip);
+    bool statsFor(uint32_t hostVip, CareerStats out[2]) const;   // the latest answer for that host (false: none)
+    uint32_t roomHostVip() const;     // online: our room's host (ourselves when hosting); 0 = none
     void noticeLocal(const char* msg) { notice(msg); }
     uint32_t peerIp() const { return peerIp_; }
     float pingMs() const { return inRoom() ? lastPingMs_ : -1.f; }   // the latest round trip to the host / a player; -1 none
@@ -123,6 +143,12 @@ public:
     bool takeCameras(char team[17], std::vector<uint8_t>& blob);
     // REPORT / MUTE A PLAYER: everyone else in our room, or at the arena a spectator stands at (role: VOICE_*)
     struct Person { uint32_t id = 0; char name[17] = {}; uint8_t role = 0; };
+    // VOTE TO REMOVE (REPORT PLAYER): everyone in an arena room may vote to remove someone else from it; when more
+    // than half of the other people in the room (and at least two) agree, the host removes them and turns them away
+    // from that arena for the rest of its session (their session, address and name). The host can't be removed.
+    bool voteKick(uint32_t target);   // false: not allowed (not in a room, the host, yourself, or already voted)
+    uint32_t hostSession() const { return mode_ == Mode::Host ? session_ : mode_ == Mode::Client ? peerSession_ : 0; }
+    int kickVotesNeeded() const;      // host: how many votes remove someone now (0 = too few people to vote)
     std::vector<Person> peopleHere() const;
     std::string hereName() const;     // that room's name (its host's name; empty: none)
     bool peerConnected() const { return peerSeen_ > 0 && (now_ - peerSeen_) < 3.0; }
@@ -164,6 +190,12 @@ private:
     double now_ = 0, searchStart_ = 0, lastBeacon_ = 0, peerSeen_ = 0, lastRoomSent_ = 0, rotateAt_ = 0, lastSlowState_ = 0;
     uint32_t peerIp_ = 0;                 // client: the host; host: unused
     char latest_[16] = {};
+    uint8_t statsKey_[16] = {};
+    bool keySent_ = false;
+    double lastTank_ = 0;
+    uint32_t statsHost_ = 0;
+    CareerStats stats_[2];
+    void relaySend(uint8_t type, const void* body, int n);
     uint32_t peerSession_ = 0;            // client: the host's session id: packets from anyone else are ignored
     uint32_t forfeit_ = 0;                // host: a tank player who gave up (handled on the next exchange)
     bool online_ = false;
@@ -189,6 +221,12 @@ private:
     }
     uint32_t session_ = 0;
     std::vector<Member> members_;         // host
+    struct Removed { uint32_t id = 0, ip = 0; char name[17] = {}; };
+    std::vector<Removed> removed_;        // host: voted out of this arena for this session
+    std::vector<std::pair<uint32_t, uint32_t>> kickVotes_;   // host: (target, voter)
+    std::vector<uint32_t> myKickVotes_;   // the people we voted to remove (one vote each)
+    uint32_t kickNow_ = 0;                // host: removed on the next exchange
+    void countKickVote(uint32_t target, uint32_t voter);
     uint32_t slot_[2] = {0, 0};           // host: member id in each tank slot (0 = empty / bot)
     std::vector<uint32_t> queue_;         // host: queued member ids, front first
     RoomInfo room_;                       // host: built each frame; client: from ROOM packets

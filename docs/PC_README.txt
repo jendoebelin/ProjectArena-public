@@ -64,10 +64,16 @@ Watching without a headset (spectator / streaming)
   (The window itself looks black behind the players in this mode; OBS sees the transparency.)
   Or a colour key: VIEW LAYERS > KEY with green, magenta or blue, and Filters > Chroma Key with the same colour on a
   Window Capture source (pick a colour nobody's outfit or glow uses).
+  Moving backgrounds to put behind the players (a Tron grid and a dark waterfall, each with several scenes and looks)
+  and a step-by-step OBS guide are in the "streaming" folder: streaming\README.md.
   R          the win screen (controller: click the right stick), on any camera:
              SPLIT        the winner and the loser side by side, each alone in a close-up
              WINNER       the camera flies to the winner, their name and WINS! over the picture
              YOUR CAMERA  the camera stays where it is, the winner's name and WINS! over it
+  M          the VS screen: the two players' portraits facing each other, VS, and their career statistics (from the
+             community server: wins, throw accuracy, blocks, top speed, hits and catches; players can delete theirs,
+             docs/PRIVACY.md). It comes up by itself at
+             the fist bump and the countdown; M shows it now (and keeps it on), M again turns it off.
   Each spectator window has its own settings, so a stream can run several (one per OBS source), e.g.
     ProjectArena.exe --spectate --layer 3 --keycol 3 --winscreen split
     ProjectArena.exe --spectate --layer 3 --keycol 3 --winscreen winner

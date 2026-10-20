@@ -26,6 +26,11 @@ Questions, or not sure where something fits? Open an issue, or email vrsportsfan
 4. Open a pull request using the **asset** checklist. We try it in the headset (`tools/import_glb.py` turns it into a
    game model) and reply with screenshots or fixes.
 
+**Countries and flags:** `tools/gen_flags.py` draws every flag from simple shapes and writes the country table. To add
+a country, append it at the end of `NATIONS` (never reorder or remove: the position is the number sent over the
+network); to fix a flag, change only its drawing function. Then run `python -I tools/gen_flags.py` and check
+`build/flags_preview.png`.
+
 ## 3. Make sounds
 
 `docs/SOUND_BRIEF.md` lists every sound the game plays: when it plays, how long and how loud it should be, and the

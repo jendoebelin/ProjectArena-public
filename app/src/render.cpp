@@ -506,6 +506,11 @@ void Renderer::setTeamColors(const float c0[4], const float c1[4], float glow0, 
     std::memcpy(team1_, c1, 16); team1_[3] = glow1;
 }
 
+void Renderer::setSideColors(bool on, const float c0[3], const float c1[3]) {
+    sidesOn_ = on;
+    for (int k = 0; k < 3; ++k) { side_[0][k] = c0[k]; side_[1][k] = c1[k]; }
+}
+
 void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int pass) {
     if (!m.valid()) return;
     Mat4 mvp = viewProj_ * model;
@@ -534,7 +539,11 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
         if (sh == SH_TRANSLUCENT && dp.glassMul != 1.f) tint[3] = std::min(1.f, tint[3] * dp.glassMul);
         float em[4] = {mt.emissive[0] + dp.emissiveAdd[0], mt.emissive[1] + dp.emissiveAdd[1], mt.emissive[2] + dp.emissiveAdd[2], mt.emissive[3]};
         const uint32_t ch = matChannel(mt.flags);
-        if (dp.channels && ch) for (int k = 0; k < 3; ++k) tint[k] *= dp.channels[ch][k];
+        if (dp.channels && ch && ch < 8) for (int k = 0; k < 3; ++k) tint[k] *= dp.channels[ch][k];
+        if (sidesOn_ && (ch == 8 || ch == 9)) {   // a team end in a country's colour, as bright as it was built
+            const float k0 = std::max(mt.tint[0], std::max(mt.tint[1], mt.tint[2]));
+            for (int k = 0; k < 3; ++k) tint[k] = k0 * side_[ch - 8][k] * dp.tintMul[k];
+        }
         const bool pat = dp.channels && dp.pattern && (mt.flags & MAT_PATTERN) && sh == SH_LIT;
         glUniform1i(uPattern_, pat ? 1 : 0);
         const bool design = dp.channels && (mt.flags & MAT_DESIGN) && mt.mask && sh == SH_LIT;

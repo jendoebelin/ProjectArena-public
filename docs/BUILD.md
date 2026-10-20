@@ -30,11 +30,14 @@ Without it, players type a server address in SETTINGS > SERVER. Running one: `do
 
 ## Tests
 
-`tools\run_tests.bat` (gameplay and protocol tests), `python tools/run_room_test.py` (multiplayer rooms through a
-local relay), `python server/test_relay.py`.
+`tools\run_tests.bat` (gameplay and protocol tests), `python tools/run_room_test.py` (multiplayer rooms and player
+statistics through a local relay), `python server/test_relay.py`, `python server/test_relay_stats.py`,
+`python server/test_relay_moderation.py`.
 
 ## Art
 
 `python tools/build_open_assets.py` regenerates `app/assets_open` with Blender 4.x / 5.x (the avatar bodies need the
 MPFB2 add-on). `tools/export_glb.py` and `tools/import_glb.py` convert between game models and .glb;
-`tools/gen_catalog.py` builds the asset catalog with downloads.
+`tools/gen_catalog.py` builds the asset catalog with downloads. `tools/gen_flags.py` writes the country table
+(`app/src/nations.inc`) and the flag textures: its list is append-only (a country's position is the number sent over
+the network).

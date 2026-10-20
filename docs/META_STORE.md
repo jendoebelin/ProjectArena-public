@@ -15,7 +15,9 @@ release channel (ALPHA). Nobody else can see or install it. Public store release
 - **Draft store art** comes from `python -I tools/gen_store_art.py`, which renders `build/store_art/*.png`.
   - It uses Meta's sizes: hero 3000x900, landscape 2560x1440, square 1440x1440, portrait 1008x1440, mini 1080x360, icon 512x512, and 3 screenshots.
   - The game's own renderer draws everything, so there is no outside artwork.
-- **Privacy policy draft**: `docs/PRIVACY.md`. Host it at a public URL (a GitHub Pages page works once the repo is public, or any web page).
+- **Privacy policy**: `docs/PRIVACY.md`, at its public URL in the store listing. It must match what the build
+  collects: from 0.3.6 that includes player statistics (`docs/DATA_AND_SECURITY.md`; the answers for the dashboard's
+  data questions are in `docs/STORE_LISTING.md`). Before each upload: `docs/RELEASE_CHECKLIST.md`.
 
 ## Your steps (the account, keys and secrets stay with you)
 

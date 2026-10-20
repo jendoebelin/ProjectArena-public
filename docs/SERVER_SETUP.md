@@ -52,6 +52,24 @@ the relay, which drops everyone for a few seconds (players reconnect by themselv
   `ssh -i oracle.key ubuntu@PUBLIC_IP "echo 0.3.5 | sudo tee /opt/projectarena/latest_version.txt"` (the relay
   re-reads it on its own; no restart).
 
+**Player statistics** (what is collected, the protections and the known gaps: `docs/DATA_AND_SECURITY.md`): the relay keeps every player's career (matches, wins, throws and throws on target, hits,
+blocks and balls faced, catches, top throw speed) in `/opt/projectarena/player_stats.db` (SQLite), keyed by a private
+random key each game makes for itself. Hosts report each finished match between two people; spectators and players
+see the numbers on the screen over the court and the PC spectator's VS screen. A match counts only when the host's
+result and the other player's confirmation agree. The table stores a salted hash of each key, never the key: the salt
+is `/opt/projectarena/player_stats.db.salt`; both files are readable by the relay's account only (the relay sets
+that). The relay logs `the same player is connected twice` when one key connects from two places.
+- **Back up the table and its salt together, encrypted** (without the salt a backup can't be matched to players
+  again, so keep them as a pair):
+  `ssh -i oracle.key ubuntu@PUBLIC_IP "sudo tar czf - -C /opt/projectarena player_stats.db player_stats.db.salt" | gpg --symmetric --output stats-backup.tgz.gpg`
+  (gpg asks for a passphrase; keep it with the server's key, never in the repository).
+- Look inside: `ssh -t -i oracle.key ubuntu@PUBLIC_IP "sudo sqlite3 /opt/projectarena/player_stats.db 'select name, matches, wins, datetime(last_seen, \"unixepoch\") from players order by wins desc'"`.
+- Remove someone's statistics on request (by name): `... sudo sqlite3 /opt/projectarena/player_stats.db "delete from players where name = 'NAME'"`.
+- Statistics unseen for 24 months are removed by the relay itself (at start and once a day), as the privacy policy
+  promises.
+- Keep the server's security updates on (Ubuntu does this by itself with unattended-upgrades; check with
+  `systemctl status unattended-upgrades`).
+
 ## Any other Ubuntu server
 
 Same steps 5 and 6 (Hetzner, DigitalOcean, Vultr, a Raspberry Pi at home with a port forward...). Open UDP and TCP

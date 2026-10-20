@@ -19,13 +19,37 @@ enum Channel { CH_NONE = 0, CH_PRIMARY, CH_SECONDARY, CH_GLOW, CH_SKIN, CH_VISOR
 
 // builder rows, in display order
 enum Field { F_SUIT, F_BUILD, F_PATTERN, F_PRIMARY, F_SECONDARY, F_GLOW, F_HAIR, F_HAIRCOLOR, F_HEADGEAR, F_VISOR,
-             F_VISORTINT, F_MASK, F_SKIN, F_LOWER, F_BODY, F_GAUNTLET, F_FACE, F_COUNT };
+             F_VISORTINT, F_MASK, F_SKIN, F_LOWER, F_BODY, F_GAUNTLET, F_FACE, F_NATION, F_COUNT };
 // FACE shares AvatarDesc::body (sent raw, no spare byte): bit 0 = the body type, bits 1-2 = the face. Older builds wrap
 // body % 2, so they still see the right body type (with its first face).
 constexpr int kFaces = 4;
 inline int bodyType(const AvatarDesc& d) { return d.body & 1; }
-inline int faceOf(const AvatarDesc& d) { return (d.body >> 1) % kFaces; }
-Field rowField(int row);                       // builder display order (BODY TYPE first)
+inline int faceOf(const AvatarDesc& d) { return ((d.body >> 1) & 3) % kFaces; }
+
+// NATION (country presets: the team jersey in the flag's colours, that end of the court, flags on the banners). The
+// country number (1.., 0 = none; app/src/nations.inc, append-only) rides in spare bits sent with the avatar: its low
+// 5 bits in body bits 3-7, its high 3 bits in gauntlet bits 5-7 (GAUNTLET itself uses bits 0-4). Older builds (0.3.5
+// and before) don't know it: they show such a player with FACE 1 and, for countries above 31, the first gauntlet.
+struct Nation {
+    const char* code;      // "USA"
+    const char* name;      // "UNITED STATES"
+    const char* flag;      // texture "flag_usa" (192 x 128)
+    uint8_t kit[3][3];     // jersey: main, trim, accent (sRGB)
+    float team[2][3];      // the glow colour for that end of the court, and a second choice (linear, brightest 1)
+};
+int nationCount();
+const Nation* nation(int n);                   // nullptr for 0 (none) or out of range
+inline int nationOf(const AvatarDesc& d) { return ((d.body >> 3) & 31) | ((d.gauntlet >> 5) << 5); }
+inline int gauntletOf(const AvatarDesc& d) { return d.gauntlet & 31; }
+void setNation(AvatarDesc& d, int n);
+// with a country: the team kit (ARENA JERSEY, no pattern, athletic shorts, the nearest colour swatches, so builds
+// that don't know countries still show a jersey in about the right colours); without: unchanged
+AvatarDesc uniform(const AvatarDesc& d);
+// the colours of the two ends of the court (linear, brightest channel 1): blue / orange, or the players' countries;
+// two close colours (FRANCE against the blue end, or the same country twice) move the second end to its other colour
+void sideColors(int nation0, int nation1, float out[2][3]);
+Field rowField(int row);                       // builder display order (BODY TYPE first; COUNTRY is not a row:
+constexpr int kRowCount = F_COUNT - 1;         //  the builder's PRESET > COUNTRY FLAG shows it as a sub-option)
 
 int fieldCount(Field f);                       // number of options
 const char* fieldName(Field f);

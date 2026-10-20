@@ -22,6 +22,10 @@ Submit for Review until the public launch (ROADMAP 4c).
   > - Voice chat: push-to-talk by default, open mic if you prefer, with mutes for spectators, players or one person.
   > - Make it yours: two body types, outfits, hair, headgear, face shields, masks, team colours, and medieval-style
   >   plate gauntlets.
+  > - Play for your country (over 200 to choose from): a team kit in your flag's colours, your end of the court lit in
+  >   them, flags in the arena.
+  > - Career statistics from online matches: wins, throw accuracy, blocks, top speed. See yours in MY STATS, and
+  >   delete them any time.
   > - Free and open source: no ads, no accounts, no tracking. Report a bug or a player from any menu.
   >
   > Inspired by CCP Games' Sparc (2017). Project Arena is an independent game with its own code, art and sound, not
@@ -100,6 +104,23 @@ The VRC circles on the Assets page (VRC.Quest.Asset.*) are confirmations: tick e
 - Advocates terrorism: **No**
 - Realistic descriptions of crimes: **No**
 
+## Data use and privacy answers (any dashboard page that asks what the app collects)
+
+Answer from these facts (the full list: `docs/DATA_AND_SECURITY.md`); match them to the dashboard's own categories
+and wording, which Meta changes from time to time:
+- **Identifiers:** an app-generated random ID (the player key), only for statistics; the server stores a salted hash.
+  No Meta user ID, device ID or advertising ID is collected.
+- **User content:** the player name the user types (public in the game). Voice chat is real-time and **not stored**.
+- **App activity / gameplay:** match statistics (public in the game), with first / last seen times for abuse checks.
+- **Diagnostics:** bug reports and player reports with the game's recent log, **only when the user sends one**.
+- **Network:** IP addresses are processed to connect players and are kept only inside reports and the ban list.
+- **Not collected:** name, email, location, contacts, photos, payment, health, fitness or body data; passthrough
+  camera images and room depth stay on the headset.
+- **Purpose:** app functionality (online play, statistics shown in the game), safety (reports, bans, abuse checks).
+  **Not** advertising, analytics or sale; nothing is shared with third parties.
+- **Deletion:** in the app (MY STATS > DELETE MY STATS) and by email (vrsportsfan@gmail.com).
+- **Encryption in transit:** no (plain UDP to the game server). Say so if asked.
+
 ## User Reporting (Engagement > User Reporting; done 2026-10-17)
 
 Delivery to vrsportsfan@gmail.com (or the dashboard inbox); custom reasons "Cheating or exploiting the game" and
@@ -110,8 +131,9 @@ asks for a description of our own tool:
 > from the list of everyone in that room, choose a reason (harassment or hate, offensive name or look, cheating,
 > other), may add a note, and press SEND REPORT. The report goes to the Project Arena team on our server with the
 > names of everyone in the room and the game's recent log; we review reports and ban players by name or address. On
-> the same page MUTE silences that player's voice for the reporter at once, and SETTINGS > VOICE AND MUTES mutes
-> spectators, players or everyone. Contact: vrsportsfan@gmail.com.
+> the same page MUTE silences that player's voice for the reporter at once, VOTE TO REMOVE lets the people in an
+> arena room remove someone from it (more than half of the others must agree; they can't come back to that arena
+> that session), and SETTINGS > VOICE AND MUTES mutes spectators, players or everyone. Contact: vrsportsfan@gmail.com.
 
 ## Builds (not in the draft)
 

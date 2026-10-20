@@ -16,6 +16,25 @@ server -> client: magic, type, body
              "0.3.4"; --latest file, empty when there is none). Builds before 0.3.4 read only the first 20 bytes.
   DELIVER 6  body: source virtual address (u32), game packet
   ERROR   7  body: message (48 bytes, upper-case ASCII)
+Player statistics (2026-10-20; relays and games from 0.3.6 on, older ones never send these):
+  KEY      8  client -> server  body: the player's private key (16 random bytes, kept by the game; the stats' owner)
+  TANK     9  host -> server    body: virtual addresses in tank slot 0 and 1 (u32 each, 0 = empty or the bot)
+  MATCH   10  host -> server    body: winner slot (u8), then for slot 0 and 1: throws, throws on target, hits,
+                                blocks, balls faced on target, catches, top throw speed (cm/s) (7 x u16), then the
+                                final score: points 0, points 1, rounds 0, rounds 1 (4 x u8). For the two players the
+                                host last named in TANK (both with a KEY, both human); counted only once a tank
+                                player who is not the host CONFIRMs the same winner and score (within 60 s)
+  CONFIRM 13  player -> server  body: the host's virtual address (u32), winner slot (u8), the final score (4 x u8)
+  DELETE  14  player -> server  (no body) delete this player's statistics (the player's KEY says whose)
+  MYSTATS 15  player -> server  (no body) the player's own career: answered with STATS for host 0xFFFFFFFF, the
+                                player in slot 0 (the game's MY STATS page)
+  STATSREQ 11 any -> server     body: a host's virtual address
+  STATS   12  server -> asker   body: that host's virtual address (u32), then for slot 0 and 1: known (u8), name
+                                (16), matches, wins, throws, on target, hits, blocks, faced, catches (8 x u32),
+                                top speed (u16 cm/s). Career totals from --stats (SQLite).
+Privacy: the server never stores a player's key, only a salted hash of it (HMAC-SHA256 with a secret salt kept beside
+the table, --stats + '.salt'); both files are readable by the server's own account only. first_seen / last_seen are
+kept for abuse checks (spam, the same player connected from two places, which is logged).
 
 Safety: tokens bind each client to its source address; only game packets (magic 'SPRC') are forwarded, at most
 1200 bytes; per-client rate limit; broadcasts only reach clients on the same game version; a client cap; names are
@@ -34,14 +53,22 @@ are delayed by lag plus a smoothly drifting 0..jitter ms, kept in order, and a s
 """
 import argparse
 import asyncio
+import hashlib
+import hmac
 import random
 import os
+import sqlite3
 import struct
 import time
 
 MAGIC = 0x4C52414F          # 'OARL'
 GAME_MAGIC = 0x43525053     # 'SPRC' (the game's LAN packets)
 HELLO, WELCOME, SEND, PING, BYE, DELIVER, ERROR = 1, 2, 3, 4, 5, 6, 7
+KEY, TANK, MATCH, STATSREQ, STATS, CONFIRM, DELETE, MYSTATS = 8, 9, 10, 11, 12, 13, 14, 15
+SELF = 0xFFFFFFFF           # STATS for MYSTATS: "host" SELF, slot 0 = the asker
+CONFIRM_WINDOW = 60.0       # seconds: a host's result and the other player's confirmation must meet within this
+STAT_FIELDS = ('matches', 'wins', 'throws', 'on_target', 'hits', 'blocks', 'faced', 'catches')
+MATCH_GAP = 30.0            # seconds: at most one result per host this often
 BROADCAST = 0xFFFFFFFF
 MAX_PAYLOAD = 1200
 RATE = 1000                 # packets / second per client (an arena host: ~450 game + forwarded voice)
@@ -54,14 +81,75 @@ def clean_name(raw):
     return s[:16] or 'PLAYER'
 
 
+def ip_text(v):
+    return '%d.%d.%d.%d' % (v >> 24 & 255, v >> 16 & 255, v >> 8 & 255, v & 255)
+
+
 class Client:
-    __slots__ = ('addr', 'token', 'vip', 'version', 'name', 'seen', 'bucket', 'bucket_t', 'joined')
+    __slots__ = ('addr', 'token', 'vip', 'version', 'name', 'seen', 'bucket', 'bucket_t', 'joined', 'key', 'tank',
+                 'last_match', 'last_req')
 
     def __init__(self, addr, vip, version, name):
         self.addr, self.vip, self.version, self.name = addr, vip, version, name
         self.token = os.urandom(16)
         self.seen = self.bucket_t = self.joined = time.monotonic()
         self.bucket = RATE
+        self.key, self.tank, self.last_match, self.last_req = None, (0, 0), -1e9, -1e9
+
+
+class Stats:
+    """Career statistics per player key (a SQLite file): matches, wins and the counts a host reports per match."""
+
+    def __init__(self, path, log=print):
+        self.log = log
+        salt_path = path + '.salt'
+        if not os.path.exists(salt_path):
+            fd = os.open(salt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'wb') as f:
+                f.write(os.urandom(32))
+        with open(salt_path, 'rb') as f:
+            self.salt = f.read()
+        self.db = sqlite3.connect(path)
+        for p in (path, salt_path):   # the server's own account only
+            try:
+                os.chmod(p, 0o600)
+            except OSError:
+                pass
+        self.db.execute('CREATE TABLE IF NOT EXISTS players (key TEXT PRIMARY KEY, name TEXT, ' +
+                        ', '.join('%s INTEGER DEFAULT 0' % f for f in STAT_FIELDS) +
+                        ', top_speed INTEGER DEFAULT 0, first_seen INTEGER, last_seen INTEGER)')
+        self.db.commit()
+        self.purge()
+        n = self.db.execute('SELECT COUNT(*) FROM players').fetchone()[0]
+        log('stats: %d players (%s)' % (n, os.path.abspath(path)))
+
+    def purge(self, months=24):
+        """The privacy policy's promise: statistics go after 24 months unseen (at start and once a day)."""
+        n = self.db.execute('DELETE FROM players WHERE last_seen < ?', (int(time.time()) - months * 30 * 86400,)).rowcount
+        self.db.commit()
+        if n:
+            self.log('stats: %d players unseen for %d months removed' % (n, months))
+
+    def add(self, key, name, won, counts, top):
+        t = int(time.time())
+        self.db.execute('INSERT OR IGNORE INTO players (key, name, first_seen, last_seen) VALUES (?, ?, ?, ?)', (key, name, t, t))
+        sets = ', '.join('%s = %s + ?' % (f, f) for f in STAT_FIELDS)
+        self.db.execute('UPDATE players SET name = ?, last_seen = ?, top_speed = MAX(top_speed, ?), ' + sets + ' WHERE key = ?',
+                        (name, t, top, 1, 1 if won else 0) + tuple(counts) + (key,))
+        self.db.commit()
+
+    def ident(self, raw):
+        """The stored id for a player's key: a salted hash, so a copy of the table can't be used to act as anyone."""
+        return hmac.new(self.salt, raw, hashlib.sha256).hexdigest()
+
+    def delete(self, key):
+        n = self.db.execute('DELETE FROM players WHERE key = ?', (key,)).rowcount
+        self.db.commit()
+        return n
+
+    def get(self, key):
+        r = self.db.execute('SELECT name, ' + ', '.join(STAT_FIELDS) + ', top_speed FROM players WHERE key = ?', (key,)).fetchone()
+        return r
 
 
 class Latest:
@@ -118,8 +206,9 @@ class Bans:
 
 
 class Relay(asyncio.DatagramProtocol):
-    def __init__(self, max_clients, log=print, lag=0.0, jitter=0.0, loss=0.0, bans=None, latest=None):
+    def __init__(self, max_clients, log=print, lag=0.0, jitter=0.0, loss=0.0, bans=None, latest=None, stats=None):
         self.latest = latest
+        self.player_stats = stats
         self.max_clients = max_clients
         self.bans = bans
         self.lag, self.jitter, self.loss = lag / 1000.0, jitter / 1000.0, loss / 100.0
@@ -129,6 +218,7 @@ class Relay(asyncio.DatagramProtocol):
         self.log = log
         self.transport = None
         self.stats = {'forwarded': 0, 'dropped': 0}
+        self.pending, self.confirms = {}, {}   # host vip -> its result waiting for a confirmation (and the reverse)
 
     def connection_made(self, transport):
         self.transport = transport
@@ -217,6 +307,9 @@ class Relay(asyncio.DatagramProtocol):
         if ptype == BYE:
             self.drop(c, 'bye')
             return
+        if ptype in (KEY, TANK, MATCH, STATSREQ, CONFIRM, DELETE, MYSTATS):
+            self.stats_message(c, ptype, body, now)
+            return
         if ptype != SEND or len(body) < 4 + 5:
             return
         dst = struct.unpack_from('<I', body)[0]
@@ -233,6 +326,81 @@ class Relay(asyncio.DatagramProtocol):
             o = self.by_vip.get(dst)
             if o is not None:
                 self.forward(out, o.addr)
+
+    def stats_message(self, c, ptype, body, now):
+        st = self.player_stats
+        if ptype == KEY and len(body) >= 16:
+            c.key = st.ident(body[:16]) if st is not None else hashlib.sha256(body[:16]).hexdigest()
+            for o in self.by_addr.values():   # abuse check: one player connected from two places at once
+                if o is not c and o.key == c.key:
+                    self.log('stats: the same player is connected twice: %s (%s) and %s (%s)' %
+                             (c.name, ip_text(c.vip), o.name, ip_text(o.vip)))
+        elif ptype == TANK and len(body) >= 8:
+            c.tank = struct.unpack_from('<II', body)
+        elif ptype == MATCH and len(body) >= 33 and st is not None:
+            if now - c.last_match < MATCH_GAP:
+                return
+            winner = body[0]
+            rows = [struct.unpack_from('<7H', body, 1 + 14 * k) for k in range(2)]
+            score = tuple(body[29:33])
+            players = [self.by_vip.get(v) for v in c.tank]
+            if winner > 1 or any(p is None or p.key is None for p in players) or players[0].key == players[1].key:
+                return
+            for r in rows:   # a result that can't be real counts for nobody
+                throws, on_target, hits, blocks, faced, catches, top = r
+                if throws > 3000 or on_target > throws or hits > on_target or blocks > faced or faced > 3000 or top > 6000:
+                    self.log('stats: result from %s refused (%s)' % (c.name, r))
+                    return
+            c.last_match = now
+            self.pending[c.vip] = dict(t=now, host=c, winner=winner, score=score, rows=rows,
+                                       keys=[p.key for p in players], names=[p.name for p in players])
+            self.settle(c.vip, now)
+        elif ptype == CONFIRM and len(body) >= 9:
+            hv, winner = struct.unpack_from('<IB', body)
+            if c.key is None:
+                return
+            self.confirms[hv] = dict(t=now, key=c.key, vip=c.vip, winner=winner, score=tuple(body[5:9]))
+            self.settle(hv, now)
+        elif ptype == DELETE and st is not None and c.key is not None:
+            n = st.delete(c.key)
+            self.log('stats: %s deleted their statistics (%d row)' % (c.name, n))
+        elif (ptype == STATSREQ and len(body) >= 4) or ptype == MYSTATS:
+            if now - c.last_req < 0.5:
+                return
+            c.last_req = now
+            hv = SELF if ptype == MYSTATS else struct.unpack_from('<I', body)[0]
+            h = self.by_vip.get(hv)
+            out = struct.pack('<I', hv)
+            for v in ((c.vip, 0) if ptype == MYSTATS else h.tank if h is not None else (0, 0)):
+                p = self.by_vip.get(v)
+                r = st.get(p.key) if (st is not None and p is not None and p.key) else None
+                if r is None:
+                    name = (p.name if p is not None else '').encode('ascii', 'replace')[:16]
+                    out += struct.pack('<B16s8IH', 1 if p is not None and p.key else 0, name, *([0] * 8), 0)
+                else:
+                    out += struct.pack('<B16s8IH', 1, (p.name or r[0]).encode('ascii', 'replace')[:16], *r[1:9], min(65535, r[9]))
+            self.send(c.addr, STATS, out)
+
+    def settle(self, hv, now):
+        """Count a host's result once a tank player who is not the host confirms the same winner and score."""
+        for d in (self.pending, self.confirms):
+            for k in [k for k, v in d.items() if now - v['t'] > CONFIRM_WINDOW]:
+                del d[k]
+        p, cf = self.pending.get(hv), self.confirms.get(hv)
+        if p is None or cf is None:
+            return
+        if cf['vip'] == hv or cf['key'] not in p['keys'] or cf['winner'] != p['winner'] or cf['score'] != p['score']:
+            if cf['vip'] != hv and cf['key'] in p['keys']:
+                self.log('stats: %s\'s result and the other player\'s disagree: not counted' % p['host'].name)
+                del self.pending[hv]
+            del self.confirms[hv]
+            return
+        del self.pending[hv], self.confirms[hv]
+        st = self.player_stats
+        for k in range(2):
+            throws, on_target, hits, blocks, faced, catches, top = p['rows'][k]
+            st.add(p['keys'][k], p['names'][k], k == p['winner'], (throws, on_target, hits, blocks, faced, catches), top)
+        self.log('stats: %s beat %s (host %s, confirmed)' % (p['names'][p['winner']], p['names'][1 - p['winner']], p['host'].name))
 
     def sweep(self):
         now = time.monotonic()
@@ -315,13 +483,15 @@ async def main():
     ap.add_argument('--reports', default='bug_reports', help='folder for bug reports sent from the game')
     ap.add_argument('--bans', default='bans.txt', help='moderation: banned IP addresses and name:PLAYERNAME lines')
     ap.add_argument('--latest', default='latest_version.txt', help='the current release (e.g. 0.3.4): older games say UPDATE AVAILABLE')
+    ap.add_argument('--stats', default='player_stats.db', help='player statistics (SQLite), keyed by each game\'s private key')
     ap.add_argument('--lag', type=float, default=0.0, help='testing: extra one-way delay per forwarded packet (ms)')
     ap.add_argument('--jitter', type=float, default=0.0, help='testing: up to this much more delay at random (ms)')
     ap.add_argument('--loss', type=float, default=0.0, help='testing: percent of forwarded packets dropped')
     args = ap.parse_args()
     loop = asyncio.get_running_loop()
     stamp = lambda m: print(time.strftime('%H:%M:%S ') + m, flush=True)
-    relay = Relay(args.max_clients, stamp, args.lag, args.jitter, args.loss, Bans(args.bans, stamp), Latest(args.latest))
+    relay = Relay(args.max_clients, stamp, args.lag, args.jitter, args.loss, Bans(args.bans, stamp), Latest(args.latest),
+                  Stats(args.stats, stamp))
     await loop.create_datagram_endpoint(lambda: relay, local_addr=(args.bind, args.port))
     stamp('Project Arena relay listening on UDP %s:%d' % (args.bind, args.port))
     reports = Reports(args.reports, stamp, relay)
@@ -334,6 +504,8 @@ async def main():
         await asyncio.sleep(2.0)
         relay.sweep()
         k += 1
+        if k % 43200 == 0 and relay.player_stats is not None:   # once a day (k counts 2 s steps)
+            relay.player_stats.purge()
         if k % 15 == 0 and relay.by_addr:
             stamp('%d online, forwarded %d, dropped %d' % (len(relay.by_addr), relay.stats['forwarded'], relay.stats['dropped']))
 

@@ -62,8 +62,23 @@ def weld(g):
     return {k: v[first] for k, v in g.items()}, inv.reshape(-1).astype(np.uint32)
 
 
+def team_flag(name, kind):
+    """NATIONS: a team end's light, glow or glass (name ..._t0 / _t1) is marked with channel 8 / 9 (material flags bits
+    8-11), so the game can give that end a country's colour (render.cpp setSideColors). Lit surfaces keep their baked
+    colour."""
+    if kind in ('emit', 'fx', 'glass') and re.search(r'_t[01]$', name):
+        return (8 + int(name[-1])) << 8
+    return 0
+
+
 def material(name, lm_tex=None, lm_scale=1.0):
     """(shader, tint, emissive, uv channel, flags, diffuse texture) for a palette material."""
+    sh, tint, em, uv, flags, tex = material_base(name, lm_tex, lm_scale)
+    d = palette.P.get(name)
+    return sh, tint, em, uv, flags | (team_flag(name, d['kind']) if d else 0), tex
+
+
+def material_base(name, lm_tex=None, lm_scale=1.0):
     d = palette.P.get(name)
     if d is None:
         print('  WARN unknown material', name)
@@ -157,7 +172,7 @@ def mirrored(groups, dim):
         out[key] = m
         sh, tint, em, uv, flags, tex = material(name)
         col = tuple(c * dim for c in tint[:3]) + (1,)
-        mats[key] = (SH_ADD, col, (0, 0, 0, 0), 0, TWOSIDED, tex)
+        mats[key] = (SH_ADD, col, (0, 0, 0, 0), 0, TWOSIDED | (flags & 0xF00), tex)
     return out, mats
 
 

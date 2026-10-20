@@ -301,6 +301,16 @@ def f_top(b, style):
         g = np.minimum(y - b.waist_y, 0.5 - Wd[:, HEAD])                      # never the head, from the waist up
         if style.get('collar') is not None:
             g = np.minimum(g, np.maximum(0.5 - Wd[:, NECK], style['collar'] - y))
+        elif style.get('crew'):
+            # a sports crew neck at the base of the neck (y = 0): about 4.5 cm down at the front, just under the neck
+            # base at the back, blended round the sides (owner, 2026-10-19: the neck-weight line rode up the neck,
+            # ragged, like a high collar with a bow at the front)
+            r = 0.075
+            dip = np.sqrt(np.maximum(0.0, r * r - ax * ax))
+            front, back = -0.012 - dip * 0.45, 0.004 - dip * 0.10
+            t = np.clip((z + 0.03) / 0.06, 0.0, 1.0)
+            t = t * t * (3 - 2 * t)
+            g = np.minimum(g, np.maximum(front + (back - front) * t - y, ax - r))
         else:
             g = np.minimum(g, (0.5 - Wd[:, NECK]) * 0.4)                       # crew neckline along the neck's weight
         if style.get('sleeve') is not None:
@@ -429,8 +439,7 @@ def design(name, b, X, dom, at, phi):
         R += (np.abs(u) < 0.085) * (y > wy + 0.03) * (y < wy + 0.15) * torso
         R += (y < wy + 0.04) * torso
         R += (at > 1.85) * arm
-    elif name == 'jersey':      # ARENA JERSEY: collar band, sleeve bands, side stripes
-        R += (y > sy + 0.035) * torso
+    elif name == 'jersey':      # ARENA JERSEY: sleeve bands, side stripes, hem (the ribbed collar is modelled)
         R += ((at > 0.34) & (at <= 0.42)) * arm
         R += (np.abs(au - 0.25) < 0.012) * (y < ay) * torso
         R += (y < wy + 0.03) * torso
@@ -1248,8 +1257,12 @@ def add_panel(mesh, shell, field, thick, key, rimkey):
     return len(sel)
 
 
-def add_bindings(mesh, shell, width, height, key):
-    """A rolled binding along every edge of the garment (collar, cuffs, hems, armholes)."""
+def add_bindings(mesh, shell, width, height, key, joined=False):
+    """A rolled binding along every edge of the garment (collar, cuffs, hems, armholes).
+    joined: one continuous band per edge loop, smoothed (add_band_loops), instead of a block per edge segment, which
+    splay apart round a curve (the ARENA JERSEY's ribbed collar, owner 2026-10-19)."""
+    if joined:
+        return add_band_loops(mesh, shell, width, height, key)
     be = boundary_edges(shell)
     out = ([], [], [], [])
     for a, c in be:
@@ -1270,6 +1283,86 @@ def add_bindings(mesh, shell, width, height, key):
         _quad(out, (tla, wa, None), (tra, wa, None), (trc, wc, None), (tlc, wc, None), n, None)
         _quad(out, (bla, wa, None), (tla, wa, None), (tlc, wc, None), (blc, wc, None), side, None)
         _quad(out, (tra, wa, None), (bra, wa, None), (brc, wc, None), (trc, wc, None), -side, None)
+    mesh.add(key, _soup(out[0], out[1], out[2]))
+    return len(be)
+
+
+def add_band_loops(mesh, shell, width, height, key, smooth=8):
+    """A continuous band along each edge loop of the garment: the boundary edges (directed, welded) chained into loops,
+    the points smoothed along the loop (the cut edge zigzags a little through the body's triangles), then one strip
+    with shared corners: a top face and two sides, skinned with the averaged weights."""
+    be = boundary_edges(shell)
+    if len(be) == 0:
+        return 0
+    keys = weld_keys(shell.P)
+    kid = {}
+    pos, nrm, wts = [], [], []
+
+    def node(v):
+        k = tuple(keys[v])
+        i = kid.get(k)
+        if i is None:
+            i = kid[k] = len(pos)
+            pos.append(np.zeros(3)); nrm.append(np.zeros(3)); wts.append(np.zeros(shell.Wd.shape[1])); cnt.append(0)
+        pos[i] = pos[i] + shell.P[v]; nrm[i] = nrm[i] + shell.N[v]; wts[i] = wts[i] + shell.Wd[v]; cnt[i] += 1
+        return i
+    cnt = []
+    nxt, prv = {}, {}
+    for a, c in be:
+        ia, ic = node(a), node(c)
+        if ia != ic:
+            nxt.setdefault(ia, ic)
+            prv.setdefault(ic, ia)
+    pos = [p / max(1, n) for p, n in zip(pos, cnt)]
+    wts = [w / max(1, n) for w, n in zip(wts, cnt)]
+    nrm = [n / max(1e-9, np.linalg.norm(n)) for n in nrm]
+    seen, chains = set(), []
+    for start in list(nxt):
+        if start in seen:
+            continue
+        s0 = start
+        while s0 in prv and prv[s0] not in seen and prv[s0] != start:   # back up to an open chain's first point
+            s0 = prv[s0]
+            if s0 == start:
+                break
+        chain, v = [], s0
+        while v is not None and v not in seen:
+            seen.add(v)
+            chain.append(v)
+            v = nxt.get(v)
+        closed = v == s0
+        if len(chain) >= 3:
+            chains.append((chain, closed))
+    out = ([], [], [], [])
+    hw = width / 2
+    for chain, closed in chains:
+        P = np.array([pos[i] for i in chain])
+        N = np.array([nrm[i] for i in chain])
+        Wt = np.array([wts[i] for i in chain])
+        m = len(P)
+        for _ in range(smooth):
+            if closed:
+                P = 0.5 * P + 0.25 * (np.roll(P, 1, 0) + np.roll(P, -1, 0))
+                N = 0.5 * N + 0.25 * (np.roll(N, 1, 0) + np.roll(N, -1, 0))
+            else:
+                P[1:-1] = 0.5 * P[1:-1] + 0.25 * (P[:-2] + P[2:])
+                N[1:-1] = 0.5 * N[1:-1] + 0.25 * (N[:-2] + N[2:])
+        N /= np.maximum(1e-9, np.linalg.norm(N, axis=1))[:, None]
+        T = (np.roll(P, -1, 0) - np.roll(P, 1, 0)) if closed else np.gradient(P, axis=0)
+        S = np.cross(N, T)
+        S /= np.maximum(1e-9, np.linalg.norm(S, axis=1))[:, None]
+        top = [P + S * hw + N * height, P - S * hw + N * height]
+        bot = [P + S * hw - N * 0.001, P - S * hw - N * 0.001]
+        for i in range(m if closed else m - 1):
+            j = (i + 1) % m
+            n = N[i] + N[j]
+            n /= max(1e-9, np.linalg.norm(n))
+            sd = S[i] + S[j]
+            sd /= max(1e-9, np.linalg.norm(sd))
+            wi, wj = Wt[i], Wt[j]
+            _quad(out, (top[0][i], wi, None), (top[1][i], wi, None), (top[1][j], wj, None), (top[0][j], wj, None), n, None)
+            _quad(out, (bot[0][i], wi, None), (top[0][i], wi, None), (top[0][j], wj, None), (bot[0][j], wj, None), sd, None)
+            _quad(out, (top[1][i], wi, None), (bot[1][i], wi, None), (bot[1][j], wj, None), (top[1][j], wj, None), -sd, None)
     mesh.add(key, _soup(out[0], out[1], out[2]))
     return len(be)
 
@@ -1421,7 +1514,7 @@ def build_details(b, n, shell, mesh, mats):
     first = lambda T: (surface_paths(b, shell, T) or [[None]])[0]
     did = []
     if n == 1:   # ARENA JERSEY: ribbed bands, side seams, a blank number panel on the back
-        add_bindings(mesh, shell, 0.016, 0.0032, key('av_secondary')); did.append('ribbed bands')
+        add_bindings(mesh, shell, 0.016, 0.0032, key('av_secondary'), joined=True); did.append('ribbed bands')
         bands([[(0.25, ay - 0.01), (0.25, wy + 0.03)], [(-0.25, ay - 0.01), (-0.25, wy + 0.03)]], 0.006, 0.0016, key('av_secondary'))
         add_panel(mesh, shell, uy_field(b, lambda u, y, d, at, ph: np.where(torso(d), np.minimum.reduce(
             [np.abs(u) - 0.41, y - (sy - 0.30), (sy - 0.07) - y]), -1.0)), 0.0025, key('av_secondary'), 'rim:av_secondary_dk')
@@ -1464,7 +1557,7 @@ def build_details(b, n, shell, mesh, mats):
                 add_tube(mesh, h, 0.030, key('av_primary'))
         did += ['pocket', 'waistband', 'cuffs', 'drawstrings', 'hood']
     elif n == 6:  # TANK TOP: rolled binding round the armholes, the neckline and the hem
-        add_bindings(mesh, shell, 0.012, 0.0028, key('av_primary_dk')); did.append('bindings')
+        add_bindings(mesh, shell, 0.012, 0.0028, key('av_primary_dk'), joined=True); did.append('bindings')
     elif n == 7:  # PILOT: harness straps with buckles, belt with buckle, shoulder patches, cuffs, chest light housing
         # harness straps (front and back, over the shoulders) and the belt as smooth bands (cut panels came out ragged)
         straps = [[(sx * 0.05, -0.01), (sx * 0.05, wy + 0.12)] for sx in (1, -1)] +                  [[(sx * 0.45, -0.01), (sx * 0.45, wy + 0.12)] for sx in (1, -1)]
@@ -1487,7 +1580,7 @@ def build_details(b, n, shell, mesh, mats):
                [(0.5 - 0.07, sy + 0.08), (0.5 - 0.20, ay + 0.02)], [(-0.5 + 0.07, sy + 0.08), (-0.5 + 0.20, ay + 0.02)],
                [(0.25, ay), (0.25, wy + 0.02)], [(-0.25, ay), (-0.25, wy + 0.02)]]
         bands(rag, 0.005, 0.0016, key('av_primary_dk'))
-        add_bindings(mesh, shell, 0.010, 0.0022, key('av_primary_dk'))
+        add_bindings(mesh, shell, 0.010, 0.0022, key('av_primary_dk'), joined=True)
         did += ['seams', 'bindings']
     return did
 
@@ -1632,7 +1725,7 @@ DRAPE_TOP = {0: (0.012, 0.15), 1: (0.050, 1.2), 2: (0.010, 0.15), 3: (0.055, 1.0
 DRAPE_BOTTOM = (0.025, 0.4)
 TOPS = {   # N: (coverage style, thickness, material, rim, design, bracer, plates)
     0: (dict(sleeve=1.95, collar=0.045), 0.0028, 'av_primary', 'av_secondary', 'grid', None, ()),
-    1: (dict(sleeve=0.42), 0.0085, 'av_primary', 'av_secondary', 'jersey', None, ()),
+    1: (dict(sleeve=0.42, crew=True), 0.0085, 'av_primary', 'av_secondary', 'jersey', None, ()),
     2: (dict(sleeve=1.95, collar=0.040), 0.0028, 'av_dark', 'av_dark', 'vanguard', None, ('chest', 'back', 'pauldron', 'vambrace')),
     3: (dict(sleeve=1.95, collar=0.062), 0.0130, 'av_primary', 'av_secondary_dk', 'jacket', None, ()),
     4: (dict(sleeve=1.95, collar=0.030), 0.0150, 'av_primary', 'av_secondary_dk', 'hoodie', None, ()),
@@ -1640,7 +1733,7 @@ TOPS = {   # N: (coverage style, thickness, material, rim, design, bracer, plate
     6: (dict(armhole=(0.80, 0.64), scoop=True), 0.0040, 'av_primary', 'av_primary_dk', None, 'silver', ()),
     7: (dict(sleeve=1.95, collar=0.040), 0.0070, 'av_primary', 'av_secondary_dk', 'pilot', None, ()),
     8: (dict(armhole=(0.88, 0.68), collar=0.060), 0.0040, 'av_primary', 'av_primary_np', 'vest', 'circuit', ()),
-    9: (dict(sleeve=0.45), 0.0040, 'av_primary', 'av_primary_dk', 'tee', 'gray', ()),
+    9: (dict(sleeve=0.45, crew=True), 0.0040, 'av_primary', 'av_primary_dk', 'tee', 'gray', ()),
     10: (dict(sleeve=1.95, collar=0.045), 0.0028, 'av_primary', 'av_secondary', None, None, ()),   # CIRCUIT RUNNER (+ traces)
 }
 LIVE = {11: (0, 'grid'), 12: (5, 'echo'), 13: (8, 'vest')}   # LIVE suit: (base suit, its glow design, now raised piping)
