@@ -493,6 +493,25 @@ def s_ambience():
     return reverb(mix(hum * 0.3, air, murmur), 2.2, 0.32, bright=2200)[:len(t)]
 
 
+def s_crowd():
+    """The Crowd (fans on phones): an excited stadium crowd, looped; the game turns it up with the fans' hype"""
+    sec = 14.0
+    t = T(sec)
+    v = mix(crowd(sec, 'ah', voices=40, swell=(0.0, 1.1), base=175, excite=1.1) * 0.6,
+            crowd(sec, 'eh', voices=30, swell=(0.0, 1.1), base=160) * 0.4)
+    v = lp(v, 2600) * (0.8 + 0.2 * np.sin(2 * np.pi * 0.21 * t) * np.sin(2 * np.pi * 0.07 * t + 0.5))
+    c = claps(sec, 26) * 0.22
+    return reverb(mix(v, c), 2.0, 0.3, bright=2600)[:len(t)]
+
+
+def s_cheer():
+    """the crowd erupts: a rising cheer with applause"""
+    sec = 3.4
+    v = crowd(sec, 'ah', voices=56, pitch_glide=(0.94, 1.14), swell=(0.12, 0.65), base=190, excite=1.25)
+    c = claps(sec, 90, np.clip(np.linspace(0.3, 1.0, 100) * np.linspace(1, 0.3, 100), 0, 1)) * 0.35
+    return reverb(lp(mix(v * 0.75, c), 3400), 1.9, 0.3, bright=2700)
+
+
 SOUNDS = [
     ('Spawn', s_spawn), ('SpawnRise', s_spawn_rise), ('Grab', s_grab), ('Caught', s_caught),
     ('ThrowSlow', lambda: s_throw(0)), ('ThrowMed', lambda: s_throw(1)), ('ThrowFast', lambda: s_throw(2)),
@@ -503,6 +522,7 @@ SOUNDS = [
     ('RoundEndLose', lambda: s_round_end(False)), ('MatchEndWin', lambda: s_match_end(True)),
     ('MatchEndLose', lambda: s_match_end(False)), ('Recharge', s_recharge), ('Strike', s_strike),
     ('Overtime', s_overtime), ('FistBump', s_fist_bump), ('Ambience', s_ambience),
+    ('Crowd', s_crowd), ('Cheer', s_cheer),   # (last: the sounds above keep their random draws)
 ]
 
 

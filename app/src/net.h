@@ -42,6 +42,10 @@ struct RoomInfo {
     const char* nameOf(uint32_t id) const { for (const Name& n : names) if (n.id == id) return n.name; return nullptr; }
 };
 
+// The Crowd: fans following an online match on their phones (the crowd web app, through the relay). Cheers in the
+// last half second, hype 0..100 and fans waving a flag, for each end; at = when it arrived (Net's clock).
+struct CrowdInfo { int fans = 0, cheers[2] = {0, 0}, hype[2] = {0, 0}, waves[2] = {0, 0}; double at = -100; };
+
 // A live match a spectator is subscribed to: the host's snapshots applied to a local Game (not simulated).
 struct SpecMatch {
     uint32_t ip = 0;
@@ -53,6 +57,7 @@ struct SpecMatch {
     std::vector<uint8_t> state;
     bool fresh = false;
     std::vector<GameEvent> events;   // new events since they were last taken
+    CrowdInfo crowd;                 // its fans (The Crowd), as its host passes them on
 };
 
 // Bug reports go to the community server (same host and port as the relay, over TCP): "PABUG1\n", u32 length, text.
@@ -92,7 +97,7 @@ public:
         uint32_t matches = 0, wins = 0, throws = 0, onTarget = 0, hits = 0, blocks = 0, faced = 0, catches = 0;
         float topSpeed = 0;           // m/s
     };
-    struct MatchStats { uint16_t throws = 0, onTarget = 0, hits = 0, blocks = 0, faced = 0, catches = 0; float topSpeed = 0; };
+    struct MatchStats { uint16_t throws = 0, onTarget = 0, hits = 0, blocks = 0, faced = 0, catches = 0, strikes = 0; float topSpeed = 0; };
     void setStatsKey(const uint8_t key[16]) { std::memcpy(statsKey_, key, 16); keySent_ = false; }
     // host, online, two people in the tank; score = points 0, points 1, rounds 0, rounds 1 (the other player confirms)
     void reportMatch(int winner, const MatchStats st[2], const uint8_t score[4]);
@@ -102,7 +107,19 @@ public:
     static constexpr uint32_t kMyStats = 0xFFFFFFFFu;
     void requestStats(uint32_t hostVip);
     bool statsFor(uint32_t hostVip, CareerStats out[2]) const;   // the latest answer for that host (false: none)
-    uint32_t roomHostVip() const;     // online: our room's host (ourselves when hosting); 0 = none
+    uint32_t roomHostVip() const;
+    // The Crowd (0.3.7): an online host tells the relay about its match every second (LIVE); the relay answers with
+    // the fans' cheers (CROWD), which the host passes on to its room and spectators (MSG_CROWD).
+    struct LiveInfo {
+        uint8_t state = 0, score[4] = {0, 0, 0, 0}, nation[2] = {0, 0}, rgb[2][3] = {}, flags = 0;   // flags: 1 advanced, 2 bot
+        float clock = 0;
+        char name[2][17] = {};
+        MatchStats st[2];             // this match so far (for the fans' stats table)
+        uint8_t round = 0, overtime = 0;
+    };
+    void setLive(const LiveInfo& li) { live_ = li; liveSet_ = true; }
+    // the fans of our room's match (host / client), or of the match at hostIp (spectator); null: none lately
+    const CrowdInfo* crowd(uint32_t hostIp = 0) const;     // online: our room's host (ourselves when hosting); 0 = none
     void noticeLocal(const char* msg) { notice(msg); }
     uint32_t peerIp() const { return peerIp_; }
     float pingMs() const { return inRoom() ? lastPingMs_ : -1.f; }   // the latest round trip to the host / a player; -1 none
@@ -196,6 +213,11 @@ private:
     uint32_t statsHost_ = 0;
     CareerStats stats_[2];
     void relaySend(uint8_t type, const void* body, int n);
+    LiveInfo live_;
+    bool liveSet_ = false;
+    double lastLive_ = 0;
+    CrowdInfo crowd_;                     // host / client: our room's fans
+    static bool readCrowd(const uint8_t* p, const uint8_t* e, CrowdInfo& c, double now);
     uint32_t peerSession_ = 0;            // client: the host's session id: packets from anyone else are ignored
     uint32_t forfeit_ = 0;                // host: a tank player who gave up (handled on the next exchange)
     bool online_ = false;

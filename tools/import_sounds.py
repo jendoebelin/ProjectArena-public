@@ -35,6 +35,8 @@ SLOTS = {
     'RoundEndWin': (4.5, -22, False), 'RoundEndLose': (4.0, -24, False), 'MatchEndWin': (8.0, -20, False),
     'MatchEndLose': (7.0, -23, False), 'Recharge': (1.2, -27, False), 'Strike': (1.6, -24, False),
     'Overtime': (2.5, -22, False), 'FistBump': (0.9, -24, False), 'Ambience': (40.0, -34, True),
+    # The Crowd (fans on phones): a loop whose volume follows the hype, and a cheer when an end's hype jumps
+    'Crowd': (12.0, -26, True), 'Cheer': (3.5, -22, False),
 }
 
 

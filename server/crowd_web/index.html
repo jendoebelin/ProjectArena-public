@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#070b16">
+<meta name="description" content="Follow live Project Arena matches and cheer the players on from your phone.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="The Crowd">
+<title>The Crowd</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <button id="back" class="back hidden" aria-label="Back to the live matches">&#8249;</button>
+  <div class="brand"><span class="brand-the">THE</span> CROWD</div>
+  <div id="conn" class="conn" title="Connection">&#9679;</div>
+</header>
+
+<main>
+  <!-- the live matches -->
+  <section id="list-view">
+    <h1>Live now</h1>
+    <div id="matches"></div>
+    <div id="empty" class="empty hidden">
+      <div class="empty-ring"></div>
+      <p><b>No live matches right now.</b></p>
+      <p>Matches show up here the moment someone hosts an online arena in <b>Project Arena</b> (Meta Quest and PC VR).
+         Keep this page open: it updates by itself.</p>
+    </div>
+  </section>
+
+  <!-- one match -->
+  <section id="match-view" class="hidden">
+    <div id="state" class="state">LIVE</div>
+    <div class="board">
+      <div class="side" id="side0">
+        <div class="flag" id="flag0"></div>
+        <div class="pname" id="name0"></div>
+        <div class="nation" id="nat0"></div>
+        <div class="points" id="pts0">0</div>
+        <div class="rounds" id="rnd0"></div>
+      </div>
+      <div class="mid"><div class="dash">&ndash;</div><div id="clock" class="clock"></div></div>
+      <div class="side" id="side1">
+        <div class="flag" id="flag1"></div>
+        <div class="pname" id="name1"></div>
+        <div class="nation" id="nat1"></div>
+        <div class="points" id="pts1">0</div>
+        <div class="rounds" id="rnd1"></div>
+      </div>
+    </div>
+
+    <div class="hype">
+      <div class="hype-row"><div class="hype-bar"><div id="hype0" class="hype-fill"></div></div></div>
+      <div class="hype-label"><span id="fans">0 fans</span><span>HYPE</span><span id="waves"></span></div>
+      <div class="hype-row"><div class="hype-bar"><div id="hype1" class="hype-fill"></div></div></div>
+    </div>
+
+    <div class="cheer">
+      <button id="cheer0" class="cheer-btn"><span class="cheer-word">CHEER</span><span id="cheername0"></span></button>
+      <button id="cheer1" class="cheer-btn"><span class="cheer-word">CHEER</span><span id="cheername1"></span></button>
+    </div>
+    <div class="tools">
+      <button id="wave" class="tool">&#9873; WAVE FLAG</button>
+      <button id="shake" class="tool">&#8645; SHAKE TO CHEER</button>
+    </div>
+
+    <div class="stats">
+      <div class="stats-head"><span id="sh0"></span><span>THIS MATCH</span><span id="sh1"></span></div>
+      <div id="statrows"></div>
+      <div id="carblock" class="hidden">
+        <div class="stats-head career"><span></span><span>CAREER</span><span></span></div>
+        <div id="carrows"></div>
+      </div>
+    </div>
+
+    <div class="call">
+      <div class="call-title">CALL IT: WHO SCORES NEXT?</div>
+      <div class="call-btns">
+        <button id="call0" class="call-btn"></button>
+        <button id="call1" class="call-btn"></button>
+      </div>
+      <div id="callmsg" class="call-msg">Pick a side. A right call scores you points.</div>
+      <div class="fan-score">FAN SCORE <b id="fanscore">0</b> &middot; STREAK <b id="streak">0</b></div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+
+<footer>
+  Anonymous: no sign-in, no name, nothing kept on the server.
+  <a href="https://github.com/jendoebelin/ProjectArena-public/blob/main/docs/PRIVACY.md" rel="noopener" target="_blank">Privacy</a>
+  &middot; Project Arena
+</footer>
+
+<script src="nations.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -51,19 +51,16 @@ Watching without a headset (spectator / streaming)
     F11        full screen   F1    controls window   F2  help bar in the picture   Esc  leave full screen
   A game controller works too: an Xbox controller, or a PlayStation 4 controller over USB or Bluetooth
   (cross = A, circle = B, square = X, triangle = Y, L1 / R1 = LB / RB, Share = View, Options = Menu):
-    A  next live match   B  the hub   X  auto camera   Y  free camera   D-pad left / right  cameras
+    A  next live match   B  the hub   X  auto camera   Y  free camera   LB / RB or D-pad left / right  cameras
     Triggers  zoom       View  help bar in the picture   Menu  full screen
     Free camera: left stick moves, right stick looks, LB / RB down / up, click the left stick to go faster
   V          view layers: FULL, NO WALLS (the court's outline instead of its glass), MINIMAL (no stadium, strike
-             zones, spawners or scoreboard), KEY (only the players and the balls, on a solid key colour)
-  K          the key colour: green, magenta, blue or TRANSPARENT
+             zones, spawners or scoreboard), KEY (only the players and the balls, transparent behind them)
   (controller: D-pad up / down cycles the view layers)
-  OBS, best: VIEW LAYERS > KEY with TRANSPARENT, and a Game Capture source (Mode: Capture specific window, Window:
+  OBS: VIEW LAYERS > KEY, and a Game Capture source (Mode: Capture specific window, Window:
   [ProjectArena.exe] Project Arena - Spectator) with "Allow Transparency" ticked. Nothing behind the players, so no
   outfit or glow colour can clash with a key; the score panels and glows stay see-through over your background.
   (The window itself looks black behind the players in this mode; OBS sees the transparency.)
-  Or a colour key: VIEW LAYERS > KEY with green, magenta or blue, and Filters > Chroma Key with the same colour on a
-  Window Capture source (pick a colour nobody's outfit or glow uses).
   Moving backgrounds to put behind the players (a Tron grid and a dark waterfall, each with several scenes and looks)
   and a step-by-step OBS guide are in the "streaming" folder: streaming\README.md.
   R          the win screen (controller: click the right stick), on any camera:
@@ -75,9 +72,9 @@ Watching without a headset (spectator / streaming)
              docs/PRIVACY.md). It comes up by itself at
              the fist bump and the countdown; M shows it now (and keeps it on), M again turns it off.
   Each spectator window has its own settings, so a stream can run several (one per OBS source), e.g.
-    ProjectArena.exe --spectate --layer 3 --keycol 3 --winscreen split
-    ProjectArena.exe --spectate --layer 3 --keycol 3 --winscreen winner
-  (--layer 0-3 FULL / NO WALLS / MINIMAL / KEY, --keycol 0-3 green / magenta / blue / transparent,
+    ProjectArena.exe --spectate --layer 3 --winscreen split
+    ProjectArena.exe --spectate --layer 3 --winscreen winner
+  (--layer 0-3 FULL / NO WALLS / MINIMAL / KEY,
   --winscreen split / winner / camera). Add --tag NAME to each so its window is "Project Arena - Spectator - NAME"
   and each OBS source can pick its own window.
   Streaming: capture only the "Project Arena - Spectator" window in OBS (Window Capture); the controls window stays

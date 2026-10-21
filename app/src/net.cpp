@@ -37,13 +37,14 @@ static const uint8_t kVersion = 8;
 // both, so the protocol version stays.
 enum : uint8_t { MSG_BEACON = 1, MSG_JOIN = 2, MSG_INPUT = 3, MSG_STATE = 4, MSG_LEAVE = 5, MSG_SPECTATE = 6,
                  MSG_REJECT = 7, MSG_QUEUE = 8, MSG_ROOM = 9, MSG_VOICE = 10, MSG_CAMERAS = 11, MSG_PING = 12, MSG_PONG = 13,
-                 MSG_KICKVOTE = 14 };   // (14: VOTE TO REMOVE, body: the target's id; older hosts ignore it)
+                 MSG_KICKVOTE = 14, MSG_CROWD = 15 };   // (14: VOTE TO REMOVE, body: the target's id; older hosts ignore it)
+// (15: The Crowd, host -> room and spectators: the relay's CROWD body, 12 bytes; older builds ignore it)
 // community relay (server/projectarena_relay.py)
 static const uint32_t kRelayMagic = 0x4C52414F;   // 'OARL'
 static const uint16_t kRelayPort = 47780;
 enum : uint8_t { R_HELLO = 1, R_WELCOME = 2, R_SEND = 3, R_PING = 4, R_BYE = 5, R_DELIVER = 6, R_ERROR = 7,
                  R_KEY = 8, R_TANK = 9, R_MATCH = 10, R_STATSREQ = 11, R_STATS = 12, R_CONFIRM = 13, R_DELETE = 14,
-                 R_MYSTATS = 15 };   // (8-15: player statistics)
+                 R_MYSTATS = 15, R_LIVE = 16, R_CROWD = 17 };   // (8-15: player statistics; 16-17: The Crowd)
 static const double kRotateDelay = 6.0;          // match summary -> both players out, the queue in
 static const double kMemberTimeout = 4.0;
 
@@ -288,6 +289,24 @@ void Net::confirmMatch(int winner, const uint8_t score[4]) {
     std::memcpy(b + 5, score, 4);
     relaySend(R_CONFIRM, b, sizeof b);
     LOGI("stats: match confirmed (winner slot %d)", winner);
+}
+
+bool Net::readCrowd(const uint8_t* p, const uint8_t* e, CrowdInfo& c, double now) {
+    if (e - p < 12) return false;
+    uint16_t v[3], w[2];
+    std::memcpy(v, p, 6); std::memcpy(w, p + 8, 4);
+    c.fans = v[0]; c.cheers[0] = v[1]; c.cheers[1] = v[2];
+    c.hype[0] = std::min<int>(100, p[6]); c.hype[1] = std::min<int>(100, p[7]);
+    c.waves[0] = w[0]; c.waves[1] = w[1];
+    c.at = now;
+    return true;
+}
+
+const CrowdInfo* Net::crowd(uint32_t hostIp) const {
+    const CrowdInfo* c = nullptr;
+    if (mode_ == Mode::Spectate) { for (const SpecMatch& m : matches_) if (m.ip == hostIp) c = &m.crowd; }
+    else if (inRoom()) c = &crowd_;
+    return c && now_ - c->at < 3.0 ? c : nullptr;
 }
 
 void Net::requestMyStats() { relaySend(R_MYSTATS, nullptr, 0); }
@@ -827,6 +846,14 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                 }
                 continue;
             }
+            if (t == R_CROWD) {   // our fans (we host an online match): keep them, and pass them on to the room
+                if (mode_ != Mode::Host || !readCrowd(rr.p, rr.e, crowd_, now_)) continue;
+                Writer w; header(w, MSG_CROWD, session_, 0);
+                w.b.insert(w.b.end(), rr.p, rr.p + 12);
+                for (const Member& m : members_) if (!m.local) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
+                for (const Spectator& sp : spectators_) sendTo(w.b.data(), (int)w.b.size(), sp.ip, kPort);
+                continue;
+            }
             if (t == R_ERROR) {
                 char msg[49] = {};
                 std::memcpy(msg, rr.p, std::min<size_t>(48, rr.e - rr.p));
@@ -1002,6 +1029,10 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                 camFrom_ = origin;
                 camFresh_ = true;
             }
+        } else if (type == MSG_CROWD) {
+            if (fromHost) readCrowd(r.p, r.e, crowd_, now_);
+            else if (mode_ == Mode::Spectate)
+                for (SpecMatch& m : matches_) if (m.ip == fromIp) readCrowd(r.p, r.e, m.crowd, now_);
         } else if (type == MSG_ROOM && fromHost) {
             peerSession_ = session;
             peerSeen_ = now_;
@@ -1033,6 +1064,26 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                 for (const Member& m : members_) if (m.id == slot_[k]) v[k] = m.local ? vip_ : m.ip;
             }
             relaySend(R_TANK, v, 8);
+        }
+        if (vip_ && mode_ == Mode::Host && liveSet_ && now_ - lastLive_ > 1.0) {   // The Crowd: our match, for the fans
+            lastLive_ = now_;
+            uint8_t b[82] = {};
+            b[0] = live_.state;
+            std::memcpy(b + 1, live_.score, 4);
+            b[5] = live_.nation[0]; b[6] = live_.nation[1];
+            std::memcpy(b + 7, live_.rgb, 6);
+            b[13] = live_.flags;
+            const uint16_t cl = (uint16_t)std::min(65535.f, std::max(0.f, live_.clock * 10.f));
+            std::memcpy(b + 14, &cl, 2);
+            std::memcpy(b + 16, live_.name[0], 16); std::memcpy(b + 32, live_.name[1], 16);
+            for (int k = 0; k < 2; ++k) {   // this match so far
+                const MatchStats& s = live_.st[k];
+                const uint16_t v[8] = {s.throws, s.onTarget, s.hits, s.blocks, s.faced, s.catches, s.strikes,
+                                       (uint16_t)std::min(6000.f, std::max(0.f, s.topSpeed * 100.f))};
+                std::memcpy(b + 48 + 16 * k, v, 16);
+            }
+            b[80] = live_.round; b[81] = live_.overtime;
+            relaySend(R_LIVE, b, sizeof b);
         }
     }
     if (inRoom() && now_ - lastPingSent_ > 2.0) {   // the round trip: the client to its host, the host to each player

@@ -18,7 +18,8 @@ with open(latest, 'w') as f:
     f.write('9.9.9')
 relay = subprocess.Popen([sys.executable, '-I', os.path.join(ROOT, 'server', 'projectarena_relay.py'), '--port', '47781',
                           '--bind', '127.0.0.1', '--latest', latest,
-                          '--stats', os.path.join(ROOT, 'build', 'tests', 'room_test_stats.db')], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                          '--stats', os.path.join(ROOT, 'build', 'tests', 'room_test_stats.db'),
+                          '--crowd', '127.0.0.1:47782'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 try:
     time.sleep(1.0)
     env = dict(os.environ)

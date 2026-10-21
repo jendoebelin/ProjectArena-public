@@ -154,8 +154,25 @@ void Audio::play(const std::string& name, float gain, float pan, bool loop) {
     if (!c || !outOn_) return;
     float l = gain * std::sqrt(0.5f * (1 - pan)), r = gain * std::sqrt(0.5f * (1 + pan));
     std::lock_guard<std::mutex> lk(mu_);
-    if (voices_.size() > 24) voices_.erase(voices_.begin());
+    if (voices_.size() > 24) {   // the oldest one-shot makes room (a loop keeps playing)
+        auto it = std::find_if(voices_.begin(), voices_.end(), [](const Voice& v) { return !v.loop; });
+        voices_.erase(it != voices_.end() ? it : voices_.begin());
+    }
     voices_.push_back({c, 0, l, r, loop});
+}
+
+void Audio::setLoop(const std::string& name, float gain) {
+    const Clip* c = get(name);
+    if (!c || !outOn_) return;
+    const float g = std::max(0.f, gain) * 0.7071f;
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto it = voices_.begin(); it != voices_.end(); ++it)
+        if (it->clip == c && it->loop) {
+            if (g <= 0.0005f) voices_.erase(it);
+            else it->gainL = it->gainR = g;
+            return;
+        }
+    if (g > 0.0005f) voices_.push_back({c, 0, g, g, true});
 }
 
 void Audio::onEvent(const GameEvent& e, const Vec3& listener, int local) {

@@ -29,7 +29,9 @@ Wants=network-online.target
 [Service]
 User=projectarena
 WorkingDirectory=/opt/projectarena
-ExecStart=/usr/bin/python3 -I /opt/projectarena/projectarena_relay.py --port $PORT --reports /opt/projectarena/bug_reports --bans /opt/projectarena/bans.txt --stats /opt/projectarena/player_stats.db
+# The Crowd's web page address (setup_crowd.sh writes it)
+EnvironmentFile=-/opt/projectarena/crowd.env
+ExecStart=/usr/bin/python3 -I /opt/projectarena/projectarena_relay.py --port $PORT --reports /opt/projectarena/bug_reports --bans /opt/projectarena/bans.txt --stats /opt/projectarena/player_stats.db --crowd 127.0.0.1:47781 --crowd-origin=${CROWD_ORIGIN}
 Restart=always
 RestartSec=3
 NoNewPrivileges=true

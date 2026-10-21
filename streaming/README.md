@@ -37,10 +37,10 @@ stills are 1920 x 1080. The others are backdrops for any camera (their floors do
 1. **Start the spectator with a transparent background.** Run the game with:
 
    ```
-   ProjectArena.exe --spectate --layer 3 --keycol 3
+   ProjectArena.exe --spectate --layer 3
    ```
 
-   Or, in the spectator window, press **V** until the view layer is KEY, then **K** until the key is TRANSPARENT.
+   Or, in the spectator window, press **V** until the view layer is KEY.
    The window itself looks black behind the players in this mode; OBS sees the transparency.
 
 2. **Add the background.** In OBS, under Sources, click **+** and choose **Browser**.
@@ -105,8 +105,8 @@ Each spectator window keeps its own settings, so a stream can switch between sev
 `--tag` so each Game Capture source can pick its own window:
 
 ```
-ProjectArena.exe --spectate --layer 3 --keycol 3 --winscreen split --tag split
-ProjectArena.exe --spectate --layer 3 --keycol 3 --winscreen winner --tag winner
+ProjectArena.exe --spectate --layer 3 --winscreen split --tag split
+ProjectArena.exe --spectate --layer 3 --winscreen winner --tag winner
 ```
 
 The windows are then called "Project Arena - Spectator - SPLIT" and "Project Arena - Spectator - WINNER".
@@ -116,9 +116,6 @@ flies to the winner) or `camera` (the camera stays put). In the window, **R** ch
 
 ## Other ways to do it
 
-- **A colour key (green screen):** if you can't use Game Capture (for example, when OBS records the game from another
-  PC), use KEY with **green**, **magenta** or **blue** instead of TRANSPARENT. Capture the window with Window Capture
-  and add **Filters > Chroma Key** with the same colour. Choose a colour that nobody's outfit or glow uses.
 - **Your own background:** anything OBS can show works behind the game: an Image, a Media Source (video) or a
   Browser source.
 

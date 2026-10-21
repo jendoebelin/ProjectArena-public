@@ -16,6 +16,22 @@
 #include "../src/voice_codec.h"
 #include <algorithm>
 #include <cstdlib>
+#include <string>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+#define SOCKET int
+#define closesocket close
+#endif
 
 bool netAcquireMulticastLock() { return false; }
 
@@ -50,6 +66,55 @@ static void pump(std::vector<std::unique_ptr<Node>>& ns, double seconds) {
 }
 
 static int waitingCount(const RoomInfo& r) { return (int)r.members.size(); }
+
+// The Crowd: a phone on the web page, as far as the relay can tell (a WebSocket client: masked text frames)
+struct Fan {
+    SOCKET s = (SOCKET)-1;
+    std::string got;   // every text message received, one per line
+    bool open(uint16_t port) {
+        s = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in a{};
+        a.sin_family = AF_INET; a.sin_port = htons(port); a.sin_addr.s_addr = htonl(0x7F000001);
+        if (connect(s, (sockaddr*)&a, sizeof a) != 0) return false;
+#ifdef _WIN32
+        DWORD ms = 100;
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&ms, sizeof ms);
+#else
+        timeval tv{0, 100000};
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+#endif
+        const char* req = "GET /ws HTTP/1.1\r\nHost: crowd\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        send(s, req, (int)std::strlen(req), 0);
+        std::string head;
+        char c;
+        for (int i = 0; i < 4000 && head.find("\r\n\r\n") == std::string::npos; ++i)
+            if (recv(s, &c, 1, 0) == 1) head += c;
+        return head.find(" 101 ") != std::string::npos;
+    }
+    void say(const std::string& text) {
+        std::string f;
+        f += (char)0x81; f += (char)(0x80 | text.size());
+        const char mask[4] = {0x11, 0x22, 0x33, 0x44};
+        f.append(mask, 4);
+        for (size_t i = 0; i < text.size(); ++i) f += (char)(text[i] ^ mask[i & 3]);
+        send(s, f.data(), (int)f.size(), 0);
+    }
+    void read() {   // whatever has arrived (frames from the server are unmasked)
+        std::string buf;
+        char tmp[4096];
+        for (;;) { int n = recv(s, tmp, sizeof tmp, 0); if (n <= 0) break; buf.append(tmp, n); }
+        size_t i = 0;
+        while (i + 2 <= buf.size()) {
+            size_t n = (uint8_t)buf[i + 1] & 0x7F, off = 2;
+            if (n == 126) { if (i + 4 > buf.size()) break; n = ((uint8_t)buf[i + 2] << 8) | (uint8_t)buf[i + 3]; off = 4; }
+            if (i + off + n > buf.size()) break;
+            got += buf.substr(i + off, n) + "\n";
+            i += off + n;
+        }
+    }
+    ~Fan() { if (s != (SOCKET)-1) closesocket(s); }
+};
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -316,6 +381,54 @@ int main() {
         pump(ns, 1.0);
         CHECK(!ns[3]->net.inRoom(), "a removed player can't come back to that arena this session");
         CHECK(ns[4]->net.inRoom() && ns[5]->net.inRoom(), "everyone else stays");
+    }
+    std::printf("[the crowd]\n");
+    {
+        Node& B = *ns[6];   // SIX's arena: FIVE plays, FOUR waits; WATCHER spectates
+        Net::LiveInfo li;
+        li.state = 2; li.score[0] = 3; li.score[1] = 1; li.nation[0] = 1; li.nation[1] = 7;
+        std::snprintf(li.name[0], 17, "SIX"); std::snprintf(li.name[1], 17, "FIVE");
+        li.clock = 95.f;
+        li.st[0].throws = 20; li.st[0].onTarget = 12; li.st[0].strikes = 2; li.st[0].topSpeed = 25.f; li.st[1].hits = 4;
+        li.round = 2;
+        B.net.setLive(li);
+        pump(ns, 1.6);
+        Fan fan;
+        const bool opened = fan.open(47782);
+        CHECK(opened, "a phone connects to the relay's crowd port (WebSocket)");
+        pump(ns, 1.2);
+        fan.read();
+        const size_t at = fan.got.find("\"host\":\"SIX\"");
+        CHECK(at != std::string::npos && fan.got.find("\"s\":[3,1,0,0]") != std::string::npos,
+              "the host's LIVE reaches the phones' list: its match and score");
+        CHECK(fan.got.find("\"throws\":20,\"on\":12") != std::string::npos && fan.got.find("\"strikes\":2") != std::string::npos &&
+              fan.got.find("\"top\":90") != std::string::npos && fan.got.find("\"hits\":4") != std::string::npos &&
+              fan.got.find("\"rnd\":2") != std::string::npos, "and this match so far: throws, accuracy, strikes, top speed, round");
+        std::string id;
+        const size_t k = fan.got.rfind("\"id\":\"", at);
+        if (k != std::string::npos) id = fan.got.substr(k + 6, 8);
+        fan.say("{\"t\":\"watch\",\"id\":\"" + id + "\"}");
+        for (int i = 0; i < 6; ++i) {
+            fan.say("{\"t\":\"cheer\",\"side\":0,\"n\":3}");
+            fan.say("{\"t\":\"flag\",\"side\":1}");
+            pump(ns, 0.25);
+        }
+        pump(ns, 0.6);
+        const CrowdInfo* hc = B.net.crowd();
+        CHECK(hc && hc->fans == 1 && hc->hype[0] > 0 && hc->hype[1] == 0 && hc->waves[1] == 1,
+              "the host hears its fan: one fan, the cheered end's hype, a flag waved for the other end");
+        const CrowdInfo* pc = ns[5]->net.crowd();
+        CHECK(pc && pc->fans == 1 && pc->hype[0] > 0, "the tank player hears the crowd too (the host passes it on)");
+        const CrowdInfo* wc = ns[4]->net.crowd();
+        CHECK(wc && wc->fans == 1, "and the waiting player");
+        uint32_t ip2 = 0;
+        for (const LanGame& lg : S.net.games()) if (std::strcmp(lg.name, "SIX") == 0) ip2 = lg.ip;
+        const CrowdInfo* sc = S.net.crowd(ip2);
+        CHECK(sc && sc->fans == 1, "a spectator watching that arena gets its crowd");
+        CHECK(!ns[1]->net.crowd() || ns[1]->net.crowd()->fans == 0, "another arena's players don't");
+        fan.read();
+        CHECK(fan.got.find("\"t\":\"m\"") != std::string::npos && fan.got.find("\"fans\":1") != std::string::npos,
+              "the phone follows the match it watches");
     }
     for (auto& n : ns) { if (n->net.online()) n->net.goOffline(); n->net.shutdown(); }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);

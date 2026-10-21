@@ -974,14 +974,15 @@ void Renderer::drawDepthBacking(const Mat4* quads, int n, GLuint depthTex, int l
     glUseProgram(prog_);
 }
 
-void Renderer::drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4], bool flipV) {
+void Renderer::drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4], bool flipV, const float* uv) {
     setColor(quad, rgba, false);
     quad.mats[0].flags = MAT_TWOSIDED;
     quad.mats[0].diffuse = tex;
     DrawParams dp;
     dp.forceShader = SH_UNLIT;
     dp.alphaMul = 0.998f;
-    if (flipV) glUniform4f(g_uUVRect, 1, -1, 0, 1);   // render targets are bottom-up
+    if (uv) glUniform4f(g_uUVRect, uv[0], uv[1], uv[2], uv[3]);
+    else if (flipV) glUniform4f(g_uUVRect, 1, -1, 0, 1);   // render targets are bottom-up
     else glUniform4f(g_uUVRect, 1, 1, 0, 0);
     draw(quad, model, dp, 1);
     glUniform4f(g_uUVRect, 1, 1, 0, 0);

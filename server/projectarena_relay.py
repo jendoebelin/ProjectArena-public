@@ -32,6 +32,21 @@ Player statistics (2026-10-20; relays and games from 0.3.6 on, older ones never 
   STATS   12  server -> asker   body: that host's virtual address (u32), then for slot 0 and 1: known (u8), name
                                 (16), matches, wins, throws, on target, hits, blocks, faced, catches (8 x u32),
                                 top speed (u16 cm/s). Career totals from --stats (SQLite).
+The Crowd (2026-10-21; games from 0.3.7 on): fans follow live matches on their phones (a web page; --crowd) and cheer.
+  LIVE    16  host -> server    body (every second while hosting): match state (u8, Game's MatchState), points 0,
+                                points 1, rounds 0, rounds 1 (4 x u8), nation 0, nation 1 (u8 each, 0 = none), the two
+                                ends' colours (2 x RGB u8), flags (u8: 1 advanced rules, 2 slot 1 is the bot), the
+                                round clock (u16, tenths of a second), the tank players' names (2 x 16); then
+                                (games from 0.3.7, 82 bytes) this match so far for slot 0 and 1: throws, throws on
+                                target, hits, blocks, balls faced, catches, strikes, top throw speed (cm/s) (8 x u16),
+                                the round (u8) and overtime (u8)
+  CROWD   17  server -> host    body (twice a second while anyone watches): fans watching (u16), cheers for end 0
+                                and end 1 in the last half second (2 x u16), hype 0 and 1 (2 x u8, 0..100), fans
+                                waving each end's flag (2 x u16)
+  Hosts from before 0.3.7 send no LIVE: their match is shown from the arena's own BEACON (forwarded to everyone
+  anyway: host name, score, clock, rules) and the tank players' names from TANK; no match statistics or flags.
+  Fans are anonymous: the web page sends no name or account; the relay keeps them in memory only (no file, no log
+  line per fan) and counts at most 10 connections per address.
 Privacy: the server never stores a player's key, only a salted hash of it (HMAC-SHA256 with a secret salt kept beside
 the table, --stats + '.salt'); both files are readable by the server's own account only. first_seen / last_seen are
 kept for abuse checks (spam, the same player connected from two places, which is logged).
@@ -40,7 +55,9 @@ Safety: tokens bind each client to its source address; only game packets (magic 
 1200 bytes; per-client rate limit; broadcasts only reach clients on the same game version; a client cap; names are
 sanitised; nothing is logged except connects / disconnects (no packet contents).
 
-Run:  python3 projectarena_relay.py [--port 47780] [--max-clients 200]
+Run:  python3 projectarena_relay.py [--port 47780] [--max-clients 200] [--crowd 127.0.0.1:47781]
+The Crowd's WebSocket (--crowd) is plain ws:// on a local port: a web server in front (Caddy, see
+deploy/setup_crowd.sh) adds HTTPS and passes /ws to it. --crowd-origin limits which web pages may connect.
 Bug reports: the game sends them over TCP to the same port: b"PABUG1\\n", u32 length (<= 200 kB), UTF-8 text;
 answered "OK\\n". Saved as text files in --reports (default ./bug_reports), at most 20 per address per hour.
 Player reports (REPORT PLAYER in the game) arrive the same way; the relay adds the reported name's current address(es)
@@ -53,8 +70,11 @@ are delayed by lag plus a smoothly drifting 0..jitter ms, kept in order, and a s
 """
 import argparse
 import asyncio
+import base64
 import hashlib
 import hmac
+import json
+import math
 import random
 import os
 import sqlite3
@@ -65,6 +85,7 @@ MAGIC = 0x4C52414F          # 'OARL'
 GAME_MAGIC = 0x43525053     # 'SPRC' (the game's LAN packets)
 HELLO, WELCOME, SEND, PING, BYE, DELIVER, ERROR = 1, 2, 3, 4, 5, 6, 7
 KEY, TANK, MATCH, STATSREQ, STATS, CONFIRM, DELETE, MYSTATS = 8, 9, 10, 11, 12, 13, 14, 15
+LIVE, CROWD = 16, 17
 SELF = 0xFFFFFFFF           # STATS for MYSTATS: "host" SELF, slot 0 = the asker
 CONFIRM_WINDOW = 60.0       # seconds: a host's result and the other player's confirmation must meet within this
 STAT_FIELDS = ('matches', 'wins', 'throws', 'on_target', 'hits', 'blocks', 'faced', 'catches')
@@ -219,6 +240,7 @@ class Relay(asyncio.DatagramProtocol):
         self.transport = None
         self.stats = {'forwarded': 0, 'dropped': 0}
         self.pending, self.confirms = {}, {}   # host vip -> its result waiting for a confirmation (and the reverse)
+        self.crowd = None                       # The Crowd (fans on phones), when --crowd is on
 
     def connection_made(self, transport):
         self.transport = transport
@@ -256,6 +278,8 @@ class Relay(asyncio.DatagramProtocol):
     def drop(self, c, why):
         self.by_addr.pop(c.addr, None)
         self.by_vip.pop(c.vip, None)
+        if self.crowd is not None:
+            self.crowd.host_gone(c)
         self.log('leave  %-16s %s (%d online)' % (c.name, why, len(self.by_addr)))
 
     def datagram_received(self, data, addr):
@@ -307,6 +331,10 @@ class Relay(asyncio.DatagramProtocol):
         if ptype == BYE:
             self.drop(c, 'bye')
             return
+        if ptype == LIVE:
+            if self.crowd is not None:
+                self.crowd.live(c, body, now)
+            return
         if ptype in (KEY, TANK, MATCH, STATSREQ, CONFIRM, DELETE, MYSTATS):
             self.stats_message(c, ptype, body, now)
             return
@@ -318,6 +346,8 @@ class Relay(asyncio.DatagramProtocol):
             self.stats['dropped'] += 1
             return
         out = struct.pack('<IBI', MAGIC, DELIVER, c.vip) + payload
+        if dst == BROADCAST and self.crowd is not None and len(payload) > 5 and payload[5] == 1:
+            self.crowd.beacon(c, payload, now)   # The Crowd: older hosts' matches from their beacons
         if dst == BROADCAST:
             for o in self.by_addr.values():
                 if o is not c and o.version == c.version:
@@ -416,6 +446,277 @@ class Relay(asyncio.DatagramProtocol):
         return sorted({'%s:%d' % c.addr for c in self.by_addr.values() if c.name == name})
 
 
+# ------------------------------------------------------------------ The Crowd: fans on phones (WebSocket, JSON)
+CROWD_TICK = 0.5             # seconds: CROWD to hosts, the watched match to its fans
+CROWD_MAX_FANS = 2000
+CROWD_PER_ADDR = 10          # connections per address
+CROWD_MSG_RATE = 20          # messages / second per fan
+CROWD_CHEERS = 8             # counted cheers / second per fan
+CROWD_IDLE = 90.0            # seconds without a message (the page pings every 20 s)
+WS_GUID = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+
+
+class LiveMatch:
+    __slots__ = ('id', 'host', 'info', 'seen', 'cheers', 'hype', 'fans', 'career', 'career_t', 'live_t')
+
+    def __init__(self, host):
+        self.id = os.urandom(4).hex()          # what fans see (not the virtual address)
+        self.host, self.info, self.seen = host, None, 0.0
+        self.cheers, self.hype, self.fans = [0, 0], [0.0, 0.0], set()
+        self.career, self.career_t = [None, None], -1e9
+        self.live_t = -1e9                     # the last LIVE (0.3.7+); until then the beacon describes the match
+
+
+class Fan:
+    __slots__ = ('writer', 'addr', 'watch', 'bucket', 'bucket_t', 'cheer_bucket', 'flag', 'flag_t', 'seen')
+
+    def __init__(self, writer, addr):
+        self.writer, self.addr, self.watch = writer, addr, None
+        self.bucket, self.cheer_bucket = CROWD_MSG_RATE, CROWD_CHEERS
+        self.bucket_t = self.seen = time.monotonic()
+        self.flag, self.flag_t = -1, 0.0
+
+
+def ws_frame(text, op=0x81):
+    data = text.encode('utf-8') if isinstance(text, str) else text
+    n = len(data)
+    if n < 126:
+        head = bytes([op, n])
+    elif n < 65536:
+        head = bytes([op, 126]) + struct.pack('>H', n)
+    else:
+        head = bytes([op, 127]) + struct.pack('>Q', n)
+    return head + data
+
+
+class Crowd:
+    def __init__(self, relay, log, origins=()):
+        self.relay, self.log = relay, log
+        self.origins = tuple(o.rstrip('/').lower() for o in origins if o)
+        self.matches = {}                      # host vip -> LiveMatch
+        self.fans = set()
+        relay.crowd = self
+
+    # --- hosts (UDP)
+    def live(self, c, body, now):
+        if len(body) < 48:
+            return
+        st, p0, p1, r0, r1, n0, n1 = struct.unpack_from('<7B', body)
+        rgb = body[7:13]
+        flags, clock = struct.unpack_from('<BH', body, 13)
+        names = (clean_name(body[16:32]), clean_name(body[32:48]))
+        m = self.matches.get(c.vip)
+        if m is None:
+            m = self.matches[c.vip] = LiveMatch(c)
+        m.seen = m.live_t = now
+        m.info = {'id': m.id, 'host': c.name, 'st': st, 's': [p0, p1, r0, r1], 'adv': bool(flags & 1),
+                  'bot': bool(flags & 2), 'clock': clock / 10.0,
+                  'p': [{'n': names[k], 'nat': (n0, n1)[k], 'c': '#%02x%02x%02x' % tuple(rgb[3 * k:3 * k + 3])}
+                        for k in range(2)]}
+        if len(body) >= 82:   # this match so far (0.3.7)
+            v = struct.unpack_from('<16H2B', body, 48)
+            for k in range(2):
+                t, ot, hi, bl, fa, ca, sk, top = v[8 * k:8 * k + 8]
+                m.info['p'][k]['m'] = {'throws': t, 'on': ot, 'hits': hi, 'blocks': bl, 'faced': fa, 'catches': ca,
+                                       'strikes': sk, 'top': round(top * 0.036)}   # cm/s -> km/h
+            m.info['rnd'], m.info['ot'] = v[16], bool(v[17])
+        self.careers(c, m, now)
+
+    def beacon(self, c, payload, now):
+        """a host from before 0.3.7 (no LIVE): its arena's beacon, which every host broadcasts twice a second"""
+        if len(payload) < 14 + 30 or payload[4] != 8 or payload[5] != 1:   # protocol 8, MSG_BEACON
+            return
+        m = self.matches.get(c.vip)
+        if m is not None and now - m.live_t < 3.0:   # it sends LIVE: that says more
+            return
+        adv, full, s0, s1, clock, specs, waiting, queued, humans = struct.unpack_from('<BBhhfBBBB', payload, 30)
+        if m is None:
+            m = self.matches[c.vip] = LiveMatch(c)
+        m.seen = now
+        names = []
+        for k, v in enumerate(c.tank):   # the tank as the host last named it (TANK, every 3 s since 0.3.6)
+            p = self.relay.by_vip.get(v) if v else None
+            names.append(p.name if p is not None else 'BOT' if k else c.name if c.tank == (0, 0) else 'OPEN')
+        cl = clock if clock == clock and 0 <= clock < 100000 else 0.0   # (not NaN)
+        m.info = {'id': m.id, 'host': c.name, 'st': 2, 's': [max(0, s0), max(0, s1), 0, 0], 'adv': bool(adv),
+                  'bot': names[1] == 'BOT', 'clock': round(cl, 1), 'old': True,
+                  'p': [{'n': names[0], 'nat': 0, 'c': '#1ab3ff'}, {'n': names[1], 'nat': 0, 'c': '#ff6a1a'}]}
+        self.careers(c, m, now)
+
+    def careers(self, c, m, now):
+        # the two players' careers (the statistics the game shows over the court), refreshed every 10 s
+        st_db = self.relay.player_stats
+        if st_db is not None and now - m.career_t > 10.0:
+            m.career_t = now
+            for k, v in enumerate(c.tank):
+                p = self.relay.by_vip.get(v) if v else None
+                r = st_db.get(p.key) if p is not None and p.key else None
+                m.career[k] = None if r is None else {'matches': r[1], 'wins': r[2], 'throws': r[3], 'on': r[4],
+                                                      'blocks': r[6], 'faced': r[7], 'top': round(r[9] * 0.036)}
+        for k in range(2):
+            if m.career[k] is not None:
+                m.info['p'][k]['car'] = m.career[k]
+
+    def host_gone(self, c):
+        m = self.matches.get(c.vip)
+        if m is None or m.host is not c:
+            return
+        del self.matches[c.vip]
+        for f in list(m.fans):
+            f.watch = None
+            self.send(f, {'t': 'gone', 'id': m.id})
+
+    # --- fans (WebSocket)
+    async def handle(self, reader, writer):
+        fan = None
+        try:
+            head = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 10)
+            lines = head.decode('latin1').split('\r\n')
+            req = lines[0].split(' ')
+            hdr = {}
+            for ln in lines[1:]:
+                if ':' in ln:
+                    k, v = ln.split(':', 1)
+                    hdr[k.strip().lower()] = v.strip()
+            key = hdr.get('sec-websocket-key', '')
+            origin = hdr.get('origin', '').rstrip('/').lower()
+            if (len(req) < 2 or req[0] != 'GET' or req[1].split('?')[0] != '/ws'
+                    or 'websocket' not in hdr.get('upgrade', '').lower() or not key
+                    or (self.origins and origin not in self.origins)):
+                writer.write(b'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+                return
+            # the phone's address (the web server in front sets X-Forwarded-For): only to cap connections per address
+            addr = hdr.get('x-forwarded-for', '').split(',')[0].strip() or (writer.get_extra_info('peername') or ('?',))[0]
+            if len(self.fans) >= CROWD_MAX_FANS or sum(1 for f in self.fans if f.addr == addr) >= CROWD_PER_ADDR:
+                writer.write(b'HTTP/1.1 503 Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+                return
+            accept = base64.b64encode(hashlib.sha1(key.encode('latin1') + WS_GUID).digest()).decode()
+            writer.write(('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+                          'Sec-WebSocket-Accept: %s\r\n\r\n' % accept).encode())
+            fan = Fan(writer, addr)
+            self.fans.add(fan)
+            self.send(fan, {'t': 'hello', 'v': 1})
+            self.send(fan, self.list_msg())
+            while True:
+                b = await asyncio.wait_for(reader.readexactly(2), CROWD_IDLE)
+                fin, op, masked, n = b[0] & 0x80, b[0] & 0x0F, b[1] & 0x80, b[1] & 0x7F
+                if n == 126:
+                    n = struct.unpack('>H', await reader.readexactly(2))[0]
+                elif n == 127:
+                    return
+                if not masked or not fin or n > 512:   # phones send short, masked, unfragmented messages
+                    return
+                mask = await reader.readexactly(4)
+                data = bytes(x ^ mask[i & 3] for i, x in enumerate(await reader.readexactly(n)))
+                if op == 8:
+                    writer.write(b'\x88\x00')
+                    return
+                if op == 9:
+                    writer.write(ws_frame(data, 0x8A))
+                    continue
+                if op == 1:
+                    self.fan_message(fan, data)
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError,
+                UnicodeDecodeError, ValueError):
+            pass
+        finally:
+            if fan is not None:
+                self.fans.discard(fan)
+                if fan.watch is not None:
+                    fan.watch.fans.discard(fan)
+            try:
+                writer.close()
+            except Exception:
+                pass
+
+    def fan_message(self, fan, data):
+        now = time.monotonic()
+        fan.seen = now
+        dt = now - fan.bucket_t
+        fan.bucket_t = now
+        fan.bucket = min(CROWD_MSG_RATE, fan.bucket + dt * CROWD_MSG_RATE)
+        fan.cheer_bucket = min(CROWD_CHEERS, fan.cheer_bucket + dt * CROWD_CHEERS)
+        if fan.bucket < 1:
+            return
+        fan.bucket -= 1
+        try:
+            msg = json.loads(data.decode('utf-8'))
+        except ValueError:
+            return
+        if not isinstance(msg, dict):
+            return
+        t = msg.get('t')
+        if t == 'watch':
+            if fan.watch is not None:
+                fan.watch.fans.discard(fan)
+                fan.watch = None
+            m = next((m for m in self.matches.values() if m.id == msg.get('id')), None)
+            if m is not None and m.info:
+                fan.watch = m
+                m.fans.add(fan)
+                self.send(fan, self.match_msg(m))
+            else:
+                self.send(fan, self.list_msg())
+        elif t == 'cheer' and fan.watch is not None:
+            side, n = msg.get('side'), msg.get('n', 1)
+            if side in (0, 1) and type(n) is int and n > 0:
+                n = min(n, int(fan.cheer_bucket))
+                fan.cheer_bucket -= n
+                fan.watch.cheers[side] += n
+        elif t == 'flag':
+            side = msg.get('side')
+            fan.flag, fan.flag_t = (side, now) if side in (0, 1) and type(side) is int else (-1, 0.0)
+
+    def send(self, fan, obj):
+        try:
+            if fan.writer.transport.get_write_buffer_size() > 65536:   # a stalled phone: skip it
+                return
+            fan.writer.write(ws_frame(json.dumps(obj, separators=(',', ':'))))
+        except Exception:
+            pass
+
+    def list_msg(self):
+        return {'t': 'list', 'm': [dict(m.info, fans=len(m.fans)) for m in self.matches.values() if m.info]}
+
+    def match_msg(self, m):
+        now = time.monotonic()
+        waves = [sum(1 for f in m.fans if f.flag == k and now - f.flag_t < 4.0) for k in range(2)]
+        return dict(m.info, t='m', fans=len(m.fans), h=[round(h) for h in m.hype], w=waves)
+
+    def tick(self, k):
+        """every CROWD_TICK: hype from the cheers, CROWD to each host, the match to its fans, the list every second"""
+        now = time.monotonic()
+        for m in list(self.matches.values()):
+            if now - m.seen > 5.0:            # the host stopped sending LIVE (left the arena)
+                self.host_gone(m.host)
+                continue
+            n = max(1, len(m.fans))
+            for s in range(2):
+                rate = m.cheers[s] / CROWD_TICK                         # cheers per second
+                target = 100.0 * (1.0 - math.exp(-rate / (3.0 + 1.5 * n)))
+                m.hype[s] += (target - m.hype[s]) * (0.5 if target > m.hype[s] else 0.1)
+                if m.hype[s] < 0.5:
+                    m.hype[s] = 0.0
+            mm = self.match_msg(m)
+            if m.fans or m.hype[0] or m.hype[1]:
+                self.relay.send(m.host.addr, CROWD, struct.pack('<3H2B2H', min(len(m.fans), 65535), min(m.cheers[0], 65535),
+                                                                min(m.cheers[1], 65535), round(m.hype[0]),
+                                                                round(m.hype[1]), mm['w'][0], mm['w'][1]))
+            m.cheers = [0, 0]
+            for f in list(m.fans):
+                self.send(f, mm)
+        for f in [f for f in self.fans if now - f.seen > CROWD_IDLE]:
+            try:
+                f.writer.close()
+            except Exception:
+                pass
+        if k % 2 == 0:
+            lst = self.list_msg()
+            for f in list(self.fans):
+                if f.watch is None:
+                    self.send(f, lst)
+
+
 REPORT_MAX = 200000
 REPORT_RATE = 20             # per address per hour
 
@@ -484,6 +785,10 @@ async def main():
     ap.add_argument('--bans', default='bans.txt', help='moderation: banned IP addresses and name:PLAYERNAME lines')
     ap.add_argument('--latest', default='latest_version.txt', help='the current release (e.g. 0.3.4): older games say UPDATE AVAILABLE')
     ap.add_argument('--stats', default='player_stats.db', help='player statistics (SQLite), keyed by each game\'s private key')
+    ap.add_argument('--crowd', default='', help='The Crowd: local WebSocket address for the phone web app '
+                    '(e.g. 127.0.0.1:47781, behind an HTTPS web server); off when empty')
+    ap.add_argument('--crowd-origin', action='append', default=[], help='The Crowd: web page origin allowed to connect '
+                    '(e.g. https://crowd.example.com; repeat for more; any when none)')
     ap.add_argument('--lag', type=float, default=0.0, help='testing: extra one-way delay per forwarded packet (ms)')
     ap.add_argument('--jitter', type=float, default=0.0, help='testing: up to this much more delay at random (ms)')
     ap.add_argument('--loss', type=float, default=0.0, help='testing: percent of forwarded packets dropped')
@@ -497,17 +802,29 @@ async def main():
     reports = Reports(args.reports, stamp, relay)
     await asyncio.start_server(reports.handle, args.bind, args.port)
     stamp('bug reports: TCP %s:%d -> %s' % (args.bind, args.port, os.path.abspath(args.reports)))
+    crowd = None
+    if args.crowd:
+        h, _, p = args.crowd.rpartition(':')
+        crowd = Crowd(relay, stamp, args.crowd_origin)
+        await asyncio.start_server(crowd.handle, h or '127.0.0.1', int(p), limit=16384)
+        stamp('the crowd: WebSocket %s (origins: %s)' % (args.crowd, ', '.join(args.crowd_origin) or 'any'))
     if args.lag or args.jitter or args.loss:
         stamp('TEST MODE: +%g ms lag, +0..%g ms jitter, %g%% loss on forwarded game packets' % (args.lag, args.jitter, args.loss))
-    k = 0
+    k, half = 0, 0
     while True:
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(CROWD_TICK)
+        half += 1
+        if crowd is not None:
+            crowd.tick(half)
+        if half % 4:
+            continue
         relay.sweep()
         k += 1
         if k % 43200 == 0 and relay.player_stats is not None:   # once a day (k counts 2 s steps)
             relay.player_stats.purge()
         if k % 15 == 0 and relay.by_addr:
-            stamp('%d online, forwarded %d, dropped %d' % (len(relay.by_addr), relay.stats['forwarded'], relay.stats['dropped']))
+            stamp('%d online, forwarded %d, dropped %d%s' % (len(relay.by_addr), relay.stats['forwarded'], relay.stats['dropped'],
+                                                          ', %d fans' % len(crowd.fans) if crowd is not None and crowd.fans else ''))
 
 
 if __name__ == '__main__':

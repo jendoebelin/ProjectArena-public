@@ -21,6 +21,8 @@ public:
     void pause();
     void resume();
     void play(const std::string& clip, float gain = 1.f, float pan = 0.f, bool loop = false);
+    // one looping clip at a volume that can change every frame (The Crowd's crowd sound); 0 stops it
+    void setLoop(const std::string& clip, float gain);
     // local: the listener's player index (HitPlayer names the victim, RoundEnd / MatchEnd the winner)
     void onEvent(const GameEvent& e, const Vec3& listener, int local = 0);
     void setVolume(float v) { volume_ = v < 0 ? 0 : v > 1 ? 1 : v; }   // master 0..1

@@ -93,7 +93,8 @@ public:
     void drawDepthBacking(const Mat4* quads, int n, GLuint depthTex, int layer, const Mat4& depthView, const Mat4& depthProj,
                           float nearZ, float farZ, const float rgba[4]);
     // a quad showing a texture: flipV for render targets (bottom-up), false for loaded images
-    void drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4], bool flipV = true);
+    // uv: a part of the texture (scale u, scale v, offset u, offset v; for loaded images), e.g. one strip of a flag
+    void drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4], bool flipV = true, const float* uv = nullptr);
 
     Model sphere, box, quad;
 

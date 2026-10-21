@@ -70,6 +70,22 @@ that). The relay logs `the same player is connected twice` when one key connects
 - Keep the server's security updates on (Ubuntu does this by itself with unattended-upgrades; check with
   `systemctl status unattended-upgrades`).
 
+## The Crowd (the fans' web page, optional)
+
+The relay can show live online matches on a phone web page where fans cheer (`server/crowd_web`). It needs a domain
+name and HTTPS:
+1. At your domain's DNS provider, add an **A record** for a name such as `crowd` pointing at the server's public IP.
+2. Oracle: in the instance's subnet > Default Security List, add two **Ingress Rules**: source `0.0.0.0/0`, TCP,
+   destination port `80`, and the same for `443`.
+3. Copy the files and run the setup (it installs Caddy, which gets and renews the certificate by itself, opens 80
+   and 443 in the server's firewall and restarts the relay with the page's address):
+   `scp -i oracle.key -r server/deploy/setup_crowd.sh server/crowd_web ubuntu@PUBLIC_IP:` then
+   `ssh -i oracle.key ubuntu@PUBLIC_IP "sudo sh setup_crowd.sh crowd.example.com"`.
+   Run `setup.sh` from this release first (it adds `--crowd 127.0.0.1:47781` to the relay's service).
+4. Open `https://crowd.example.com` on a phone. Updating the page later: run step 3 again.
+
+Fans are anonymous and nothing about them is stored (`docs/DATA_AND_SECURITY.md`). Caddy writes no access log.
+
 ## Any other Ubuntu server
 
 Same steps 5 and 6 (Hetzner, DigitalOcean, Vultr, a Raspberry Pi at home with a port forward...). Open UDP and TCP

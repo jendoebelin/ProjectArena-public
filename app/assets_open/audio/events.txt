@@ -26,3 +26,5 @@ Strike oa_Strike
 Overtime oa_Overtime
 FistBump oa_FistBump
 Ambience oa_Ambience
+Crowd oa_Crowd
+Cheer oa_Cheer

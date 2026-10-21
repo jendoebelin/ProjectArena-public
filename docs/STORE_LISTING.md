@@ -112,6 +112,8 @@ and wording, which Meta changes from time to time:
   No Meta user ID, device ID or advertising ID is collected.
 - **User content:** the player name the user types (public in the game). Voice chat is real-time and **not stored**.
 - **App activity / gameplay:** match statistics (public in the game), with first / last seen times for abuse checks.
+  From 0.3.7: an online host's live match (player names, countries, score) is shown on the public web page The Crowd
+  while the arena is open; not stored.
 - **Diagnostics:** bug reports and player reports with the game's recent log, **only when the user sends one**.
 - **Network:** IP addresses are processed to connect players and are kept only inside reports and the ban list.
 - **Not collected:** name, email, location, contacts, photos, payment, health, fitness or body data; passthrough

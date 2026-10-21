@@ -20,6 +20,9 @@ checklist, `docs/RELEASE_CHECKLIST.md`, says when). Last reviewed: 20 October 20
 | Votes to remove (REPORT PLAYER > VOTE TO REMOVE) | The arena host's game, in memory only | The host's game; a notice to the host | Until the host leaves its arena (never written anywhere) | Who voted against whom; a removed player's session, virtual address and name, so the host can turn them away for the rest of that session |
 | IP addresses | Seen by the server for every connection | The operator (never shown to players) | Not stored, except inside reports and the ban list | Players see only virtual addresses |
 | Voice | Forwarded live between players in a room | The people in that room | **Never stored** | Push-to-talk by default; mutes for spectators, players, everyone, one person |
+| Live match (The Crowd, 0.3.7+) | Sent by an online host to the official server every second; shown on the public web page crowd.aftersparc.com | **Anyone** with the page | In memory only, while the arena is open | The host's name, the tank players' names, countries or end colours, score, rules, clock |
+| Fans' cheers, waved flags, fan count | The official server, in memory; counts sent to the arena host, which passes them to its room and spectators | The players and spectators of that arena (counts only) | Never stored | Fans are anonymous (no sign-in, name or account); the fan score stays on the phone (browser storage) |
+| Fans' IP addresses | Seen by the web server (Caddy) and the relay for each connection | Nobody | Not stored or logged (no access log; used in memory to cap 10 connections per address) | |
 | Passthrough camera images, room depth | The headset only | Nobody | Never stored or sent | The game never receives camera images |
 
 Nothing else is collected: no accounts, no email, no real names, no Meta account data, no location, no analytics or
@@ -60,6 +63,16 @@ advertising identifiers.
 - Ubuntu's unattended security updates (check: `systemctl status unattended-upgrades`).
 - Backups of the statistics table and its salt are taken together and encrypted (`docs/SERVER_SETUP.md`).
 - `.gitignore` keeps statistics tables, salts, keystores and local server settings out of the repository.
+
+**The Crowd (web)**
+- HTTPS only (Caddy, automatic Let's Encrypt certificates, HSTS); the relay's WebSocket port listens on 127.0.0.1
+  only, behind Caddy.
+- The relay accepts the live connection only from The Crowd's own page (Origin check), at most 2000 fans and 10 per
+  address, 20 messages a second per fan (cheers counted at most 8 a second), messages of at most 512 bytes, idle
+  connections closed after 90 s.
+- Strict Content-Security-Policy (the page loads only its own files; no third-party scripts, fonts or trackers),
+  no cookies, no access log.
+- Fans see a random match id, never a host's address (virtual or real).
 
 ## 3. Known gaps (accepted for now)
 

@@ -1,6 +1,6 @@
 # Project Arena privacy policy
 
-_Last updated: 20 October 2026. Contact: vrsportsfan@gmail.com._
+_Last updated: 21 October 2026. Contact: vrsportsfan@gmail.com._
 
 Project Arena is a free, open-source VR game. This policy explains what the game and the community servers do with
 information about you.
@@ -88,6 +88,22 @@ the player name you used, and when you were first and last seen.
   its folder on PC) makes a new player key, so a reinstalled game starts new statistics; ask
   vrsportsfan@gmail.com to remove old ones.
 - Statistics are kept until you delete them, or for 24 months after you were last seen.
+
+## The Crowd (live matches on the web, from version 0.3.7)
+
+When you host an **online** arena, the official server shows your match on The Crowd, a public web page
+(crowd.aftersparc.com) where anyone can follow live matches and cheer:
+- what it shows: the host's player name, the two tank players' names, their countries (COUNTRY FLAG) or end colours,
+  the score, the rules and the clock;
+- it is **live only**: nothing about the match is stored for the page, and a match leaves the page when its arena
+  closes;
+- the fans' cheers, waved flags and how many fans watch come back to the arena (a crowd sound, the lights at the
+  ends, the screen over the court). They are counts only: nobody in the arena sees who the fans are.
+
+**Fans on The Crowd** use it anonymously: no sign-in, no name, no account. The server keeps a fan's connection in
+memory only while the page is open, and uses the phone's IP address only to limit how many connections one address
+can open; it is not written to any log or file. The web server keeps no access log. The fan score ("call it") is
+kept on the phone only. The page sets no cookies and uses no analytics or advertising.
 
 ## Community servers
 
