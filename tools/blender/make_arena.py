@@ -187,7 +187,17 @@ def build_environment(b):
             yc = -5.7 + k * 3.8
             b.card('slats', (x, yc, 1.9), (0, -side, 0), (0, 0, 1), 3.5, 3.4, uv=((0, 0), (2.2, 0), (2.2, 1), (0, 1)))
 
-    # stands rising behind and above the galleries, with a crowd and their lights
+    # stands rising behind and above the galleries, with a crowd and their lights.
+    # Aisles (owner, 2026-10-21: "stairs through the stands showing how the fans got to their seats"): along each side
+    # stand at SIDE_AISLES (x), across each end stand at END_AISLES (y); nobody sits in them (the random draws are made
+    # as before, so everyone else keeps their seat, height and light)
+    SIDE_AISLES, END_AISLES, AISLE_W = (-10.0, -3.5, 3.5, 10.0), (-4.0, 4.0), 1.2
+
+    def in_aisle(p):
+        if abs(p.y) > 8.0 and abs(p.x) < 14.0:   # a side stand: aisles along x
+            return any(abs(p.x - a) < AISLE_W * 0.5 + 0.12 for a in SIDE_AISLES)
+        return any(abs(p.y - a) < AISLE_W * 0.5 + 0.12 for a in END_AISLES)
+
     def seat_row(p0, p1, z, facing, twinkle_team):
         n = max(2, int((Vector(p1) - Vector(p0)).length / 0.62))
         for i in range(n):
@@ -195,18 +205,38 @@ def build_environment(b):
                 continue
             p = Vector(p0).lerp(Vector(p1), (i + 0.5) / n)
             hgt = 0.48 + rnd.random() * 0.12
+            light = rnd.random() < 0.33
+            lift = rnd.random() if light else 0.0
+            u = rnd.random() if light else 0.0
+            tw = rnd.random() if light else 0.0
+            if in_aisle(p):
+                continue
             f = Vector(facing)
             body_c = p + Vector((0, 0, z + hgt / 2 + 0.05))
             b.box('crowd', body_c, (0.36 if abs(f.y) > 0.5 else 0.30, 0.30 if abs(f.y) > 0.5 else 0.36, hgt))
             b.sphere('crowd', body_c + Vector((0, 0, hgt / 2 + 0.11)), 0.095, segs=6, rings=4, smooth=True)
-            if rnd.random() < 0.33:
-                lc = body_c + f * 0.2 + Vector((0, 0, hgt / 2 + rnd.random() * 0.35))
-                u = rnd.random()
-                tw = rnd.random()
+            if light:
+                lc = body_c + f * 0.2 + Vector((0, 0, hgt / 2 + lift * 0.35))
                 mat = 'twinkle_' + (twinkle_team if tw < 0.7 else 'w')
                 up = Vector((0, 0, 1))
                 side_ax = f.cross(up)
                 b.card(mat, lc, side_ax, up, 0.06, 0.06, uv=((u, 0), (u, 0), (u, 1), (u, 1)), double=True)
+
+    def stairs(along_x, a, c, k, side, tone):
+        """one tier's stairs in an aisle: a tinted tread over the tier and a half step at its back (0.31 m up, half
+        of the next tier's 0.62), so the aisle climbs in even steps; a light edge on each step's nose"""
+        top = 4.2 + k * 0.62
+        d = 0.95
+        if along_x:   # a side stand: the aisle runs outward along y at x = a; c = the tier's centre (y)
+            b.box('stairs_' + tone, (a, c, top + 0.012), (AISLE_W, d, 0.024))
+            b.box('stairs_' + tone, (a, c + side * d / 4, top + 0.155), (AISLE_W, d / 2, 0.31))
+            b.box('stairs_edge_' + tone, (a, c - side * (d / 2 - 0.015), top + 0.026), (AISLE_W, 0.03, 0.012))
+            b.box('stairs_edge_' + tone, (a, c + side * 0.015, top + 0.312), (AISLE_W, 0.03, 0.012))
+        else:         # an end stand: the aisle runs outward along x at y = a; c = the tier's centre (x)
+            b.box('stairs_' + tone, (c, a, top + 0.012), (d, AISLE_W, 0.024))
+            b.box('stairs_' + tone, (c + side * d / 4, a, top + 0.155), (d / 2, AISLE_W, 0.31))
+            b.box('stairs_edge_' + tone, (c - side * (d / 2 - 0.015), a, top + 0.026), (0.03, AISLE_W, 0.012))
+            b.box('stairs_edge_' + tone, (c + side * 0.015, a, top + 0.312), (0.03, AISLE_W, 0.012))
 
     tiers = 9
     for side in (-1, 1):
@@ -218,6 +248,8 @@ def build_environment(b):
             b.box('stand_edge', (0, y - side * 0.47, z - 0.02), (length, 0.04, 0.04))
             seat_row((-length / 2 + 0.6, y + side * 0.1, 0), (length / 2 - 0.6, y + side * 0.1, 0), z,
                      (0, -side, 0), 't0' if rnd.random() < 0.5 else 't1')
+            for i, a in enumerate(SIDE_AISLES):
+                stairs(True, a, y, k, side, 'b' if i % 2 == 0 else 'p')
         b.box('structure', (0, side * (8.4 + tiers * 0.95 + 0.3), 4.2 + tiers * 0.62 / 2), (36.0, 0.4, tiers * 0.62 + 1.0))
     for side in (-1, 1):
         team = 't0' if side < 0 else 't1'
@@ -228,6 +260,8 @@ def build_environment(b):
             b.box('stand', (x, 0, z - 0.25), (0.95, width, 0.5), bevel=0.02)
             b.box('stand_edge', (x - side * 0.47, 0, z - 0.02), (0.04, width, 0.04))
             seat_row((x + side * 0.1, -width / 2 + 0.6, 0), (x + side * 0.1, width / 2 - 0.6, 0), z, (-side, 0, 0), team)
+            for i, a in enumerate(END_AISLES):
+                stairs(False, a, x, k, side, 'p' if i % 2 == 0 else 'b')
 
     # overhead rig: truss ring with spotlights and a four-sided screen above centre court
     zr = 9.0

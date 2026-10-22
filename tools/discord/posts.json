@@ -1,0 +1,48 @@
+[
+  {
+    "channel": "how-to-join",
+    "title": "How to join Project Arena",
+    "color": "#1ab3ff",
+    "image": "title.png",
+    "text": "**Project Arena** is a free VR sport: throw your ball past your opponent's shield, block theirs, and play for your country.\n\n**On Meta Quest**\n1. Open this link on your phone or computer, signed in to the Meta account your headset uses:\n   **https://www.meta.com/s/4NDP5YlGM**\n2. Accept the invite.\n3. In the headset, open **Library** and install **Project Arena**.\n\n**On a PC VR headset**, or to watch on a PC without a headset:\n   download the PC version from **https://github.com/jendoebelin/ProjectArena-public/releases**\n\nThe alpha needs everyone on the newest version: if the game says **UPDATE AVAILABLE**, update it in your Library."
+  },
+  {
+    "channel": "how-to-join",
+    "title": "Your first match",
+    "color": "#1ab3ff",
+    "text": "**Practice:** MAIN MENU > **PLAY PRACTICE** > pick the rules. You play the bot.\n\n**Online:** MAIN MENU > **MULTIPLAYER**, check it says **ONLINE: ON**, then\n- **HOST A ROOM** to open your own arena (others can join you), or\n- pick an arena in the list to join it.\n\nWaiting outside the tank? Press **JOIN QUEUE** to play next.\n\n**Rules:** BASIC is a timed match. ADVANCED is best of three rounds, first to 4 points.\n**Talk:** hold the left grip (push to talk).\n**Help in the game:** MENU > **HOW TO PLAY**.\n\nLooking for someone to play? Post in **#looking-for-match**."
+  },
+  {
+    "channel": "the-crowd",
+    "title": "The Crowd: cheer from your phone",
+    "color": "#ff6a1a",
+    "image": "action.png",
+    "text": "Follow any online match live on your phone, no app or sign-in needed:\n**https://crowd.aftersparc.com**\n\n1. Open the link on your phone (Android or iPhone). Live matches show up by themselves.\n2. Tap a match to see the score, the clock, both players' flags and their stats.\n3. Tap **CHEER** for a side, as fast as you like. Turn on **SHAKE TO CHEER** to cheer by shaking your phone.\n4. **WAVE FLAG** puts your side's flag up in the stands.\n5. **CALL IT**: guess who scores next to earn fan points.\n\nThe players hear you: the crowd gets louder, their end's lights flash, and hearts and stars burst from the stands.\nTip: add the page to your home screen to open it like an app."
+  },
+  {
+    "channel": "bug-reports",
+    "title": "How to report a bug",
+    "color": "#ffd34d",
+    "image": "bug.png",
+    "text": "**Best way: report it in the game, right after it happens.**\nMENU > **REPORT A BUG** > pick what kind of problem > add a short note > **SEND REPORT**.\nIt sends your note, your settings and the game's recent log, which shows us what went wrong. Nothing else.\n\n**Or post it here.** Please include:\n- what happened, and what you expected\n- Quest or PC, and your game version (bottom of the main menu)\n- a picture or clip if you have one\n\n**On GitHub:** https://github.com/jendoebelin/ProjectArena-public/issues\n\nGood ideas get credited by name in the release notes."
+  },
+  {
+    "channel": "streaming",
+    "title": "Streaming Project Arena (OBS)",
+    "color": "#a46bff",
+    "text": "The PC version can draw **only the players and balls, with nothing behind them**, so you can put any background behind them in OBS.\n\n1. Start the spectator: `ProjectArena.exe --spectate --layer 3`, or press **V** in the spectator window until the view is **KEY**.\n2. In OBS, add a **Game Capture**: Capture specific window > **Project Arena - Spectator**, and tick **Allow Transparency**.\n3. Put a background under it: a picture, a video, or one from the streaming kit.\n\n**Streaming kit** (backgrounds, camera guides and the full guide): the streaming-kit zip on\n**https://github.com/jendoebelin/ProjectArena-public/releases**\n\nIn the spectator window, **F1** shows all the controls. An Xbox or PlayStation controller works too."
+  },
+  {
+    "channel": "announcements",
+    "title": "Project Arena 0.3.7: THE CROWD",
+    "color": "#4dffa6",
+    "image": "action.png",
+    "text": "Fans can now follow online matches live on their phones at **https://crowd.aftersparc.com**: the score, flags, live stats and careers.\n\nEvery cheer reaches the arena: a crowd that gets louder, flashing end lights, hearts and stars bursting from the stands, and a flag in the stands for every fan waving one.\n\nAlso new: **SETTINGS > CROWD** to turn the crowd down or off, and strikes now count in your stats.\n\n**Join the alpha:** https://www.meta.com/s/4NDP5YlGM\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases\nBugs > **#bug-reports** | Ideas > **#feedback-and-ideas**"
+  },
+  {
+    "channel": "quest-board",
+    "title": "The Quest Board",
+    "color": "#ff4d6a",
+    "text": "What we are working on and looking at, thanks to your reports and ideas.\n\n**Coming in 0.3.8**\n- **Host match options:** shields on or off (HOTDOG MODE), knuckle guards on or off, match time (including no limit), round timers for Advanced\n- Hosts can remove a player from their arena\n- Smooth turning (a setting, for players and spectators)\n- A foul ball bounces back instead of dissolving\n- SAVE AND APPLY in the avatar builder\n- Push-to-talk that suits each controller (Index, Vive, Windows Mixed Reality)\n- Smoother frame times\n\n**On the board** (we are looking at these)\n- Body turning, ducking and bending when you dodge; smoother bot movement\n- A country banner separate from your outfit\n- The arena's look: darker floor and frame, a sky\n\nGot an idea? Post it in **#feedback-and-ideas**."
+  }
+]

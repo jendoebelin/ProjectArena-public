@@ -77,6 +77,13 @@ P = {
     # ---------------------------------------------------------------- stadium
     'stand':          dict(kind='lit', albedo=(0.09, 0.10, 0.12), f0=(0.05, 0.05, 0.05), gloss=0.2),
     'stand_edge':     dict(kind='lit', albedo=(0.30, 0.32, 0.35), f0=(0.5, 0.52, 0.56), gloss=0.7),
+    # the aisles' stairs through the stands (owner, 2026-10-21): slightly tinted, with light step edges
+    # (owner: "a little more visible ... pinks and blues but subtle": the aisles alternate a soft blue and a soft pink,
+    # with a gentle glow on each step's edge)
+    'stairs_b':       dict(kind='lit', albedo=(0.16, 0.24, 0.42), f0=(0.06, 0.07, 0.10), gloss=0.3),
+    'stairs_p':       dict(kind='lit', albedo=(0.40, 0.18, 0.32), f0=(0.10, 0.06, 0.08), gloss=0.3),
+    'stairs_edge_b':  dict(kind='emit', color=(0.35, 0.65, 1.0), strength=0.9, show=(0.12, 0.24, 0.42)),
+    'stairs_edge_p':  dict(kind='emit', color=(1.0, 0.45, 0.80), strength=0.9, show=(0.40, 0.16, 0.30)),
     'seat':           dict(kind='lit', albedo=(0.05, 0.055, 0.065), f0=(0.04, 0.04, 0.04), gloss=0.2),
     'crowd':          dict(kind='lit', albedo=(0.06, 0.06, 0.07), f0=(0.04, 0.04, 0.04), gloss=0.1),
     'dais':           dict(kind='lit', albedo=(0.06, 0.065, 0.075), f0=(0.3, 0.32, 0.35), gloss=0.6),

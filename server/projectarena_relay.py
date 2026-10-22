@@ -28,6 +28,8 @@ Player statistics (2026-10-20; relays and games from 0.3.6 on, older ones never 
   DELETE  14  player -> server  (no body) delete this player's statistics (the player's KEY says whose)
   MYSTATS 15  player -> server  (no body) the player's own career: answered with STATS for host 0xFFFFFFFF, the
                                 player in slot 0 (the game's MY STATS page)
+  MATCH from 0.3.8 hosts has one more byte (34 in all): the match's mode, 0 standard rules, 1 HOTDOG (no shields),
+  2 other custom MATCH OPTIONS. Careers count every mode; the table player_modes keeps each mode apart as well.
   STATSREQ 11 any -> server     body: a host's virtual address
   STATS   12  server -> asker   body: that host's virtual address (u32), then for slot 0 and 1: known (u8), name
                                 (16), matches, wins, throws, on target, hits, blocks, faced, catches (8 x u32),
@@ -86,6 +88,7 @@ GAME_MAGIC = 0x43525053     # 'SPRC' (the game's LAN packets)
 HELLO, WELCOME, SEND, PING, BYE, DELIVER, ERROR = 1, 2, 3, 4, 5, 6, 7
 KEY, TANK, MATCH, STATSREQ, STATS, CONFIRM, DELETE, MYSTATS = 8, 9, 10, 11, 12, 13, 14, 15
 LIVE, CROWD = 16, 17
+MODE_NAMES = ('standard', 'hotdog', 'custom')   # MATCH's mode byte (0.3.8)
 SELF = 0xFFFFFFFF           # STATS for MYSTATS: "host" SELF, slot 0 = the asker
 CONFIRM_WINDOW = 60.0       # seconds: a host's result and the other player's confirmation must meet within this
 STAT_FIELDS = ('matches', 'wins', 'throws', 'on_target', 'hits', 'blocks', 'faced', 'catches')
@@ -139,6 +142,9 @@ class Stats:
         self.db.execute('CREATE TABLE IF NOT EXISTS players (key TEXT PRIMARY KEY, name TEXT, ' +
                         ', '.join('%s INTEGER DEFAULT 0' % f for f in STAT_FIELDS) +
                         ', top_speed INTEGER DEFAULT 0, first_seen INTEGER, last_seen INTEGER)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS player_modes (key TEXT, mode INTEGER, ' +
+                        ', '.join('%s INTEGER DEFAULT 0' % f for f in STAT_FIELDS) +
+                        ', top_speed INTEGER DEFAULT 0, PRIMARY KEY (key, mode))')
         self.db.commit()
         self.purge()
         n = self.db.execute('SELECT COUNT(*) FROM players').fetchone()[0]
@@ -147,23 +153,34 @@ class Stats:
     def purge(self, months=24):
         """The privacy policy's promise: statistics go after 24 months unseen (at start and once a day)."""
         n = self.db.execute('DELETE FROM players WHERE last_seen < ?', (int(time.time()) - months * 30 * 86400,)).rowcount
+        self.db.execute('DELETE FROM player_modes WHERE key NOT IN (SELECT key FROM players)')
         self.db.commit()
         if n:
             self.log('stats: %d players unseen for %d months removed' % (n, months))
 
-    def add(self, key, name, won, counts, top):
+    def add(self, key, name, won, counts, top, mode=0):
         t = int(time.time())
         self.db.execute('INSERT OR IGNORE INTO players (key, name, first_seen, last_seen) VALUES (?, ?, ?, ?)', (key, name, t, t))
         sets = ', '.join('%s = %s + ?' % (f, f) for f in STAT_FIELDS)
+        vals = (1, 1 if won else 0) + tuple(counts)
         self.db.execute('UPDATE players SET name = ?, last_seen = ?, top_speed = MAX(top_speed, ?), ' + sets + ' WHERE key = ?',
-                        (name, t, top, 1, 1 if won else 0) + tuple(counts) + (key,))
+                        (name, t, top) + vals + (key,))
+        self.db.execute('INSERT OR IGNORE INTO player_modes (key, mode) VALUES (?, ?)', (key, mode))
+        self.db.execute('UPDATE player_modes SET top_speed = MAX(top_speed, ?), ' + sets + ' WHERE key = ? AND mode = ?',
+                        (top,) + vals + (key, mode))
         self.db.commit()
+
+    def modes(self, key):
+        """a player's statistics by mode: {mode: (matches, wins, ..., top_speed)}"""
+        return {r[0]: r[1:] for r in self.db.execute('SELECT mode, ' + ', '.join(STAT_FIELDS) + ', top_speed FROM player_modes '
+                                                       'WHERE key = ?', (key,))}
 
     def ident(self, raw):
         """The stored id for a player's key: a salted hash, so a copy of the table can't be used to act as anyone."""
         return hmac.new(self.salt, raw, hashlib.sha256).hexdigest()
 
     def delete(self, key):
+        self.db.execute('DELETE FROM player_modes WHERE key = ?', (key,))
         n = self.db.execute('DELETE FROM players WHERE key = ?', (key,)).rowcount
         self.db.commit()
         return n
@@ -373,6 +390,7 @@ class Relay(asyncio.DatagramProtocol):
             winner = body[0]
             rows = [struct.unpack_from('<7H', body, 1 + 14 * k) for k in range(2)]
             score = tuple(body[29:33])
+            mode = body[33] if len(body) >= 34 and body[33] <= 2 else 0   # (0.3.8: the match's mode)
             players = [self.by_vip.get(v) for v in c.tank]
             if winner > 1 or any(p is None or p.key is None for p in players) or players[0].key == players[1].key:
                 return
@@ -382,7 +400,7 @@ class Relay(asyncio.DatagramProtocol):
                     self.log('stats: result from %s refused (%s)' % (c.name, r))
                     return
             c.last_match = now
-            self.pending[c.vip] = dict(t=now, host=c, winner=winner, score=score, rows=rows,
+            self.pending[c.vip] = dict(t=now, host=c, winner=winner, score=score, rows=rows, mode=mode,
                                        keys=[p.key for p in players], names=[p.name for p in players])
             self.settle(c.vip, now)
         elif ptype == CONFIRM and len(body) >= 9:
@@ -429,8 +447,10 @@ class Relay(asyncio.DatagramProtocol):
         st = self.player_stats
         for k in range(2):
             throws, on_target, hits, blocks, faced, catches, top = p['rows'][k]
-            st.add(p['keys'][k], p['names'][k], k == p['winner'], (throws, on_target, hits, blocks, faced, catches), top)
-        self.log('stats: %s beat %s (host %s, confirmed)' % (p['names'][p['winner']], p['names'][1 - p['winner']], p['host'].name))
+            st.add(p['keys'][k], p['names'][k], k == p['winner'], (throws, on_target, hits, blocks, faced, catches), top,
+                   p.get('mode', 0))
+        self.log('stats: %s beat %s (host %s, confirmed, %s)' % (p['names'][p['winner']], p['names'][1 - p['winner']],
+                                                                 p['host'].name, MODE_NAMES[p.get('mode', 0)]))
 
     def sweep(self):
         now = time.monotonic()
@@ -510,7 +530,8 @@ class Crowd:
             m = self.matches[c.vip] = LiveMatch(c)
         m.seen = m.live_t = now
         m.info = {'id': m.id, 'host': c.name, 'st': st, 's': [p0, p1, r0, r1], 'adv': bool(flags & 1),
-                  'bot': bool(flags & 2), 'clock': clock / 10.0,
+                  'bot': bool(flags & 2), 'clock': clock / 10.0, 'hotdog': bool(flags & 4), 'free': bool(flags & 8),
+                  'kg': bool(flags & 16), 'rt': bool(flags & 32),
                   'p': [{'n': names[k], 'nat': (n0, n1)[k], 'c': '#%02x%02x%02x' % tuple(rgb[3 * k:3 * k + 3])}
                         for k in range(2)]}
         if len(body) >= 82:   # this match so far (0.3.7)
@@ -553,6 +574,9 @@ class Crowd:
                 r = st_db.get(p.key) if p is not None and p.key else None
                 m.career[k] = None if r is None else {'matches': r[1], 'wins': r[2], 'throws': r[3], 'on': r[4],
                                                       'blocks': r[6], 'faced': r[7], 'top': round(r[9] * 0.036)}
+                if r is not None:
+                    m.career[k]['modes'] = {MODE_NAMES[md]: {'matches': v[0], 'wins': v[1]}
+                                            for md, v in st_db.modes(p.key).items() if md < len(MODE_NAMES)}
         for k in range(2):
             if m.career[k] is not None:
                 m.info['p'][k]['car'] = m.career[k]

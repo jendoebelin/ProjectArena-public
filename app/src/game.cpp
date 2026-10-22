@@ -188,7 +188,7 @@ void Game::reset(bool player1IsBot) {
     meetBumped = false;
     round = 0;
     overtime = false;
-    roundClock = tun.basicMatchTime;
+    roundClock = tun.advanced ? tun.advancedRoundTime : tun.basicMatchTime;
     lastRoundWinner = matchWinner = -1;
     events.clear();
 }
@@ -205,6 +205,7 @@ void Game::spawnBall(int p) {
     b.scored = false;
     b.rechargePending = false;
     b.bounces = 0;
+    b.fouled = b.homing = false;
     b.scale = strikeScale(pl[1 - p].strikesAgainst);
 }
 
@@ -232,6 +233,7 @@ void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin) {
     b.rechargePending = true;      // "To recharge your ball, you must throw it past your foul line"
     b.bounces = 0;
     b.timer = 0;
+    b.fouled = b.homing = false;
     emit(EventType::Throw, p, h, b.pos, b.speedLimit);
 }
 
@@ -335,13 +337,17 @@ void Game::scorePoint(int scorer, const Vec3& where) {
             match = MatchState::MatchSummary;
             emit(EventType::MatchEnd, scorer, -1, {}, 0);
         }
-    } else if (pl[scorer].score >= tun.advancedPointsToWin) {
-        lastRoundWinner = scorer;
-        pl[scorer].roundWins++;
-        match = MatchState::RoundSummary;
-        stateTimer = tun.roundSummaryTime;
-        emit(EventType::RoundEnd, scorer, -1, {}, float(round));
+    } else if (overtime || pl[scorer].score >= tun.advancedPointsToWin) {   // (overtime: a timed round's sudden death)
+        endRound(scorer);
     }
+}
+
+void Game::endRound(int scorer) {
+    lastRoundWinner = scorer;
+    pl[scorer].roundWins++;
+    match = MatchState::RoundSummary;
+    stateTimer = tun.roundSummaryTime;
+    emit(EventType::RoundEnd, scorer, -1, {}, float(round));
 }
 
 void Game::addStrike(int against, const Vec3& where) {
@@ -398,14 +404,32 @@ void Game::stepBall(int p, float dt) {
     }
 
     b.timer += dt;
+    if (b.homing) {   // a fouled ball on its way home after its bounce off the wall
+        const Vec3 d = idlePoint(p) - b.pos;
+        if (length(d) < 0.35f || b.timer > 6.f) {
+            b.state = BallState::Idle;
+            b.homing = b.fouled = false;
+            b.vel = b.vel * 0.3f;
+            b.spin = {};
+            return;
+        }
+        // a magnetic pull: the velocity swings toward home (a curve, not a sharp turn) at the return speed
+        const Vec3 want = normalize(d) * tun.foulReturnSpeed;
+        b.vel += (want - b.vel) * std::min(1.f, dt * 7.f);
+    }
     // a short throw goes home: not yet past the owner's foul line, and slow, heading back, or taking too long
     if (b.state == BallState::Flying && b.instigator == p && b.rechargePending) {
         const bool behind = p == 0 ? b.pos.x < -tun.foulLineX : b.pos.x > tun.foulLineX;
         const float forward = p == 0 ? b.vel.x : -b.vel.x;   // toward the opponent
         if (behind && (b.speedLimit < tun.recallSpeed || forward < 0 || b.timer > tun.recallTime)) {
-            b.state = BallState::Idle;   // the spawner's damped spring brings it back
+            b.state = BallState::Returning;   // drawn home by the same magnetic pull as a foul
             b.heldHand = -1;
             b.spin = {};
+            b.scored = true;
+            b.homing = true;
+            b.rechargePending = false;
+            b.timer = 0;
+            b.speedLimit = tun.foulReturnSpeed;
             emit(EventType::ThrowFail, p, -1, b.pos, length(b.vel));
             return;
         }
@@ -496,11 +520,46 @@ void Game::stepBall(int p, float dt) {
                 bool own = (zoneTeam >= 0 && zoneTeam == b.instigator);   // team gating
                 bool returning = b.state == BallState::Returning;
                 if ((tags & TAG_FOUL) && own && !returning) {
-                    // DMTE_HitFoulZone: ball dissolves. Deflecting the opponent's ball into your own foul zone
-                    // gives them a strike.
+                    // a foul. Deflecting the opponent's ball into your own foul zone gives them a strike.
+                    // The original dissolved the ball; here (owner, 2026-10-21) it stays in the arena: a ball that never
+                    // crossed its owner's foul line springs straight back to its float position; one that did bounces on,
+                    // off the wall it is heading for, and flies home, harmless (it can't hit or score; its owner can catch it)
                     emit(EventType::Foul, b.instigator, -1, hp, float(zoneTeam));
                     if (b.instigator != p) addStrike(b.instigator, hp);
-                    spawnBall(p);
+                    if (b.instigator == p && b.rechargePending) {   // bounce off, then drawn home (owner: faster, magnetic)
+                        b.state = BallState::Returning;
+                        b.heldHand = -1;
+                        b.spin = {};
+                        b.rechargePending = false;
+                        b.scored = true;
+                        b.fouled = false;
+                        b.homing = true;
+                        b.timer = 0;
+                        b.speedLimit = tun.foulReturnSpeed;
+                        b.vel = (b.vel - hn * (2 * dot(b.vel, hn))) * 0.6f;
+                        b.pos = hp + hn * 0.01f;
+                        return;
+                    }
+                    b.state = BallState::Returning;
+                    b.instigator = p;
+                    b.rechargePending = false;
+                    b.scored = true;
+                    b.fouled = true;
+                    b.homing = false;
+                    b.timer = 0;
+                    b.speedLimit = std::max(12.f, std::min(b.speedLimit, tun.foulReturnSpeed));
+                    b.vel = normalize(b.vel - hn * (2 * dot(b.vel, hn))) * b.speedLimit;   // bounce off the floor
+                    b.pos = hp + hn * 0.01f;
+                    return;
+                }
+                if (b.fouled && std::fabs(hn.y) < 0.7f) {   // the wall it was heading for: bounce, then home
+                    b.fouled = false;
+                    b.homing = true;
+                    b.timer = 0;
+                    b.speedLimit = tun.foulReturnSpeed;
+                    b.pos = hp + hn * 0.01f;
+                    b.vel = normalize(idlePoint(p) - b.pos) * b.speedLimit;
+                    emit(EventType::Bounce, p, -1, hp, 0.f);
                     return;
                 }
                 if (tags & TAG_RETURN) {
@@ -599,10 +658,10 @@ void Game::stepPlayer(int p, float dt) {
         }
         holding = (b.state == BallState::Held && b.heldHand == h);
         // "To activate your shield, you must first hold a charged ball."
-        hs.shieldUp = hi.tracked && holding && b.charged;
+        hs.shieldUp = hi.tracked && holding && b.charged && tun.shields;   // (MATCH OPTIONS: shields off = HOTDOG MODE)
         // in Basic the gauntlet bumpers are always active, trigger or not. (The tutorial line "Pulling the trigger will
         // deactivate the knuckle guard on that hand" belongs to the tutorial's own setup, not Brawl Basic.)
-        hs.knuckleUp = !tun.advanced && hi.tracked;
+        hs.knuckleUp = tun.knuckleGuards() && hi.tracked;   // (MATCH OPTIONS can turn them on or off in either rules)
         hs.prevTrigger = hi.trigger;
     }
 }
@@ -644,8 +703,8 @@ void Game::stepBot(int p, float dt) {
     bool holding = b.state == BallState::Held;
     int blockHand = -1;
     if (incoming && s.botWillBlock && now - s.botNoticeT > tun.botReaction) {
-        if (holding && b.charged) blockHand = b.heldHand;                 // raise the shield arm
-        else if (!tun.advanced) blockHand = holding ? 1 - b.heldHand : 0;  // punch with a knuckle guard
+        if (holding && b.charged && tun.shields) blockHand = b.heldHand;            // raise the shield arm
+        else if (tun.knuckleGuards()) blockHand = holding ? 1 - b.heldHand : 0;   // punch with a knuckle guard
     }
     if (holding) {
         HandInput& hi = s.in.hand[b.heldHand];
@@ -713,7 +772,7 @@ void Game::startCountdown() {
     match = MatchState::Countdown;
     stateTimer = tun.countdown;
     round = 1;
-    roundClock = tun.basicMatchTime;
+    roundClock = tun.advanced ? tun.advancedRoundTime : tun.basicMatchTime;
     overtime = false;
     emit(EventType::Countdown, -1, -1, {}, tun.countdown);
 }
@@ -775,16 +834,21 @@ void Game::stepMatch(float dt) {
         break;
     }
     case MatchState::InProgress:
-        if (!tun.advanced && !overtime) {
+        // the clock: Basic's match time (none in FREE PLAY), Advanced's round time when the host set one
+        if (tun.timed() && !overtime) {
             roundClock -= dt;
             if (roundClock <= 0) {
                 roundClock = 0;
                 if (pl[0].score != pl[1].score) {
-                    matchWinner = pl[0].score > pl[1].score ? 0 : 1;
-                    match = MatchState::MatchSummary;
-                    emit(EventType::MatchEnd, matchWinner, -1, {}, 0);
+                    const int w = pl[0].score > pl[1].score ? 0 : 1;
+                    if (tun.advanced) endRound(w);   // the round goes to the one ahead
+                    else {
+                        matchWinner = w;
+                        match = MatchState::MatchSummary;
+                        emit(EventType::MatchEnd, matchWinner, -1, {}, 0);
+                    }
                 } else {
-                    overtime = true;   // "Sudden death overtime on a tie"
+                    overtime = true;   // "Sudden death overtime on a tie" (and a timed round's tie: the next point)
                     emit(EventType::Overtime, -1, -1, {}, 0);
                 }
             }
@@ -802,6 +866,8 @@ void Game::stepMatch(float dt) {
             } else {
                 round++;
                 pl[0].score = pl[1].score = 0;
+                overtime = false;
+                roundClock = tun.advancedRoundTime;   // (a timed round starts its clock again)
                 match = MatchState::Countdown;
                 stateTimer = tun.countdown;
                 emit(EventType::Countdown, -1, -1, {}, tun.countdown);

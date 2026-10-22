@@ -164,6 +164,21 @@ async def run():
         s3.db.commit()
         s3.purge()
         check(s3.get('old') is None and s3.get(s3.ident(b'H' * 16)) is not None, 'statistics unseen for 24 months are removed')
+        # 0.3.8: a HOTDOG match (no shields) counts in the career and in the hotdog mode; standard matches in theirs
+        rearm()
+        before = s3.get(s3.ident(b'H' * 16))[1]
+        host.raw(R.MATCH, bytes([0]) + row0 + row1 + score + bytes([1]))
+        confirm(0, score)
+        time.sleep(0.3)
+        s4 = R.Stats(db, log=lambda m: None)
+        md = s4.modes(s4.ident(b'H' * 16))
+        check(s4.get(s4.ident(b'H' * 16))[1] == before + 1 and md.get(1, (0, 0))[:2] == (1, 1),
+              'a hotdog match counts in the career and in the hotdog mode (1 match, 1 win)')
+        check(md.get(0, (0,))[0] == 2, 'results without a mode byte (0.3.7 hosts, which have no options) count as standard')
+        guest.raw(R.DELETE)
+        time.sleep(0.3)
+        s5 = R.Stats(db, log=lambda m: None)
+        check(s5.modes(s5.ident(b'G' * 16)) == {}, 'DELETE removes the player\'s modes too')
 
     await loop.run_in_executor(None, blocking)
     tr.close()

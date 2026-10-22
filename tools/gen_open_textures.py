@@ -115,18 +115,17 @@ def hex_grid():
 
 
 def slats():
-    """Stadium light slats (bright vertical bars with soft edges), tileable in u."""
+    """The panels of the galleries round the court. Once light slats (bright vertical bars); the owner asked for smooth
+    walls (2026-10-21): now an even, softly lit panel, a little brighter low down, fading at the top and bottom edges,
+    with no bars. (The random draw stays, so the textures made after this one come out as before.)"""
     w, h = 512, 256
     u, v = grid(w, h)
     nb = 16
-    f = (u * nb) % 1.0
-    bar = np.clip((0.5 - np.abs(f - 0.5)) / 0.5, 0, 1)
-    bar = np.clip((bar - 0.18) / 0.10, 0, 1)
-    idx = np.floor(u * nb).astype(int)
-    var = 0.82 + 0.18 * rng.random(nb)[idx]
+    rng.random(nb)
     vert = np.clip((0.5 - np.abs(v - 0.5)) / 0.5, 0, 1)
-    vert = np.clip(vert / 0.08, 0, 1) * (0.85 + 0.15 * (1 - v))
-    a = (0.10 + 0.90 * bar) * var * vert
+    vert = np.clip(vert / 0.08, 0, 1) * (0.80 + 0.20 * v)            # (v grows downward: a touch brighter low down)
+    sheen = 0.5 + 0.5 * np.cos((u - 0.5) * np.pi * 2.0) * 0.0         # (even across: tiles seamlessly)
+    a = (0.30 + 0.06 * sheen) * vert
     col = np.dstack([a * 0.92, a * 0.97, a * 1.0])
     save('slats', col)
 

@@ -46,13 +46,19 @@ function chipStyle(el, p) {
   else { el.style.backgroundImage = ''; el.style.backgroundColor = colorOf(p); }
 }
 function label(m, k) { const p = m.p[k]; return (p.n === 'OPEN' || !p.n) ? 'OPEN' : p.n; }
+function mmss(c) { const s = Math.ceil(c), mm = Math.floor(s / 60), ss = s % 60; return mm + ':' + (ss < 10 ? '0' : '') + ss; }
 function clockText(m) {
-  if (m.ot) return 'OVERTIME';
-  if (m.adv) return m.rnd > 0 ? 'ROUND ' + m.rnd : '';
+  if (m.ot) return m.adv && m.rnd > 0 ? 'ROUND ' + m.rnd + ' · SUDDEN DEATH' : 'SUDDEN DEATH';
+  if (m.free) return 'FREE PLAY';
+  if (m.adv) {
+    const r = m.rnd > 0 ? 'ROUND ' + m.rnd : '';
+    return m.rt && m.clock > 0 ? (r ? r + ' · ' : '') + mmss(m.clock) + ' LEFT' : r;
+  }
   if (!(m.clock > 0)) return '';
-  const s = Math.ceil(m.clock), mm = Math.floor(s / 60), ss = s % 60;
-  return mm + ':' + (ss < 10 ? '0' : '') + ss + ' LEFT';
+  return mmss(m.clock) + ' LEFT';
 }
+// the rules with the host's MATCH OPTIONS: "ADVANCED", "BASIC · HOTDOG", ...
+function rulesText(m) { return (m.adv ? 'ADVANCED' : 'BASIC') + (m.hotdog ? ' · HOTDOG \uD83C\uDF2D' : ''); }
 const pct = (a, b) => (b > 0 ? Math.round(100 * a / b) : 0);
 
 // one row of the stats table: the two values, the label, and a bar split by the raw numbers (a, b)
@@ -100,6 +106,12 @@ function renderStats(m) {
     const rec = (x) => x.wins + '-' + (x.matches - x.wins);
     cb.appendChild(statRow('RECORD', v(0, rec(a)), v(1, rec(b)), pct(a.wins, a.matches), pct(b.wins, b.matches),
       [sm(0, pct(a.wins, a.matches) + '%'), sm(1, pct(b.wins, b.matches) + '%')]));
+    const hd = [(a.modes || {}).hotdog, (b.modes || {}).hotdog];
+    if (hd[0] || hd[1]) {   // the hotdog record next to the overall one
+      const h0 = hd[0] || { matches: 0, wins: 0 }, h1 = hd[1] || { matches: 0, wins: 0 };
+      cb.appendChild(statRow('HOTDOG \uD83C\uDF2D', h0.matches ? rec(h0) : '—', h1.matches ? rec(h1) : '—',
+        pct(h0.wins, h0.matches), pct(h1.wins, h1.matches)));
+    }
     cb.appendChild(statRow('ACCURACY', v(0, pct(a.on, a.throws) + '%'), v(1, pct(b.on, b.throws) + '%'), pct(a.on, a.throws), pct(b.on, b.throws)));
     cb.appendChild(statRow('BLOCKS', v(0, pct(a.blocks, a.faced) + '%'), v(1, pct(b.blocks, b.faced) + '%'), pct(a.blocks, a.faced), pct(b.blocks, b.faced)));
     cb.appendChild(statRow('TOP SPEED', v(0, a.top), v(1, b.top), a.top, b.top, [sm(0, 'km/h'), sm(1, 'km/h')]));
@@ -124,7 +136,7 @@ function renderList() {
     const live = LIVE_STATES.includes(m.st);
     top.appendChild(el('span', 'live-dot' + (live ? '' : ' idle'), (live ? '● ' : '') + (STATES[m.st] || 'LIVE')));
     const ck = clockText(m);
-    top.appendChild(el('span', '', m.host + "'S ARENA · " + (ck || (m.adv ? 'ADVANCED' : 'BASIC')) + ' · ' + m.fans + (m.fans === 1 ? ' FAN' : ' FANS')));
+    top.appendChild(el('span', '', m.host + "'S ARENA · " + (m.hotdog ? 'HOTDOG \uD83C\uDF2D · ' : '') + (ck || (m.adv ? 'ADVANCED' : 'BASIC')) + ' · ' + m.fans + (m.fans === 1 ? ' FAN' : ' FANS')));
     card.appendChild(top);
     const row = el('div', 'card-row');
     for (let k = 0; k < 2; ++k) {
@@ -176,7 +188,7 @@ function renderMatch(m) {
   root.style.setProperty('--c0', colorOf(m.p[0]));
   root.style.setProperty('--c1', colorOf(m.p[1]));
   const live = LIVE_STATES.includes(m.st);
-  $('state').textContent = (live ? '● ' : '') + (STATES[m.st] || 'LIVE') + ' · ' + (m.adv ? 'ADVANCED' : 'BASIC');
+  $('state').textContent = (live ? '● ' : '') + (m.free && m.st === 2 ? 'FREE PLAY' : (STATES[m.st] || 'LIVE')) + ' · ' + rulesText(m);
   $('state').classList.toggle('idle', !live);
   $('clock').textContent = clockText(m);
   for (let k = 0; k < 2; ++k) {

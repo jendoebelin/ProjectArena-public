@@ -738,6 +738,140 @@ int main(int argc, char** argv) {
         CHECK(g.match == MatchState::MatchSummary, "match reaches a winner");
         CHECK(botThrows > 3 && hits > 0, "bot throws and points are scored");
     }
+    {
+        std::printf("[MATCH OPTIONS: hotdog mode, knuckle guards, free play, timed Advanced rounds]\n");
+        auto setup = [&](PlayerInput in[2], bool adv, bool shields, int knuckles, float matchT, float roundT) {
+            Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.meetTime = 0;
+            g.tun.shields = shields; g.tun.knuckleMode = knuckles; g.tun.basicMatchTime = matchT; g.tun.advancedRoundTime = roundT;
+            g.reset(false);
+            in[0] = standing(g, 0); in[1] = standing(g, 1);
+            run(g, in, 3.6f);
+            return g;
+        };
+        {   // HOTDOG: holding a charged ball raises no shield; the ball that would have been blocked scores
+            PlayerInput in[2]; Game g = setup(in, false, false, 0, 180, 0);
+            grabBall(g, in, 1);
+            Quat q = fromTo({0, 1, 0}, {1, 0, 0});
+            Vec3 face = g.pl[0].in.head.p;
+            Pose sl = g.shieldLocal(1);
+            Quat gq = q * sl.q.conj();
+            in[0].hand[1].grip = {gq, face + Vec3{0.45f, 0, 0} - gq.rotate(sl.p)};
+            run(g, in, 0.05f);
+            CHECK(!g.pl[0].hands[1].shieldUp && g.pl[0].ball.charged, "hotdog mode: no shield, even holding a charged ball");
+            fireOpponentBall(g, face);
+            std::vector<GameEvent> log;
+            run(g, in, 2.0f, &log);
+            CHECK(!hasEvent(log, EventType::ShieldBlock) && g.pl[1].score == 1, "hotdog mode: the ball goes through and scores");
+        }
+        {
+            PlayerInput in[2];
+            Game b = setup(in, false, true, -1, 180, 0);
+            CHECK(b.pl[0].hands[0].knuckleUp, "Basic: knuckle guards on as the rules say");
+            Game b0 = setup(in, false, true, 0, 180, 0);
+            CHECK(!b0.pl[0].hands[0].knuckleUp, "Basic with knuckle guards off: none");
+            Game a1 = setup(in, true, true, 1, 0, 0);
+            CHECK(a1.pl[0].hands[0].knuckleUp, "Advanced with knuckle guards on: there");
+            Game a0 = setup(in, true, true, -1, 0, 0);
+            CHECK(!a0.pl[0].hands[0].knuckleUp, "Advanced: no knuckle guards as the rules say");
+        }
+        {   // FREE PLAY: no clock, no winner
+            PlayerInput in[2]; Game g = setup(in, false, true, -1, 0, 0);
+            std::vector<GameEvent> log;
+            run(g, in, 240.f, &log);
+            CHECK(g.match == MatchState::InProgress && !hasEvent(log, EventType::MatchEnd) && !hasEvent(log, EventType::Overtime),
+                  "free play: still playing after 4 minutes, no match end, no overtime");
+        }
+        {   // Advanced, 1 minute rounds: at time the one ahead wins the round
+            PlayerInput in[2]; Game g = setup(in, true, true, -1, 180, 60);
+            CHECK(g.match == MatchState::InProgress && g.roundClock > 50.f && g.roundClock <= 60.f, "timed round: the clock runs from 1:00");
+            g.pl[1].score = 2;
+            std::vector<GameEvent> log;
+            run(g, in, 61.f, &log);
+            CHECK(hasEvent(log, EventType::RoundEnd, 1) && g.pl[1].roundWins == 1, "timed round: at time the one ahead (2-0) wins it");
+            run(g, in, g.tun.roundSummaryTime + g.tun.countdown + 0.5f);
+            CHECK(g.match == MatchState::InProgress && g.round == 2 && g.roundClock > 55.f && !g.overtime, "the next round starts its own 1:00");
+        }
+        {   // Advanced, timed, tied at time: sudden death, the next point wins the round
+            PlayerInput in[2]; Game g = setup(in, true, true, -1, 180, 60);
+            std::vector<GameEvent> log;
+            run(g, in, 61.f, &log);
+            CHECK(g.overtime && hasEvent(log, EventType::Overtime) && g.match == MatchState::InProgress, "timed round tied 0-0 at time: sudden death");
+            log.clear();
+            fireOpponentBall(g, g.pl[0].in.head.p - Vec3{0, 0.3f, 0});
+            run(g, in, 2.0f, &log);
+            CHECK(hasEvent(log, EventType::RoundEnd, 1) && g.pl[1].roundWins == 1 && g.pl[1].score == 1,
+                  "sudden death: one point (1-0, short of 4) wins the round");
+        }
+        {
+            Tunables t;
+            CHECK(t.statsMode() == 0, "stats mode: the rules as they come are standard");
+            t.shields = false; t.basicMatchTime = 300;
+            CHECK(t.statsMode() == 1, "stats mode: any match without shields is HOTDOG");
+            t.shields = true;
+            CHECK(t.statsMode() == 2, "stats mode: other options are custom");
+            t.advanced = true; t.basicMatchTime = 180; t.advancedRoundTime = 0;
+            CHECK(t.statsMode() == 0 && !t.freePlay() && !t.timed(), "Advanced without a round time is standard and untimed");
+            t.knuckleMode = 0;   // "off" chosen, then Advanced (which has none): still the rules as they come
+            CHECK(t.statsMode() == 0, "knuckle guards count by what is in play, not by how they were chosen");
+        }
+    }
+    {
+        std::printf("[foul ball: stays in the arena (owner, 2026-10-21)]\n");
+        {   // past the foul line, then back down into its own foul zone: bounce, wall, home; harmless
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            Ball& b = g.pl[0].ball;
+            b.state = BallState::Flying; b.instigator = 0; b.rechargePending = false; b.scored = false; b.spin = {};
+            b.pos = {-3.6f, 1.3f, 0.4f};
+            b.speedLimit = 8.f; b.vel = normalize(Vec3{-5.6f, 0.f, 1.2f} - b.pos) * 8.f;
+            std::vector<GameEvent> log;
+            bool dissolved = false, homeBound = false;
+            for (int i = 0; i < 72 * 8 && b.state != BallState::Idle; ++i) {
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+                dissolved |= b.state == BallState::Spawning || b.state == BallState::Dead;
+                homeBound |= b.homing;
+            }
+            CHECK(hasEvent(log, EventType::Foul, 0), "a ball landing in its owner's foul zone is a foul");
+            CHECK(!dissolved && !hasEvent(log, EventType::SpawnRise), "it no longer dissolves or rises from under the floor");
+            CHECK(homeBound && b.state == BallState::Idle && length(b.pos - g.idlePoint(0)) < 0.6f,
+                  "it bounces off the wall it was heading for and flies home to its launch spot");
+            CHECK(g.pl[0].score == 0 && g.pl[1].score == 0 && !hasEvent(log, EventType::HitPlayer), "nobody scores from a fouled ball");
+        }
+        {   // never crossed the foul line: springs straight back to its float position
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            Ball& b = g.pl[0].ball;
+            b.state = BallState::Flying; b.instigator = 0; b.rechargePending = true; b.scored = false; b.spin = {};
+            b.pos = {-5.4f, 0.9f, 0.6f}; b.speedLimit = 8.f; b.vel = normalize(Vec3{-5.2f, 0.f, 0.8f} - b.pos) * 8.f;
+            std::vector<GameEvent> log;
+            bool dissolved = false;
+            float home = -1;
+            for (int i = 0; i < 72 * 3; ++i) {
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+                dissolved |= b.state == BallState::Spawning || b.state == BallState::Dead;
+                if (home < 0 && b.state == BallState::Idle) home = i / 72.f;
+            }
+            std::printf("  (back at its float position after %.2f s)\n", home);
+            CHECK(!dissolved && b.state == BallState::Idle && length(b.pos - g.idlePoint(0)) < 0.2f,
+                  "a ball that never crossed the foul line bounces and is drawn back to its float position (no dissolving)");
+            CHECK(home > 0 && home < 1.0f, "and it is back within a second (the magnetic pull)");
+        }
+        {   // a weak throw that never reaches the foul line: drawn home by the same pull
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            Ball& b = g.pl[0].ball;
+            b.state = BallState::Flying; b.instigator = 0; b.rechargePending = true; b.scored = false; b.spin = {};
+            b.pos = {-5.6f, 1.4f, 0.2f}; b.speedLimit = 2.f; b.vel = Vec3{-0.4f, 0.3f, 0.f};
+            float home = -1;
+            for (int i = 0; i < 72 * 3 && home < 0; ++i) {
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                if (b.state == BallState::Idle) home = i / 72.f;
+            }
+            CHECK(home > 0 && home < 1.0f, "a weak throw is drawn back home within a second");
+        }
+    }
     avatarTests(tris);
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

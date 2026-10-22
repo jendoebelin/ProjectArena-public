@@ -430,6 +430,29 @@ int main() {
         CHECK(fan.got.find("\"t\":\"m\"") != std::string::npos && fan.got.find("\"fans\":1") != std::string::npos,
               "the phone follows the match it watches");
     }
+    std::printf("[match options and the host's kick]\n");
+    {
+        Node& B = *ns[6];   // SIX hosts; FIVE plays, FOUR waits
+        B.game.tun.shields = false; B.game.tun.basicMatchTime = 300.f; B.game.tun.knuckleMode = 0;
+        pump(ns, 1.5);
+        const Tunables& t = ns[5]->game.tun;
+        CHECK(!t.shields && t.basicMatchTime == 300.f && t.knuckleMode == 0, "the host's MATCH OPTIONS reach the player in its tank");
+        bool listed = false;
+        for (const LanGame& lg : ns[1]->net.games())
+            if (std::strcmp(lg.name, "SIX") == 0) listed = !lg.shields && lg.matchTime == 300.f && lg.knuckleMode == 0;
+        CHECK(listed, "and the games list shows them (HOTDOG, 5 minutes, no knuckle guards)");
+        const uint32_t four = ns[4]->net.session();
+        CHECK(!ns[5]->net.hostKick(four), "only the host can remove someone directly");
+        CHECK(B.net.hostKick(four), "the host removes a waiting player at once");
+        pump(ns, 1.0);
+        CHECK(!ns[4]->net.inRoom(), "removed by the host: out of the arena");
+        uint32_t ip2 = 0;
+        for (const LanGame& lg : ns[4]->net.games()) if (std::strcmp(lg.name, "SIX") == 0) ip2 = lg.ip;
+        ns[4]->net.join(ip2, false);
+        pump(ns, 1.0);
+        CHECK(!ns[4]->net.inRoom(), "and can't come back this session");
+        CHECK(!B.net.hostKick(B.net.session()), "the host can't remove itself");
+    }
     for (auto& n : ns) { if (n->net.online()) n->net.goOffline(); n->net.shutdown(); }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

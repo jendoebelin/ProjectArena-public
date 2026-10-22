@@ -31,3 +31,4 @@ tools/UassetDump/obj/
 # player statistics tables and their salts (server/projectarena_relay.py --stats): private, never in git
 *.db
 *.db.salt
+/discord.local.cfg

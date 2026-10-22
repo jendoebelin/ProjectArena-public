@@ -267,9 +267,10 @@ uint32_t Net::roomHostVip() const {
     return 0;
 }
 
-void Net::reportMatch(int winner, const MatchStats st[2], const uint8_t score[4]) {
+void Net::reportMatch(int winner, const MatchStats st[2], const uint8_t score[4], int mode) {
     if (mode_ != Mode::Host || !online_ || !vip_ || winner < 0 || winner > 1 || !slot_[0] || !slot_[1]) return;
-    uint8_t b[33];
+    uint8_t b[34];
+    b[33] = (uint8_t)std::max(0, std::min(2, mode));   // (relays before 0.3.8 read the first 33 bytes)
     std::memcpy(b + 29, score, 4);
     b[0] = (uint8_t)winner;
     for (int k = 0; k < 2; ++k) {
@@ -278,7 +279,7 @@ void Net::reportMatch(int winner, const MatchStats st[2], const uint8_t score[4]
         std::memcpy(b + 1 + 14 * k, v, 14);
     }
     relaySend(R_MATCH, b, sizeof b);
-    LOGI("stats: match reported (winner slot %d)", winner);
+    LOGI("stats: match reported (winner slot %d, mode %d)", winner, mode);
 }
 
 void Net::confirmMatch(int winner, const uint8_t score[4]) {
@@ -518,6 +519,9 @@ static void writeState(Writer& w, const Game& g) {
         w.put<uint8_t>((uint8_t)s.ball.state); w.put(s.ball.pos); w.put(s.ball.vel); w.put<int8_t>((int8_t)s.ball.heldHand);
         w.put<uint8_t>(s.ball.charged); w.put<int8_t>((int8_t)s.ball.instigator); w.put(s.ball.scale);
     }
+    // MATCH OPTIONS (0.3.8): after everything older builds read
+    w.put<uint8_t>(g.tun.shields); w.put<int8_t>((int8_t)g.tun.knuckleMode); w.put<float>(g.tun.basicMatchTime);
+    w.put<float>(g.tun.advancedRoundTime);
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -544,6 +548,15 @@ static bool readState(Reader& r, Game& g, int localIndex) {
         s.score = r.get<int32_t>(); s.roundWins = r.get<int32_t>(); s.strikesAgainst = r.get<int32_t>();
         s.ball.state = (BallState)r.get<uint8_t>(); s.ball.pos = r.get<Vec3>(); s.ball.vel = r.get<Vec3>(); s.ball.heldHand = r.get<int8_t>();
         s.ball.charged = r.get<uint8_t>(); s.ball.instigator = r.get<int8_t>(); s.ball.scale = r.get<float>();
+    }
+    if (r.ok && r.e - r.p >= 10) {   // MATCH OPTIONS (hosts from 0.3.8; older ones: the rules as they come)
+        g.tun.shields = r.get<uint8_t>() != 0;
+        g.tun.knuckleMode = std::max(-1, std::min(1, (int)r.get<int8_t>()));
+        const float mt = r.get<float>(), rt = r.get<float>();
+        if (std::isfinite(mt) && mt >= 0 && mt <= 3600) g.tun.basicMatchTime = mt;
+        if (std::isfinite(rt) && rt >= 0 && rt <= 3600) g.tun.advancedRoundTime = rt;
+    } else if (r.ok) {
+        g.tun.shields = true; g.tun.knuckleMode = -1; g.tun.basicMatchTime = 180.f; g.tun.advancedRoundTime = 0.f;
     }
     return r.ok;
 }
@@ -709,6 +722,13 @@ void Net::countKickVote(uint32_t target, uint32_t voter) {
     }
 }
 
+bool Net::hostKick(uint32_t target) {
+    if (mode_ != Mode::Host || !target || target == session_ || !member(target)) return false;
+    kickNow_ = target;
+    kickByHost_ = true;
+    return true;
+}
+
 bool Net::voteKick(uint32_t target) {
     if (!inRoom() || !target || target == session_ || target == hostSession()) return false;
     if (std::find(myKickVotes_.begin(), myKickVotes_.end(), target) != myKickVotes_.end()) return false;
@@ -787,13 +807,14 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             Removed x; x.id = m->id; x.ip = m->ip; std::memcpy(x.name, m->name, 16);
             removed_.push_back(x);
             char msg[48];
-            std::snprintf(msg, sizeof msg, "%s WAS REMOVED BY VOTE", m->name[0] ? m->name : "A PLAYER");
-            LOGI("net: %s removed by vote", m->name[0] ? m->name : ipStr(m->ip));
-            reject(m->ip, "REMOVED BY VOTE");
+            std::snprintf(msg, sizeof msg, "%s WAS REMOVED%s", m->name[0] ? m->name : "A PLAYER", kickByHost_ ? "" : " BY VOTE");
+            LOGI("net: %s removed by %s", m->name[0] ? m->name : ipStr(m->ip), kickByHost_ ? "the host" : "vote");
+            reject(m->ip, kickByHost_ ? "REMOVED BY THE HOST" : "REMOVED BY VOTE");
             removeMember(kickNow_, g);
             notice(msg);
         }
         kickNow_ = 0;
+        kickByHost_ = false;
     }
     now_ = monoNow();
     bool gotState = false;
@@ -889,6 +910,13 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             lg.name[16] = 0; lg.advanced = r.get<uint8_t>() != 0; lg.full = r.get<uint8_t>() != 0;
             lg.score0 = r.get<int16_t>(); lg.score1 = r.get<int16_t>(); lg.clock = r.get<float>(); lg.spectators = r.get<uint8_t>();
             lg.waiting = r.get<uint8_t>(); lg.queued = r.get<uint8_t>(); lg.inTank = r.get<uint8_t>();
+            if (r.ok && r.e - r.p >= 10) {   // MATCH OPTIONS (0.3.8 hosts)
+                lg.shields = r.get<uint8_t>() != 0;
+                lg.knuckleMode = std::max(-1, std::min(1, (int)r.get<int8_t>()));
+                lg.matchTime = r.get<float>(); lg.roundTime = r.get<float>();
+                if (!std::isfinite(lg.matchTime) || lg.matchTime < 0) lg.matchTime = 180.f;
+                if (!std::isfinite(lg.roundTime) || lg.roundTime < 0) lg.roundTime = 0.f;
+            }
             for (char& c : lg.name) if (c && (c < 32 || c > 'Z')) c = ' ';
             if (r.ok) {
                 bool found = false;
@@ -1171,6 +1199,8 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             w.put<int16_t>((int16_t)g.pl[0].score); w.put<int16_t>((int16_t)g.pl[1].score); w.put<float>(g.roundClock);
             w.put<uint8_t>((uint8_t)std::min<size_t>(255, spectators_.size()));
             w.put<uint8_t>((uint8_t)waiting); w.put<uint8_t>((uint8_t)queue_.size()); w.put<uint8_t>((uint8_t)humans());
+            w.put<uint8_t>(g.tun.shields); w.put<int8_t>((int8_t)g.tun.knuckleMode);   // MATCH OPTIONS (0.3.8)
+            w.put<float>(g.tun.basicMatchTime); w.put<float>(g.tun.advancedRoundTime);
             sendTo(w.b.data(), (int)w.b.size(), INADDR_BROADCAST, kPort);
         }
         if (now_ - lastRoomSent_ > 1.0 / 15.0) { lastRoomSent_ = now_; sendRoom(); }

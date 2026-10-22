@@ -1,6 +1,6 @@
 # Project Arena privacy policy
 
-_Last updated: 21 October 2026. Contact: vrsportsfan@gmail.com._
+_Last updated: 22 October 2026. Contact: vrsportsfan@gmail.com._
 
 Project Arena is a free, open-source VR game. This policy explains what the game and the community servers do with
 information about you.
@@ -75,7 +75,9 @@ for microphone permission the first time you enter a room; you can refuse it and
 
 When you play an online match against another person (never the practice bot), the official server keeps your career
 statistics: matches, wins, throws and throws on target, hits, blocks and balls faced, catches, your top throw speed,
-the player name you used, and when you were first and last seen.
+the player name you used, and when you were first and last seen. From version 0.3.8 the same numbers are also kept
+for each kind of match (standard rules, HOTDOG matches without shields, and other custom match options), next to the
+overall total.
 - They are kept under your game's private player key. The server stores only a scrambled form of that key (a salted
   hash), never the key itself, and no IP address, real name or account.
 - They are **public in the game**: other players and spectators see them on the screen over the court and in the

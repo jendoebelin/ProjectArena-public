@@ -21,6 +21,11 @@ struct LanGame {
     uint32_t ip = 0, session = 0;
     char name[17] = {};
     bool advanced = false, full = false;
+    // MATCH OPTIONS (0.3.8 hosts; older ones: the defaults): shields off = HOTDOG, knuckle guards -1 as the rules say,
+    // basic match time (0 = free play) and advanced round time (0 = none), seconds
+    bool shields = true;
+    int knuckleMode = -1;
+    float matchTime = 180.f, roundTime = 0.f;
     int score0 = 0, score1 = 0, spectators = 0, waiting = 0, queued = 0, inTank = 0;
     float clock = 0;
     double seen = 0;
@@ -100,7 +105,8 @@ public:
     struct MatchStats { uint16_t throws = 0, onTarget = 0, hits = 0, blocks = 0, faced = 0, catches = 0, strikes = 0; float topSpeed = 0; };
     void setStatsKey(const uint8_t key[16]) { std::memcpy(statsKey_, key, 16); keySent_ = false; }
     // host, online, two people in the tank; score = points 0, points 1, rounds 0, rounds 1 (the other player confirms)
-    void reportMatch(int winner, const MatchStats st[2], const uint8_t score[4]);
+    // mode: Tunables::statsMode() (0 standard, 1 HOTDOG, 2 custom): careers keep each mode apart as well (0.3.8)
+    void reportMatch(int winner, const MatchStats st[2], const uint8_t score[4], int mode = 0);
     void confirmMatch(int winner, const uint8_t score[4]);   // a tank player who is not the host: what it saw
     void requestMyStats();            // our own career: the answer is statsFor(kMyStats) (slot 0)
     void deleteMyStats();             // erase our statistics on the server
@@ -116,6 +122,7 @@ public:
         char name[2][17] = {};
         MatchStats st[2];             // this match so far (for the fans' stats table)
         uint8_t round = 0, overtime = 0;
+        // the flags byte also says: 4 HOTDOG (no shields), 8 free play, 16 knuckle guards on, 32 a round timer
     };
     void setLive(const LiveInfo& li) { live_ = li; liveSet_ = true; }
     // the fans of our room's match (host / client), or of the match at hostIp (spectator); null: none lately
@@ -164,6 +171,7 @@ public:
     // than half of the other people in the room (and at least two) agree, the host removes them and turns them away
     // from that arena for the rest of its session (their session, address and name). The host can't be removed.
     bool voteKick(uint32_t target);   // false: not allowed (not in a room, the host, yourself, or already voted)
+    bool hostKick(uint32_t target);   // the host removes someone from its arena at once (0.3.8; owner's decision)
     uint32_t hostSession() const { return mode_ == Mode::Host ? session_ : mode_ == Mode::Client ? peerSession_ : 0; }
     int kickVotesNeeded() const;      // host: how many votes remove someone now (0 = too few people to vote)
     std::vector<Person> peopleHere() const;
@@ -248,6 +256,7 @@ private:
     std::vector<std::pair<uint32_t, uint32_t>> kickVotes_;   // host: (target, voter)
     std::vector<uint32_t> myKickVotes_;   // the people we voted to remove (one vote each)
     uint32_t kickNow_ = 0;                // host: removed on the next exchange
+    bool kickByHost_ = false;             // (by the host's own decision, not by a vote)
     void countKickVote(uint32_t target, uint32_t voter);
     uint32_t slot_[2] = {0, 0};           // host: member id in each tank slot (0 = empty / bot)
     std::vector<uint32_t> queue_;         // host: queued member ids, front first

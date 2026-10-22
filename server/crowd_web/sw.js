@@ -1,6 +1,6 @@
 // The Crowd: keeps the app's own files on the phone so it opens at once (and installs as an app). Live data always
 // comes over the WebSocket, never from this cache. Bump VERSION when the files change.
-const VERSION = 'crowd-3';
+const VERSION = 'crowd-4';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'nations.js', 'manifest.webmanifest', 'icon-192.png'];
 
 self.addEventListener('install', (e) => {

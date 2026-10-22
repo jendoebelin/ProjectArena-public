@@ -8,7 +8,8 @@ Pipeline
   4. this script                     npz -> .mdl (welded, per-material shaders from tools/blender/palette.py),
                                      lightmaps -> .tex, floor + mirrored-light reflection layer, collision
 
-Usage: python -I tools/build_open_assets.py [--preview] [--skip-blender | --skip-arena]
+Usage: python -I tools/build_open_assets.py [--preview] [--skip-blender | --skip-arena | --arena-only]
+  --arena-only: the textures and the court / stadium only (no props, heads, bodies or sounds: those stay as they are)
 """
 import math
 import os
@@ -569,17 +570,20 @@ def main():
         if '--skip-arena' not in sys.argv:   # --skip-arena: keep the baked court/stadium, rebuild only the props
             print('blender: arena' + (' (preview quality)' if preview else ''))
             run_blender('make_arena.py', [SRC] + (['preview'] if preview else []))
-        if os.path.exists(os.path.join(ROOT, 'tools', 'blender', 'make_props.py')):
+        if '--arena-only' in sys.argv:
+            pass
+        elif os.path.exists(os.path.join(ROOT, 'tools', 'blender', 'make_props.py')):
             print('blender: props')
             run_blender('make_props.py', [os.path.join(SRC, 'props.npz')])
-        print('blender: MPFB2 bodies (needs the MPFB extension in Blender)')
-        run_blender('make_body.py', [os.path.join(SRC, 'body')], factory=False)
-        for key in ('m', 'f'):
-            print('blender: head parts on the %s head' % key)
-            run_blender('make_avatar.py', [os.path.join(SRC, 'avatar_head_%s.npz' % key), '--head', key])
-        for key in FACE_KEYS:   # FACE 2..4: face shields and masks fitted to each face (hair and helmets fit them all)
-            print('blender: face shields and masks on face', key)
-            run_blender('make_avatar.py', [os.path.join(SRC, 'avatar_head_%s.npz' % key), '--head', key, 'av_visor', 'av_mask'])
+        if '--arena-only' not in sys.argv:
+            print('blender: MPFB2 bodies (needs the MPFB extension in Blender)')
+            run_blender('make_body.py', [os.path.join(SRC, 'body')], factory=False)
+            for key in ('m', 'f'):
+                print('blender: head parts on the %s head' % key)
+                run_blender('make_avatar.py', [os.path.join(SRC, 'avatar_head_%s.npz' % key), '--head', key])
+            for key in FACE_KEYS:   # FACE 2..4: face shields and masks fitted to each face (hair and helmets fit them all)
+                print('blender: face shields and masks on face', key)
+                run_blender('make_avatar.py', [os.path.join(SRC, 'avatar_head_%s.npz' % key), '--head', key, 'av_visor', 'av_mask'])
     print('models')
     court, lm_c = load_npz(os.path.join(SRC, 'court.npz'))
     env, lm_e = load_npz(os.path.join(SRC, 'environment.npz'))
@@ -613,6 +617,9 @@ def main():
     write_mdl(os.path.join(OUT, 'floor_reflect.mdl'), refl, mats_override=rmats)          # the court in the floor
     write_mdl(os.path.join(OUT, 'floor_reflect_env.mdl'), refl_e, mats_override=rmats_e)  # the stadium in the floor
     write_collision(os.path.join(OUT, 'arena.col'))
+    if '--arena-only' in sys.argv:
+        print('done (arena only) ->', OUT)
+        return
     built = {'arena', 'environment'} | build_props() | build_props('avatar_head_m.npz') | build_props('avatar_head_f.npz')
     for key in FACE_KEYS:
         built |= build_props('avatar_head_%s.npz' % key)

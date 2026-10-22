@@ -18,6 +18,24 @@ struct Tunables {
     bool advanced = false;
     float basicMatchTime = 180.0f;
     int advancedPointsToWin = 4, advancedRoundsToWin = 2;
+    // ---- MATCH OPTIONS (the host's, 0.3.8; owner's design 2026-10-21). shields false = HOTDOG MODE (the community's
+    // name for playing without shields). knuckleMode -1 = as the rules say (Basic on, Advanced off), 0 off, 1 on.
+    // basicMatchTime 0 = FREE PLAY: no clock and no winner, play on. advancedRoundTime 0 = no limit; otherwise each
+    // round ends at time: more points wins the round, a tie goes to sudden death (the next point wins it).
+    bool shields = true;
+    int knuckleMode = -1;
+    float advancedRoundTime = 0.0f;
+    bool knuckleGuards() const { return knuckleMode < 0 ? !advanced : knuckleMode != 0; }
+    bool freePlay() const { return !advanced && basicMatchTime <= 0.f; }
+    bool timed() const { return advanced ? advancedRoundTime > 0.f : basicMatchTime > 0.f; }
+    // statistics are kept by mode: 0 standard (the rules as they come), 1 HOTDOG (no shields, any other options),
+    // 2 custom (other options)
+    int statsMode() const {
+        if (!shields) return 1;
+        // (knuckle guards count by what is in play: "off" chosen in Basic and then Advanced picked is Advanced's own rule)
+        const bool std_ = knuckleGuards() == !advanced && (advanced ? advancedRoundTime <= 0.f : basicMatchTime == 180.0f);
+        return std_ ? 0 : 2;
+    }
 
     // ---- arena / layout
     Vec3 start[2] = {{-7.0f, 0, 0}, {7.0f, 0, 0}};           // Start_Player0/1 (UE x = -700/+700 cm)
@@ -68,6 +86,7 @@ struct Tunables {
     // that moment (no further seeking) at ReturnSpeed. It can be caught, can hit the owner (point to the opponent, selfHitScores), or fly past into the owner's back
     // wall, where it dissolves and respawns rising from the floor spawner.
     float returnSpeed = 10.0f;
+    float foulReturnSpeed = 16.0f;   // a fouled ball: to the wall and home again (owner, 2026-10-21: faster)
     // Short throws (owner request, matches Sparc): a throw that has not crossed the owner's foul line and is slow
     // (below recallSpeed), heading back toward the owner, or still short after recallTime goes back to the spawner
     // (the idle spring pulls it home) instead of rattling round the owner's end.
@@ -196,6 +215,9 @@ struct Ball {
     bool rechargePending = false;
     int bounces = 0;
     float scale = 1.f;          // grows with strikes against the opponent
+    // a foul (owner, 2026-10-21): the ball no longer dissolves. It bounces on, off the wall it is heading for, then
+    // flies home to its launch spot (homing), harmless all the way; fouled = still before that wall
+    bool fouled = false, homing = false;
 };
 
 struct HandState {
@@ -270,6 +292,7 @@ public:
 private:
     void stepMatch(float dt);
     void startCountdown();   // round 1 of a new match: the 3-2-1
+    void endRound(int winner);   // Advanced: a round won (by points, at time, or in sudden death)
     float lastFistLog = 0;
 public:
     bool meetLog = false;       // a meeting diagnostic is ready (main.cpp logs it): closest fist gap, triggers
