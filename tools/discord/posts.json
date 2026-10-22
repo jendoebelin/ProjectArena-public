@@ -1,5 +1,11 @@
 [
   {
+    "channel": "rules",
+    "title": "Server rules",
+    "color": "#ff4d6a",
+    "text": "Welcome to Project Arena! Keep it friendly, keep it fun.\n\n**1. Be respectful.** No harassment, bullying, hate speech, slurs or threats, here or in the game.\n**2. Keep it clean.** No NSFW, gore or shock content. Players here are 13 and older.\n**3. Play fair.** No cheating, exploits or modified game files in online play. Found a bug that gives an edge? Report it, don't use it.\n**4. Protect privacy.** Don't share anyone's personal information: real names, addresses, photos or accounts, yours included.\n**5. No spam.** No flooding, chain messages or unrelated advertising. Streamers: share your streams and clips in #streaming and #highlights.\n**6. Use the right channel.** Bugs in #bug-reports, ideas in #feedback-and-ideas, finding a match in #looking-for-match.\n**7. Report problems, don't fight them.** Trouble with a player in the game? Use MENU > REPORT PLAYER (and MUTE). Here, message a moderator.\n**8. Follow Discord's rules:** https://discord.com/terms and https://discord.com/guidelines\n\nModerators may warn, mute or remove anyone who breaks these rules, and serious cases can be banned from the game's servers too. By staying here you agree to them. Have fun out there!"
+  },
+  {
     "channel": "how-to-join",
     "title": "How to join Project Arena",
     "color": "#1ab3ff",
@@ -44,5 +50,48 @@
     "title": "The Quest Board",
     "color": "#ff4d6a",
     "text": "What we are working on and looking at, thanks to your reports and ideas.\n\n**Coming in 0.3.8**\n- **Host match options:** shields on or off (HOTDOG MODE), knuckle guards on or off, match time (including no limit), round timers for Advanced\n- Hosts can remove a player from their arena\n- Smooth turning (a setting, for players and spectators)\n- A foul ball bounces back instead of dissolving\n- SAVE AND APPLY in the avatar builder\n- Push-to-talk that suits each controller (Index, Vive, Windows Mixed Reality)\n- Smoother frame times\n\n**On the board** (we are looking at these)\n- Body turning, ducking and bending when you dodge; smoother bot movement\n- A country banner separate from your outfit\n- The arena's look: darker floor and frame, a sky\n\nGot an idea? Post it in **#feedback-and-ideas**."
+  },
+  {
+    "channel": "announcements",
+    "title": "Project Arena 0.3.8: MATCH OPTIONS & HOTDOG MODE",
+    "color": "#4dffa6",
+    "image": "action.png",
+    "text": "**Hosts choose the match:** shields on or off (**HOTDOG MODE** 🌭), knuckle guards on or off, match time from 1 to 15 minutes or **FREE PLAY**, and round timers for Advanced.\n\nAlso new: hosts can remove a player; hot dogs and smiley faces in HOTDOG cheers; foam fingers for players without a country; stairs through the stands and smooth walls; stats for HOTDOG and custom matches; foul balls bounce back to you; smooth turning for spectators; SAVE AND APPLY in the avatar builder; better push-to-talk on Index.\n\nThanks to **R0gueICE** for testing and ideas!\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
+  },
+  {
+    "channel": "quest-board",
+    "title": "The Quest Board (updated for 0.3.8)",
+    "color": "#ff4d6a",
+    "text": "**Done in 0.3.8** ✅\n- Host match options: shields (HOTDOG MODE), knuckle guards, match time and FREE PLAY, round timers\n- Hosts can remove a player\n- Smooth turning for spectators\n- A foul ball bounces back instead of dissolving\n- SAVE AND APPLY in the avatar builder\n- Push-to-talk that suits each controller\n- Smoother frame times (part one)\n- Smooth walls and stairs through the stands\n\n**On the board** (we are looking at these)\n- The arena's look: darker floor and frame, a sky (mock-ups for review: https://github.com/jendoebelin/ProjectArena-public/issues/9)\n- Body turning, ducking and bending when you dodge; smoother bot movement\n- A country banner separate from your outfit\n- Higher process priority on PC; flicker on the coloured borders\n- Free play: switching players when others wait\n\nGot an idea? Post it in **#feedback-and-ideas**, or on GitHub: https://github.com/jendoebelin/ProjectArena-public/issues"
+  },
+  {
+    "channel": "get-the-game",
+    "title": "Get the game: which version?",
+    "color": "#1ab3ff",
+    "text": "**Project Arena is free.** Pick the version for your setup:\n\n🥽 **Meta Quest 2, 3, 3S or Pro** → the Meta Store alpha (below). Easiest, and it updates itself.\n🖥️ **PC VR** (Valve Index, Vive, Windows Mixed Reality, or a Quest on Link) → the PC version from GitHub.\n👀 **No headset?** → the PC version too: without a headset it opens as a spectator window, so you can watch live matches.\n📱 **Just want to cheer?** → The Crowd on your phone: https://crowd.aftersparc.com\n🎮 **Steam:** coming soon.\n\nQuest and PC players meet in the same rooms online."
+  },
+  {
+    "channel": "get-the-game",
+    "title": "Meta Quest: get the alpha",
+    "color": "#1ab3ff",
+    "text": "1. On your phone or computer, sign in to the **Meta account your headset uses**.\n2. Open **https://www.meta.com/s/4NDP5YlGM** and accept the invite. Access is instant.\n3. In the headset, open the **Store** or your **Library**, find **Project Arena** and install it.\n\n**Updates** install by themselves. If the game says **UPDATE AVAILABLE**, open your Library and update it: the alpha needs everyone on the newest version to play online.\n\n**Already sideloading the APK from GitHub?** The store version and the GitHub APK can't be installed over each other. To switch, uninstall the old one first (this starts your statistics fresh)."
+  },
+  {
+    "channel": "get-the-game",
+    "title": "PC VR, or watching on a PC",
+    "color": "#1ab3ff",
+    "text": "1. Download the PC zip: **https://github.com/jendoebelin/ProjectArena-public/releases/latest**\n2. Unzip it anywhere (keep the **assets** folder next to **ProjectArena.exe**).\n3. **To play:** start SteamVR (or Quest Link), put your headset on, then run **ProjectArena.exe**.\n4. **To watch:** run **ProjectArena.exe** without a headset. It finds a live match by itself. **F1** shows the controls.\n\n**Updating:** download the new zip and unzip it over the old folder (or into a new one). Your settings and avatar are kept in **%APPDATA%\\ProjectArena**.\n**Streamers:** see **#streaming** for OBS."
+  },
+  {
+    "channel": "faq",
+    "title": "Frequently asked questions",
+    "color": "#ffd34d",
+    "text": "**Is it free?** Yes, on Quest and PC.\n\n**How do I get it?** See **#get-the-game**.\n\n**Can Quest and PC players play together?** Yes, in the same online rooms.\n\n**Do I need a headset to watch?** No. The PC version opens as a spectator window without a headset, and The Crowd works on any phone: https://crowd.aftersparc.com\n\n**It says UPDATE AVAILABLE.** Update from your Quest Library (or download the new PC zip). Online play needs everyone on the newest version.\n\n**How do I find a match?** MULTIPLAYER > check **ONLINE: ON** > **HOST A ROOM**, or pick a room to join. Or ask in **#looking-for-match**.\n\n**How do I talk?** Hold the **left grip** in a room (push to talk). SETTINGS > VOICE AND MUTES has open mic and mutes.\n\n**What is HOTDOG MODE?** A match with shields off: the host sets it in MATCH OPTIONS.\n\n**What do you keep about me?** Your player name and your online match statistics (public in the game). Delete them any time: **MY STATS > DELETE MY STATS**. Voice is never recorded. Privacy policy: https://github.com/jendoebelin/ProjectArena-public/blob/main/docs/PRIVACY.md\n\n**Is it on Steam?** Coming soon.\n\n**Something's broken?** Report it in the game (MENU > REPORT A BUG) or in **#bug-reports**. Stuck? Ask in **#help**."
+  },
+  {
+    "channel": "help",
+    "title": "How to get help (please read)",
+    "color": "#a46bff",
+    "text": "Stuck installing, connecting or playing? Ask here. You'll get an answer faster if you include:\n\n1. **Quest or PC** (and which headset)\n2. **Your game version** (bottom of the main menu)\n3. **What you tried, and what happened** (an error message or a picture helps)\n\nCheck **#faq** first: the answer may be there.\nFound a bug? **#bug-reports** (or MENU > REPORT A BUG in the game, which sends us the details).\nNever share passwords, account details or personal information here."
   }
 ]

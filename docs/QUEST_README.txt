@@ -11,12 +11,12 @@ There are two ways to get it. Option A is the easiest and keeps you updated auto
 
 A. Join the test in the Meta Horizon Store (recommended, no developer mode)
 -----------------------------------------------------------------------------
-  1. Email vrsportsfan@gmail.com with the subject "Project Arena test access" and the email address of the
-     Meta account your headset is signed in to.
-  2. You get an invite from Meta by email (or in the Meta Horizon phone app). Accept it.
-  3. On the headset, open the Store and search for "Project Arena" (or follow the link in the invite), then
-     install it like any other app.
+  1. On your phone or computer, sign in to the Meta account your headset uses and open
+     https://www.meta.com/s/4NDP5YlGM . Accept the invite: access is instant.
+  2. On the headset, find "Project Arena" in the Store or your Library and install it like any other app.
      New test versions arrive as normal updates.
+  (Trouble with the link? Email vrsportsfan@gmail.com with your Meta account's email address.
+   Help and news: the Discord server, https://discord.gg/KuNkSbVHzh)
 
 
 B. Sideload the APK (developer mode)
