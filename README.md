@@ -6,6 +6,11 @@ A free, open-source VR court sport for **Meta Quest** and **PC VR**: throw, curv
 opponent in a neon glass arena. Inspired by CCP Games' *Sparc* (2017); an independent game with its own code, art and
 sound.
 
+**[Get the game](https://github.com/jendoebelin/ProjectArena-public/releases/latest)** ·
+**[Join the Quest alpha](https://www.meta.com/s/4NDP5YlGM)** ·
+**[Discord: news, help and matches](https://discord.gg/KuNkSbVHzh)** ·
+**[The Crowd: cheer from your phone](https://crowd.aftersparc.com)**
+
 - 1-v-1 against a practice bot or another player, on your home network or online through a community server
 - Rooms with a waiting area and a queue, spectating (a hub of live miniature arenas), voice chat
 - An avatar builder: two body types, outfits, hair, headgear, face shields, masks, gauntlets, patterns and colours

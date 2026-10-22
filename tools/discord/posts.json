@@ -6,19 +6,6 @@
     "text": "Welcome to Project Arena! Keep it friendly, keep it fun.\n\n**1. Be respectful.** No harassment, bullying, hate speech, slurs or threats, here or in the game.\n**2. Keep it clean.** No NSFW, gore or shock content. Players here are 13 and older.\n**3. Play fair.** No cheating, exploits or modified game files in online play. Found a bug that gives an edge? Report it, don't use it.\n**4. Protect privacy.** Don't share anyone's personal information: real names, addresses, photos or accounts, yours included.\n**5. No spam.** No flooding, chain messages or unrelated advertising. Streamers: share your streams and clips in #streaming and #highlights.\n**6. Use the right channel.** Bugs in #bug-reports, ideas in #feedback-and-ideas, finding a match in #looking-for-match.\n**7. Report problems, don't fight them.** Trouble with a player in the game? Use MENU > REPORT PLAYER (and MUTE). Here, message a moderator.\n**8. Follow Discord's rules:** https://discord.com/terms and https://discord.com/guidelines\n\nModerators may warn, mute or remove anyone who breaks these rules, and serious cases can be banned from the game's servers too. By staying here you agree to them. Have fun out there!"
   },
   {
-    "channel": "how-to-join",
-    "title": "How to join Project Arena",
-    "color": "#1ab3ff",
-    "image": "title.png",
-    "text": "**Project Arena** is a free VR sport: throw your ball past your opponent's shield, block theirs, and play for your country.\n\n**On Meta Quest**\n1. Open this link on your phone or computer, signed in to the Meta account your headset uses:\n   **https://www.meta.com/s/4NDP5YlGM**\n2. Accept the invite.\n3. In the headset, open **Library** and install **Project Arena**.\n\n**On a PC VR headset**, or to watch on a PC without a headset:\n   download the PC version from **https://github.com/jendoebelin/ProjectArena-public/releases**\n\nThe alpha needs everyone on the newest version: if the game says **UPDATE AVAILABLE**, update it in your Library."
-  },
-  {
-    "channel": "how-to-join",
-    "title": "Your first match",
-    "color": "#1ab3ff",
-    "text": "**Practice:** MAIN MENU > **PLAY PRACTICE** > pick the rules. You play the bot.\n\n**Online:** MAIN MENU > **MULTIPLAYER**, check it says **ONLINE: ON**, then\n- **HOST A ROOM** to open your own arena (others can join you), or\n- pick an arena in the list to join it.\n\nWaiting outside the tank? Press **JOIN QUEUE** to play next.\n\n**Rules:** BASIC is a timed match. ADVANCED is best of three rounds, first to 4 points.\n**Talk:** hold the left grip (push to talk).\n**Help in the game:** MENU > **HOW TO PLAY**.\n\nLooking for someone to play? Post in **#looking-for-match**."
-  },
-  {
     "channel": "the-crowd",
     "title": "The Crowd: cheer from your phone",
     "color": "#ff6a1a",
@@ -93,5 +80,11 @@
     "title": "How to get help (please read)",
     "color": "#a46bff",
     "text": "Stuck installing, connecting or playing? Ask here. You'll get an answer faster if you include:\n\n1. **Quest or PC** (and which headset)\n2. **Your game version** (bottom of the main menu)\n3. **What you tried, and what happened** (an error message or a picture helps)\n\nCheck **#faq** first: the answer may be there.\nFound a bug? **#bug-reports** (or MENU > REPORT A BUG in the game, which sends us the details).\nNever share passwords, account details or personal information here."
+  },
+  {
+    "channel": "faq",
+    "title": "How to play your first match",
+    "color": "#1ab3ff",
+    "text": "**Practice:** MAIN MENU > **PLAY PRACTICE** > pick the rules > **START PRACTICE**. You play the bot.\n\n**Online:** MAIN MENU > **MULTIPLAYER**, check it says **ONLINE: ON**, then\n- **HOST A ROOM** to open your own arena: pick the rules, set **MATCH OPTIONS**, then **OPEN MY ARENA**, or\n- pick an arena in the list to join it.\n\nWaiting outside the tank? Press **JOIN QUEUE** to play next. Two players meet in the middle: **bump fists** to start.\n\n**The rules:** BASIC is a timed match (3 minutes unless the host changes it). ADVANCED is best of three rounds, first to 4 points.\n**MATCH OPTIONS** (the host's): shields on or off (**HOTDOG MODE** 🌭), knuckle guards, match time or **FREE PLAY** (no clock, no winner), and round timers for Advanced.\n\n**Talk:** hold the **left grip** (push to talk).\n**Re-centre:** press **B** or click a thumbstick.\n**More help in the game:** MENU > **HOW TO PLAY**."
   }
 ]
