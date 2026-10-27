@@ -8,6 +8,9 @@
 enum : uint32_t { TAG_ARENA = 1, TAG_RETURN = 2, TAG_FOUL = 4, TAG_TEAM0 = 8, TAG_TEAM1 = 16 };
 
 struct CollisionTri { Vec3 a, b, c, n; uint32_t tags; };
+// arena.col (tools/build_open_assets.py): "SCOL", the triangle count (u32), then per triangle 9 floats and tags (u32).
+// Empty when the data isn't one (wrong magic, cut short).
+std::vector<CollisionTri> parseCollision(const uint8_t* data, size_t size);
 
 struct Tunables {
     // ---- rule set. Basic = BeginnerBrawlActivityBP (the activity spawned by l_courtside_00); Advanced = BrawlActivityBP.
@@ -200,6 +203,23 @@ struct GameEvent {
     int hand;       // hand index where relevant (-1 otherwise)
     Vec3 pos;
     float value;
+    int ball = -1;  // hits, strikes, blocks: the ball (its owner's index) behind it; -1 otherwise. Not sent: host only
+};
+
+// One match's counts for the community statistics (the host keeps them from its events; sent when a match between two
+// people ends). THROW ACCURACY is literal (owner, 2026-10-26; GitHub #14, astrobleem): a throw counts on target at most
+// once, at its first hit, strike or block. A ball the other player blocked or punched back is their return: a point it
+// scores counts in hits and in returnHits, never as a throw on target. Your own ball hitting you, a foul's strike and the
+// shot clock's automatic strike are nobody's shot.
+struct MatchTally {
+    uint16_t throws = 0, onTarget = 0, hits = 0, blocks = 0, faced = 0, catches = 0, strikes = 0, returnHits = 0;
+    float topSpeed = 0;
+};
+struct StatCounter {
+    MatchTally s[2];
+    void add(const GameEvent& e);   // Throw, HitPlayer, Strike, ShieldBlock, KnuckleBlock, Caught (others: ignored)
+private:
+    struct Shot { int by = -1; bool thrown = false, counted = false; } shot_[2];   // the attack each ball carries
 };
 
 struct Ball {
@@ -283,7 +303,7 @@ public:
     Vec3 idlePoint(int p) const { return tun.spawner[p] + Vec3{0, tun.spawnerIdleHeight, 0}; }
     Vec3 chestPoint(int p) const;
     float throwSpeedFromHandSpeed(float handSpeed, int thrower) const;
-    void addStrike(int againstPlayer, const Vec3& where);   // public for tests
+    void addStrike(int againstPlayer, const Vec3& where, int ball = -1);   // public for tests; ball: whose ball did it
     Vec3 handVelocity(int p, int h, float now) const;
     float ballRadius(int p) const { return tun.projectileRadius * pl[p].ball.scale; }
     float strikeScale(int strikes) const;
@@ -310,8 +330,10 @@ private:
     bool hitsBox(const Pose& box, const Vec3& half, const Vec3& from, const Vec3& to, float r, Vec3& n) const;
     void deflectMoving(Ball& b, const Vec3& n, const Vec3& surfaceVel, int deflector, float assistDeg, const Vec3& from,
                        bool punch = false);
-    void scorePoint(int scorer, const Vec3& where);
-    void emit(EventType t, int p, int h, const Vec3& pos, float v = 0) { events.push_back({t, p, h, pos, v}); }
+    void scorePoint(int scorer, const Vec3& where, int ball);
+    void emit(EventType t, int p, int h, const Vec3& pos, float v = 0, int ball = -1) {
+        events.push_back({t, p, h, pos, v, ball});
+    }
     float rnd();
     uint32_t rng = 0x12345u;
 };

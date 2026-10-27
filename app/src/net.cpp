@@ -269,8 +269,10 @@ uint32_t Net::roomHostVip() const {
 
 void Net::reportMatch(int winner, const MatchStats st[2], const uint8_t score[4], int mode) {
     if (mode_ != Mode::Host || !online_ || !vip_ || winner < 0 || winner > 1 || !slot_[0] || !slot_[1]) return;
-    uint8_t b[34];
+    uint8_t b[38];
     b[33] = (uint8_t)std::max(0, std::min(2, mode));   // (relays before 0.3.8 read the first 33 bytes)
+    std::memcpy(b + 34, &st[0].returnHits, 2);         // (0.3.9: the points from returns; older relays: 34 bytes)
+    std::memcpy(b + 36, &st[1].returnHits, 2);
     std::memcpy(b + 29, score, 4);
     b[0] = (uint8_t)winner;
     for (int k = 0; k < 2; ++k) {
@@ -864,6 +866,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                     uint16_t top;
                     std::memcpy(&top, q + 49, 2);
                     c.topSpeed = top / 100.f;
+                    if (rr.e - rr.p >= 4 + 2 * 51 + 8) std::memcpy(&c.returnHits, rr.p + 4 + 2 * 51 + 4 * k, 4);   // 0.3.9 relays
                 }
                 continue;
             }

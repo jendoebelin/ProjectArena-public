@@ -23,6 +23,21 @@ int main(int argc, char** argv) {
     net.init();
     net.setName(argc > 4 ? argv[4] : role.c_str());
     Game g;
+    {   // the arena's collision (without it a hosted match has no floor or walls: the ball falls through)
+        const char* paths[] = {"arena.col", "app/assets_open/arena.col", "../app/assets_open/arena.col"};
+        for (const char* path : paths) {
+            FILE* f = std::fopen(path, "rb");
+            if (!f) continue;
+            std::vector<uint8_t> bytes;
+            uint8_t buf[4096];
+            for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) bytes.insert(bytes.end(), buf, buf + n);
+            std::fclose(f);
+            const std::vector<CollisionTri> tris = parseCollision(bytes.data(), bytes.size());
+            std::printf("arena: %d triangles from %s\n", (int)tris.size(), path);
+            g.setArena(tris);
+            break;
+        }
+    }
     g.reset(true);
     if (server && !net.goOnline(server)) { std::printf("server did not resolve\n"); return 1; }
     PlayerInput local;
@@ -45,6 +60,8 @@ int main(int argc, char** argv) {
             }
         }
         PlayerInput in[2];
+        // a hosting probe plays as a bot itself (else a dummy stands still mid-court and the bot plays alone)
+        if (role == "host" && net.localIndex() == 0 && !net.localWaiting()) g.pl[0].isBot = true;
         if (net.exchange(local, in, g, 1.f / 90.f)) { g.step(1.f / 90.f, in); net.sendState(g); }
         const int L = net.localIndex();
         if (role == "queue" && joined && net.localWaiting() && net.localQueuePos() < 0 && t > 3) net.queue(true);

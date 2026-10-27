@@ -39,6 +39,13 @@ reports arriving. Reports are saved in `/opt/projectarena/bug_reports`; fetch th
 
 Updating: copy the new `projectarena_relay.py` (and `setup.sh`) up and run `sudo sh setup.sh` again; it restarts
 the relay, which drops everyone for a few seconds (players reconnect by themselves).
+- **Order: the relay first.** New relays accept older games; a new game may send what an older relay refuses (0.3.9's
+  match statistics are refused by a 0.3.8 relay). Update the relay before (or as) the new game reaches players, and
+  only then set `latest_version.txt`.
+- Copy the file by its full path (e.g. `C:/Users/you/ProjectArena/server/projectarena_relay.py`), not a relative one:
+  a copy run from another folder can fail and leave an old file in `/tmp` that then gets installed. Before
+  installing, compare `sha256sum /tmp/projectarena_relay.py` with the same file on your computer; keep a backup
+  (`sudo cp projectarena_relay.py projectarena_relay.py.bak-VERSION`) to put back if it doesn't start.
 
 **Player reports and bans (moderation):**
 - Player reports are the `player_report_*.txt` files in `/opt/projectarena/bug_reports`. Each one has the reported

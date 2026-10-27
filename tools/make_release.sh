@@ -48,7 +48,8 @@ if [ "$WHAT" = --store-only ]; then
   exit 0
 fi
 
-rm -rf "$OUT"; mkdir -p "$OUT"
+mkdir -p "$OUT"   # start the GitHub files afresh, but keep a store APK already built (and maybe uploaded)
+find "$OUT" -mindepth 1 -maxdepth 1 ! -name "ProjectArena-$VER-store.apk" -exec rm -rf {} +
 if [ "$WHAT" = --github-only ]; then
   cp "$APK" "$OUT/ProjectArena-$VER.apk"
 else

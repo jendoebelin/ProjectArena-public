@@ -15,16 +15,12 @@ static std::vector<CollisionTri> loadCol(const char* path) {
     std::vector<CollisionTri> out;
     FILE* f = std::fopen(path, "rb");
     if (!f) { std::printf("cannot open %s\n", path); std::exit(2); }
-    char magic[4]; uint32_t n;
-    std::fread(magic, 1, 4, f); std::fread(&n, 4, 1, f);
-    for (uint32_t i = 0; i < n; ++i) {
-        float v[9]; uint32_t tags;
-        std::fread(v, 4, 9, f); std::fread(&tags, 4, 1, f);
-        CollisionTri t{{v[0], v[1], v[2]}, {v[3], v[4], v[5]}, {v[6], v[7], v[8]}, {}, tags};
-        t.n = normalize(cross(t.b - t.a, t.c - t.a));
-        out.push_back(t);
-    }
+    std::vector<uint8_t> bytes;
+    uint8_t buf[4096];
+    for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) bytes.insert(bytes.end(), buf, buf + n);
     std::fclose(f);
+    out = parseCollision(bytes.data(), bytes.size());
+    if (out.empty()) { std::printf("%s is not an arena.col\n", path); std::exit(2); }
     return out;
 }
 
@@ -870,6 +866,81 @@ int main(int argc, char** argv) {
                 if (b.state == BallState::Idle) home = i / 72.f;
             }
             CHECK(home > 0 && home < 1.0f, "a weak throw is drawn back home within a second");
+        }
+    }
+    {
+        std::printf("[match statistics: throw accuracy is literal, returns count apart (GitHub #14)]\n");
+        auto ev = [](EventType t, int p, float v, int ball) { GameEvent e{t, p, -1, {}, v}; e.ball = ball; return e; };
+        // what the community server accepts (server/projectarena_relay.py, 0.3.9)
+        auto valid = [](const MatchTally& s) {
+            return s.onTarget <= s.throws && s.returnHits <= s.hits && s.returnHits <= s.blocks &&
+                   s.hits - s.returnHits <= s.onTarget && s.blocks <= s.faced;
+        };
+        {   // the issue's case: 0 throws, 1 blocks it back, the return hits 0
+            StatCounter c;
+            c.add(ev(EventType::Throw, 0, 9.f, -1));
+            c.add(ev(EventType::ShieldBlock, 1, 0, 0));
+            c.add(ev(EventType::HitPlayer, 0, 1.f, 0));
+            const MatchTally &a = c.s[0], &b = c.s[1];
+            CHECK(a.throws == 1 && a.onTarget == 1 && a.hits == 0 && a.faced == 1, "the thrower: one throw, on target (it was blocked)");
+            CHECK(b.throws == 0 && b.onTarget == 0 && b.hits == 1 && b.returnHits == 1 && b.blocks == 1,
+                  "the defender: a point from a return, no throw on target");
+            CHECK(valid(a) && valid(b), "the server accepts both players' numbers");
+        }
+        {   // one throw that strikes and then hits: on target once
+            StatCounter c;
+            c.add(ev(EventType::Throw, 0, 9.f, -1));
+            c.add(ev(EventType::Strike, 1, 1.f, 0));
+            c.add(ev(EventType::HitPlayer, 1, 0.f, 0));
+            CHECK(c.s[0].onTarget == 1 && c.s[0].hits == 1 && c.s[0].strikes == 1 && c.s[0].returnHits == 0 && c.s[1].faced == 1,
+                  "a throw that strikes and then hits is on target once");
+        }
+        {   // your own ball hits you: the other player's point, but nobody's shot
+            StatCounter c;
+            c.add(ev(EventType::Throw, 0, 9.f, -1));
+            c.add(ev(EventType::HitPlayer, 0, 1.f, 0));
+            CHECK(c.s[1].hits == 0 && c.s[1].onTarget == 0 && c.s[0].onTarget == 0, "an own goal is nobody's hit or throw on target");
+        }
+        {   // the shot clock's automatic strike belongs to no ball
+            StatCounter c;
+            c.add(ev(EventType::Throw, 0, 9.f, -1));
+            c.add(ev(EventType::Strike, 1, 1.f, -1));
+            CHECK(c.s[0].strikes == 1 && c.s[0].onTarget == 0, "an automatic strike counts as a strike, not a throw on target");
+        }
+        {   // a returned ball blocked back again: the first thrower's throw on target once, then it's a return again
+            StatCounter c;
+            c.add(ev(EventType::Throw, 0, 9.f, -1));
+            c.add(ev(EventType::KnuckleBlock, 1, 9.f, 0));
+            c.add(ev(EventType::ShieldBlock, 0, 0, 0));
+            c.add(ev(EventType::HitPlayer, 1, 0.f, 0));
+            CHECK(c.s[0].onTarget == 1 && c.s[0].hits == 1 && c.s[0].returnHits == 1 && c.s[1].onTarget == 0 && valid(c.s[0]) &&
+                  valid(c.s[1]), "a rally of blocks: each throw on target once; the last return scores");
+        }
+        {   // real matches: two lively bots for ten minutes; every event behind a point names its ball
+            Game g; g.setArena(tris); g.reset(true);
+            g.pl[0].isBot = true;
+            g.tun.botBlockChance = 0.5f; g.tun.botHoldMin = 0.4f; g.tun.botHoldMax = 1.0f; g.tun.botAimError = 0.1f;
+            PlayerInput in[2] = {standing(g, 0), {}};
+            std::vector<GameEvent> log;
+            run(g, in, 600.f, &log);
+            StatCounter c;
+            int untagged = 0, points[2] = {0, 0};
+            bool ok = true;
+            for (const GameEvent& e : log) {
+                if (e.type == EventType::RoundStart && (int)e.value <= 1) c = StatCounter{};
+                if ((e.type == EventType::HitPlayer || e.type == EventType::ShieldBlock || e.type == EventType::KnuckleBlock) && e.ball < 0)
+                    ++untagged;
+                if (e.type == EventType::HitPlayer) ++points[(int)e.value & 1];
+                c.add(e);
+                ok = ok && valid(c.s[0]) && valid(c.s[1]);
+            }
+            int returns = 0, blocks = 0;
+            for (const GameEvent& e : log) blocks += e.type == EventType::ShieldBlock || e.type == EventType::KnuckleBlock;
+            for (int p = 0; p < 2; ++p) returns += c.s[p].returnHits;
+            std::printf("       (bots: %d + %d points, %d blocks, %d events)\n", points[0], points[1], blocks, (int)log.size());
+            CHECK(points[0] + points[1] > 4 && blocks > 2, "(test setup: the bots score and block)");
+            CHECK(untagged == 0, "every hit and block names the ball behind it");
+            CHECK(ok, "the counts stay acceptable to the server all through ten minutes of bot matches");
         }
     }
     avatarTests(tris);

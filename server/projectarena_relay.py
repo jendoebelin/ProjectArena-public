@@ -30,6 +30,12 @@ Player statistics (2026-10-20; relays and games from 0.3.6 on, older ones never 
                                 player in slot 0 (the game's MY STATS page)
   MATCH from 0.3.8 hosts has one more byte (34 in all): the match's mode, 0 standard rules, 1 HOTDOG (no shields),
   2 other custom MATCH OPTIONS. Careers count every mode; the table player_modes keeps each mode apart as well.
+  MATCH from 0.3.9 hosts has four more (38 in all): each slot's points from returns (2 x u16), the hits scored by
+  balls the player blocked or punched back. Throws on target are then literal (each throw at most once, returns never:
+  GitHub #14), so the checks are: on target <= throws, returns' points <= hits and <= blocks, the other hits <= on
+  target. Older hosts (0.3.6-0.3.8) counted a returned ball's hit, strike or block as a throw on target too, so their
+  on target can exceed their throws in a real match: it is capped at the throws (accuracy never above 100 %), not
+  refused; their hits must still be <= on target. STATS then ends with each slot's points from returns (2 x u32).
   STATSREQ 11 any -> server     body: a host's virtual address
   STATS   12  server -> asker   body: that host's virtual address (u32), then for slot 0 and 1: known (u8), name
                                 (16), matches, wins, throws, on target, hits, blocks, faced, catches (8 x u32),
@@ -145,6 +151,9 @@ class Stats:
         self.db.execute('CREATE TABLE IF NOT EXISTS player_modes (key TEXT, mode INTEGER, ' +
                         ', '.join('%s INTEGER DEFAULT 0' % f for f in STAT_FIELDS) +
                         ', top_speed INTEGER DEFAULT 0, PRIMARY KEY (key, mode))')
+        for table in ('players', 'player_modes'):   # (0.3.9: the points from returns)
+            if 'return_hits' not in [r[1] for r in self.db.execute('PRAGMA table_info(%s)' % table)]:
+                self.db.execute('ALTER TABLE %s ADD COLUMN return_hits INTEGER DEFAULT 0' % table)
         self.db.commit()
         self.purge()
         n = self.db.execute('SELECT COUNT(*) FROM players').fetchone()[0]
@@ -158,11 +167,11 @@ class Stats:
         if n:
             self.log('stats: %d players unseen for %d months removed' % (n, months))
 
-    def add(self, key, name, won, counts, top, mode=0):
+    def add(self, key, name, won, counts, top, mode=0, returns=0):
         t = int(time.time())
         self.db.execute('INSERT OR IGNORE INTO players (key, name, first_seen, last_seen) VALUES (?, ?, ?, ?)', (key, name, t, t))
-        sets = ', '.join('%s = %s + ?' % (f, f) for f in STAT_FIELDS)
-        vals = (1, 1 if won else 0) + tuple(counts)
+        sets = ', '.join('%s = %s + ?' % (f, f) for f in STAT_FIELDS + ('return_hits',))
+        vals = (1, 1 if won else 0) + tuple(counts) + (returns,)
         self.db.execute('UPDATE players SET name = ?, last_seen = ?, top_speed = MAX(top_speed, ?), ' + sets + ' WHERE key = ?',
                         (name, t, top) + vals + (key,))
         self.db.execute('INSERT OR IGNORE INTO player_modes (key, mode) VALUES (?, ?)', (key, mode))
@@ -186,8 +195,9 @@ class Stats:
         return n
 
     def get(self, key):
-        r = self.db.execute('SELECT name, ' + ', '.join(STAT_FIELDS) + ', top_speed FROM players WHERE key = ?', (key,)).fetchone()
-        return r
+        """(name, matches, wins, throws, on_target, hits, blocks, faced, catches, top_speed, return_hits) or None"""
+        return self.db.execute('SELECT name, ' + ', '.join(STAT_FIELDS) + ', top_speed, return_hits FROM players WHERE key = ?',
+                               (key,)).fetchone()
 
 
 class Latest:
@@ -391,16 +401,24 @@ class Relay(asyncio.DatagramProtocol):
             rows = [struct.unpack_from('<7H', body, 1 + 14 * k) for k in range(2)]
             score = tuple(body[29:33])
             mode = body[33] if len(body) >= 34 and body[33] <= 2 else 0   # (0.3.8: the match's mode)
+            returns = struct.unpack_from('<2H', body, 34) if len(body) >= 38 else None   # (0.3.9: points from returns)
             players = [self.by_vip.get(v) for v in c.tank]
             if winner > 1 or any(p is None or p.key is None for p in players) or players[0].key == players[1].key:
                 return
-            for r in rows:   # a result that can't be real counts for nobody
+            for k, r in enumerate(rows):   # a result that can't be real counts for nobody
                 throws, on_target, hits, blocks, faced, catches, top = r
-                if throws > 3000 or on_target > throws or hits > on_target or blocks > faced or faced > 3000 or top > 6000:
-                    self.log('stats: result from %s refused (%s)' % (c.name, r))
+                if returns is None:   # (older hosts: on target may include returns; capped below)
+                    bad = hits > on_target or on_target > 3000
+                else:
+                    rh = returns[k]
+                    bad = on_target > throws or rh > hits or rh > blocks or hits - rh > on_target
+                if bad or throws > 3000 or blocks > faced or faced > 3000 or top > 6000:
+                    self.log('stats: result from %s refused (%s%s)' % (c.name, r, '' if returns is None else ', returns %d' % returns[k]))
                     return
+            if returns is None:
+                rows = [(r[0], min(r[1], r[0])) + tuple(r[2:]) for r in rows]
             c.last_match = now
-            self.pending[c.vip] = dict(t=now, host=c, winner=winner, score=score, rows=rows, mode=mode,
+            self.pending[c.vip] = dict(t=now, host=c, winner=winner, score=score, rows=rows, mode=mode, returns=returns or (0, 0),
                                        keys=[p.key for p in players], names=[p.name for p in players])
             self.settle(c.vip, now)
         elif ptype == CONFIRM and len(body) >= 9:
@@ -418,16 +436,18 @@ class Relay(asyncio.DatagramProtocol):
             c.last_req = now
             hv = SELF if ptype == MYSTATS else struct.unpack_from('<I', body)[0]
             h = self.by_vip.get(hv)
-            out = struct.pack('<I', hv)
+            out, rets = struct.pack('<I', hv), []
             for v in ((c.vip, 0) if ptype == MYSTATS else h.tank if h is not None else (0, 0)):
                 p = self.by_vip.get(v)
                 r = st.get(p.key) if (st is not None and p is not None and p.key) else None
                 if r is None:
                     name = (p.name if p is not None else '').encode('ascii', 'replace')[:16]
                     out += struct.pack('<B16s8IH', 1 if p is not None and p.key else 0, name, *([0] * 8), 0)
+                    rets.append(0)
                 else:
                     out += struct.pack('<B16s8IH', 1, (p.name or r[0]).encode('ascii', 'replace')[:16], *r[1:9], min(65535, r[9]))
-            self.send(c.addr, STATS, out)
+                    rets.append(r[10] or 0)
+            self.send(c.addr, STATS, out + struct.pack('<2I', *rets))   # (0.3.9: points from returns; older games stop at 106)
 
     def settle(self, hv, now):
         """Count a host's result once a tank player who is not the host confirms the same winner and score."""
@@ -448,7 +468,7 @@ class Relay(asyncio.DatagramProtocol):
         for k in range(2):
             throws, on_target, hits, blocks, faced, catches, top = p['rows'][k]
             st.add(p['keys'][k], p['names'][k], k == p['winner'], (throws, on_target, hits, blocks, faced, catches), top,
-                   p.get('mode', 0))
+                   p.get('mode', 0), p.get('returns', (0, 0))[k])
         self.log('stats: %s beat %s (host %s, confirmed, %s)' % (p['names'][p['winner']], p['names'][1 - p['winner']],
                                                                  p['host'].name, MODE_NAMES[p.get('mode', 0)]))
 

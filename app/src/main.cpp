@@ -281,7 +281,7 @@ struct App {
     // updateSides(); with no country anywhere the ends stay blue / orange and everything looks as before
     // player statistics (the community server keeps them per player key, net.h CareerStats): this match's counts on
     // the host, and the two players' careers as the server last answered (careersOk) for statsHost
-    Net::MatchStats matchStats[2];
+    StatCounter matchCount;
     Net::MatchStats liveStats[2];   // The Crowd: this match so far (kept through the match summary)
     Net::CareerStats careers[2];
     bool careersOk = false;
@@ -430,7 +430,9 @@ struct App {
     int voiceMode = 0;             // 0 push-to-talk, 1 open mic, 2 off
     bool muteSpectators = false, mutePlayers = false, muteAll = false;
     bool voicePage = false;        // settings sub-page
-    bool ptt = false, talking = false, micAsked = false, micDenied = false;
+    bool ptt = false, talking = false, micAsked = false, micDenied = false;   // micDenied: asked, not granted (yet)
+    bool micFailed = false;        // allowed, but the microphone wouldn't open (tried again every 10 s)
+    double micCheckAt = 0;
     float micGain = 1.0f;          // automatic microphone gain
     int voiceSent = 0, voiceRecv = 0;
     float pttGripMax = 0; int pttHeldFrames = 0;   // push-to-talk diagnostics: the left grip's peak, frames held (per log line)
@@ -500,25 +502,28 @@ bool netAcquireMulticastLock() {
     return true;
 }
 
-// runtime permissions (RECORD_AUDIO for voice, USE_SCENE for WINDOW's depth): ask once, the headset shows its own prompt
+// runtime permissions (RECORD_AUDIO for voice, USE_SCENE for WINDOW's depth): ask once, the headset shows its own prompt.
+// The answer comes later: callers check again (once a second) and never take "not granted yet" as a refusal. Checked
+// from the render thread, which never returns to Java, so every local reference is freed here (or the table fills up).
 static bool androidPermission(const char* name, bool request, int code) {
     if (!g_vm || !g_activity) return false;
     JNIEnv* env = nullptr;
     g_vm->AttachCurrentThread(&env, nullptr);
+    if (env->PushLocalFrame(8) != 0) { env->ExceptionClear(); return false; }
     jclass cls = env->GetObjectClass(g_activity);
     jstring perm = env->NewStringUTF(name);
     jmethodID check = env->GetMethodID(cls, "checkSelfPermission", "(Ljava/lang/String;)I");
     jint r = check ? env->CallIntMethod(g_activity, check, perm) : -1;
-    if (env->ExceptionCheck()) { env->ExceptionClear(); return false; }
-    if (r == 0) return true;
-    if (request) {
+    if (env->ExceptionCheck()) { env->ExceptionClear(); r = -1; }
+    else if (r != 0 && request) {
         jclass strCls = env->FindClass("java/lang/String");
         jobjectArray arr = env->NewObjectArray(1, strCls, perm);
         jmethodID req = env->GetMethodID(cls, "requestPermissions", "([Ljava/lang/String;I)V");
         if (req) env->CallVoidMethod(g_activity, req, arr, code);
         if (env->ExceptionCheck()) env->ExceptionClear();
     }
-    return false;
+    env->PopLocalFrame(nullptr);
+    return r == 0;
 }
 static bool micPermission(bool request) { return androidPermission("android.permission.RECORD_AUDIO", request, 1); }
 static bool scenePermission(bool request) { return androidPermission("com.oculus.permission.USE_SCENE", request, 2); }
@@ -528,7 +533,9 @@ static bool micPermission(bool) { return true; }   // Windows asks for microphon
 static bool scenePermission(bool) { return true; }
 #endif
 
+static double g_clockOverride = -1.0;   // --record: the recording's own clock (frames are rendered slower than real time)
 static double nowSeconds() {
+    if (g_clockOverride >= 0.0) return g_clockOverride;
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
@@ -1062,17 +1069,9 @@ static std::vector<CollisionTri> loadCollision() {
     std::vector<CollisionTri> out;
     std::vector<uint8_t> file;
     if (!assetRead("arena.col", file) || file.size() < 8) { LOGE("arena.col missing"); return out; }
-    const uint8_t* d = file.data();
-    uint32_t n; std::memcpy(&n, d + 4, 4);
-    const uint8_t* p = d + 8;
-    for (uint32_t i = 0; i < n; ++i, p += 40) {
-        float v[9]; uint32_t tags;
-        std::memcpy(v, p, 36); std::memcpy(&tags, p + 36, 4);
-        CollisionTri t{{v[0], v[1], v[2]}, {v[3], v[4], v[5]}, {v[6], v[7], v[8]}, {}, tags};
-        t.n = normalize(cross(t.b - t.a, t.c - t.a));
-        out.push_back(t);
-    }
-    LOGI("collision: %u tris", n);
+    out = parseCollision(file.data(), file.size());
+    if (out.empty()) LOGE("arena.col unreadable");
+    LOGI("collision: %u tris", (unsigned)out.size());
     return out;
 }
 
@@ -1243,7 +1242,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.8";
+static const char* kAppVersion = "0.3.9";
 
 // "0.3.4" newer than "0.3.3" (dotted numbers, compared part by part)
 static bool versionNewer(const char* a, const char* b) {
@@ -2538,11 +2537,11 @@ static void drawStats(App& a) {
     }
     if (!c.matches) return;
     // the tiles
-    const char* tl[4] = {"MATCHES", "WINS", "HITS", "CATCHES"};
-    const uint32_t tv[4] = {c.matches, c.wins, c.hits, c.catches};
-    for (int k = 0; k < 4; ++k) {
-        const float x = -0.36f + 0.24f * k, y = -0.17f;
-        quad(x, y, 0.22f, 0.10f, 0.002f, tile);
+    const char* tl[5] = {"MATCHES", "WINS", "HITS", "FROM RETURNS", "CATCHES"};   // (hits: from throws and returns)
+    const uint32_t tv[5] = {c.matches, c.wins, c.hits, c.returnHits, c.catches};
+    for (int k = 0; k < 5; ++k) {
+        const float x = -0.40f + 0.20f * k, y = -0.17f;
+        quad(x, y, 0.18f, 0.10f, 0.002f, tile);
         std::snprintf(buf_stats, sizeof buf_stats, "%u", tv[k]);
         text(buf_stats, x, y + 0.012f, 0.040f, white);
         text(tl[k], x, y - 0.033f, 0.015f, grey);
@@ -2921,44 +2920,29 @@ static void drawFx(App& a) {
     for (int p = 0; p < 2; ++p) drawSpawnFx(a, p);
 }
 
-// the host counts each match for the community server's statistics: throws, throws on target (a hit, a strike or a
-// block), hits, blocks, on-target balls faced, catches, the top throw speed; sent when a match between two people ends
+// the host counts each match for the community server's statistics (StatCounter, game.h: throws, throws on target,
+// hits and the points from returns, blocks, on-target balls faced, catches, the top throw speed); sent when a match
+// between two people ends
 static std::array<uint8_t, 4> finalScore(const Game& g) {   // what both players' games agree on (CONFIRM)
     auto c = [](int v) { return (uint8_t)std::max(0, std::min(255, v)); };
     return {c(g.pl[0].score), c(g.pl[1].score), c(g.pl[0].roundWins), c(g.pl[1].roundWins)};
 }
 
 static void countStat(App& a, const GameEvent& e) {
-    Net::MatchStats* s = a.matchStats;
-    auto bump = [](uint16_t& v) { if (v < 3000) ++v; };
-    const int p = e.player;
+    Net::MatchStats* s = a.matchCount.s;
     switch (e.type) {
     case EventType::RoundStart:
-        if ((int)e.value <= 1) { s[0] = Net::MatchStats{}; s[1] = Net::MatchStats{}; }
-        break;
-    case EventType::Throw:
-        if (p >= 0 && p < 2) { bump(s[p].throws); s[p].topSpeed = std::max(s[p].topSpeed, e.value); }
-        break;
-    case EventType::HitPlayer: {   // player = the one hit, value = the scorer
-        const int sc = (int)e.value;
-        if (p >= 0 && p < 2 && sc >= 0 && sc < 2 && sc != p) { bump(s[sc].hits); bump(s[sc].onTarget); bump(s[p].faced); }
-        break;
-    }
-    case EventType::Strike:   // player = the one struck against
-        if (p >= 0 && p < 2) { bump(s[1 - p].onTarget); bump(s[p].faced); bump(s[1 - p].strikes); }
-        break;
-    case EventType::ShieldBlock: case EventType::KnuckleBlock:   // player = the blocker
-        if (p >= 0 && p < 2) { bump(s[p].blocks); bump(s[p].faced); bump(s[1 - p].onTarget); }
-        break;
-    case EventType::Caught:
-        if (p >= 0 && p < 2) bump(s[p].catches);
+        if ((int)e.value <= 1) a.matchCount = StatCounter{};
         break;
     case EventType::MatchEnd:
         a.liveStats[0] = s[0]; a.liveStats[1] = s[1];
-        if (p >= 0 && p < 2 && !a.game.pl[1].isBot) a.net.reportMatch(p, s, finalScore(a.game).data(), a.game.tun.statsMode());
-        s[0] = Net::MatchStats{}; s[1] = Net::MatchStats{};
+        if (e.player >= 0 && e.player < 2 && !a.game.pl[1].isBot)
+            a.net.reportMatch(e.player, s, finalScore(a.game).data(), a.game.tun.statsMode());
+        a.matchCount = StatCounter{};
         return;
-    default: break;
+    default:
+        a.matchCount.add(e);
+        break;
     }
     a.liveStats[0] = s[0]; a.liveStats[1] = s[1];
 }
@@ -3056,9 +3040,10 @@ static int careerLines(const App& a, int p, char out[5][48]) {
     if (!c.matches) { std::snprintf(out[0], 48, "FIRST ONLINE MATCH"); return 1; }
     std::snprintf(out[0], 48, "%u WINS  /  %u MATCHES", c.wins, c.matches);
     std::snprintf(out[1], 48, "THROW ACCURACY %d%%", c.throws ? (int)std::lround(100.0 * c.onTarget / c.throws) : 0);
-    std::snprintf(out[2], 48, "BLOCKS %d%%", c.faced ? (int)std::lround(100.0 * c.blocks / c.faced) : 0);
+    // (each line about as wide as the first: they share a column on the jumbotron)
+    std::snprintf(out[2], 48, "BLOCKS %d%%  -  %u CATCHES", c.faced ? (int)std::lround(100.0 * c.blocks / c.faced) : 0, c.catches);
     std::snprintf(out[3], 48, "TOP SPEED %d KM/H", (int)std::lround(c.topSpeed * 3.6f));
-    std::snprintf(out[4], 48, "%u HITS  -  %u CATCHES", c.hits, c.catches);
+    std::snprintf(out[4], 48, "%u HITS (%u FROM RETURNS)", c.hits, c.returnHits);
     return 5;
 }
 
@@ -3107,7 +3092,10 @@ static void drawJumbotron(App& a) {
                 const float bar[4] = {a.sideRGB[p][0], a.sideRGB[p][1], a.sideRGB[p][2], 0.95f};
                 a.gfx.drawPanel(Mat4::fromPose(at(u, 0.33f, 0.002f), {0.62f, 0.05f, 1}), bar);
             }
-            for (int k = 0; k < nl[p]; ++k) a.gfx.drawText(lines[p][k], at(u, 0.05f - 0.15f * k, 0.004f), 0.070f, k ? grey : white);
+            for (int k = 0; k < nl[p]; ++k) {   // (long lines shrink to their 1 m column: a character is ~0.72 x the size)
+                const float sz = std::min(0.070f, 1.0f / (0.72f * std::max<size_t>(1, std::strlen(lines[p][k]))));
+                a.gfx.drawText(lines[p][k], at(u, 0.05f - 0.15f * k, 0.004f), sz, k ? grey : white);
+            }
         }
         // The Crowd, in the middle: how many fans follow on their phones and each end's hype; or where to follow
         if (crowd && crowd->fans > 0) {
@@ -5068,10 +5056,16 @@ static bool speakerPos(const App& a, uint32_t id, Vec3& out) {
 // permission given; 40 ms frames are sent while push-to-talk is held (or always with open mic, above a noise gate).
 static void updateVoice(App& a) {
     const bool zone = a.net.voiceZone() && a.voiceMode != 2;
-    if (zone && !a.micDenied && !a.audio.capturing()) {
-        if (micPermission(!a.micAsked)) a.audio.startCapture();
-        else if (a.micAsked && !micPermission(false)) a.micDenied = true;
+    // the permission: asked once; then checked once a second, so a prompt answered later (or a grant from the headset's
+    // settings) starts the microphone without changing VOICE (GitHub #15, astrobleem: a pending prompt once read as no)
+    const double now = nowSeconds();
+    if (zone && !a.audio.capturing() && now >= a.micCheckAt) {
+        a.micCheckAt = now + 1.0;
+        const bool granted = micPermission(!a.micAsked);
         a.micAsked = true;
+        a.micDenied = !granted;
+        a.micFailed = granted && !a.audio.startCapture();
+        if (a.micFailed) a.micCheckAt = now + 10.0;   // (busy or missing: not every second, nor a log line each time)
     }
     if (!zone && a.audio.capturing()) a.audio.stopCapture();
     a.talking = false;
@@ -5145,7 +5139,7 @@ static void drawVoiceHud(App& a) {
     const float grey[4] = {0.6f, 0.65f, 0.72f, 1}, red[4] = {1.0f, 0.3f, 0.25f, 1}, white[4] = {1, 1, 1, 1};
     const PlayerInput& in = a.localIn;
     if (in.hand[0].tracked && !a.menuOpen) {
-        const char* t = a.voiceMode == 2 ? "VOICE OFF" : a.micDenied ? "MIC NOT ALLOWED" : a.muteAll ? "ALL MUTED"
+        const char* t = a.voiceMode == 2 ? "VOICE OFF" : a.micDenied ? "MIC NEEDS PERMISSION" : a.micFailed ? "MIC NOT AVAILABLE" : a.muteAll ? "ALL MUTED"
                         : a.voiceMode == 1 ? (a.talking ? "OPEN MIC - TALKING" : "OPEN MIC")
                         : a.talking ? "TALKING" : "HOLD LEFT GRIP TO TALK";
         Vec3 at = in.hand[0].grip.p + Vec3{0, 0.12f, 0};
@@ -6447,6 +6441,8 @@ struct ShotView {
     int layer = 0, keyCol = 3;  // --layer 0-3: its VIEW LAYERS; --keycol 0-2 (pictures only): an old colour key
     std::string nations[2];     // --nations USA FRA: the two players' countries (NATIONS; "-" = none)
     int crowdFans = -1, crowdHype[2] = {0, 0}, crowdCheer = -1;   // --crowd FANS HYPE0 HYPE1 [END]: The Crowd
+    std::string recordDir;   // --record DIR SECONDS: a bot-vs-bot match recorded frame by frame (a trailer; DIR/f%05d.ppm
+    float recordSeconds = 0; // and DIR/events.csv for the sound), with scripted cameras; --size sets the frame size
     std::string opts;   // --opts hotdog,free,adv,round2,time5,kg0,kg1: MATCH OPTIONS in the pictures
     float mockDark = -1.f;   // --mockdark K: pictures only, a darker arena (GitHub #9): floor, dais and structure x K
     int winStyle = 0;           // --winscreen split|winner|camera (or 0-2): its WIN SCREEN
@@ -6456,6 +6452,38 @@ struct ShotView {
     int ptMode = 1;
     float ptRoom = 1.f;         // --ptroom: ROOM BRIGHTNESS in the picture
 };
+
+static Pose lookFrom(const Vec3& pos, const Vec3& target);
+static void stepFrame(App& a, PlayerInput in[2], int L, double t, float dt);
+
+// --record: the trailer's cameras by time (s): a wide establishing move, over blue's shoulder, low at the orange end,
+// alongside the ball, and a slow orbit high over the court for the finish
+static Pose trailerCamera(const App& a, float tt) {
+    // (inside the hall: the side stands start 8.4 m out and the end walls are 13.6 m out, so the camera stays within
+    // |z| < 7 and |x| < 12.5)
+    const Game& g = a.game;
+    const Vec3 h0 = a.viewIn[0].head.p, h1 = a.viewIn[1].head.p;
+    if (tt < 5.f) {
+        const float s = tt / 5.f, e = s * s * (3 - 2 * s);
+        return lookFrom(Vec3{-11.5f, 3.8f, 6.6f} * (1 - e) + Vec3{-3.5f, 2.6f, 6.4f} * e, {0.5f, 1.1f, 0});
+    }
+    if (tt < 10.f) return lookFrom(h0 + Vec3{-1.3f, 0.30f, 0.50f}, h1 + Vec3{0, -0.2f, 0});
+    if (tt < 14.5f) return lookFrom(h1 + Vec3{1.4f, 0.25f, -0.55f}, h0 + Vec3{0, -0.2f, 0});
+    if (tt < 19.5f) {
+        const Vec3 b = g.pl[0].ball.state == BallState::Flying ? g.pl[0].ball.pos : g.pl[1].ball.pos;
+        const float x = clampf(b.x * 0.55f, -5.f, 5.f);
+        return lookFrom({x, 2.2f, 6.2f}, {b.x * 0.8f, 1.2f, 0});
+    }
+    if (tt < 21.9f) {   // up at the stands: flags and the cheer bursts, the court below
+        const float s = (tt - 19.5f) / 2.4f;
+        return lookFrom({-3.f + 4.f * s, 1.7f, -6.6f}, {-1.f + 4.f * s, 4.6f, 9.f});
+    }
+    // the winner up close, the confetti over them (orange is player 1, standing at +X facing -X)
+    const int w = g.matchWinner >= 0 ? g.matchWinner : 1;
+    const Vec3 hw = a.viewIn[w].head.p;
+    const float side = w == 0 ? 1.f : -1.f, s = std::min(1.f, (tt - 21.9f) / 6.f);
+    return lookFrom(hw + Vec3{side * (2.6f - 0.6f * s), 0.45f - 0.2f * s, 0.9f - 1.4f * s}, hw + Vec3{0, 0.1f, 0});
+}
 
 static int selfTest(App& a, const char* out, const ShotView& v) {
     if (!initGraphics(a) || !initContent(a)) return 2;
@@ -6591,6 +6619,95 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         b1.pos = g.launcherPoint(1, 1);
         g.pl[1].hands[1].shieldUp = true;
     }
+    if (!v.recordDir.empty() && v.recordSeconds > 0) {   // --record: a bot-vs-bot match, frame by frame
+        Game& g = a.game;
+        g.tun.advanced = false;
+        g.tun.basicMatchTime = std::max(5.f, v.recordSeconds - 9.f);   // (the match ends a few seconds before the clip)
+        g.tun.meetTime = 0;
+        // livelier bots for a trailer: quicker throws, fewer blocks, steadier aim (more points in a short clip)
+        g.tun.botHoldMin = 0.4f; g.tun.botHoldMax = 1.0f; g.tun.botBlockChance = 0.2f; g.tun.botAimError = 0.08f;
+        g.tun.botHandSpeed *= 1.15f;
+        g.reset(true);
+        g.pl[0].isBot = true;
+        AvatarDesc looks[2];
+        for (int p = 0; p < 2; ++p) {
+            AvatarDesc d = avatar::preset(p ? 12 : 10);
+            for (int n = 1; n <= avatar::nationCount(); ++n)
+                if (v.nations[p] == avatar::nation(n)->code) avatar::setNation(d, n);
+            looks[p] = d;
+            g.pl[p].in.avatar = d;
+            g.pl[p].in.headTracked = true;
+        }
+        a.botAvatar = looks[1];   // (each frame the practice bot is given the bot's look: here, the chosen one)
+        a.viewing = true;
+        a.menuOpen = false;
+        a.testCrowdOn = true;
+        a.testCrowd = CrowdInfo{};
+        a.testCrowd.fans = 48;
+        a.testCrowd.waves[0] = 14; a.testCrowd.waves[1] = 11;
+        FILE* ev = fopen((v.recordDir + "/events.csv").c_str(), "w");
+        if (ev) fprintf(ev, "t,event,player,value\n");
+        const float dt = 1.f / 30.f;
+        double t = 1000.0;
+        a.startTime = t;
+        g_clockOverride = t;
+        a.lastTime = 0;
+        const int frames = (int)std::lround(v.recordSeconds * 30.f);
+        std::vector<uint8_t> px((size_t)W * H * 4), row((size_t)W * 3);
+        uint32_t rs = 4242u;
+        auto rnd = [&rs]() { rs = rs * 1664525u + 1013904223u; return (rs >> 8) / 16777216.f; };
+        float excite[2] = {0.3f, 0.3f};   // the fans' mood: up after a point or a block, settling back
+        for (int f = 0; f < frames; ++f) {
+            const float tt = f * dt;
+            g_clockOverride = t;
+            if (f % 15 == 0) {   // the phones' cheers, twice a second
+                CrowdInfo& c = a.testCrowd;
+                c.at = t;
+                for (int p = 0; p < 2; ++p) {
+                    c.cheers[p] = (int)(excite[p] * 30.f * (0.6f + 0.8f * rnd()));
+                    c.hype[p] = std::min(100, (int)(excite[p] * 100.f));
+                    excite[p] = std::max(0.25f, excite[p] * 0.82f);
+                }
+            }
+            PlayerInput in[2] = {g.pl[0].in, g.pl[1].in};
+            stepFrame(a, in, 0, t, dt);
+            for (int p = 0; p < 2; ++p) { g.pl[p].in.avatar = looks[p]; a.viewIn[p].avatar = looks[p]; }
+            for (const GameEvent& e : g.events) {
+                if (ev) fprintf(ev, "%.4f,%s,%d,%.3f\n", tt, eventName(e.type), e.player, e.value);
+                if (e.type == EventType::HitPlayer && e.value >= 0 && e.value < 2) excite[(int)e.value] = 1.f;
+                if (e.type == EventType::ShieldBlock && e.player >= 0 && e.player < 2) excite[e.player] = std::max(excite[e.player], 0.7f);
+            }
+            const Pose eye = trailerCamera(a, tt);
+            a.viewHead = eye;
+            a.localIn.head = eye;
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, W, H);
+            glEnable(GL_FRAMEBUFFER_SRGB);
+            glClearColor(0.01f, 0.012f, 0.02f, 1);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            const float fy = std::tan(deg2rad(v.fovY) * 0.5f), fx = fy * W / H;
+            a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(fx), std::atan(fx), std::atan(fy), -std::atan(fy), 0.05f, 2000.f), eye.p);
+            drawWorld(a, 0);
+            drawWorld(a, 1);
+            glFinish();
+            glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            char fn[64];
+            std::snprintf(fn, sizeof fn, "/f%05d.ppm", f);
+            if (FILE* fo = fopen((v.recordDir + fn).c_str(), "wb")) {
+                fprintf(fo, "P6\n%d %d\n255\n", W, H);
+                for (int y = H - 1; y >= 0; --y) {
+                    for (int x = 0; x < W; ++x) std::memcpy(&row[(size_t)x * 3], &px[((size_t)y * W + x) * 4], 3);
+                    fwrite(row.data(), 1, row.size(), fo);
+                }
+                fclose(fo);
+            }
+            t += dt;
+        }
+        if (ev) fclose(ev);
+        g_clockOverride = -1.0;
+        LOGI("record: %d frames (%dx%d) -> %s, final score %d-%d", frames, W, H, v.recordDir.c_str(), g.pl[0].score, g.pl[1].score);
+        return 0;
+    }
     for (int p = 0; p < 2; ++p) {   // --nations: the players' countries
         for (int n = 1; n <= avatar::nationCount(); ++n)
             if (v.nations[p] == avatar::nation(n)->code) {
@@ -6647,6 +6764,14 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         a.viewHead = eye;
         openBuilder(a, in);
     }
+    if (v.menu == "careers") {   // the jumbotron's career lines (made-up, wide numbers); no menu
+        a.careersOk = true;
+        for (int p = 0; p < 2; ++p) {
+            Net::CareerStats& c = a.careers[p];
+            c.known = true; c.matches = 1240; c.wins = 815; c.throws = 9410; c.onTarget = 6262; c.hits = 2120;
+            c.returnHits = 1314; c.blocks = 1880; c.faced = 3160; c.catches = 1031; c.topSpeed = 27.8f;
+        }
+    }
     if (!v.dcshot.empty()) {   // the desktop spectator watching this match: its side camera eased into the moment
         SpecMatch fake;
         fake.ip = 1;
@@ -6674,7 +6799,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
                 std::snprintf(c.name, sizeof c.name, "%s", nm[p]);
                 c.matches = m[p][0]; c.wins = m[p][1]; c.throws = m[p][2]; c.onTarget = m[p][3];
                 c.hits = m[p][4]; c.blocks = m[p][5]; c.faced = m[p][6]; c.catches = m[p][7];
-                c.topSpeed = p ? 21.4f : 24.8f;
+                c.topSpeed = p ? 21.4f : 24.8f; c.returnHits = p ? 5 : 14;
             }
         }
         a.viewLayer = v.layer & 3;
@@ -6690,7 +6815,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         drawWorld(a, 0);
         drawWorld(a, 1);
     }
-    if (!v.menu.empty()) {
+    if (!v.menu.empty() && v.menu != "careers") {
         a.menuOpen = true;
         a.titleOpen = v.menu == "title";
         a.xpOpen = v.menu == "xp";
@@ -6705,7 +6830,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             a.statsOpen = true; a.myCareerOk = true;
             Net::CareerStats& c = a.myCareer;
             c.known = true; c.matches = 24; c.wins = 15; c.throws = 410; c.onTarget = 262; c.hits = 120; c.blocks = 88;
-            c.faced = 160; c.catches = 31; c.topSpeed = 24.8f;
+            c.faced = 160; c.catches = 31; c.returnHits = 14; c.topSpeed = 24.8f;
         }
         if (v.menu == "bug") { a.bugOpen = true; a.bugCat = 1; a.bugNote = "BALL WENT THROUGH THE WALL"; }
         if (v.menu == "rules") { a.rulesOpen = true; a.rulesForHost = true; a.game.tun.advanced = true; }
@@ -7626,6 +7751,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--keycol") && i + 1 < argc) view.keyCol = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--nations") && i + 2 < argc) { view.nations[0] = argv[++i]; view.nations[1] = argv[++i]; }
         else if (!strcmp(argv[i], "--opts") && i + 1 < argc) view.opts = argv[++i];
+        else if (!strcmp(argv[i], "--record") && i + 2 < argc) { view.recordDir = argv[++i]; view.recordSeconds = (float)atof(argv[++i]); }
+        else if (!strcmp(argv[i], "--size") && i + 2 < argc) { view.w = atoi(argv[++i]); view.h = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "--mockdark") && i + 1 < argc) view.mockDark = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--crowd") && i + 3 < argc) {
             view.crowdFans = atoi(argv[++i]); view.crowdHype[0] = atoi(argv[++i]); view.crowdHype[1] = atoi(argv[++i]);

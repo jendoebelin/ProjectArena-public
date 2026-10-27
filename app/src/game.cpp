@@ -325,12 +325,12 @@ bool Game::hitsShield(int p, int h, const Vec3& from, const Vec3& to, float r, V
     return true;
 }
 
-void Game::scorePoint(int scorer, const Vec3& where) {
+void Game::scorePoint(int scorer, const Vec3& where, int ball) {
     if (match != MatchState::InProgress) return;
     int victim = 1 - scorer;
     pl[scorer].score++;
     pl[victim].strikesAgainst = 0;   // "If you get hit, any strikes against you are removed."
-    emit(EventType::HitPlayer, victim, -1, where, float(scorer));
+    emit(EventType::HitPlayer, victim, -1, where, float(scorer), ball);
     if (!tun.advanced) {
         if (overtime) {   // sudden death
             matchWinner = scorer;
@@ -350,11 +350,11 @@ void Game::endRound(int scorer) {
     emit(EventType::RoundEnd, scorer, -1, {}, float(round));
 }
 
-void Game::addStrike(int against, const Vec3& where) {
+void Game::addStrike(int against, const Vec3& where, int ball) {
     if (match != MatchState::InProgress) return;
     if (pl[against].strikesAgainst >= tun.maxStrikes) return;
     pl[against].strikesAgainst++;
-    emit(EventType::Strike, against, -1, where, float(pl[against].strikesAgainst));
+    emit(EventType::Strike, against, -1, where, float(pl[against].strikesAgainst), ball);
 }
 
 void Game::stepBall(int p, float dt) {
@@ -451,7 +451,7 @@ void Game::stepBall(int p, float dt) {
             if (!b.charged) emit(EventType::Recharge, p, -1, to);
             b.charged = true;
             pl[p].shotClock = tun.shotClockSeconds;                         // throw past the foul line resets it
-            if (tun.useShotClock && pl[1 - p].shotClock <= 0) addStrike(1 - p, to);   // automatic strike
+            if (tun.useShotClock && pl[1 - p].shotClock <= 0) addStrike(1 - p, to);   // automatic strike (no ball's doing)
         }
         bool handled = b.state == BallState::Returning;   // a returning ball can't be blocked / score
         // shields and knuckle guards of the player who did NOT last touch the ball
@@ -465,7 +465,7 @@ void Game::stepBall(int p, float dt) {
                 deflectMoving(b, n, vs, q, tun.advanced ? tun.shieldAimAssistAdvancedDeg : tun.shieldAimAssistBasicDeg, from);
                 pl[q].ball.charged = false;            // "Shield breaks on hit": the held ball loses its charge
                 pl[q].hands[hh].shieldUp = false;
-                emit(EventType::ShieldBlock, q, hh, from, 0);
+                emit(EventType::ShieldBlock, q, hh, from, 0, p);
                 emit(EventType::ShieldBreak, q, hh, from);
                 to = from + b.vel * h;
                 handled = true;
@@ -478,7 +478,7 @@ void Game::stepBall(int p, float dt) {
                 if (dot(face, b.vel - vs) > 0) face = -face;
                 n = normalize(face * 0.75f + n * 0.25f);
                 deflectMoving(b, n, vs, q, tun.knuckleAimAssistDeg, from, true);
-                emit(EventType::KnuckleBlock, q, hh, from, length(b.vel));
+                emit(EventType::KnuckleBlock, q, hh, from, length(b.vel), p);
                 to = from + b.vel * h;
                 handled = true;
             }
@@ -490,12 +490,12 @@ void Game::stepBall(int p, float dt) {
             if ((from.x - c.x) * (to.x - c.x) <= 0 && std::fabs(to.x - from.x) > 1e-6f) {
                 float t = (c.x - from.x) / (to.x - from.x);
                 Vec3 x = from + (to - from) * t;
-                if (length(Vec3{0, x.y - c.y, x.z - c.z}) < tun.strikeZoneRadius) addStrike(victim, x);
+                if (length(Vec3{0, x.y - c.y, x.z - c.z}) < tun.strikeZoneRadius) addStrike(victim, x, p);
             }
         }
         if (!handled && !b.scored && hitsBody(victim, to, r)) {
             b.scored = true;
-            scorePoint(b.instigator, to);
+            scorePoint(b.instigator, to, p);
             b.state = BallState::Dead;
             b.timer = tun.respawnDelay + tun.postSpawnDelay + 0.5f;
             return;
@@ -507,7 +507,7 @@ void Game::stepBall(int p, float dt) {
             if (tun.selfHitScores && !b.scored && b.timer > tun.selfHitGrace && dot(b.vel, toSelf) > 0 &&
                 pl[self].in.headTracked && hitsBody(self, to, r)) {
                 b.scored = true;
-                scorePoint(1 - self, to);
+                scorePoint(1 - self, to, p);
                 b.state = BallState::Dead;
                 b.timer = tun.respawnDelay + tun.postSpawnDelay + 0.5f;
                 return;
@@ -525,7 +525,7 @@ void Game::stepBall(int p, float dt) {
                     // crossed its owner's foul line springs straight back to its float position; one that did bounces on,
                     // off the wall it is heading for, and flies home, harmless (it can't hit or score; its owner can catch it)
                     emit(EventType::Foul, b.instigator, -1, hp, float(zoneTeam));
-                    if (b.instigator != p) addStrike(b.instigator, hp);
+                    if (b.instigator != p) addStrike(b.instigator, hp, p);
                     if (b.instigator == p && b.rechargePending) {   // bounce off, then drawn home (owner: faster, magnetic)
                         b.state = BallState::Returning;
                         b.heldHand = -1;
@@ -896,4 +896,64 @@ void Game::step(float dt, PlayerInput in[2]) {
     stepMatch(dt);
     for (int p = 0; p < 2; ++p) stepPlayer(p, dt);
     for (int p = 0; p < 2; ++p) stepBall(p, dt);
+}
+
+std::vector<CollisionTri> parseCollision(const uint8_t* d, size_t size) {
+    std::vector<CollisionTri> out;
+    if (size < 8 || std::memcmp(d, "SCOL", 4) != 0) return out;
+    uint32_t n;
+    std::memcpy(&n, d + 4, 4);
+    if (n > (size - 8) / 40) return out;
+    for (const uint8_t* p = d + 8; n--; p += 40) {
+        float v[9]; uint32_t tags;
+        std::memcpy(v, p, 36); std::memcpy(&tags, p + 36, 4);
+        CollisionTri t{{v[0], v[1], v[2]}, {v[3], v[4], v[5]}, {v[6], v[7], v[8]}, {}, tags};
+        t.n = normalize(cross(t.b - t.a, t.c - t.a));
+        out.push_back(t);
+    }
+    return out;
+}
+
+void StatCounter::add(const GameEvent& e) {
+    auto bump = [](uint16_t& v) { if (v < 3000) ++v; };
+    const int p = e.player, k = e.ball;
+    if (p < 0 || p > 1) return;
+    // is ball k an attack by `who`? 0 no, 1 yes (already on target), 2 yes and now on target for the first time
+    auto attack = [&](int who) {
+        if (k < 0 || k > 1 || shot_[k].by != who) return 0;
+        if (shot_[k].counted) return 1;
+        shot_[k].counted = true;
+        if (shot_[k].thrown) bump(s[who].onTarget);
+        return 2;
+    };
+    switch (e.type) {
+    case EventType::Throw:   // a player throws their own ball
+        bump(s[p].throws);
+        s[p].topSpeed = std::max(s[p].topSpeed, e.value);
+        shot_[p] = Shot{p, true, false};
+        break;
+    case EventType::HitPlayer: {   // player = the one hit, value = the scorer
+        const int sc = (int)e.value, a = sc == 1 - p ? attack(sc) : 0;
+        if (a) {
+            bump(s[sc].hits);
+            if (!shot_[k].thrown) bump(s[sc].returnHits);
+            if (a == 2) bump(s[p].faced);
+        }
+        break;
+    }
+    case EventType::Strike:   // player = the one struck against
+        bump(s[1 - p].strikes);
+        if (attack(1 - p) == 2) bump(s[p].faced);
+        break;
+    case EventType::ShieldBlock: case EventType::KnuckleBlock:   // player = the blocker: the ball is now their return
+        bump(s[p].blocks);
+        bump(s[p].faced);
+        attack(1 - p);
+        if (k >= 0 && k < 2) shot_[k] = Shot{p, false, false};
+        break;
+    case EventType::Caught:
+        bump(s[p].catches);
+        break;
+    default: break;
+    }
 }

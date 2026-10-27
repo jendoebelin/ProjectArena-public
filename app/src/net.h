@@ -100,9 +100,10 @@ public:
         bool known = false;           // the server has (or will keep) stats for this player
         char name[17] = {};
         uint32_t matches = 0, wins = 0, throws = 0, onTarget = 0, hits = 0, blocks = 0, faced = 0, catches = 0;
+        uint32_t returnHits = 0;      // of the hits: points scored by balls the player blocked or punched back
         float topSpeed = 0;           // m/s
     };
-    struct MatchStats { uint16_t throws = 0, onTarget = 0, hits = 0, blocks = 0, faced = 0, catches = 0, strikes = 0; float topSpeed = 0; };
+    using MatchStats = MatchTally;   // (game.h)
     void setStatsKey(const uint8_t key[16]) { std::memcpy(statsKey_, key, 16); keySent_ = false; }
     // host, online, two people in the tank; score = points 0, points 1, rounds 0, rounds 1 (the other player confirms)
     // mode: Tunables::statsMode() (0 standard, 1 HOTDOG, 2 custom): careers keep each mode apart as well (0.3.8)

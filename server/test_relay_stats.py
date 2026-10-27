@@ -61,6 +61,9 @@ def stats_reply(f):
                 out.append(dict(known=known, name=name.split(b'\0')[0].decode(), matches=rest[0], wins=rest[1],
                                 throws=rest[2], on_target=rest[3], hits=rest[4], blocks=rest[5], faced=rest[6],
                                 catches=rest[7], top=rest[8]))
+            if len(body) >= 4 + 2 * 51 + 8:   # (0.3.9 relays: each player's points from returns at the end)
+                for k in range(2):
+                    out[k]['returns'] = struct.unpack_from('<I', body, 4 + 2 * 51 + 4 * k)[0]
             return hv, out
 
 
@@ -127,7 +130,7 @@ async def run():
         check(r and r[1][0]['matches'] == 2, 'the host can\'t confirm its own result')
         relay.pending.clear()   # (that real result would still count if the other player confirmed it in time)
         rearm()
-        bad = struct.pack('<7H', 20, 25, 7, 5, 9, 3, 2350)   # more on target than thrown
+        bad = struct.pack('<7H', 20, 12, 15, 5, 9, 3, 2350)   # more hits than balls on target
         host.raw(R.MATCH, bytes([0]) + bad + row1 + score)
         confirm(0, score)
         r = ask()
@@ -179,6 +182,55 @@ async def run():
         time.sleep(0.3)
         s5 = R.Stats(db, log=lambda m: None)
         check(s5.modes(s5.ident(b'G' * 16)) == {}, 'DELETE removes the player\'s modes too')
+        # 0.3.9 (GitHub #14, astrobleem): throws on target are literal; points from returns come separately
+        relay.pending.clear(), relay.confirms.clear()   # (the earlier tests' unused confirmations)
+        host.raw(R.TANK, struct.pack('<II', host.vip, guest.vip))
+        rearm()
+        base = ask()
+        thrower = struct.pack('<7H', 1, 1, 0, 0, 1, 0, 1200)    # one throw, on target (blocked)
+        defender = struct.pack('<7H', 0, 0, 1, 1, 1, 0, 0)      # never threw: blocked it back and scored with it
+        sc = bytes([0, 1, 0, 0])
+        host.raw(R.MATCH, bytes([1]) + thrower + defender + sc + bytes([0]) + struct.pack('<2H', 0, 1))
+        confirm(1, sc)
+        r = ask()
+        check(base and r and all(r[1][i]['matches'] == base[1][i]['matches'] + 1 for i in range(2)),
+              'a point scored with a returned ball counts for both players (no throw needed)')
+        check(r and r[1][1].get('returns') == 1 and r[1][1]['hits'] == base[1][1]['hits'] + 1 and r[1][0].get('returns') == 0,
+              'STATS ends with each player\'s points from returns')
+        for bad, rh, why in ((struct.pack('<7H', 0, 1, 1, 1, 1, 0, 0), 1, 'a return counted as a throw on target'),
+                             (struct.pack('<7H', 0, 0, 1, 0, 1, 0, 0), 1, 'points from returns without a block'),
+                             (struct.pack('<7H', 0, 0, 2, 1, 1, 0, 0), 1, 'a hit from a throw that was never on target'),
+                             (struct.pack('<7H', 0, 0, 0, 1, 1, 0, 0), 1, 'more points from returns than hits')):
+            rearm()
+            host.raw(R.MATCH, bytes([1]) + thrower + bad + sc + bytes([0]) + struct.pack('<2H', 0, rh))
+            confirm(1, sc)
+            r2 = ask()
+            check(r and r2 and r2[1][1]['matches'] == r[1][1]['matches'], 'refused: ' + why)
+        # an older host (0.3.8) counted returns as throws on target: more on target than thrown is capped, not refused
+        rearm()
+        before = ask()
+        legacy = struct.pack('<7H', 0, 1, 1, 1, 1, 0, 0)   # the issue's defender as 0.3.8 counted them
+        host.raw(R.MATCH, bytes([1]) + thrower + legacy + sc + bytes([0]))
+        confirm(1, sc)
+        r3 = ask()
+        check(before and r3 and r3[1][1]['matches'] == before[1][1]['matches'] + 1 and
+              r3[1][1]['on_target'] == before[1][1]['on_target'] and r3[1][1]['throws'] == before[1][1]['throws'],
+              'an older host\'s returned-ball match counts, its throws on target capped at its throws')
+        # an older table (before 0.3.9) gets the new column; its players keep their numbers
+        import sqlite3
+        old = os.path.join(tempfile.mkdtemp(), 'old.db')
+        o = sqlite3.connect(old)
+        o.execute('CREATE TABLE players (key TEXT PRIMARY KEY, name TEXT, ' + ', '.join('%s INTEGER DEFAULT 0' % f for f in R.STAT_FIELDS) +
+                  ', top_speed INTEGER DEFAULT 0, first_seen INTEGER, last_seen INTEGER)')
+        o.execute('INSERT INTO players (key, name, matches, hits, first_seen, last_seen) VALUES (?, ?, 3, 5, ?, ?)',
+                  ('k', 'OLD', int(time.time()), int(time.time())))
+        o.commit()
+        o.close()
+        s6 = R.Stats(old, log=lambda m: None)
+        g = s6.get('k')
+        check(g is not None and g[1] == 3 and g[5] == 5 and g[10] == 0, 'an older table is upgraded: same numbers, 0 points from returns')
+        s6.add('k', 'OLD', True, (2, 1, 2, 1, 1, 0), 900, 0, 1)
+        check(s6.get('k')[10] == 1 and s6.modes('k')[0][0] == 1, 'the upgraded table counts points from returns')
 
     await loop.run_in_executor(None, blocking)
     tr.close()
