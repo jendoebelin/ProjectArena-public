@@ -3,10 +3,13 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "../src/game.h"
 #include "../src/avatar.h"
+#include "../src/record.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <algorithm>
+#include <chrono>
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(c, msg) do { if (c) { ++g_pass; std::printf("  ok   %s\n", msg); } else { ++g_fail; std::printf("  FAIL %s  (%s:%d)\n", msg, __FILE__, __LINE__); } } while (0)
@@ -333,6 +336,362 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
             valid2 += std::memcmp(&p, &c, sizeof p) == 0;
         }
         CHECK(valid2 == avatar::presetCount(), "presets are valid looks");
+    }
+}
+
+
+// ---- the practice bot: a person's limits at every level, and UNBEATABLE
+static PlayerInput standingAt(const Game& g, int p, float z) {   // standing() moved sideways along the end
+    PlayerInput in = standing(g, p);
+    in.head.p.z += z;
+    for (HandInput& h : in.hand) h.grip.p.z += z;
+    return in;
+}
+// a strong player against the bot (player 1): takes the ball as soon as it can and throws it at 14 m/s (the fastest
+// throw) at the bot's head, chest, hips and sides, curved and off the side walls, and at its strike zone, from all
+// over their end. Steps of 1/hz s; `seed` moves them around their end.
+// points: the bot hit by the attacker's throws; rebounds: by a ball it had just blocked itself, bouncing back into it
+// (the game counts that as the attacker's point; since 2026-10-27 only after the self-hit grace, as after a throw)
+struct Attack { int throws = 0, points = 0, rebounds = 0, botPoints = 0, strikes = 0, blocks = 0, knuckles = 0; double slowest = 0; };
+static Attack attackBot(Game& g, int wanted, float hz, uint32_t seed, rec::Recorder* recorder = nullptr) {
+    Attack a;
+    auto rnd = [&]() { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; return (seed & 0xFFFF) / 65535.f; };
+    PlayerInput in[2] = {standing(g, 0), {}};
+    std::vector<GameEvent> log;
+    float t = 0, next = 0;
+    int lastK = -1;
+    auto step = [&]() {
+        PlayerInput tmp[2] = {in[0], in[1]};
+        const auto t0 = std::chrono::steady_clock::now();
+        g.step(1.f / hz, tmp);
+        a.slowest = std::max(a.slowest, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        if (recorder) recorder->frame(g, 1.f / hz);
+        log.insert(log.end(), g.events.begin(), g.events.end());
+        for (const GameEvent& e : g.events)   // (whose ball last touched it: the bot's own block coming back)
+            if (e.type == EventType::HitPlayer && e.player == 1 && e.ball == 0 && g.pl[0].ball.instigator == 1) ++a.rebounds;
+        for (const GameEvent& e : g.events) {   // (a point against UNBEATABLE: what it was doing, to find out why)
+            if (e.type != EventType::HitPlayer || e.player != 1 || g.tun.botAdapt || g.tun.botLevel != kBotLevels - 1) continue;
+            const PlayerState& s = g.pl[1];
+            std::printf("       hit by throw type %d (ball %.1f m/s, x%.2f); its reads: %d/%d, plans %d/%d; body (%.2f %.2f %.2f)\n",
+                        lastK % 7, g.pl[0].ball.speedLimit, g.pl[0].ball.scale, s.botRead[0].mode, s.botRead[1].mode, s.botRead[0].plan,
+                        s.botRead[1].plan, s.botBody.x, s.botBody.y, s.botBody.z);
+            const PlayerState::BotRead& r = s.botRead[0];
+            std::printf("         read: noticed %.2f s, read %.2f s ago; hitT %+.2f; tried %d, again %d, act %d; stance %d\n", g.now - r.noticeT,
+                        g.now - r.readT, r.hitT < 0 ? -1.f : r.hitT - g.now, (int)r.tried.size(), (int)r.again, (int)r.act, s.botStance);
+        }
+    };
+    for (; t < 1500.f && a.throws < wanted; t += 1.f / hz) {
+        in[0].buttonA = g.match == MatchState::MatchSummary;   // (a match won: the next one)
+        if (g.match == MatchState::InProgress && t > next && g.pl[0].ball.state == BallState::Idle) {
+            in[0] = standing(g, 0);
+            grabBall(g, in);
+            const int k = lastK = a.throws++;
+            Vec3 target = g.chestPoint(1);
+            const float sgn = (k / 7) % 2 ? -1.f : 1.f;
+            switch (k % 7) {
+            case 0: break;
+            case 1: target.y += 0.30f; break;                  // the head
+            case 2: target.y -= 0.40f; break;                  // the hips
+            case 3: target.z += 0.25f * sgn; break;            // a side
+            case 4: target.z += 3.0f * sgn; break;             // off the side wall
+            case 5: target.z -= 1.2f * sgn; in[0].hand[1].angVel = Vec3{0, 25.f * sgn, 0}; break;   // curved
+            default: target = g.strikeZoneCenter(1) + Vec3{0, 0.3f * sgn, 0.45f * sgn}; break;     // its strike zone
+            }
+            const Vec3 dir = normalize(target - g.launcherPoint(0, 1));
+            for (int f = 0; f < 16; ++f) {   // the swing (as swingAndRelease), then let go
+                if (f < 15) in[0].hand[1].grip.p += dir * (6.5f / 72); else in[0].hand[1].trigger = 0;
+                step();
+            }
+            in[0] = standingAt(g, 0, (rnd() - 0.5f) * 1.6f);   // and somewhere else in their end
+            next = t + 0.6f;
+        }
+        step();
+    }
+    for (const GameEvent& e : log) {
+        if (e.type == EventType::HitPlayer) ++(e.player == 1 ? a.points : a.botPoints);
+        if (e.type == EventType::Strike && e.player == 1) ++a.strikes;
+        if (e.type == EventType::ShieldBlock && e.player == 1) ++a.blocks;
+        if (e.type == EventType::KnuckleBlock && e.player == 1) ++a.knuckles;
+    }
+    a.points -= a.rebounds;
+    return a;
+}
+
+static void botTests(const std::vector<CollisionTri>& tris) {
+    {
+        std::printf("[practice bot: a person's limits at every level]\n");
+        bool reach = true, rig = true, hands = true, body = true, finite = true;
+        int used[2] = {0, 0}, catches = 0, dodges = 0;
+        float worstHand = 0, worstBody = 0;
+        const AvatarDesc look = avatar::preset(3);
+        for (int level = 0; level < kBotLevels; ++level)
+            for (int adv = 0; adv < 2; ++adv) {
+                Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.botLevel = level; g.reset(true);
+                g.pl[0].isBot = true;
+                const BotSkill& sk = botSkill(level);
+                PlayerInput in[2] = {{}, {}};
+                Vec3 lastGrip[2][2], lastBody[2];
+                for (int i = 0; i < 72 * 60; ++i) {
+                    PlayerInput tmp[2] = {in[0], in[1]};
+                    g.step(1.f / 72, tmp);
+                    for (const GameEvent& e : g.events) {
+                        if ((e.type == EventType::Grab || e.type == EventType::Throw || e.type == EventType::ShieldBlock ||
+                             e.type == EventType::KnuckleBlock || e.type == EventType::Caught) && e.hand >= 0 && e.hand < 2)
+                            ++used[e.hand];
+                        catches += e.type == EventType::Caught;
+                    }
+                    for (int p = 0; p < 2; ++p) {
+                        const PlayerState& s = g.pl[p];
+                        for (int k = 0; k < 2; ++k) dodges += s.botRead[k].plan == BOT_DODGE;
+                        for (int h = 0; h < 2; ++h) {
+                            const Vec3 gp = s.in.hand[h].grip.p;
+                            finite = finite && std::isfinite(gp.x) && std::isfinite(gp.y) && std::isfinite(gp.z);
+                            if (length(g.botWrist(h, s.in.hand[h].grip) - g.botShoulder(p, h)) > g.tun.botArm + 1e-3f) reach = false;
+                            if (i > 0) {   // its own move, plus the body carrying the arm along
+                                const float lim = std::max(sk.handSpeed, sk.throwHand) + sk.bodySpeed;
+                                const float v = length(gp - lastGrip[p][h]) * 72;
+                                worstHand = std::max(worstHand, v / lim);
+                                if (v > lim + 0.05f) hands = false;
+                            }
+                            lastGrip[p][h] = gp;
+                        }
+                        if (i > 0) {
+                            const float v = length(s.botBody - lastBody[p]) * 72;
+                            worstBody = std::max(worstBody, v / sk.bodySpeed);
+                            if (v > sk.bodySpeed + 0.01f) body = false;
+                        }
+                        lastBody[p] = s.botBody;
+                        if (i % 9 == 0) {   // the drawn arms: both bones keep their length (never longer than the arm)
+                            const avatar::Rig r = avatar::solveRig(s.in, look);
+                            const avatar::BodyBind& K = avatar::bodyBind(look.body);
+                            for (int k = 0; k < 2; ++k) {
+                                const float l1 = length(K.elbow[k] - K.shoulder[k]) * avatar::rigTuning().upperLen;
+                                const float l2 = length(K.wrist[k] - K.elbow[k]) * avatar::rigTuning().foreLen;
+                                if (length(r.upper[k].b - r.upper[k].a) > l1 * 1.002f || length(r.fore[k].b - r.fore[k].a) > l2 * 1.002f) {
+                                    if (rig) {
+                                        const Vec3 gs = g.botShoulder(p, k), gp = s.in.hand[k].grip.p;
+                                        const Quat iq = s.in.head.q.conj();
+                                        const Vec3 rs = iq.rotate(r.upper[k].a - s.in.head.p), ms = iq.rotate(gs - s.in.head.p);
+                                        const Vec3 tf = r.torso.q.rotate({0, 0, -1}), hf = s.in.head.q.rotate({0, 0, -1});
+                                        const Vec3 wl = s.in.hand[k].grip.q.conj().rotate(r.fore[k].b - gp);
+                                        std::printf("       stretched: level %d, %s arm, %.3f m shoulder to wrist (arm %.3f); grip %.3f from the game's shoulder; rig shoulder (%.3f %.3f %.3f) game (%.3f %.3f %.3f); wrist (%.3f %.3f %.3f) in the grip; torso turned %.0f deg; plans %d/%d\n",
+                                                    level, k ? "right" : "left", length(r.fore[k].b - r.upper[k].a), l1 + l2, length(gp - gs),
+                                                    rs.x, rs.y, rs.z, ms.x, ms.y, ms.z, wl.x, wl.y, wl.z,
+                                                    rad2deg(std::acos(clampf(dot(tf, hf), -1.f, 1.f))), s.botRead[0].plan, s.botRead[1].plan);
+                                    }
+                                    rig = false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        std::printf("       (hands used: left %d, right %d; catches %d; dodging %d frames; fastest hand %.0f%%, body %.0f%% of its limit)\n",
+                    used[0], used[1], catches, dodges, worstHand * 100, worstBody * 100);
+        CHECK(finite, "the bot's hands always have a position");
+        CHECK(reach, "a hand never goes beyond its arm's reach");
+        CHECK(rig, "the drawn arms never stretch");
+        CHECK(hands, "its hands never move faster than a person's (at its level)");
+        CHECK(body, "its body never steps, leans or ducks faster than a person (at its level)");
+        CHECK(used[0] > 20 && used[1] > 20, "it grabs, throws, blocks and catches with both hands");
+        CHECK(catches > 5, "it catches its own ball coming back");
+        CHECK(dodges > 0, "it dodges");
+    }
+    {
+        std::printf("[practice bot: levels]\n");
+        int wins = 0;
+        for (int adv = 0; adv < 2; ++adv) {
+            Game g; g.setArena(tris); g.tun.advanced = adv; g.reset(true);
+            g.pl[0].isBot = true;
+            g.pl[0].botLevel = 0; g.pl[1].botLevel = kBotLevels - 1;
+            PlayerInput in[2] = {{}, {}};
+            std::vector<GameEvent> log;
+            run(g, in, 180.f, &log);
+            int pts[2] = {0, 0};
+            for (const GameEvent& e : log) if (e.type == EventType::HitPlayer) ++pts[(int)e.value & 1];
+            std::printf("       %s: ROOKIE %d - %d UNBEATABLE\n", adv ? "Advanced" : "Basic", pts[0], pts[1]);
+            wins += pts[1] > pts[0];
+        }
+        CHECK(wins == 2, "UNBEATABLE beats ROOKIE");
+    }
+    {
+        std::printf("[practice bot: UNBEATABLE against a strong player]\n");
+        struct M { const char* name; bool adv, shields; int knuckles; } modes[] = {
+            {"Basic", false, true, -1}, {"Advanced", true, true, -1}, {"Basic HOTDOG", false, false, -1},
+            {"Advanced HOTDOG", true, false, -1}};
+        for (const M& m : modes) {
+            Game g; g.setArena(tris); g.tun.advanced = m.adv; g.tun.shields = m.shields; g.tun.knuckleMode = m.knuckles;
+            g.tun.basicMatchTime = 0; g.tun.meetTime = 0; g.tun.botLevel = kBotLevels - 1; g.reset(true);
+            // 200 throws each from three spots and at the headset's two frame rates
+            int throws = 0, points = 0, rebounds = 0, scored = 0, strikes = 0, blocks = 0, punches = 0;
+            double slowest = 0;
+            for (uint32_t seed : {99u, 1234u, 777u})
+                for (float hz : {72.f, 90.f}) {
+                    Game g2 = g;
+                    const Attack a = attackBot(g2, 200, hz, seed);
+                    throws += a.throws; points += a.points; rebounds += a.rebounds; scored += a.botPoints; strikes += a.strikes;
+                    blocks += a.blocks; punches += a.knuckles; slowest = std::max(slowest, a.slowest);
+                }
+            std::printf("       %s: %d throws, %d hits (and %d of its own blocks back into it), it scored %d; %d strikes, %d shield blocks, %d punches; slowest step %.2f ms\n",
+                        m.name, throws, points, rebounds, scored, strikes, blocks, punches, slowest * 1000);
+            char msg[112];
+            std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: 1200 hard throws, never hit", m.name);
+            CHECK(throws == 1200 && points == 0, msg);
+            std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: none of its own blocks comes back into it", m.name);
+            CHECK(rebounds == 0, msg);
+        }
+    }
+}
+
+
+// ---- MATCH MY LEVEL, and RECORD MY MATCHES
+static void matchLevelTests(const std::vector<CollisionTri>& tris) {
+    {
+        std::printf("[MATCH MY LEVEL: the levels between levels]\n");
+        bool same = true, smooth = true;
+        for (int l = 0; l < kBotLevels; ++l) {
+            const BotSkill a = botSkillAt((float)l), &b = botSkill(l);
+            same &= a.reaction == b.reaction && a.handSpeed == b.handSpeed && a.readsFlight == b.readsFlight && !std::strcmp(a.name, b.name);
+        }
+        for (float l = 0; l < kBotLevels - 1.01f; l += 0.05f)
+            smooth &= botSkillAt(l + 0.05f).reaction <= botSkillAt(l).reaction && botSkillAt(l + 0.05f).handSpeed >= botSkillAt(l).handSpeed;
+        CHECK(same, "at a whole level, MATCH MY LEVEL plays exactly that level");
+        CHECK(smooth, "between levels it gets steadily quicker (reaction, hands)");
+    }
+    std::printf("[MATCH MY LEVEL: it follows the player]\n");
+    {   // someone who never throws back: every point is the bot's, so it eases down to ROOKIE and stays there
+        Game g; g.setArena(tris); g.tun.botAdapt = true; g.tun.botMatch = 2.f; g.tun.basicMatchTime = 0; g.reset(true);
+        PlayerInput in[2] = {standing(g, 0), {}};
+        std::vector<GameEvent> log;
+        run(g, in, 400.f, &log);
+        int pts = 0;
+        for (const GameEvent& e : log) pts += e.type == EventType::HitPlayer && e.player == 0;
+        std::printf("       a player who doesn't play: the bot scored %d, its level %.2f\n", pts, g.tun.botMatch);
+        CHECK(pts > 5 && g.tun.botMatch == 0.f, "against someone who doesn't play back it eases down to ROOKIE");
+    }
+    {   // a strong player: from ROOKIE it climbs until the points even out
+        Game g; g.setArena(tris); g.tun.botAdapt = true; g.tun.botMatch = 0.f; g.tun.basicMatchTime = 0; g.tun.meetTime = 0; g.reset(true);
+        const Attack a = attackBot(g, 200, 72.f, 99u);
+        std::printf("       a strong player: %d points to the bot's %d, its level %.2f (%s)\n", a.points, a.botPoints, g.tun.botMatch,
+                    botSkillAt(g.tun.botMatch).name);
+        CHECK(a.points > 0 && g.tun.botMatch >= 0.f && g.tun.botMatch <= kBotLevels - 1.f, "a strong player scores, and its level stays in range");
+        CHECK(std::abs(a.points - a.botPoints) * 5 <= a.points + a.botPoints, "the points even out (within a fifth of each other)");
+        Game f; f.setArena(tris); f.tun.botLevel = 2; f.tun.basicMatchTime = 0; f.tun.meetTime = 0; f.reset(true);
+        const Attack b = attackBot(f, 200, 72.f, 99u);
+        std::printf("       (against PRO, set: %d points to the bot's %d)\n", b.points, b.botPoints);
+    }
+}
+
+static void recordTests(const std::vector<CollisionTri>& tris) {
+    std::printf("[RECORD MY MATCHES]\n");
+    Game g; g.setArena(tris); g.tun.botLevel = 3; g.tun.basicMatchTime = 60; g.tun.meetTime = 0; g.reset(true);
+    rec::Recorder r;
+    // (in the temp folder: tools/run_tests.bat has tools/analyze_play.py check it)
+    const char* tmp = std::getenv("TEMP") ? std::getenv("TEMP") : std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/data/local/tmp";
+    const std::string path = std::string(tmp) + "/projectarena_sample_match.par";
+    rec::Meta m;
+    m.local = 0;
+    m.version = "test";
+    CHECK(r.begin(path, g, m), "a recording opens");
+    attackBot(g, 60, 72.f, 7u, &r);
+    r.end(g);
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    std::vector<uint8_t> bytes;
+    if (f) {
+        uint8_t buf[4096];
+        for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) bytes.insert(bytes.end(), buf, buf + n);
+        std::fclose(f);
+    }
+    std::printf("       %s: %.1f MB\n", path.c_str(), bytes.size() / 1e6);
+    CHECK(bytes.size() > 1000 && !std::memcmp(bytes.data(), "PAREC1", 6) && bytes[bytes.size() - 5] == 'X',
+          "it starts with its name and ends with its end mark (tools/analyze_play.py reads it)");
+}
+
+
+// ---- the bot's stances and its fist bump
+static void stanceTests(const std::vector<CollisionTri>& tris) {
+    {
+        std::printf("[practice bot: stances]\n");
+        bool reach = true, rig = true, held = true;
+        const AvatarDesc look = avatar::preset(3);
+        for (int st = 0; st < kBotStances; ++st) {
+            Game g; g.setArena(tris); g.tun.botLevel = 3; g.reset(true);
+            g.pl[1].botStance = st;
+            PlayerInput in[2] = {standing(g, 0), {}};
+            in[0].head.p.z += 3.f;   // (out of the way: nothing happens, the bot just stands)
+            run(g, in, 2.f);
+            const PlayerState& s = g.pl[1];
+            for (int h = 0; h < 2; ++h) {
+                if (length(g.botWrist(h, s.in.hand[h].grip) - g.botShoulder(1, h)) > g.tun.botArm + 1e-3f) reach = false;
+                if (length(s.botHandVel[h]) > 0.5f) held = false;
+            }
+            const avatar::Rig r = avatar::solveRig(s.in, look);
+            const avatar::BodyBind& K = avatar::bodyBind(look.body);
+            for (int k = 0; k < 2; ++k) {
+                const float l1 = length(K.elbow[k] - K.shoulder[k]) * avatar::rigTuning().upperLen;
+                const float l2 = length(K.wrist[k] - K.elbow[k]) * avatar::rigTuning().foreLen;
+                if (length(r.upper[k].b - r.upper[k].a) > l1 * 1.002f || length(r.fore[k].b - r.fore[k].a) > l2 * 1.002f) rig = false;
+            }
+            std::printf("       %-8s hands at (%.2f %.2f %.2f) and (%.2f %.2f %.2f) from its head\n", botStanceName(st),
+                        s.in.hand[0].grip.p.x - s.in.head.p.x, s.in.hand[0].grip.p.y - s.in.head.p.y, s.in.hand[0].grip.p.z - s.in.head.p.z,
+                        s.in.hand[1].grip.p.x - s.in.head.p.x, s.in.hand[1].grip.p.y - s.in.head.p.y, s.in.hand[1].grip.p.z - s.in.head.p.z);
+        }
+        CHECK(reach && rig, "every stance is within the arm's reach, and the drawn arms never stretch");
+        CHECK(held, "and it holds it (the hands settled)");
+        int open = 0, picks = 0;
+        for (int i = 0; i < 40; ++i) {   // beginners hold no guard
+            Game g; g.setArena(tris); g.tun.botLevel = 0; g.rngSeed((i + 1) * 2654435761u); g.reset(true);
+            PlayerInput in[2] = {standing(g, 0), {}};
+            run(g, in, 0.1f);
+            const int st = g.pl[1].botStance;
+            open += st == STANCE_KITTEN || st == STANCE_RELAXED || st == STANCE_MONKEY;
+            ++picks;
+        }
+        CHECK(open == picks, "ROOKIE only takes an open stance (no guard)");
+        bool all[kBotStances] = {};
+        for (int i = 0; i < 80; ++i) {
+            Game g; g.setArena(tris); g.tun.botLevel = 4; g.rngSeed((i + 7) * 2246822519u); g.reset(true);
+            PlayerInput in[2] = {standing(g, 0), {}};
+            run(g, in, 0.1f);
+            all[g.pl[1].botStance] = true;
+        }
+        bool every = true;
+        for (bool b : all) every &= b;
+        CHECK(every, "from PRO up, every stance comes up (picked at random each match)");
+    }
+    {
+        std::printf("[practice bot: FIST BUMP FIRST]\n");
+        Game g; g.setArena(tris); g.tun.botMeet = true; g.reset(true);
+        g.pl[1].botStance = STANCE_KARATE;
+        PlayerInput in[2] = {standing(g, 0), {}};
+        run(g, in, 0.1f);
+        CHECK(g.match == MatchState::Meet, "with FIST BUMP FIRST on, the bot meets you in the centre");
+        // the person at their side of the centre line, the right fist held out to the middle, closed
+        in[0].head.p = {-g.tun.meetSpot, 1.65f, 0};
+        in[0].hand[1].grip = {kFaceP0, {-0.12f, 1.30f, 0.02f}};
+        in[0].hand[1].trigger = 1;
+        in[0].hand[0].grip.p = {-0.55f, 1.0f, -0.25f};
+        std::vector<GameEvent> log;
+        float bowed = 0;
+        for (int i = 0; i < 72 * 4 && !hasEvent(log, EventType::FistBump); ++i) {
+            PlayerInput tmp[2] = {in[0], in[1]};
+            g.step(1.f / 72, tmp);
+            log.insert(log.end(), g.events.begin(), g.events.end());
+        }
+        CHECK(hasEvent(log, EventType::FistBump), "it brings its fist to yours: a fist bump");
+        CHECK(std::fabs(g.pl[1].in.head.p.x - g.tun.meetSpot) < 0.3f, "(it came to its side of the centre for it)");
+        for (int i = 0; i < 36; ++i) {
+            PlayerInput tmp[2] = {in[0], in[1]};
+            g.step(1.f / 72, tmp);
+            bowed = std::max(bowed, -g.pl[1].in.head.q.rotate({0, 0, -1}).y);
+        }
+        CHECK(bowed > 0.3f, "KARATE bows at the fist bump");
+        run(g, in, 1.f);
+        CHECK(g.match == MatchState::Countdown || g.match == MatchState::InProgress, "then the match starts");
+        Game h; h.setArena(tris); h.reset(true);
+        PlayerInput in2[2] = {standing(h, 0), {}};
+        run(h, in2, 0.1f);
+        CHECK(h.match == MatchState::Countdown, "with it off (as before), straight to the countdown");
     }
 }
 
@@ -919,7 +1278,6 @@ int main(int argc, char** argv) {
         {   // real matches: two lively bots for ten minutes; every event behind a point names its ball
             Game g; g.setArena(tris); g.reset(true);
             g.pl[0].isBot = true;
-            g.tun.botBlockChance = 0.5f; g.tun.botHoldMin = 0.4f; g.tun.botHoldMax = 1.0f; g.tun.botAimError = 0.1f;
             PlayerInput in[2] = {standing(g, 0), {}};
             std::vector<GameEvent> log;
             run(g, in, 600.f, &log);
@@ -944,6 +1302,10 @@ int main(int argc, char** argv) {
         }
     }
     avatarTests(tris);
+    botTests(tris);
+    matchLevelTests(tris);
+    stanceTests(tris);
+    recordTests(tris);
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

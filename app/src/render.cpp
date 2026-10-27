@@ -16,7 +16,7 @@ layout(location=6) in vec4 aWeight;
 uniform mat4 uMVP;
 uniform mat4 uModel;
 uniform int uSkinned;
-uniform mat4 uBones[7];
+uniform mat4 uBones[9];
 uniform int uUV;
 uniform vec4 uUVRect;
 uniform int uTuck;          // hair under headgear: kept inside it (uTuckTex: per direction from uTuckC, the radius)
@@ -39,7 +39,7 @@ void main() {
         if (x > 0.0) p.xyz = uTuckC + d * ((lim - 0.006 + 0.006 * (1.0 - exp(-x / 0.006))) / r);
         pin = clamp((0.45 - lim) * 4.0, 0.0, 1.0);
     }
-    if (uSkinned == 1) {   // linear blend skinning over the avatar's 7 bones
+    if (uSkinned == 1) {   // linear blend skinning over the avatar's 9 bones (avatar.h BONE_*)
         mat4 S = uBones[int(aBone.x)] * aWeight.x + uBones[int(aBone.y)] * aWeight.y +
                  uBones[int(aBone.z)] * aWeight.z + uBones[int(aBone.w)] * aWeight.w;
         if (uTuck == 1) S = S * (1.0 - pin) + mat4(1.0) * pin;   // (hair rigs: bone 0 is the head)
@@ -518,7 +518,7 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
     glUniformMatrix4fv(uModel_, 1, GL_FALSE, model.m);
     const bool skin = m.skinned && dp.bones;
     glUniform1i(uSkinned_, skin ? 1 : 0);
-    if (skin) glUniformMatrix4fv(uBones_, 7, GL_FALSE, dp.bones[0].m);
+    if (skin) glUniformMatrix4fv(uBones_, 9, GL_FALSE, dp.bones[0].m);
     glUniform1i(uTuck_, dp.tuck ? 1 : 0);
     if (dp.tuck) {
         glUniform3fv(uTuckC_, 1, dp.tuckC);

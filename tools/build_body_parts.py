@@ -17,8 +17,10 @@ Writes (app/assets_open):
   av_wfade_<b>          the energy fade where a waist-up body ends (LOWER BODY = NONE)
   tex/open_design_*.tex garment designs; tex/open_pat_*.tex the PATTERN masks in the same UV layout
   app/src/avatar_bodies.inc  bind-pose joints for the rig (avatar.cpp)
-Model format v3: the usual 44-byte vertex plus 4 bone indices and 4 weights (bytes) over the game's 7 bones
-(0 torso, 1 neck, 2 head, 3 upper L, 4 upper R, 5 fore L, 6 fore R); vertex colour R = ambient occlusion.
+Model format v3: the usual 44-byte vertex plus 4 bone indices and 4 weights (bytes) over the game's 9 bones
+(0 torso, 1 neck, 2 head, 3 upper L, 4 upper R, 5 fore L, 6 fore R, 7 collarbone L, 8 collarbone R); vertex colour R =
+ambient occlusion. The collarbones take part of the torso's weight around each shoulder as a model is written
+(clavicle_weights): the rig lifts them as an arm goes overhead, so the shoulder rises with the arm instead of pinching.
 
 Usage: python -I tools/build_body_parts.py
 """
@@ -40,7 +42,8 @@ import palette  # noqa: E402
 CH, TWOSIDED, PATTERN = palette.CH, palette.TWOSIDED, palette.PATTERN
 DESIGN = 32
 CLOTH = 64   # fabric: the character shader adds a knit texture and a cloth sheen, and no glossy highlight
-TORSO, NECK, HEAD, UPL, UPR, FOL, FOR = range(7)
+TORSO, NECK, HEAD, UPL, UPR, FOL, FOR, CLL, CLR = range(9)
+CLAV_SHOULDERS = None   # the body being written's shoulder joints (bind space): build_body sets them
 SH = {'lit': 0, 'unlit': 3, 'add': 2, 'trans': 4}
 TEX = 512
 
@@ -695,7 +698,7 @@ class Mesh:
             v['p'], v['n'], v['u0'] = S.P[first], S.N[first], S.UV[first]
             a = np.clip(S.AO[first] * 255 + 0.5, 0, 255).astype(np.uint8)
             v['c'] = np.stack([a, a, a, np.full(n, 255, np.uint8)], 1)
-            Wd = S.Wd[first]
+            Wd = clavicle_weights(S.P[first], S.Wd[first])
             order = np.argsort(-Wd, axis=1)[:, :4]
             top = np.take_along_axis(Wd, order, 1)
             top /= np.maximum(top.sum(1, keepdims=True), 1e-9)
@@ -1778,7 +1781,30 @@ def build_head(b, mats):
 FACE_KEYS = ('m1', 'm2', 'm3', 'f1', 'f2', 'f3')   # FACE 2..4 (FACE 1 is the base body's own head)
 
 
+def clavicle_weights(P, Wd):
+    """The 7 bones' weights (n x 7) as 9: around each shoulder, part of the torso's weight goes to that side's
+    collarbone, most at the shoulder's top and outside, none from a little out from the neck (where the collarbone
+    turns) or below the armpit. The rig (avatar.cpp) turns the collarbone up about that point as the arm rises."""
+    W = np.concatenate([Wd, np.zeros((len(Wd), 2))], 1)
+    if CLAV_SHOULDERS is None:
+        return W
+    for col, S in ((CLL, CLAV_SHOULDERS[0]), (CLR, CLAV_SHOULDERS[1])):
+        side = 1.0 if S[0] > 0 else -1.0
+        out = np.clip((P[:, 0] * side - 0.05) / (abs(S[0]) - 0.05), 0.0, 1.0)     # 0 near the neck, 1 at the shoulder
+        out = out * out * (3 - 2 * out)
+        d = np.linalg.norm(P - S, axis=1)
+        near = np.clip(1.0 - (d - 0.06) / 0.12, 0.0, 1.0)                         # within 6 cm all, gone by 18 cm
+        below = np.clip((P[:, 1] - (S[1] - 0.12)) / 0.06, 0.0, 1.0)              # nothing below the armpit
+        f = 0.9 * out * near * below
+        move = W[:, TORSO] * f
+        W[:, TORSO] -= move
+        W[:, col] += move
+    return W
+
+
 def build_body(b, raster, design_tex):
+    global CLAV_SHOULDERS
+    CLAV_SHOULDERS = (np.array(b.J['shoulder_l'], dtype=np.float64), np.array(b.J['shoulder_r'], dtype=np.float64))
     mats = materials()
     total = 0
     whole = Soup.of(b, b.T)

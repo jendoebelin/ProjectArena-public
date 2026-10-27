@@ -50,7 +50,7 @@ struct DrawParams {
     const float (*channels)[4] = nullptr;
     float rim[4] = {0, 0, 0, 0};
     GLuint pattern = 0;
-    const Mat4* bones = nullptr;   // skinned models: the 7 avatar bone matrices (bind -> world, before `model`)
+    const Mat4* bones = nullptr;   // skinned models: the 9 avatar bone matrices (avatar.h BONE_*; bind -> world, before `model`)
     // hair under headgear: a tuckTexture() (per direction from tuckC, model space, the radius the hair stays inside)
     GLuint tuck = 0;
     float tuckC[3] = {0, 0, 0};

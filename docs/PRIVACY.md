@@ -15,7 +15,9 @@ The game keeps these in its own folder on your headset or PC (`%APPDATA%\Project
 - your avatar choices;
 - your settings and camera positions;
 - a diagnostic log;
-- a private random player key (made once; it is what your statistics are kept under, below).
+- a private random player key (made once; it is what your statistics are kept under, below);
+- MATCH MY LEVEL's level for the practice bot (one number);
+- your match recordings, only if you turn them on (below).
 
 They are not sent to us, except in a bug report you choose to send (below). Uninstalling the game removes them on
 Quest; on PC you can delete the folder.
@@ -27,6 +29,18 @@ the headset's system straight to the display; the game never receives them, and 
 In the WINDOW mode on Quest 3 / 3S the game asks for access to **spatial data**: the headset's depth map of your
 room, used frame by frame on the headset to hide real things inside the court. It is not stored or sent anywhere,
 and you can refuse it (WINDOW then works without hiding them).
+
+## Match recordings (only when you turn them on)
+
+**MENU → MY STATS → RECORD MY MATCHES** is off unless you turn it on. When it is on, the game saves each match you
+play, frame by frame, in its folder on your headset or PC: how **your own** head and hands moved, the balls, and the
+game's events (throws, hits, blocks, points). Another person's movement is never saved, only their ball; when you
+play the practice bot, its movement is saved too (it is not a person). The newest 20 recordings are kept and older
+ones are deleted; turning it off stops recording.
+
+Recordings never leave your device on their own. You can choose to send one to us (for example by email to
+vrsportsfan@gmail.com) to help make the practice bot play more like real people; we use it only for that and delete
+it when you ask. How someone moves can be personal, so send one only if you are comfortable with that.
 
 ## Bug reports (only when you send one)
 
@@ -138,6 +152,7 @@ Community servers run by other people follow their own rules.
 ## Your choices
 
 - Delete your statistics any time: **MENU → MY STATS → DELETE MY STATS**.
+- Match recordings are off unless you turn them on (**MENU → MY STATS → RECORD MY MATCHES**), and stay on your device.
 - Ask us to delete anything else we hold about you (reports naming you, old statistics from a game you reinstalled):
   email vrsportsfan@gmail.com with your player name. We answer within 30 days.
 - Play offline or on your home network (**MULTIPLAYER → ONLINE: OFF**): then nothing reaches our server.

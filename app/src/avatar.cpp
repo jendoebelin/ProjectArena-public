@@ -468,6 +468,7 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
         const Bone bu = {K.shoulder[k], K.elbow[k], (K.wrist[k] - K.elbow[k]) + Vec3{0, 0, -0.3f}, L1};
         const Bone bf = {K.elbow[k], K.wrist[k], K.thumb[k] - K.wrist[k], L2};
         const HandInput& hi = in.hand[k];
+        r.skin[BONE_CLAV_L + k] = r.skin[BONE_TORSO];   // (the collarbone as bound, unless an arm raises it, below)
         if (!hi.tracked) {   // arms at rest: the bind pose, rotated with the torso
             r.upper[k] = {S, r.torso.transform(K.elbow[k]), yaw.rotate(bu.front), L1};
             r.fore[k] = {r.upper[k].b, r.torso.transform(K.wrist[k]), yaw.rotate(bf.front), L2};
@@ -484,7 +485,21 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
             const Vec3 W = hi.grip.transform(plate ? cuffPose(k == 0).transform(fe) : Vec3{side * 0.004f, -0.042f, 0.105f});
             const Vec3 back = hi.grip.q.rotate(normalize(Vec3{0, -0.047f, 1.f}));
             // elbow: where a straight wrist would put it, nudged down / out / back so the IK stays stable
-            const Vec3 pole = W + back * L2t + yaw.rotate({side * T.elbowPole.x, T.elbowPole.y, T.elbowPole.z}) * T.elbowPull;
+            // a hand raised above the shoulder (e: 0 level or below, 1 straight up): the shoulder lifts with it (a real
+            // one shrugs as the arm goes overhead) and the elbow turns out to the side instead of hanging down
+            // (owner's report 2026-10-27: arms raised to the ceiling folded the shoulders in)
+            const float e = clampf(dot(normalize(W - S), Vec3{0, 1, 0}) * 1.4f, 0.f, 1.f);
+            // the collarbone (BONE_CLAV_*, bind space): turned up about a point near the neck so the shoulder rises
+            // T.shrug with the arm straight up; the skin around the shoulder goes with it (build_body_parts.py)
+            const Vec3 piv{side * 0.05f, K.shoulder[k].y, K.shoulder[k].z};
+            const float ang = side * std::asin(clampf(T.shrug * e / (std::fabs(K.shoulder[k].x) - 0.05f), 0.f, 0.8f));
+            const Quat cq = Quat::axisAngle({0, 0, 1}, ang);
+            r.skin[BONE_CLAV_L + k] = r.skin[BONE_TORSO] * Mat4::fromPose({cq, piv - cq.rotate(piv)});
+            const Vec3 Kr = piv + cq.rotate(K.shoulder[k] - piv);
+            S = r.torso.transform({Kr.x * scale.x + side * T.shoulder.x, Kr.y + T.shoulder.y, Kr.z * scale.z + T.shoulder.z});
+            const Vec3 hang = yaw.rotate({side * T.elbowPole.x, T.elbowPole.y, T.elbowPole.z});
+            const Vec3 out = yaw.rotate({side * 1.0f, 0.15f, 0.35f});
+            const Vec3 pole = W + back * (L2t * (1.f - 0.6f * e)) + normalize(lerp(hang, out, e)) * (T.elbowPull + 0.25f * e);
             // a hand beyond the arm's reach draws the shoulder after it (up to 7 cm, as a real shoulder blade
             // slides) before the arm has to stretch
             const Vec3 SW = W - S;

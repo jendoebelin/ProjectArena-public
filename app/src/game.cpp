@@ -1,6 +1,7 @@
 // Sparc gameplay simulation. See game.h for provenance conventions; rules quoted from the original's
 // English text are in docs/game_text_en.txt.
 #include "game.h"
+#include <algorithm>
 #include <cstring>
 
 static const Vec3 kUp{0, 1, 0};
@@ -86,6 +87,7 @@ void Game::deflectMoving(Ball& b, const Vec3& n, const Vec3& vs, int deflector, 
     b.rechargePending = false;
     b.scored = false;
     b.spin *= 0.5f;
+    b.timer = 0;   // (the self-hit grace, after a block as after a throw)
 }
 Pose Game::shieldLocal(int h) const {
     // Candidate placements (grip space: +X right, +Y up/thumb, -Z forward). side = +1 right hand, -1 left hand.
@@ -173,11 +175,63 @@ const char* eventName(EventType t) {
     return "?";
 }
 
+void Game::setArena(const std::vector<CollisionTri>& tris) {
+    auto A = std::make_shared<ArenaData>();
+    A->tris = tris;
+    if (tris.empty()) { arena = A; return; }
+    Vec3 lo{1e9f, 1e9f, 1e9f}, hi{-1e9f, -1e9f, -1e9f};
+    auto grow = [](Vec3& l, Vec3& h, const Vec3& v) {
+        l = {std::min(l.x, v.x), std::min(l.y, v.y), std::min(l.z, v.z)};
+        h = {std::max(h.x, v.x), std::max(h.y, v.y), std::max(h.z, v.z)};
+    };
+    for (CollisionTri& t : A->tris) {
+        t.mid = (t.a + t.b + t.c) / 3.f;
+        t.rad = std::max(length(t.a - t.mid), std::max(length(t.b - t.mid), length(t.c - t.mid)));
+        for (const Vec3* v : {&t.a, &t.b, &t.c}) grow(lo, hi, *v);
+    }
+    if (A->tris.size() > 65535) { arena = A; return; }   // (no grid: every triangle is tested)
+    const Vec3 pad{ArenaData::kPad, ArenaData::kPad, ArenaData::kPad};
+    A->lo = lo - pad;
+    for (int i = 0; i < 3; ++i) A->n[i] = std::max(1, (int)std::ceil(((&hi.x)[i] + ArenaData::kPad - (&A->lo.x)[i]) / ArenaData::kCell));
+    const size_t cells = size_t(A->n[0]) * A->n[1] * A->n[2];
+    // each triangle in every cell its box (grown by kPad) touches: count, then fill, in triangle order
+    auto range = [&](const CollisionTri& t, int c0[3], int c1[3]) {
+        Vec3 l{1e9f, 1e9f, 1e9f}, h{-1e9f, -1e9f, -1e9f};
+        for (const Vec3* v : {&t.a, &t.b, &t.c}) grow(l, h, *v);
+        for (int i = 0; i < 3; ++i) {
+            c0[i] = std::max(0, (int)std::floor(((&l.x)[i] - ArenaData::kPad - (&A->lo.x)[i]) / ArenaData::kCell));
+            c1[i] = std::min(A->n[i] - 1, (int)std::floor(((&h.x)[i] + ArenaData::kPad - (&A->lo.x)[i]) / ArenaData::kCell));
+        }
+    };
+    std::vector<uint32_t> count(cells + 1, 0);
+    for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 1) {
+            A->first.assign(cells + 1, 0);
+            for (size_t c = 0; c < cells; ++c) A->first[c + 1] = A->first[c] + count[c];
+            A->items.resize(A->first[cells]);
+            std::fill(count.begin(), count.end(), 0);
+        }
+        for (size_t k = 0; k < A->tris.size(); ++k) {
+            int c0[3], c1[3];
+            range(A->tris[k], c0, c1);
+            for (int z = c0[2]; z <= c1[2]; ++z)
+                for (int y = c0[1]; y <= c1[1]; ++y)
+                    for (int x = c0[0]; x <= c1[0]; ++x) {
+                        const size_t c = (size_t(z) * A->n[1] + y) * A->n[0] + x;
+                        if (pass == 1) A->items[A->first[c] + count[c]] = (uint16_t)k;
+                        ++count[c];
+                    }
+        }
+    }
+    arena = A;
+}
+
 void Game::reset(bool player1IsBot) {
     for (int p = 0; p < 2; ++p) {
         PlayerState& s = pl[p];
         s = PlayerState{};
         s.isBot = (p == 1 && player1IsBot);
+        s.botStance = -1;   // (a bot's stance: picked as its first step, new each match)
         s.in.head.p = tun.start[p] + Vec3{0, 1.65f, 0};
         spawnBall(p);
         s.ball.pos = idlePoint(p);
@@ -248,6 +302,7 @@ void Game::deflect(Ball& b, const Vec3& n, int deflector, float assistDeg, const
     b.rechargePending = false;
     b.scored = false;
     b.spin *= 0.5f;
+    b.timer = 0;   // (the self-hit grace, after a block as after a throw)
 }
 
 bool Game::sweepArena(const Vec3& from, const Vec3& to, float r, Vec3& hitPos, Vec3& hitN, uint32_t& tags) const {
@@ -256,7 +311,10 @@ bool Game::sweepArena(const Vec3& from, const Vec3& to, float r, Vec3& hitPos, V
     float best = 1e9f;
     bool hit = false;
     Vec3 motion = to - from;
-    for (const CollisionTri& t : arena) {
+    if (!arena) return false;
+    const ArenaData& A = *arena;
+    auto test = [&](const CollisionTri& t) {
+        if (t.rad >= 0 && length2(to - t.mid) > (t.rad + r) * (t.rad + r)) return;   // nowhere near it
         Vec3 ab = t.b - t.a, ac = t.c - t.a, ap = to - t.a;
         float d1 = dot(ab, ap), d2 = dot(ac, ap);
         Vec3 q;
@@ -284,17 +342,28 @@ bool Game::sweepArena(const Vec3& from, const Vec3& to, float r, Vec3& hitPos, V
         }
         Vec3 d = to - q;
         float dist = length(d);
-        if (dist >= r) continue;
+        if (dist >= r) return;
         Vec3 n = dist > 1e-6f ? d / dist : t.n;
-        if (dot(motion, n) >= 0) continue;   // already separating
+        if (dot(motion, n) >= 0) return;   // already separating
         float score = dist - ((t.tags & (TAG_FOUL | TAG_RETURN)) ? 0.05f : 0.f);
         if (score < best) { best = score; hitPos = q + n * r; hitN = n; tags = t.tags; hit = true; }
+    };
+    if (r <= ArenaData::kPad && !A.first.empty()) {   // only the triangles listed for the ball's cell can touch it
+        int c[3];
+        for (int i = 0; i < 3; ++i) {
+            c[i] = (int)std::floor(((&to.x)[i] - (&A.lo.x)[i]) / ArenaData::kCell);
+            if (c[i] < 0 || c[i] >= A.n[i]) return false;   // (outside the grid: nothing within kPad)
+        }
+        const size_t cell = (size_t(c[2]) * A.n[1] + c[1]) * A.n[0] + c[0];
+        for (uint32_t k = A.first[cell]; k < A.first[cell + 1]; ++k) test(A.tris[A.items[k]]);
+    } else {
+        for (const CollisionTri& t : A.tris) test(t);
     }
     return hit;
 }
 
-bool Game::hitsBody(int v, const Vec3& pos, float r) const {
-    const Vec3 head = pl[v].in.head.p;
+bool Game::hitsBody(int v, const Vec3& pos, float r) const { return bodyTouches(pl[v].in.head.p, pos, r); }
+bool Game::bodyTouches(const Vec3& head, const Vec3& pos, float r) const {
     if (length(pos - head) < tun.headRadius + r) return true;
     Vec3 a = head - Vec3{0, tun.torsoTop, 0};
     Vec3 b = head - Vec3{0, tun.torsoBottom, 0};
@@ -302,6 +371,13 @@ bool Game::hitsBody(int v, const Vec3& pos, float r) const {
     Vec3 ab = b - a;
     float t = clampf(dot(pos - a, ab) / std::max(1e-6f, dot(ab, ab)), 0.f, 1.f);
     return length(pos - (a + ab * t)) < tun.torsoRadius + r;
+}
+
+bool Game::bodyTouchesPath(const Vec3& head, const Vec3& from, const Vec3& to, float r) const {
+    if (segSegDist(from, to, head, head) < tun.headRadius + r) return true;
+    Vec3 a = head - Vec3{0, tun.torsoTop, 0}, b = head - Vec3{0, tun.torsoBottom, 0};
+    if (b.y < 0.3f) b.y = 0.3f;
+    return segSegDist(from, to, a, b) < tun.torsoRadius + r;
 }
 
 bool Game::hitsShield(int p, int h, const Vec3& from, const Vec3& to, float r, Vec3& n) const {
@@ -329,6 +405,8 @@ void Game::scorePoint(int scorer, const Vec3& where, int ball) {
     if (match != MatchState::InProgress) return;
     int victim = 1 - scorer;
     pl[scorer].score++;
+    if (tun.botAdapt && pl[scorer].isBot != pl[victim].isBot)   // MATCH MY LEVEL: toward close matches
+        tun.botMatch = clampf(tun.botMatch + (pl[scorer].isBot ? -tun.botMatchStep : tun.botMatchStep), 0.f, kBotLevels - 1.f);
     pl[victim].strikesAgainst = 0;   // "If you get hit, any strikes against you are removed."
     emit(EventType::HitPlayer, victim, -1, where, float(scorer), ball);
     if (!tun.advanced) {
@@ -666,105 +744,684 @@ void Game::stepPlayer(int p, float dt) {
     }
 }
 
-void Game::stepBot(int p, float dt) {
-    // Practice opponent following the same rules (shield only while holding a charged ball).
+// ---- the practice bot (owner, 2026-10-26): a person's body and limits, its skill set by its level. Throws
+// raised 2026-10-27 from the owner's recorded matches (their median throw 14.5 m/s, at the game's top speed): ROOKIE
+// about 9 m/s, PRO 12, UNBEATABLE 14 (the most a throw gives)
+static const BotSkill kBotSkills[kBotLevels] = {
+    //  name         react  defend reads  misread hand body  accel throw  aim    hold         catch plan   strikes
+    {"ROOKIE",      0.45f, 0.30f, false, 0.30f, 2.5f, 1.0f, 4.f,  4.2f, 0.60f, 2.0f, 4.0f, 0.2f, false, false},
+    {"AMATEUR",     0.35f, 0.50f, false, 0.18f, 3.0f, 1.4f, 6.f,  4.8f, 0.45f, 1.6f, 3.4f, 0.5f, false, false},
+    {"PRO",         0.25f, 0.65f, true,  0.10f, 3.8f, 1.8f, 7.f,  5.6f, 0.35f, 1.2f, 3.0f, 0.7f, false, false},
+    {"ALL-STAR",    0.20f, 0.80f, true,  0.05f, 4.5f, 2.2f, 9.f,  6.0f, 0.20f, 0.9f, 2.2f, 0.9f, true,  false},
+    {"CHAMPION",    0.17f, 0.92f, true,  0.02f, 5.2f, 2.6f, 11.f, 6.3f, 0.10f, 0.7f, 1.6f, 1.0f, true,  true},
+    {"UNBEATABLE",  0.15f, 1.00f, true,  0.00f, 6.0f, 3.0f, 12.f, 6.5f, 0.00f, 0.6f, 1.2f, 1.0f, true,  true},
+};
+const BotSkill& botSkill(int level) { return kBotSkills[level < 0 ? 0 : level >= kBotLevels ? kBotLevels - 1 : level]; }
+BotSkill botSkillAt(float level) {
+    level = clampf(level, 0.f, kBotLevels - 1.f);
+    const int i = std::min((int)level, kBotLevels - 2);
+    const float f = level - i;
+    const BotSkill &a = kBotSkills[i], &b = kBotSkills[i + 1];
+    BotSkill s = f < 0.5f ? a : b;
+    auto mix = [&](float BotSkill::*m) { s.*m = a.*m + (b.*m - a.*m) * f; };
+    for (float BotSkill::*m : {&BotSkill::reaction, &BotSkill::defend, &BotSkill::readError, &BotSkill::handSpeed, &BotSkill::bodySpeed,
+                               &BotSkill::bodyAccel, &BotSkill::throwHand, &BotSkill::aimError, &BotSkill::holdMin, &BotSkill::holdMax,
+                               &BotSkill::catchChance})
+        mix(m);
+    return s;
+}
+BotSkill Game::botSkillOf(int p) const {
+    if (pl[p].botLevel >= 0) return botSkill(pl[p].botLevel);
+    return tun.botAdapt ? botSkillAt(tun.botMatch) : botSkill(tun.botLevel);
+}
+
+// the stances: each hand's grip from the head (head frame: x right, y up, z back; the right hand, the left mirrored)
+// and its controller's pitch / yaw / roll (degrees), how low it crouches, and how much it bobs
+struct BotStance { const char* name; Vec3 pos[2]; Vec3 rot[2]; float crouch, bob; };
+static const BotStance kStances[kBotStances] = {
+    {"KITTEN",  {{-0.25f, -0.40f, -0.25f}, {0.25f, -0.40f, -0.25f}}, {{-20, 0, 0}, {-20, 0, 0}}, 0.00f, 1.0f},     // paws up
+    {"RELAXED", {{-0.24f, -0.74f, -0.04f}, {0.24f, -0.74f, -0.04f}}, {{-80, 0, 0}, {-80, 0, 0}}, 0.00f, 0.7f},     // arms down
+    {"BOXER",   {{-0.11f, -0.17f, -0.34f}, {0.13f, -0.21f, -0.22f}}, {{15, -10, 25}, {15, 10, -25}}, 0.05f, 1.8f},  // fists up
+    {"KARATE",  {{-0.06f, -0.34f, -0.44f}, {0.22f, -0.60f, 0.02f}}, {{0, 0, 70}, {0, 0, -90}}, 0.08f, 0.8f},     // lead hand out, one chambered
+    {"MANTIS",  {{-0.14f, -0.10f, -0.34f}, {0.14f, -0.10f, -0.34f}}, {{-70, 0, 0}, {-70, 0, 0}}, 0.06f, 1.0f},    // raised, wrists hooked
+    {"MONKEY",  {{-0.30f, -0.60f, -0.30f}, {0.30f, -0.60f, -0.30f}}, {{-60, 0, 0}, {-60, 0, 0}}, 0.18f, 2.2f},    // low, loose, bouncing
+};
+const char* botStanceName(int stance) { return kStances[stance < 0 ? 0 : stance >= kBotStances ? kBotStances - 1 : stance].name; }
+
+// a person's movement toward a target: never faster than vmax, speeding up and slowing down at most amax (no
+// teleporting, no instant stops)
+static void approach(Vec3& x, Vec3& v, const Vec3& target, float vmax, float amax, float dt) {
+    const Vec3 e = target - x;
+    const float d = length(e);
+    const Vec3 want = d > 1e-5f ? e / d * std::min(vmax, std::sqrt(2.f * amax * d)) : Vec3{};
+    Vec3 dv = want - v;
+    const float l = length(dv), m = amax * dt;
+    if (l > m) dv *= m / l;
+    v += dv;
+    x += v * dt;
+    if (d < 0.003f && length(v) < 0.5f) { x = target; v = {}; }   // there: settled (not trembling about it)
+}
+static float moveTime(float d, float vmax, float amax) {   // from standing still to standing still, d metres away
+    return d < vmax * vmax / amax ? 2.f * std::sqrt(d / amax) : d / vmax + vmax / amax;
+}
+
+Vec3 Game::botShoulder(int p, int h) const {
+    const Pose& hd = pl[p].in.head;   // (the bot's head stays level, facing the court)
+    const Vec3 o = tun.botShoulder;
+    return hd.p + hd.q.rotate({h == 1 ? o.x : -o.x, 0, o.z}) + Vec3{0, o.y, 0};
+}
+Vec3 Game::botWrist(int h, const Pose& grip) const {
+    const Vec3 w = tun.botWrist;
+    return grip.transform({h == 1 ? w.x : -w.x, w.y, w.z});
+}
+Pose Game::botTuck(int p, int h, const Vec3& head) const {
+    const Quat q = pl[p].in.head.q;
+    return {q * Quat::axisAngle({1, 0, 0}, deg2rad(-20)),
+            head + q.rotate({h == 1 ? 0.20f : -0.20f, 0, 0.12f}) + Vec3{0, -0.48f, 0}};
+}
+Vec3 Game::botInReach(int p, int h, const Pose& grip) const {
+    const Vec3 sh = botShoulder(p, h), w = botWrist(h, grip), d = w - sh;
+    const float l = length(d);
+    return l > tun.botArm ? grip.p + d * (tun.botArm / l - 1.f) : grip.p;   // (the hand moves in with its wrist)
+}
+
+void Game::predictBall(int owner, int reader, float horizon, float dt, std::vector<BallPathPt>& out) const {
+    out.clear();
+    Game g = *this;
+    PlayerState& r = g.pl[reader];
+    r.in.head.p = {0, -50, 0};   // the reader out of the way: no hit, no block
+    for (HandState& hs : r.hands) hs.shieldUp = hs.knuckleUp = false;
+    const Ball& b = g.pl[owner].ball;
+    const int by = b.instigator;
+    // (read during a step, before that step moves the ball: the ball is where the step before left it, and this
+    // step's move comes first, at this step's time)
+    out.push_back({g.now - dt, b.pos, b.vel, false, b});
+    for (float t = 0; t < horizon; t += dt, g.now += dt) {
+        g.events.clear();
+        g.stepBall(owner, dt);
+        // (a returning ball can only reach its owner)
+        if ((b.state != BallState::Flying && b.state != BallState::Returning) || b.instigator != by ||
+            (b.state == BallState::Returning && owner != reader))
+            break;
+        bool strike = false;
+        for (const GameEvent& e : g.events) strike |= e.type == EventType::Strike && e.player == reader;
+        out.push_back({g.now, b.pos, b.vel, strike, b});
+    }
+}
+
+Pose Game::botBlockGrip(int p, int h, int plan, const BallPathPt& x) const {
+    // the surface faces where the ball comes from; a good reader angles it to send the ball back at the opponent
+    // (the reflection of the ball's direction d onto t needs a normal along t - d), never more than 60 deg off square
+    const Vec3 d = normalize(x.vel);
+    Vec3 n = -d;
+    if (plan != BOT_CATCH && botSkillOf(p).readsFlight) {
+        const Vec3 aim = normalize(normalize(chestPoint(1 - p) - x.pos) - d);
+        n = dot(aim, -d) >= 0.5f ? aim : normalize(aim - d);
+    }
+    // turn `g` about n so that its local `upLocal` is as near `upWorld` as it goes
+    auto roll = [&](Quat g, const Vec3& upLocal, const Vec3& upWorld) {
+        Vec3 cur = g.rotate(upLocal), want = upWorld - n * dot(upWorld, n);
+        cur = cur - n * dot(cur, n);
+        if (length2(cur) > 1e-6f && length2(want) > 1e-6f) g = fromTo(normalize(cur), normalize(want)) * g;
+        return g;
+    };
+    if (plan == BOT_SHIELD) {   // the plate (its normal = local +Y) facing n, its long side down
+        const Quat plate = roll(fromTo({0, 1, 0}, n), {0, 0, 1}, {0, -1, 0});
+        const Pose sl = shieldLocal(h);
+        const Quat gq = plate * sl.q.conj();   // grip * shieldLocal = plate
+        return {gq, x.pos - gq.rotate(sl.p)};
+    }
+    if (plan == BOT_KNUCKLE) {   // the front of the fist facing n, knuckles up
+        const Quat gq = roll(fromTo({0, 0, -1}, n), {0, 1, 0}, {0, 1, 0});
+        Vec3 ko = tun.knuckleOffset;
+        if (h == 0) ko.x = -ko.x;
+        return {gq, x.pos - gq.rotate(ko)};
+    }
+    const Quat gq = pl[p].in.head.q * Quat::axisAngle({1, 0, 0}, deg2rad(-20));   // a catch: the hand as at rest
+    return {gq, x.pos - gq.rotate(tun.catcherOffset)};
+}
+
+int Game::botTry(int p, int k, int owner, int plan, int h, const Pose& grip, const Vec3& body, int tuck) const {
+    if (botTriesLeft <= 0) { botTriesOut = true; return -1; }   // (none left this step: not known yet)
+    --botTriesLeft;
+    Game g = *this;
+    g.botFrozen = true;
+    PlayerState& s = g.pl[p];
+    PlayerState::BotRead& r = s.botRead[k];
+    r.plan = plan; r.hand = h; r.grip = grip.p; r.gripQ = grip.q; r.body = body; r.tuck = tuck;
+    const BallPath& path = pl[p].botRead[k].path;   // (the read stays here: copies don't carry it)
+    const Vec3 stand = tun.start[p] + Vec3{0, 1.62f, 0};
+    Ball& b = g.pl[owner].ball;
+    const int by = b.instigator;
+    bool touched = false, near = false;
+    int result = 2;
+    // (while the ball is still far off, nothing of the bot can touch it: it follows the flight already read, so only
+    // the part near the bot is played out; the read is from this step, in the same steps)
+    const bool skip = botSkillOf(p).readsFlight && !path.empty() && std::fabs(path[0].t - (now - lastDt)) < 1e-5f;
+    int step = 0;
+    for (float t = 0; t < 3.f; t += lastDt) {
+        if (step++ > 0) g.now += lastDt;   // (the first: the rest of this step, as the bot's own goes on from here)
+        g.events.clear();
+        g.stepBot(p, lastDt);
+        g.stepPlayer(p, lastDt);
+        if (!near && skip && step < (int)path.size() && length(path[step].pos - stand) > 3.f) {
+            b = path[step].ball;
+            continue;
+        }
+        near = true;
+        // (on its way off and 8 m away: should it come back, there is time to read it again)
+        if (dot(b.vel, b.pos - stand) > 0 && length(b.pos - stand) > 8.f) break;
+        g.stepBall(owner, lastDt);
+        for (const GameEvent& e : g.events) {
+            if (e.type == EventType::HitPlayer && e.player == p) return 0;
+            if (e.type == EventType::Strike && e.player == p) result = 1;
+            touched |= (e.type == EventType::ShieldBlock || e.type == EventType::KnuckleBlock) && e.player == p;
+        }
+        // done: it stops, the opponent sends it back (a new ball to read), or it goes home to the opponent
+        if (b.state != BallState::Flying && b.state != BallState::Returning) break;
+        if ((touched || by == p) && b.instigator == 1 - p) break;
+        if (b.state == BallState::Returning && b.instigator != p) break;
+    }
+    return result;
+}
+
+bool Game::botReachable(int p, int h, const Pose& grip, float by) const {
+    if (length(botWrist(h, grip) - botShoulder(p, h)) > tun.botArm - 0.02f) return false;
+    const BotSkill& sk = botSkillOf(p);
+    // (there a moment early, to settle: a hand still moving changes where the ball goes)
+    return now + moveTime(length(grip.p - pl[p].botHand[h]), sk.handSpeed, tun.botHandAccel) + 0.10f <= by;
+}
+
+void Game::botWatch(int p, int k, const BotSkill& sk) {
     PlayerState& s = pl[p];
-    int opp = 1 - p;
-    Quat q = Quat::axisAngle(kUp, deg2rad(p == 0 ? -90.f : 90.f));
-    float sway = std::sin(now * 0.9f) * 0.25f;
+    PlayerState::BotRead& r = s.botRead[k];
+    const int owner = k == 0 ? 1 - p : p;
+    const Ball& B = pl[owner].ball;
+    int mode = 0;
+    if (B.state == BallState::Flying && B.instigator == 1 - p && !B.scored) mode = 1;   // coming at it
+    else if ((B.state == BallState::Flying || (B.state == BallState::Returning && owner == p)) && B.instigator == p &&
+             !B.homing && !B.scored && dot(B.vel, s.in.head.p - B.pos) > 0)
+        mode = 2;   // one it threw or deflected, coming back at it (off a wall, or returned)
+    if (mode != r.mode) { r = PlayerState::BotRead{}; r.mode = mode; }   // (a new ball, or one that changed hands)
+    if (!mode) return;
+    if (r.noticeT < 0) {
+        r.noticeT = now;
+        // it stops where it is (a body still moving comes to rest a little further on) and watches
+        r.body = s.botBody + s.botBodyVel * (length(s.botBodyVel) / (2.f * sk.bodyAccel));
+        for (int h = 0; h < 2; ++h) { r.rel[h] = s.botHand[h] - s.in.head.p; r.relQ[h] = s.botHandQ[h]; }
+        r.act = rnd() < sk.defend;
+        r.catchIt = mode == 2 && rnd() < sk.catchChance;
+        const Vec3 e{rnd() - 0.5f, rnd() - 0.5f, rnd() - 0.5f};
+        r.err = normalize(e) * (sk.readError * rnd());
+    }
+    if (now - r.noticeT < sk.reaction) return;   // not seen yet
+    bool fresh = r.path.empty();
+    if (!fresh && sk.readsFlight) {   // still the flight it read? (where the read says the last step left the ball)
+        const float tb = now - lastDt;
+        size_t i = 0;
+        while (i + 1 < r.path.size() && r.path[i].t < tb) ++i;
+        Vec3 at = r.path[i].pos;
+        if (i > 0 && r.path[i].t > r.path[i - 1].t)
+            at = lerp(r.path[i - 1].pos, at, clampf((tb - r.path[i - 1].t) / (r.path[i].t - r.path[i - 1].t), 0.f, 1.f));
+        // (and read on before it runs out: a slow ball can be in the air longer than one read reaches)
+        fresh = r.path.back().t < now + (r.full ? 1.f : 0.f) || length(at - r.err - B.pos) > 0.08f;
+    } else if (!fresh) {
+        fresh = now - r.readT > 0.12f;   // a straight-line read, taken again as the ball comes
+    }
+    // (a shield up or down since it planned (it caught its ball, or blocked with it): its plan was tried out without
+    // that, so a new one)
+    const int hands = (s.hands[0].shieldUp ? 1 : 0) | (s.hands[1].shieldUp ? 2 : 0);
+    if (!fresh && r.hands >= 0 && hands != r.hands && !r.path.empty()) {
+        r.hands = hands;
+        r.tried.clear();
+        botPlan(p, k, sk);
+        return;
+    }
+    r.hands = hands;
+    if (!fresh && !r.again) return;
+    if (!fresh) {   // the rest of a plan, the read unchanged
+        r.again = false;
+        botPlan(p, k, sk);
+        return;
+    }
+    if (sk.readsFlight) {
+        predictBall(owner, p, 2.5f, lastDt, r.path);
+        r.full = r.path.back().t >= now + 2.5f - 2.f * lastDt;
+    } else {
+        r.path.clear();
+        for (int i = 0; i <= 600; ++i) r.path.push_back({now + i / 240.f, B.pos + B.vel * (i / 240.f), B.vel, false, B});
+    }
+    for (BallPathPt& x : r.path) x.pos += r.err;
+    r.tried.clear();
+    r.readT = now;
+    botPlan(p, k, sk);
+}
+
+void Game::botPlan(int p, int k, const BotSkill& sk) {
+    PlayerState& s = pl[p];
+    PlayerState::BotRead& r = s.botRead[k];
+    const Ball& B = pl[k == 0 ? 1 - p : p].ball;
+    const float br = tun.projectileRadius * B.scale;
+    // (it plans from where it stands still: r.body, chosen when it noticed the ball; its hands hold where they come
+    // to rest now)
+    const Vec3 still = r.body;
+    for (int h = 0; h < 2; ++h) {
+        const Vec3 v = s.botHand[h] + s.botHandVel[h] * (length(s.botHandVel[h]) / (2.f * tun.botHandAccel)) - s.in.head.p;
+        r.rel[h] = v;
+        r.relQ[h] = s.botHandQ[h];
+        if (r.mode == 1) {   // a ball coming at it: from its stance into the ready one (hands up in a guard catch balls by
+            const BotStance& k = kStances[STANCE_KITTEN];   // themselves, and send some into its own foul zone)
+            r.rel[h] = s.in.head.q.rotate(k.pos[h]);
+            r.relQ[h] = s.in.head.q * Quat::axisAngle({1, 0, 0}, deg2rad(k.rot[h].x));
+        }
+    }
+    // (and its head steady: it stops bobbing while it watches)
+    const Vec3 head = (match == MatchState::Meet ? Vec3{p == 0 ? -tun.meetSpot : tun.meetSpot, 1.62f, 0} : tun.start[p] + Vec3{0, 1.62f, 0}) + still;
+    r.plan = BOT_NONE; r.hand = -1; r.hitT = -1; r.tuck = -1;
+    float strikeT = -1;
+    // the stretches of the read still to come that pass anywhere near where its body can be (within its reach of
+    // steps, leans and ducks): only those can touch it. (The whole stretch between two points read: a fast ball moves
+    // 15 cm or more between two.)
+    std::vector<int> near;
+    {
+        const Vec3 mid = tun.start[p] + Vec3{0, 1.2f, 0};
+        const float reach = length(tun.botBodyRange) + 0.5f * tun.torsoBottom + tun.torsoRadius + br + 0.1f;
+        for (size_t i = 1; i < r.path.size(); ++i) {
+            if (r.path[i].t < now) continue;
+            if (segSegDist(r.path[i - 1].pos, r.path[i].pos, mid, mid) < reach) near.push_back((int)i);
+            if (strikeT < 0 && r.path[i].strike) strikeT = r.path[i].t;
+        }
+    }
+    for (int i : near)
+        if (bodyTouchesPath(head, r.path[i - 1].pos, r.path[i].pos, br + 0.06f)) { r.hitT = r.path[i].t; break; }
+    if (!r.act && !r.catchIt) return;
+    const int owner = k == 0 ? 1 - p : p;
+    const bool tries = sk.guardsStrikes;   // (the best try their answer out first)
+    botTriesOut = false;
+    struct Again {   // a plan that ran out of tryouts, with nothing found yet, goes on next step
+        PlayerState::BotRead& r; const bool& out;
+        ~Again() { if (out && r.plan == BOT_NONE) r.again = true; }
+    } again_{r, botTriesOut};
+    // a tryout, or how it went the last time (a plan carried on over steps goes on from where it was)
+    auto tryOut = [&](uint32_t key, int plan, int h, const Pose& g, const Vec3& body, int tuck) {
+        for (const auto& c : r.tried) if (c.first == key) return (int)c.second;
+        const int v = botTry(p, k, owner, plan, h, g, body, tuck);
+        if (v >= 0) r.tried.push_back({key, (int8_t)v});
+        return v;
+    };
+    const Pose none{};
+    // the hand holding its ball, its shield up: unless it blocks with it, the best pull it in to their side as a ball
+    // comes (a shield where it happens to be can catch the ball, and send it back into them)
+    const int sh = tries && r.mode == 1 && s.ball.state == BallState::Held && s.hands[s.ball.heldHand].shieldUp ? s.ball.heldHand : -1;
+    // the ball misses its body: would it still get it, off a hand where it is (or tucked in)?
+    int passive = 2;
+    if (tries && r.mode == 1 && r.hitT < 0) {
+        if (sh >= 0) passive = tryOut(0xFFFFFFFEu, BOT_NONE, -1, none, still, sh);
+        if (passive == 2 && sh >= 0) r.tuck = sh;
+        else passive = std::max(passive, tryOut(0xFFFFFFFFu, BOT_NONE, -1, none, still, -1));
+        if (passive == 0)   // (its answer must come before the ball reaches it)
+            for (const BallPathPt& x : r.path)
+                if (x.t >= now && dot(x.pos - head, s.in.head.q.rotate({0, 0, -1})) < 0.6f) { r.hitT = x.t; break; }
+    }
+    const PlayerState::BotRead& other = s.botRead[1 - k];
+    const int busy = other.plan == BOT_SHIELD || other.plan == BOT_KNUCKLE || other.plan == BOT_CATCH ? other.hand : -1;
+    // the point of the path where hand h meets the ball best (in reach, in time, before `until`): nearest its shoulder
+    // (tried out: it must take the ball and not send it back into it, nor into its own foul zone unless `need` allows)
+    auto pick = [&](int h, int plan, float until, float& dist, int need) {
+        dist = 1e9f;
+        if (h < 0 || h == busy) return -1;
+        std::vector<std::pair<float, int>> ok;
+        for (size_t i = 0; i < r.path.size(); ++i) {
+            const BallPathPt& x = r.path[i];
+            if (x.t <= now || x.t > until) continue;
+            const Pose g = botBlockGrip(p, h, plan, x);
+            if (botReachable(p, h, g, x.t)) ok.push_back({length(botWrist(h, g) - botShoulder(p, h)), (int)i});
+        }
+        std::sort(ok.begin(), ok.end());
+        for (size_t j = 0; j < ok.size() && j < 6; ++j) {
+            if (plan != BOT_CATCH && tries &&
+                tryOut(uint32_t(plan) << 24 | uint32_t(h) << 20 | uint32_t(ok[j].second), plan, h,
+                       botBlockGrip(p, h, plan, r.path[ok[j].second]), still, -1) < need)
+                continue;
+            dist = ok[j].first;
+            return ok[j].second;
+        }
+        return -1;
+    };
+    auto take = [&](int h, int plan, int i) {
+        const Pose g = botBlockGrip(p, h, plan, r.path[i]);
+        r.plan = plan; r.hand = h; r.grip = g.p; r.gripQ = g.q;
+        r.body = still;   // (it holds still for it)
+    };
+    auto either = [&](int plan, float until, int need) {   // the better of the two hands
+        float d0, d1;
+        const int i0 = pick(0, plan, until, d0, need), i1 = pick(1, plan, until, d1, need);
+        if (i0 < 0 && i1 < 0) return false;
+        if (i1 >= 0 && (i0 < 0 || d1 < d0)) take(1, plan, i1); else take(0, plan, i0);
+        return true;
+    };
+    // out of the ball's way: the smallest step, lean or duck that clears it, made in time
+    // (tried out: its hands come along, and a shield up must not catch the ball on the way)
+    auto dodge = [&](int need) {
+        const Vec3 right = s.in.head.q.rotate({1, 0, 0});
+        const Vec3 stand = tun.start[p] + Vec3{0, 1.62f, 0};
+        struct Spot { float cost; Vec3 o; uint32_t key; };
+        std::vector<Spot> ok;
+        const Vec3 fwd = s.in.head.q.rotate({0, 0, -1});
+        const float steps[3] = {0.f, 0.3f, -0.15f};   // (a step forward or back, for a ball coming in on a slant)
+        // (how far the ball's path stays from a body standing at offset o: below zero, it touches)
+        auto gap = [&](const Vec3& o) {
+            const Vec3 hd = stand + o, a = hd - Vec3{0, tun.torsoTop, 0};
+            Vec3 b2 = hd - Vec3{0, tun.torsoBottom, 0};
+            if (b2.y < 0.3f) b2.y = 0.3f;
+            float g = 9.f;
+            for (int i : near) {
+                const Vec3 &x0 = r.path[i - 1].pos, &x1 = r.path[i].pos;
+                g = std::min(g, std::min(segSegDist(x0, x1, hd, hd) - tun.headRadius, segSegDist(x0, x1, a, b2) - tun.torsoRadius) - br);
+            }
+            return g;
+        };
+        float bestGap = -9.f;
+        Vec3 bestO = still;
+        for (int iff = 0; iff < 3; ++iff)
+        for (int iy = 0; iy < 4; ++iy)
+            for (int ix = -10; ix <= 10; ++ix) {
+                const Vec3 o = right * (tun.botBodyRange.x * 0.1f * ix) + Vec3{0, -tun.botBodyRange.y * iy / 3.f, 0} + fwd * steps[iff];
+                const float move = length(o - still);
+                if (now + moveTime(move, sk.bodySpeed, sk.bodyAccel) + 0.02f > r.hitT) continue;
+                const float g = gap(o);
+                if (g > bestGap) { bestGap = g; bestO = o; }
+                if (g > 0.06f) ok.push_back({move - 0.3f * o.y, o, 0x40000000u | uint32_t(iff * 4 + iy) << 8 | uint32_t(ix + 10)});   // (ducking costs a little more)
+            }
+        std::sort(ok.begin(), ok.end(), [](const Spot& a, const Spot& b) { return a.cost < b.cost; });
+        // each as it stands, or with the arm holding its ball (shield up) pulled in, if that hand gets there in time
+        int tried = 0;
+        for (size_t j = 0; j < ok.size() && tried < 16; ++j)
+            for (int v = 0; v < (sh >= 0 ? 2 : 1) && tried < 16; ++v) {
+                const int tuck = v ? -1 : sh;   // (tucked in first)
+                Pose g = none;
+                if (tuck >= 0) {
+                    g = botTuck(p, tuck, {});   // (from its head)
+                    if (now + moveTime(length(stand + ok[j].o + g.p - s.botHand[tuck]), sk.handSpeed, tun.botHandAccel) + 0.05f > r.hitT)
+                        continue;
+                }
+                ++tried;
+                if (tries && tryOut(ok[j].key | uint32_t(v) << 16, BOT_DODGE, -1, none, ok[j].o, tuck) < need) continue;
+                r.plan = BOT_DODGE; r.body = ok[j].o; r.tuck = tuck;
+                return true;
+            }
+        if (need == 1 && ok.empty() && bestGap > -8.f) {   // nowhere clear in time: as far from it as it can get
+            r.plan = BOT_DODGE; r.body = bestO; r.tuck = sh;
+            return true;
+        }
+        return false;
+    };
+    float d;
+    if (r.mode == 2) {   // a ball of its own coming back: catch it (only its own ball), or step out of its way
+        if (k == 1 && r.catchIt && either(BOT_CATCH, r.hitT >= 0 ? r.hitT - 0.02f : 1e9f, 2)) return;
+        // (a ball coming at it decides where its body goes: only then may it step out of its own ball's way)
+        if (r.act && r.hitT >= 0 && (k == 0 || !s.botRead[0].mode) && !dodge(2)) dodge(1);
+        return;
+    }
+    if (!r.act) return;
+    const float until = r.hitT >= 0 ? r.hitT - 0.02f : sk.guardsStrikes && strikeT >= 0 ? strikeT - 0.02f : -1.f;
+    if (until < 0) return;   // it misses (and the strike zone, or it doesn't mind)
+    // the shield (on the hand holding a charged ball), then a knuckle guard, then a dodge; a block that fouls only when
+    // nothing else will do
+    const bool shield = s.ball.state == BallState::Held && s.ball.charged && tun.shields;
+    for (int need = 2; need >= 1; --need) {
+        if (shield) {
+            const int i = pick(s.ball.heldHand, BOT_SHIELD, until, d, need);
+            if (i >= 0) { take(s.ball.heldHand, BOT_SHIELD, i); return; }
+        }
+        if (tun.knuckleGuards() && either(BOT_KNUCKLE, until, need)) return;
+        if (r.hitT >= 0 && dodge(need)) return;
+    }
+}
+
+void Game::botPlanShot(int p, const BotSkill& sk) {
+    PlayerState& s = pl[p];
+    const int opp = 1 - p, k = s.botShotsTried++, h = s.ball.heldHand;
+    const Vec3 fwd = s.in.head.q.rotate({0, 0, -1});
+    const Vec3 rel = botShoulder(p, h) + fwd * 0.45f;   // about where its hand lets go
+    Vec3 aim = chestPoint(opp) + Vec3{rnd() - 0.5f, rnd() - 0.5f, rnd() - 0.5f} * 0.15f, spin{};
+    const float sgn = rnd() < 0.5f ? -1.f : 1.f;
+    switch (k % 6) {
+    case 0: break;                                          // the chest
+    case 1: aim.y += sgn > 0 ? 0.25f : -0.30f; break;       // the head or the hips
+    case 2: aim.z += sgn * 0.22f; break;                    // a side
+    case 3: aim.z += sgn * 3.0f; break;                     // off the side wall
+    default: {                                              // a curve (spin about up bends it along cross(up, fwd))
+        spin = kUp * (sgn * lerpf(14.f, 26.f, rnd()));
+        aim -= cross(kUp, fwd) * (sgn * lerpf(0.8f, 1.5f, rnd()));
+    }
+    }
+    const Vec3 dir = normalize(aim - rel);
+    Game g = *this;
+    Ball& gb = g.pl[p].ball;
+    gb.pos = rel;
+    g.launch(p, h, dir, throwSpeedFromHandSpeed(sk.throwHand, p), spin);
+    float score = -100;
+    const float dt = 1.f / 120;
+    for (float t = 0; t < 2.5f && gb.state == BallState::Flying; t += dt) {
+        g.events.clear();
+        g.now += dt;
+        g.stepBall(p, dt);
+        bool done = false;
+        for (const GameEvent& e : g.events) {
+            if (e.type == EventType::HitPlayer && e.player == opp) {   // it scores: soon, and far from their hands
+                float far = 1.f;
+                for (int hh = 0; hh < 2; ++hh) far = std::min(far, length(pl[opp].in.hand[hh].grip.p - e.pos));
+                score = 1000.f - 150.f * t + 200.f * far + (length2(spin) > 0 || k % 6 == 3 ? 60.f : 0.f);
+                done = true;
+            } else if ((e.type == EventType::ShieldBlock || e.type == EventType::KnuckleBlock) && e.player == opp) {
+                score = -500;
+                done = true;
+            } else if (e.type == EventType::Strike && e.player == opp) {
+                score = std::max(score, 300.f);
+            }
+        }
+        if (done) break;
+    }
+    if (score > s.botShotScore) { s.botShotScore = score; s.botShotDir = dir; s.botShotSpin = spin; }
+}
+
+void Game::stepBot(int p, float dt) {
+    // Practice opponent following the same rules (shield only while holding a charged ball), moving as a person
+    // can: a body that steps, leans and ducks, two arms of a person's reach and speed, either hand for everything
+    PlayerState& s = pl[p];
+    const BotSkill& sk = botSkillOf(p);
+    const int opp = 1 - p;
+    const Quat q = Quat::axisAngle(kUp, deg2rad(p == 0 ? -90.f : 90.f));
+    const Vec3 right = q.rotate({1, 0, 0}), fwd = q.rotate({0, 0, -1});
+    // where it stands: its end, or its side of the centre for a fist bump
+    const bool meet = match == MatchState::Meet;
+    const Vec3 stand = meet ? Vec3{p == 0 ? -tun.meetSpot : tun.meetSpot, 1.62f, 0} : tun.start[p] + Vec3{0, 1.62f, 0};
+    if (s.botStance < 0) {   // its stance this match. Beginners hold no guard (hands up in front block by themselves)
+        static const int kOpen[3] = {STANCE_KITTEN, STANCE_RELAXED, STANCE_MONKEY};
+        const float level = s.botLevel >= 0 ? (float)s.botLevel : tun.botAdapt ? tun.botMatch : (float)tun.botLevel;
+        s.botStance = level < 1.5f ? kOpen[(int)(rnd() * 3) % 3] : (int)(rnd() * kBotStances) % kBotStances;
+    }
+    const BotStance& st = kStances[s.botStance >= kBotStances ? 0 : s.botStance];
+    s.botSteady += ((s.botRead[0].mode || s.botRead[1].mode ? 1.f : 0.f) - s.botSteady) * std::min(1.f, dt * 5.f);
+    auto bob = [&]() { return Vec3{0, 0.03f * st.bob * (1.f - s.botSteady) * std::sin(now * 2.1f * std::sqrt(st.bob)), 0}; };
+    // a bow (KARATE, at the fist bump): the head down and forward
+    s.botBow += ((s.botStance == STANCE_KARATE && meet && meetBumped ? 1.f : 0.f) - s.botBow) * std::min(1.f, dt * 6.f);
+    auto headAt = [&]() {
+        return Pose{q * Quat::axisAngle({1, 0, 0}, -0.6f * s.botBow), stand + s.botBody + bob() + fwd * (0.10f * s.botBow) - Vec3{0, 0.12f * s.botBow, 0}};
+    };
+    Ball& b = s.ball;
     s.in.headTracked = true;
-    s.in.head = {q, tun.start[p] + Vec3{0, 1.62f + 0.03f * std::sin(now * 2.1f), sway} + s.botLean};
-    Vec3 right = q.rotate({1, 0, 0}), fwd = q.rotate({0, 0, -1});
-    Vec3 chest = s.in.head.p - Vec3{0, 0.4f, 0};
-    Quat handQ = q * Quat::axisAngle({1, 0, 0}, deg2rad(-20));
+    s.in.head = headAt();
+    auto side = [&](int h) { return right * (h == 1 ? 1.f : -1.f); };
+    auto stanceQ = [&](int h) {
+        const Vec3 r = st.rot[h];
+        return q * Quat::axisAngle({1, 0, 0}, deg2rad(r.x)) * Quat::axisAngle({0, 1, 0}, deg2rad(r.y)) * Quat::axisAngle({0, 0, 1}, deg2rad(r.z));
+    };
+    const Quat restQ = q * Quat::axisAngle({1, 0, 0}, deg2rad(-20));   // (a hand reaching for something: forward, a little down)
+    auto rest = [&](int h) { return s.in.head.p + q.rotate(st.pos[h]); };
+    if (!s.botHandSet) {
+        for (int h = 0; h < 2; ++h) { s.botHand[h] = rest(h); s.botHandVel[h] = {}; s.botHandQ[h] = stanceQ(h); }
+        s.botHandSet = true;
+    }
     for (int h = 0; h < 2; ++h) {
         HandInput& hi = s.in.hand[h];
         hi.tracked = true;
         hi.trigger = 0;
         hi.angVel = {};
-        hi.grip = {handQ, chest + right * (h == 0 ? -0.25f : 0.25f) + fwd * 0.25f};
+        hi.grip = {s.botHandQ[h], s.botHand[h]};
     }
-    Ball& b = s.ball;
     s.botTimer -= dt;
-    const int hand = 1;
-    if (match == MatchState::InProgress && b.state == BallState::Idle) {
-        b.state = BallState::Held; b.heldHand = hand;
-        emit(EventType::Grab, p, hand, b.pos);
-        s.botTimer = lerpf(tun.botHoldMin, tun.botHoldMax, rnd());
+    botTriesLeft = kBotTriesPerStep;
+    if (!botFrozen) {   // (in a tryout: the plan being tried, as it is)
+        botWatch(p, 0, sk);
+        botWatch(p, 1, sk);
     }
-    // incoming opponent ball?
-    const Ball& ob = pl[opp].ball;
-    bool incoming = ob.state == BallState::Flying && ob.instigator == opp && dot(ob.vel, fwd) < -0.5f;
-    if (incoming) {
-        if (s.botNoticeT < 0) { s.botNoticeT = now; s.botWillBlock = rnd() < tun.botBlockChance; }
-    } else {
-        s.botNoticeT = -1;
+    const PlayerState::BotRead* reads[2] = {&s.botRead[0], &s.botRead[1]};
+    auto handBusy = [&](int h) {
+        for (const PlayerState::BotRead* r : reads)
+            if (r->hand == h && (r->plan == BOT_SHIELD || r->plan == BOT_KNUCKLE || r->plan == BOT_CATCH)) return true;
+        return false;
+    };
+    // where everything goes: the hands at rest (the ball held ready), the body swaying a little where it stands
+    Pose want[2] = {{stanceQ(0), rest(0)}, {stanceQ(1), rest(1)}};
+    float speed[2] = {sk.handSpeed, sk.handSpeed};
+    if (b.state == BallState::Held) want[b.heldHand].p = s.in.head.p + Vec3{0, -0.15f, 0} + side(b.heldHand) * 0.30f - fwd * 0.10f;
+    // (it stops swaying while it watches a ball)
+    Vec3 bodyWant = right * (0.15f * std::sin(now * 0.9f)) - Vec3{0, st.crouch, 0};
+    bool threatened = false;
+    for (const PlayerState::BotRead* r : reads) {
+        threatened |= r->mode != 0;   // (no throw while a ball comes at it: a wind-up could swing its shield into it)
+        if (r->plan == BOT_SHIELD || r->plan == BOT_KNUCKLE || r->plan == BOT_CATCH) want[r->hand] = {r->gripQ, r->grip};
+        if (r->mode && r->plan != BOT_CATCH && (r == reads[0] || !reads[0]->mode)) bodyWant = r->body;   // (still while it watches; or its dodge)
     }
-    bool holding = b.state == BallState::Held;
-    int blockHand = -1;
-    if (incoming && s.botWillBlock && now - s.botNoticeT > tun.botReaction) {
-        if (holding && b.charged && tun.shields) blockHand = b.heldHand;            // raise the shield arm
-        else if (tun.knuckleGuards()) blockHand = holding ? 1 - b.heldHand : 0;   // punch with a knuckle guard
+    // while it watches a ball, the hands it isn't using keep their place (from its head, so a dodge carries them):
+    // what its tryouts assumed (a hand still moving could swing a shield into the ball)
+    bool watching = false;
+    Vec3 carried[2] = {{0, 0, 0}, {0, 0, 0}};   // (from its head: placed once the body has moved this step)
+    for (int h = 0; h < 2; ++h) carried[h].y = 1e9f;
+    for (const PlayerState::BotRead* r : reads) {
+        if (!r->mode || watching) continue;
+        watching = true;
+        for (int h = 0; h < 2; ++h)
+            if (!handBusy(h)) {
+                want[h] = (r->plan == BOT_DODGE || r->plan == BOT_NONE) && r->tuck == h ? botTuck(p, h, s.in.head.p) : Pose{r->relQ[h], s.in.head.p + r->rel[h]};
+                carried[h] = want[h].p - s.in.head.p;
+            }
     }
-    if (holding) {
-        HandInput& hi = s.in.hand[b.heldHand];
-        hi.trigger = 1;
-        hi.grip.p = chest + right * 0.3f + Vec3{0, 0.25f, 0} - fwd * 0.10f;
-    }
-    if (blockHand >= 0) {
-        float planeX = chest.x + fwd.x * 0.45f;
-        float tHit = (planeX - ob.pos.x) / (std::fabs(ob.vel.x) > 1e-3f ? ob.vel.x : 1e-3f);
-        Vec3 cp = ob.pos + ob.vel * std::max(0.f, tHit);
-        cp.y = clampf(cp.y, 0.6f, 2.1f);
-        cp.z = clampf(cp.z, s.in.head.p.z - 0.7f, s.in.head.p.z + 0.7f);
-        HandInput& hi = s.in.hand[blockHand];
-        if (holding && blockHand == b.heldHand) {
-            Vec3 n = normalize(-ob.vel);
-            Quat gq = fromTo({0, 1, 0}, n);
-            Vec3 curZ = gq.rotate({0, 0, 1});
-            Vec3 wantZ = normalize(Vec3{0, -1, 0} - n * dot(Vec3{0, -1, 0}, n));
-            gq = fromTo(normalize(curZ - n * dot(curZ, n)), wantZ) * gq;   // plate orientation in world
-            Pose sl = shieldLocal(blockHand);
-            Quat gripQ = gq * sl.q.conj();                                 // grip such that grip*shieldLocal = plate
-            hi.grip = {gripQ, cp - gripQ.rotate(sl.p)};
-            hi.trigger = 1;
-        } else {
-            Vec3 ko = tun.knuckleOffset;
-            if (blockHand == 0) ko.x = -ko.x;
-            hi.grip.p = cp - hi.grip.q.rotate(ko);
-            hi.trigger = 0;
+    // its ball off the spawner, with the nearer free hand
+    if (match == MatchState::InProgress && b.state == BallState::Idle && !watching) {
+        int h = -1;
+        float bd = 1e9f;
+        for (int k = 0; k < 2; ++k) {
+            const float d = length(botShoulder(p, k) - b.pos);
+            if (!handBusy(k) && d < bd) { bd = d; h = k; }
+        }
+        if (h >= 0) {
+            want[h] = {restQ, b.pos - restQ.rotate(tun.launcherOffset)};
+            if (length(launcherPoint(p, h) - b.pos) < 0.25f) {
+                b.state = BallState::Held; b.heldHand = h; b.vel = {};
+                emit(EventType::Grab, p, h, b.pos);
+                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd());
+                s.botThrow = 0; s.botShotsTried = 0; s.botShotScore = -1e9f;
+            }
         }
     }
-    // the body follows a far block (leans sideways, dips for low balls) instead of the arm stretching out, and the
-    // hands move to their targets quickly rather than teleporting (owner: the bot looked stiff reaching for a ball)
-    Vec3 leanWant{};
-    if (blockHand >= 0) {
-        const Vec3 shoulder = chest + right * (blockHand == 1 ? 0.19f : -0.19f) + Vec3{0, 0.12f, 0};
-        Vec3 d = s.in.hand[blockHand].grip.p - shoulder;
-        d.x *= 0.3f;   // barely along the court
-        const float dist = length(d), excess = dist - 0.50f;
-        if (excess > 0 && dist > 1e-4f) leanWant = d / dist * std::min(excess * 0.9f, 0.40f);
-        leanWant.y = clampf(leanWant.y, -0.35f, 0.05f);
-    }
-    s.botLean += (leanWant - s.botLean) * std::min(1.f, dt * 7.f);
-    for (int h = 0; h < 2; ++h) {
-        Vec3& cur = s.botHand[h];
-        if (!s.botHandSet) cur = s.in.hand[h].grip.p;
-        cur += (s.in.hand[h].grip.p - cur) * std::min(1.f, dt * 20.f);
-        s.in.hand[h].grip.p = cur;
-    }
-    s.botHandSet = true;
+    // a throw: wind up behind the shoulder, swing through at a throw's hand speed, let go
+    const bool holding = b.state == BallState::Held;
+    if (!holding || threatened || match != MatchState::InProgress) s.botThrow = 0;
     if (holding && !b.charged) s.botTimer = std::min(s.botTimer, 0.35f);   // recharge by throwing
-    if (holding && !incoming && s.botTimer <= 0) {
-        if (match == MatchState::InProgress) {
-            b.pos = launcherPoint(p, b.heldHand);
-            Vec3 target = chestPoint(opp) + Vec3{(rnd() - 0.5f) * tun.botAimError, (rnd() - 0.5f) * tun.botAimError, (rnd() - 0.5f) * tun.botAimError};
-            Vec3 spin{};
-            if (rnd() < 0.3f) target.z += (rnd() < 0.5f ? -1.f : 1.f) * 3.0f;              // bank shot
-            else if (rnd() < 0.4f) spin = kUp * ((rnd() < 0.5f ? -1.f : 1.f) * lerpf(12.f, 28.f, rnd()));   // curve
-            launch(p, b.heldHand, normalize(target - b.pos), throwSpeedFromHandSpeed(tun.botHandSpeed * (0.85f + 0.3f * rnd()), p), spin);
+    if (holding && !threatened && match == MatchState::InProgress) {
+        const int h = b.heldHand;
+        if (s.botThrow == 0) {
+            // one try a step while it waits (not in a step its reads already spent tryouts in)
+            if (sk.planShots && s.botShotsTried < 12 && botTriesLeft == kBotTriesPerStep) botPlanShot(p, sk);
+            // the best keep their ball (their shield) while the opponent can throw, unless their shot clock runs low
+            const Ball& ob = pl[opp].ball;
+            const bool patient = sk.guardsStrikes && tun.shields && !tun.knuckleGuards() && b.charged &&
+                                 (ob.state == BallState::Held || ob.state == BallState::Idle) && s.shotClock > 3.f &&
+                                 s.botTimer > -4.f;
+            if (s.botTimer <= 0 && !patient) {
+                if (!(sk.planShots && s.botShotScore > 0)) {   // at the chest, off the side wall, or curved
+                    const Vec3 rel = botShoulder(p, h) + fwd * 0.45f;
+                    Vec3 target = chestPoint(opp) + Vec3{rnd() - 0.5f, rnd() - 0.5f, rnd() - 0.5f} * sk.aimError;
+                    s.botShotSpin = {};
+                    if (rnd() < 0.3f) target.z += (rnd() < 0.5f ? -1.f : 1.f) * 3.0f;
+                    else if (rnd() < 0.4f) s.botShotSpin = kUp * ((rnd() < 0.5f ? -1.f : 1.f) * lerpf(12.f, 28.f, rnd()));
+                    s.botShotDir = normalize(target - rel);
+                } else {   // the planned throw, made as well as it can
+                    s.botShotDir = normalize(s.botShotDir + Vec3{rnd() - 0.5f, rnd() - 0.5f, rnd() - 0.5f} * (sk.aimError * 0.1f));
+                }
+                s.botThrow = 1;
+                s.botThrowT = now;
+            }
         }
-        s.botTimer = lerpf(tun.botHoldMin, tun.botHoldMax, rnd());
+        if (s.botThrow == 1) {   // wind up
+            want[h].p = botShoulder(p, h) + Vec3{0, 0.12f, 0} - fwd * 0.22f + side(h) * 0.06f;
+            if (length(s.botHand[h] - want[h].p) < 0.06f || now - s.botThrowT > 0.6f) { s.botThrow = 2; s.botThrowT = now; }
+        } else if (s.botThrow == 2) {   // the swing, forward along the throw
+            Vec3 flat = s.botShotDir;
+            flat.y *= 0.3f;
+            want[h].p = botShoulder(p, h) + normalize(flat) * 0.50f;
+            speed[h] = sk.throwHand;
+            if (length(s.botHand[h] - want[h].p) < 0.15f || now - s.botThrowT > 0.4f) {
+                b.pos = launcherPoint(p, h);
+                launch(p, h, s.botShotDir, throwSpeedFromHandSpeed(sk.throwHand, p), s.botShotSpin);
+                s.botThrow = 0;
+                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd());
+                s.botShotsTried = 0;
+                s.botShotScore = -1e9f;
+            }
+        }
+    }
+    // move: the body (within a person's step, lean and duck), then each hand (never beyond its reach)
+    approach(s.botBody, s.botBodyVel, bodyWant, sk.bodySpeed, sk.bodyAccel, dt);
+    {
+        const Vec3 R = tun.botBodyRange;
+        const float lat = clampf(dot(s.botBody, right), -R.x, R.x), fw = clampf(dot(s.botBody, fwd), -0.15f, R.z);
+        const Vec3 o = right * lat + fwd * fw + Vec3{0, clampf(s.botBody.y, -R.y, 0.05f), 0};
+        if (length2(o - s.botBody) > 1e-10f) s.botBodyVel = {};   // (at the edge of where it can go)
+        s.botBody = o;
+    }
+    s.in.head = headAt();
+    int bump = -1;   // the fist bump: one fist out to the middle, ready; the other's fist reaching it, it meets it
+    if (meet && !meetBumped) {
+        int oh = -1;
+        float ox = 9.f;
+        for (int k = 0; k < 2; ++k)
+            if (pl[opp].in.hand[k].tracked && std::fabs(pl[opp].in.hand[k].grip.p.x) < ox) { ox = std::fabs(pl[opp].in.hand[k].grip.p.x); oh = k; }
+        bump = 1;
+        if (oh >= 0) bump = dot(pl[opp].in.hand[oh].grip.p - s.in.head.p, right) > 0 ? 1 : 0;   // (the nearer fist)
+        const Quat fq = q;   // the fist level, knuckles to the front
+        Vec3 at = s.in.head.p + fwd * 0.36f - Vec3{0, 0.30f, 0} + side(bump) * 0.06f;   // offered
+        if (oh >= 0) {
+            const Vec3 theirs = pl[opp].in.hand[oh].grip.transform(tun.fistFront);
+            if (length(theirs - at) < 0.45f) at = theirs - fq.rotate(tun.fistFront) + fwd * -0.02f;   // fist to fist
+        }
+        want[bump] = {fq, at};
+        carried[bump].y = 1e9f;
+    }
+    for (int h = 0; h < 2; ++h)   // the hands it holds still go with the body (in step with it, as its tryouts have them)
+        if (carried[h].y < 1e8f) want[h].p = s.in.head.p + carried[h];
+    for (int h = 0; h < 2; ++h) {
+        approach(s.botHand[h], s.botHandVel[h], botInReach(p, h, want[h]), speed[h],
+                 tun.botHandAccel * (speed[h] > sk.handSpeed ? 2.f : 1.f), dt);
+        s.botHandQ[h] = nlerp(s.botHandQ[h], want[h].q, std::min(1.f, dt * 18.f));
+        s.botHand[h] = botInReach(p, h, {s.botHandQ[h], s.botHand[h]});   // (an arm comes along with the body)
+        HandInput& hi = s.in.hand[h];
+        hi.grip = {s.botHandQ[h], s.botHand[h]};
+        hi.trigger = (b.state == BallState::Held && b.heldHand == h) || h == bump ? 1.f : 0.f;   // (a fist for the bump)
+    }
+    // a catch: its own ball, in its catcher
+    const PlayerState::BotRead& c = s.botRead[1];
+    if (c.plan == BOT_CATCH && (b.state == BallState::Flying || b.state == BallState::Returning) && b.instigator == p) {
+        s.in.hand[c.hand].trigger = 1;
+        if (length(catcherPoint(p, c.hand) - b.pos) < tun.catchHalfHeight + ballRadius(p)) {
+            b.state = BallState::Held; b.heldHand = c.hand; b.vel = {}; b.spin = {};
+            emit(EventType::Caught, p, c.hand, b.pos);
+            s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd());
+            s.botThrow = 0; s.botShotsTried = 0; s.botShotScore = -1e9f;
+        }
     }
 }
 
@@ -781,7 +1438,8 @@ void Game::stepMatch(float dt) {
     switch (match) {
     case MatchState::WaitingForPlayers:
         if (pl[0].in.headTracked && pl[1].in.headTracked) {
-            if (!pl[0].isBot && !pl[1].isBot && tun.meetTime > 0) {   // two people: meet in the centre first
+            // two people meet in the centre first; a person and the bot too when asked (practice); two bots never
+            if ((pl[0].isBot != pl[1].isBot ? tun.botMeet : !pl[0].isBot) && tun.meetTime > 0) {
                 match = MatchState::Meet;
                 stateTimer = tun.meetTime;
             } else {
@@ -888,6 +1546,7 @@ void Game::step(float dt, PlayerInput in[2]) {
     if (dt <= 0) return;
     dt = std::min(dt, 0.05f);
     now += dt;
+    lastDt = dt;
     for (int p = 0; p < 2; ++p) {
         if (pl[p].isBot) stepBot(p, dt);
         else pl[p].in = in[p];

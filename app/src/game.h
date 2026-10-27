@@ -1,13 +1,28 @@
 // Sparc gameplay simulation (platform independent; unit-tested on desktop by tests/test_game.cpp).
 #pragma once
 #include <cstdint>
+#include <memory>
 #include <vector>
 #include "math3d.h"
 
 // collision tag bits (match tools/build_open_assets.py)
 enum : uint32_t { TAG_ARENA = 1, TAG_RETURN = 2, TAG_FOUL = 4, TAG_TEAM0 = 8, TAG_TEAM1 = 16 };
 
-struct CollisionTri { Vec3 a, b, c, n; uint32_t tags; };
+struct CollisionTri {
+    Vec3 a, b, c, n; uint32_t tags;
+    Vec3 mid; float rad = -1.f;   // a sphere around it (Game::setArena): balls far from it skip the exact test
+};
+// The arena's collision as the game uses it (Game::setArena), shared by every copy of the game (the bot plays its
+// tryouts out on copies): the triangles, and a grid of 1 m cells listing the triangles within kPad of each, so a ball
+// (its radius at most 0.3 m) tests only those around it.
+struct ArenaData {
+    static constexpr float kCell = 1.f, kPad = 0.45f;
+    std::vector<CollisionTri> tris;
+    Vec3 lo;
+    int n[3] = {0, 0, 0};
+    std::vector<uint32_t> first;   // per cell (x fastest, then y, z): its first entry in `items`; one more at the end
+    std::vector<uint16_t> items;   // triangle indices
+};
 // arena.col (tools/build_open_assets.py): "SCOL", the triangle count (u32), then per triangle 9 floats and tags (u32).
 // Empty when the data isn't one (wrong magic, cut short).
 std::vector<CollisionTri> parseCollision(const uint8_t* data, size_t size);
@@ -64,7 +79,8 @@ struct Tunables {
     int fullScaleSteps = 4;
     float lateScaleIncreasePerStrike = 0.05f, maxBallScale = 3.0f, scaleGrowRate = 6.0f;
     // Your own ball can hit you once it has travelled away and is coming back (PORT, owner request); the point goes
-    // to the opponent. selfHitGrace: seconds after a throw / return start before it can hit its owner.
+    // to the opponent. selfHitGrace: seconds after a throw / return start / block (owner, 2026-10-27: a ball just blocked
+    // could count against the blocker the moment it left the shield) before it can hit its owner.
     bool selfHitScores = true;
     float selfHitGrace = 0.35f;
     int maxBounces = 16;                      // UProjectileLaunchParams.MaxBounces
@@ -156,11 +172,49 @@ struct Tunables {
     // ---- body hit volumes; torso offset below the head
     float headRadius = 0.12f, torsoRadius = 0.165f, torsoTop = 0.25f, torsoBottom = 0.85f;
 
-    // ---- practice bot
-    float botHoldMin = 1.2f, botHoldMax = 3.0f;
-    float botBlockChance = 0.6f, botReaction = 0.22f, botAimError = 0.35f;
-    float botHandSpeed = 4.8f;   // simulated hand speed fed through the real launch-speed mapping
+    // ---- practice bot its level (botSkill below; practice MATCH OPTIONS), and its body. A person's reach and
+    // shoulders, as the avatar draws them: each wrist (grip-local botWrist) stays within botArm of its shoulder (head +
+    // botShoulder in the head's frame; x mirrored for the left), so the drawn arm never stretches (tests check it
+    // against the avatar rig); its head moves within botBodyRange (sideways, down, toward the court) by stepping,
+    // leaning and ducking.
+    int botLevel = 2;
+    // MATCH MY LEVEL (owner, 2026-10-26): instead of botLevel, a level between 0 (ROOKIE) and 5 (UNBEATABLE) that
+    // follows the player: up botMatchStep each time the person scores against the bot, down each time the bot scores
+    // (close matches: it settles where both score about as often)
+    bool botAdapt = false;
+    float botMatch = 2.f, botMatchStep = 0.15f;
+    bool botMeet = false;   // practice: meet the bot in the centre for a fist bump first (owner, 2026-10-27)
+    Vec3 botShoulder = {0.18f, -0.295f, 0.04f}, botWrist = {0.04f, 0.047f, 0.122f};
+    float botArm = 0.52f, botHandAccel = 40.f;   // (0.52: room for the shoulder lifting with a raised arm)
+    Vec3 botBodyRange = {1.0f, 0.50f, 0.35f};
 };
+
+// The practice bot's levels (owner, 2026-10-26): it always moves like a person (reaction time, hand and body speed,
+// arm's reach), and the levels differ in skill within those limits. UNBEATABLE reads every ball's real flight (walls,
+// spin) and answers it with what it can reach in time: shield, knuckle guard or dodge; its throws are tried out first.
+struct BotSkill {
+    const char* name;
+    float reaction;             // seconds from seeing a ball to the first move
+    float defend;               // chance it does something about a ball coming at it
+    bool readsFlight;           // reads curves and bank shots (else it expects a straight line, re-read as it comes)
+    float readError;            // metres its read of the ball's path is off
+    float handSpeed;            // m/s: its fastest hand move (blocking, reaching, catching)
+    float bodySpeed, bodyAccel; // m/s, m/s^2: stepping, leaning and ducking
+    float throwHand;            // m/s: the hand speed of its throws (through the real launch-speed mapping)
+    float aimError;             // metres
+    float holdMin, holdMax;     // seconds it holds the ball before a throw
+    float catchChance;          // its own ball coming back
+    bool planShots;             // tries out throws (direct, curved, banked) on a copy of the game and picks the best
+    bool guardsStrikes;         // also blocks balls heading for its strike zone
+};
+constexpr int kBotLevels = 6;
+// how the bot holds its hands when it has nothing to do (owner, 2026-10-27: more than the one "kitten hands"): one
+// picked at random each match (ROOKIE and AMATEUR: only the open ones, KITTEN, RELAXED, MONKEY: a guard blocks by
+// itself). KARATE bows at the fist bump.
+enum : int { STANCE_KITTEN, STANCE_RELAXED, STANCE_BOXER, STANCE_KARATE, STANCE_MANTIS, STANCE_MONKEY, kBotStances };
+const char* botStanceName(int stance);
+const BotSkill& botSkill(int level);
+BotSkill botSkillAt(float level);   // between two levels: their numbers blended (the name and yes-or-no skills: the nearer)
 
 struct HandInput {
     Pose grip;          // controller grip pose in world (app) space
@@ -240,6 +294,18 @@ struct Ball {
     bool fouled = false, homing = false;
 };
 
+// one point of a ball's expected flight (Game::predictBall): the step (its game time) whose move brings the ball here
+// (the first point: the ball as it is, where the step before left it), where, how fast; strike: it crossed the
+// reader's strike zone ring on the way here; the whole ball then (a tryout starts from it)
+struct BallPathPt { float t; Vec3 pos, vel; bool strike; Ball ball; };
+// the bot's read of a flight. Not copied with the game: the copies (the bot's tryouts) don't need it
+struct BallPath : std::vector<BallPathPt> {
+    BallPath() = default;
+    BallPath(const BallPath&) {}
+    BallPath& operator=(const BallPath&) { clear(); return *this; }
+};
+enum : int { BOT_NONE, BOT_SHIELD, BOT_KNUCKLE, BOT_DODGE, BOT_CATCH };
+
 struct HandState {
     Vec3 hist[64];
     Vec3 angHist[64];
@@ -260,14 +326,41 @@ struct PlayerState {
     int strikesAgainst = 0; // strikes the opponent holds against this player
     float shotClock = 0;    // seconds remaining on this player's shot clock
     bool isBot = false;
-    // bot
-    float botTimer = 0;
-    float botNoticeT = -1;
-    bool botWillBlock = false;
-    int botBlockHand = 0;
-    Vec3 botLean;               // the bot's body leaning / dipping toward a far block (smoothed)
-    Vec3 botHand[2];            // the bot's hands, moving toward their targets (no teleporting)
+    // bot (Game::stepBot)
+    int botLevel = -1;          // -1: tun.botLevel (the lobby's bots choose their own)
+    int botStance = -1;         // STANCE_* (-1: picked as its first step of a match; no guard below PRO)
+    float botBow = 0;           // 0 upright .. 1 bowed (KARATE, at the fist bump)
+    float botSteady = 0;        // 0 bobbing as its stance does .. 1 still (it steadies its head while it watches a ball)
+    float botTimer = 0;         // until its next throw
+    Vec3 botBody, botBodyVel;   // its head's offset from where it stands (steps, leans, ducks), and that offset's speed
+    Vec3 botHand[2], botHandVel[2];   // its grips, moving at a person's speed
+    Quat botHandQ[2];
     bool botHandSet = false;
+    // the balls it watches: [0] the opponent's, [1] its own. Each read: the path (Game::predictBall, or a straight
+    // line), when it noticed, whether it acts, and its answer (BOT_*)
+    struct BotRead {
+        int mode = 0;           // 0 nothing to watch, 1 a ball coming at it (an attack), 2 one it threw or deflected coming back
+        BallPath path;
+        float noticeT = -1, readT = -1;
+        bool act = false, catchIt = false;   // it does something about it (block, punch, dodge); it goes for the catch
+        Vec3 err;               // its misread (lower levels)
+        bool full = false;      // the read reaches its whole horizon (the ball still flying at its end)
+        int tuck = -1;          // a dodge with this hand (its shield up) pulled in to its side, out of the ball's way
+        bool again = false;     // its plan ran out of tryouts this step: it goes on with it the next
+        int hands = -1;         // its shields up when it planned (bits by hand): a change, a new plan
+        std::vector<std::pair<uint32_t, int8_t>> tried;   // this read's tryouts so far (which answer, how it went)
+        Vec3 rel[2];            // where its hands hold still (from its head) while it watches the ball (as planned)
+        Quat relQ[2];
+        int plan = 0, hand = -1;
+        float hitT = -1;             // when the ball would reach its body (or, missing it, its own hands where they are)
+        Vec3 grip, body;             // the grip (block, catch) it moves to; its body offset (where it stands, or its dodge)
+        Quat gripQ;
+    } botRead[2];
+    int botThrow = 0;                      // 0 holding, 1 winding up, 2 swinging
+    float botThrowT = 0;
+    Vec3 botShotDir, botShotSpin;          // the throw it will make, and how good it looked (planned shots)
+    float botShotScore = -1e9f;
+    int botShotsTried = 0;
 };
 
 class Game {
@@ -281,10 +374,11 @@ public:
     bool overtime = false;
     int round = 0;
     int lastRoundWinner = -1, matchWinner = -1;
-    std::vector<CollisionTri> arena;
+    std::shared_ptr<const ArenaData> arena;
     std::vector<GameEvent> events;
 
-    void setArena(const std::vector<CollisionTri>& tris) { arena = tris; }
+    void setArena(const std::vector<CollisionTri>& tris);
+    void rngSeed(uint32_t seed) { rng = seed ? seed : 1u; }   // (the bot's chances; tests vary them)
     void reset(bool player1IsBot);
     // Advance the simulation. `in` is overwritten for bot players.
     void step(float dt, PlayerInput in[2]);
@@ -307,6 +401,19 @@ public:
     Vec3 handVelocity(int p, int h, float now) const;
     float ballRadius(int p) const { return tun.projectileRadius * pl[p].ball.scale; }
     float strikeScale(int strikes) const;
+    // the flight of `owner`'s ball from now (up to `horizon` seconds, in steps of dt: the game's own, so it matches the
+    // real flight step for step) as the game would play it if nothing of player `reader` touched it (its body and hands
+    // out of the way); stops when the ball stops flying or someone else deflects it. A copy of the game runs it: a few
+    // times a throw, not every frame.
+    void predictBall(int owner, int reader, float horizon, float dt, std::vector<BallPathPt>& out) const;
+    // the bot's body: where its shoulder is and where a grip puts its wrist (within tun.botArm of the shoulder), and
+    // whether a ball of radius r at pos would touch a body whose head is at `head` (as hitsBody)
+    Vec3 botShoulder(int p, int h) const;
+    Vec3 botWrist(int h, const Pose& grip) const;
+    Vec3 botInReach(int p, int h, const Pose& grip) const;   // the grip's position, moved in if the arm can't reach it
+    Pose botTuck(int p, int h, const Vec3& head) const;       // hand h pulled in to its side (a shield out of the way)
+    bool bodyTouches(const Vec3& head, const Vec3& pos, float r) const;
+    bool bodyTouchesPath(const Vec3& head, const Vec3& from, const Vec3& to, float r) const;   // anywhere from `from` to `to`
     float now = 0;
 
 private:
@@ -321,6 +428,24 @@ private:
     void stepPlayer(int p, float dt);
     void stepBall(int p, float dt);
     void stepBot(int p, float dt);
+    void botWatch(int p, int k, const BotSkill& sk);           // keeps botRead[k] up to date and plans the answer
+    void botPlan(int p, int k, const BotSkill& sk);
+    bool botReachable(int p, int h, const Pose& grip, float by) const;   // in reach, and the hand gets there by game time `by`
+    // a plan for read k (BOT_*: hand h at `grip`, its body at `body`, hand `tuck` pulled in) tried on a copy of the game
+    // while `owner`'s ball flies: the copy's own stepBot carries it out (botFrozen: no new reads or plans there), so it
+    // moves exactly as the bot will. 2 nothing comes of it, 1 a strike against it (a block into its own foul zone, or
+    // its strike zone), 0 it is hit; -1 not known yet (no tryouts left this step)
+    int botTry(int p, int k, int owner, int plan, int h, const Pose& grip, const Vec3& body, int tuck) const;
+    bool botFrozen = false;
+    float lastDt = 1.f / 72;    // the last step's length (the bot's reads run in the same steps)
+    // the bot's tryouts left this step (six at most: the rest of a plan waits for the next step), and whether a plan
+    // wanted more
+    static constexpr int kBotTriesPerStep = 6;
+    mutable int botTriesLeft = 0;
+    mutable bool botTriesOut = false;
+    void botPlanShot(int p, const BotSkill& sk);               // tries one more throw (planned shots)
+    BotSkill botSkillOf(int p) const;
+    Pose botBlockGrip(int p, int h, int plan, const BallPathPt& at) const;   // the grip that puts the shield / guard / catcher on the ball
     void launch(int p, int h, Vec3 dir, float speed, Vec3 spin);
     void spawnBall(int p);
     void deflect(Ball& b, const Vec3& n, int deflector, float assistDeg, const Vec3& from);

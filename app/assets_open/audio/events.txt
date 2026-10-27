@@ -28,3 +28,4 @@ FistBump oa_FistBump
 Ambience oa_Ambience
 Crowd oa_Crowd
 Cheer oa_Cheer
+ClockTick oa_ClockTick

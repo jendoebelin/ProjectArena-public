@@ -2,7 +2,7 @@
 
 Everything Project Arena and the official community server handle, where it is kept, who can see it, how long it is
 kept, and what protects it. The player-facing version is `docs/PRIVACY.md`; keep the two in step (the release
-checklist, `docs/RELEASE_CHECKLIST.md`, says when). Last reviewed: 20 October 2026 (version 0.3.6).
+checklist, `docs/RELEASE_CHECKLIST.md`, says when). Last reviewed: 27 October 2026 (version 0.3.10: match recordings, MATCH MY LEVEL).
 
 ## 1. Inventory
 
@@ -12,6 +12,8 @@ checklist, `docs/RELEASE_CHECKLIST.md`, says when). Last reviewed: 20 October 20
 | Avatar (look, COUNTRY) | The device (`avatar.cfg`); sent to other players | Other players, spectators | On the device | Cosmetic; the country is only a choice of kit, not a location |
 | Settings, camera positions | The device (`settings.cfg`, `warps.cfg`) | Nobody else | On the device | |
 | Diagnostic log | The device (`projectarena_log.txt`) | Nobody else, unless in a report | On the device (rotated) | |
+| Match recordings (off unless turned on: MY STATS > RECORD MY MATCHES) | The device (`recordings/match_*.par`, `app/src/record.h`) | Nobody else, unless the player sends one | The newest 20 (older ones deleted) | The player's own head and hand movement, both balls, the game's events, frame by frame; never another person's movement (a bot's, yes). For tuning the practice bot (`tools/analyze_play.py`, `docs/BOT_TUNING.md`) |
+| MATCH MY LEVEL | The device (`settings.cfg`: botmatch) | Nobody else | On the device | One number: the practice bot's level |
 | Player key (16 random bytes) | The device (`stats_key.bin`); sent to the official server at each connection | Nobody (the server keeps only a salted hash) | On the device until uninstalled | Ties statistics to a game install, not to a person or account |
 | Career statistics | The official server (`player_stats.db`, SQLite) | **Public in the game**: other players and spectators (screen over the court, the PC VS screen); the player (MY STATS); the operator | Until the player deletes them (MY STATS > DELETE MY STATS), or 24 months after last seen (removed automatically) | Matches, wins, throws, throws on target, hits, blocks, balls faced, catches, top speed, the name last used, first and last seen; from 0.3.8 also per kind of match (`player_modes`: standard, HOTDOG, custom), deleted and purged with the player's row; from 0.3.9 also hits from returned balls (`return_hits`) |
 | Bug reports | The official server (`bug_reports/`); waits on the device (`bug_outbox.txt`) until the server can take it | The operator | Up to 12 months (the operator deletes older ones) | Only when the player sends one: note, settings, recent log, the sending address |

@@ -416,6 +416,14 @@ def s_countdown():
     return room(x, 0.12)
 
 
+def s_clock_tick():
+    """the last 10 seconds of a timed match or round, once a second: a very soft, short wooden tick"""
+    sec = 0.25
+    click = lp(noise(sec), 3500) * env(sec, 0.0008, 0.012) * 0.5
+    body = osc(880, sec) * env(sec, 0.001, 0.035) + osc(1760, sec) * env(sec, 0.001, 0.015) * 0.25
+    return room(lp(mix(click, body), 4000), 0.08)
+
+
 def s_round_start():
     """GO: a short bright swell landing on a soft chord"""
     sec = 1.3
@@ -521,7 +529,7 @@ SOUNDS = [
     ('Countdown', s_countdown), ('RoundStart', s_round_start), ('RoundEndWin', lambda: s_round_end(True)),
     ('RoundEndLose', lambda: s_round_end(False)), ('MatchEndWin', lambda: s_match_end(True)),
     ('MatchEndLose', lambda: s_match_end(False)), ('Recharge', s_recharge), ('Strike', s_strike),
-    ('Overtime', s_overtime), ('FistBump', s_fist_bump), ('Ambience', s_ambience),
+    ('Overtime', s_overtime), ('FistBump', s_fist_bump), ('Ambience', s_ambience), ('ClockTick', s_clock_tick),
     ('Crowd', s_crowd), ('Cheer', s_cheer),   # (last: the sounds above keep their random draws)
 ]
 

@@ -53,6 +53,7 @@ bool xrLoaderInit();   // pc/xr_loader.cpp
 #include "render.h"
 #include "audio.h"
 #include "net.h"
+#include "record.h"
 #include "xcompat.h"
 #if __has_include("servers_default.h")
 #include "servers_default.h"   // generated at build time (tools/write_servers_header.py)
@@ -211,6 +212,10 @@ struct App {
              buttonB = XR_NULL_HANDLE, buttonY = XR_NULL_HANDLE, buttonX = XR_NULL_HANDLE, thumbClick = XR_NULL_HANDLE, menu = XR_NULL_HANDLE, haptic = XR_NULL_HANDLE;
     bool prevY = false, prevMenu = false;
     bool onlinePref = true;         // the community server by default (owner); ONLINE: OFF = home Wi-Fi only
+    // RECORD MY MATCHES (record.h; MENU > MY STATS; settings.cfg record): off unless the player turns it on
+    bool recordOn = false;
+    rec::Recorder recorder;
+    int clockTick = 0;            // the last second the round-end tick sounded for (its last 10 seconds)
     bool botFill = true;       // settings.cfg botfill: the bot plays a lone host   // settings.cfg online=1: go online at start-up
     XrPath handPath[2] = {};
     XrSpace handSpace[2] = {};
@@ -401,6 +406,9 @@ struct App {
     bool optAdvanced = false, optShields = true;
     int optKnuckle = -1;
     float optMatchTime = 180.f, optRoundTime = 0.f;
+    int optBotLevel = 2;           // the practice bot's level (botSkill, game.h)
+    bool optBotAdapt = false;      // MATCH MY LEVEL (Tunables::botAdapt)
+    bool optBotMeet = false;       // FIST BUMP FIRST (Tunables::botMeet)
     bool quitArmed = false;         // QUIT GAME pressed once: the next press quits
     // THE LOBBY (owner, 2026-10-17): where you arrive, and come back to from a room, spectating or practice. A balcony
     // over the practice court where two bots play; posters around it; point at the court to play the bot.
@@ -1242,7 +1250,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.9";
+static const char* kAppVersion = "0.3.10";
 
 // "0.3.4" newer than "0.3.3" (dotted numbers, compared part by part)
 static bool versionNewer(const char* a, const char* b) {
@@ -1518,6 +1526,11 @@ static float floorHere(const App& a) { return inLobby(a) ? kLobbyFloor : 0.f; }
 // holding area outside the tank (waiting players): four spots along the -Z side, facing the glass
 static Vec3 holdingSpot(int spot) { return {-4.5f + 3.0f * (spot & 3), 0, -4.2f}; }
 
+// the fist bump start, face to face in the centre: in a room, and in practice against the bot (FIST BUMP FIRST)
+static bool meetHere(const App& a) {
+    return a.game.match == MatchState::Meet && (a.net.inRoom() || (a.net.mode() == Net::Mode::Offline && !inLobby(a)));
+}
+
 static void viewTarget(const App& a, int local, Vec3& pos, Vec3& fwd) {
     if (inLobby(a)) {
         pos = kLobbySpot;
@@ -1528,7 +1541,7 @@ static void viewTarget(const App& a, int local, Vec3& pos, Vec3& fwd) {
     } else if (a.spectating) {
         if (a.watchIp) { pos = {0, 1.0f, 5.4f}; fwd = {0, 0, -1}; }
         else { pos = {0, 0, 0}; fwd = {1, 0, 0}; }
-    } else if (a.game.match == MatchState::Meet && a.net.inRoom()) {   // face to face in the centre (fist bump start)
+    } else if (meetHere(a)) {   // face to face in the centre (fist bump start)
         pos = {local == 0 ? -a.game.tun.meetSpot : a.game.tun.meetSpot, 0, 0};
         fwd = local == 0 ? Vec3{1, 0, 0} : Vec3{-1, 0, 0};
     } else {
@@ -1720,7 +1733,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
     if (local != g_lastLocal) { a.recentered = false; g_lastLocal = local; }
     {   // moving between playing / the hub / watching a match re-places the viewer
         uint32_t key = a.spectating ? (a.watchIp ? a.watchIp : 1u) : a.net.localWaiting() ? 10u + (uint32_t)a.net.localSpot()
-                     : (a.game.match == MatchState::Meet && a.net.inRoom()) ? 2u : inLobby(a) ? 3u : 0u;   // the centre meeting, then your end
+                     : meetHere(a) ? 2u : inLobby(a) ? 3u : 0u;   // the centre meeting, then your end
         if (key != a.viewKey) { a.viewKey = key; a.recentered = false; }
     }
     if (headOk && !a.spectating) {   // floor guard (see App::floorFix)
@@ -1862,7 +1875,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 
 // ------------------------------------------------------------------ lobby menu
 enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute, ReportKick, StatsNoticeOk,
-                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, ReportHostKick };
+                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, ReportHostKick, OptBot, Record, OptMeet };
 struct MenuItem {
     std::string label;
     float x, y, w, h;
@@ -1877,10 +1890,12 @@ static void haptic(App& a, int hand, float amp, float seconds);
 static void optionsFrom(App& a, const Tunables& t) {
     a.optAdvanced = t.advanced; a.optShields = t.shields; a.optKnuckle = t.knuckleMode;
     a.optMatchTime = t.basicMatchTime; a.optRoundTime = t.advancedRoundTime;
+    a.optBotLevel = t.botLevel; a.optBotAdapt = t.botAdapt; a.optBotMeet = t.botMeet;
 }
 static void optionsInto(const App& a, Tunables& t) {
     t.advanced = a.optAdvanced; t.shields = a.optShields; t.knuckleMode = a.optKnuckle;
     t.basicMatchTime = a.optMatchTime; t.advancedRoundTime = a.optRoundTime;
+    t.botLevel = a.optBotLevel; t.botAdapt = a.optBotAdapt; t.botMeet = a.optBotMeet;
 }
 static std::string timeLabel(float secs, bool rounds) {
     if (secs <= 0.f) return rounds ? "OFF (NO LIMIT)" : "FREE PLAY (NO LIMIT)";
@@ -1977,6 +1992,7 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         const bool armed = nowSeconds() < a.deleteArmedUntil;
         v.push_back({armed ? "PRESS AGAIN TO DELETE" : "DELETE MY STATS", 0.24f, -0.495f, 0.40f, 0.055f, MenuAct::DeleteStats, 0,
                      a.net.onlineReady() && a.myCareerOk && a.myCareer.known});
+        v.push_back({a.recordOn ? "RECORD MY MATCHES: ON" : "RECORD MY MATCHES: OFF", 0.24f, -0.41f, 0.40f, 0.05f, MenuAct::Record, 0, true});
         return v;
     }
     if (a.bugOpen && !a.nameEdit) {
@@ -1992,15 +2008,28 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
     if (a.rulesOpen && a.rulesStep == 1 && !a.nameEdit) {   // MATCH OPTIONS
         Tunables t;
         optionsInto(a, t);
-        v.push_back({t.shields ? "SHIELDS: ON" : "SHIELDS: OFF  (HOTDOG MODE)", 0, 0.13f, 0.74f, 0.075f, MenuAct::OptShields, 0, true});
-        v.push_back({t.knuckleGuards() ? "KNUCKLE GUARDS: ON" : "KNUCKLE GUARDS: OFF", 0, 0.04f, 0.74f, 0.075f, MenuAct::OptKnuckle, 0, true});
+        const bool bot = !a.rulesForHost;   // practice: the bot's level too (a row more: the rows closer together)
+        const float y[4] = {bot ? 0.15f : 0.13f, bot ? 0.065f : 0.04f, bot ? -0.02f : -0.05f, -0.105f};
+        v.push_back({t.shields ? "SHIELDS: ON" : "SHIELDS: OFF  (HOTDOG MODE)", 0, y[0], 0.74f, 0.075f, MenuAct::OptShields, 0, true});
+        v.push_back({t.knuckleGuards() ? "KNUCKLE GUARDS: ON" : "KNUCKLE GUARDS: OFF", 0, y[1], 0.74f, 0.075f, MenuAct::OptKnuckle, 0, true});
         const std::string tl = std::string(t.advanced ? "ROUND TIME: " : "MATCH TIME: ") + timeLabel(t.advanced ? t.advancedRoundTime : t.basicMatchTime, t.advanced);
-        v.push_back({"-", -0.335f, -0.05f, 0.07f, 0.075f, MenuAct::OptTime, 0, true});
-        v.push_back({tl, 0, -0.05f, 0.56f, 0.075f, MenuAct::None, 0, true});
-        v.push_back({"+", 0.335f, -0.05f, 0.07f, 0.075f, MenuAct::OptTime, 1, true});
+        v.push_back({"-", -0.335f, y[2], 0.07f, 0.075f, MenuAct::OptTime, 0, true});
+        v.push_back({tl, 0, y[2], 0.56f, 0.075f, MenuAct::None, 0, true});
+        v.push_back({"+", 0.335f, y[2], 0.07f, 0.075f, MenuAct::OptTime, 1, true});
+        if (bot) {   // - / +, the slider (one step a level, lit up to the one chosen), and MATCH MY LEVEL
+            const std::string bl = t.botAdapt ? std::string("BOT: MATCH MY LEVEL (NOW ") + botSkillAt(a.game.tun.botMatch).name + ")"
+                                              : std::string("BOT: ") + botSkill(t.botLevel).name;
+            v.push_back({"-", -0.335f, y[3], 0.07f, 0.075f, MenuAct::OptBot, 0, t.botAdapt || t.botLevel > 0});
+            v.push_back({bl, 0, y[3], 0.56f, 0.075f, MenuAct::None, 0, true});
+            v.push_back({"+", 0.335f, y[3], 0.07f, 0.075f, MenuAct::OptBot, 1, t.botAdapt || t.botLevel < kBotLevels - 1});
+            for (int l = 0; l < kBotLevels; ++l)
+                v.push_back({"", -0.33f + 0.07f * l, -0.165f, 0.062f, 0.04f, MenuAct::OptBot, (uint32_t)(10 + l), true});
+            v.push_back({"MATCH MY LEVEL", 0.225f, -0.165f, 0.29f, 0.04f, MenuAct::OptBot, 2, true});
+            v.push_back({t.botMeet ? "FIST BUMP FIRST: ON" : "FIST BUMP FIRST: OFF", 0, -0.395f, 0.46f, 0.05f, MenuAct::OptMeet, 0, true});
+        }
         const char* go = a.rulesEdit ? (rulesLive(a) ? "APPLY FROM THE NEXT MATCH" : "APPLY") : a.rulesForHost ? "OPEN MY ARENA" : "START PRACTICE";
-        v.push_back({go, 0.19f, -0.24f, 0.36f, 0.08f, MenuAct::OptGo, 0, true});
-        v.push_back({"BACK", -0.19f, -0.24f, 0.36f, 0.08f, MenuAct::OptBack, 0, true});
+        v.push_back({go, 0.19f, bot ? -0.32f : -0.24f, 0.36f, 0.08f, MenuAct::OptGo, 0, true});
+        v.push_back({"BACK", -0.19f, bot ? -0.32f : -0.24f, 0.36f, 0.08f, MenuAct::OptBack, 0, true});
         return v;
     }
     if (a.rulesOpen && !a.nameEdit) {
@@ -2243,6 +2272,13 @@ static void menuActivate(App& a, const MenuItem& it) {
         break;
     }
     case MenuAct::MainMenu: a.titleOpen = true; a.settingsOpen = false; break;
+    case MenuAct::Record:   // RECORD MY MATCHES (record.h): on this headset only
+        a.recordOn = !a.recordOn;
+        if (!a.recordOn && a.recorder.active()) a.recorder.end(a.game);
+        a.net.noticeLocal(a.recordOn ? "RECORDING YOUR MATCHES - THEY STAY ON THIS HEADSET" : "NOT RECORDING YOUR MATCHES");
+        LOGI("record my matches: %s", a.recordOn ? "on" : "off");
+        saveSettings(a);
+        break;
     case MenuAct::DeleteStats:   // two presses within 4 s
         if (nowSeconds() < a.deleteArmedUntil) {
             a.net.deleteMyStats();
@@ -2325,6 +2361,14 @@ static void menuActivate(App& a, const MenuItem& it) {
         v = l[k];
         break;
     }
+    case MenuAct::OptBot:   // - / + or a step of the slider (a set level), or MATCH MY LEVEL
+        if (it.ip == 2) { a.optBotAdapt = true; break; }
+        if (a.optBotAdapt) a.optBotLevel = (int)std::lround(a.game.tun.botMatch);   // (- / + go on from where it got to)
+        a.optBotLevel = it.ip >= 10 ? (int)it.ip - 10 : a.optBotLevel + (a.optBotAdapt ? 0 : it.ip ? 1 : -1);
+        a.optBotLevel = std::max(0, std::min(kBotLevels - 1, a.optBotLevel));
+        a.optBotAdapt = false;
+        break;
+    case MenuAct::OptMeet: a.optBotMeet = !a.optBotMeet; break;   // FIST BUMP FIRST (practice)
     case MenuAct::OptBack: a.rulesStep = 0; break;
     case MenuAct::OptGo: {
         applyRules(a);
@@ -2554,8 +2598,10 @@ static void drawStats(App& a) {
     text(buf_stats, 0, y + 0.04f, 0.020f, white);
     text("0", -w * 0.5f, y - 0.035f, 0.014f, grey);
     text("100 KM/H", w * 0.5f - 0.04f, y - 0.035f, 0.014f, grey);
-    text("YOUR STATS ARE SHOWN TO OTHER PLAYERS AND SPECTATORS", -0.16f, -0.475f, 0.0125f, grey);
-    text("DELETE ERASES THEM FROM THE SERVER", -0.16f, -0.505f, 0.0125f, grey);
+    // left of the DELETE button (x 0.04 to 0.44): each line under 0.36 wide (a letter is 0.75 x its height)
+    text("YOUR STATS ARE SHOWN TO OTHER PLAYERS", -0.22f, -0.457f, 0.0125f, grey);
+    text("AND SPECTATORS", -0.22f, -0.482f, 0.0125f, grey);
+    text("DELETE ERASES THEM FROM THE SERVER", -0.22f, -0.507f, 0.0125f, grey);
 }
 
 static void drawMenu(App& a) {
@@ -2611,8 +2657,20 @@ static void drawMenu(App& a) {
                          : t.advanced && t.advancedRoundTime > 0 ? "AT TIME, MORE POINTS WINS THE ROUND - A TIE GOES TO SUDDEN DEATH"
                          : t.advanced ? "NO TIME LIMIT: FIRST TO 4 POINTS WINS THE ROUND"
                          : "AT TIME, MORE POINTS WINS - A TIE GOES TO SUDDEN DEATH";
-        text(hint, 0, -0.125f, 0.018f, grey);
-        if (!t.shields) text("HOTDOG MODE: NO SHIELDS - DODGE, CATCH AND PUNCH", 0, -0.155f, 0.018f, grey);
+        const bool bot = !a.rulesForHost;
+        text(hint, 0, bot ? -0.235f : -0.125f, 0.018f, grey);
+        if (!t.shields) text("HOTDOG MODE: NO SHIELDS - DODGE, CATCH AND PUNCH", 0, bot ? -0.26f : -0.155f, 0.018f, grey);
+        if (bot) {   // what the level means (every level moves as a person can: reach, speed, reaction)
+            static const char* kBotLine[kBotLevels] = {
+                "SLOW TO REACT, OFTEN MISREADS THE BALL - A GENTLE START",
+                "BLOCKS SOME, MISSES CURVES AND BANK SHOTS",
+                "A SOLID PLAYER - READS CURVES AND BANKS",
+                "QUICK HANDS, ANGLES ITS BLOCKS, PICKS ITS SHOTS",
+                "RARELY MISSES - GUARDS ITS STRIKE ZONE",
+                "READS EVERY BALL - CAN YOU SCORE ONE?"};
+            text(t.botAdapt ? "IT GETS BETTER WHEN YOU SCORE, EASIER WHEN IT DOES - CLOSE MATCHES"
+                            : kBotLine[std::max(0, std::min(kBotLevels - 1, t.botLevel))], 0, -0.205f, 0.018f, white);
+        }
         if (rulesLive(a) && a.rulesEdit) text("A MATCH IS ON: THE NEW RULES START WITH THE NEXT MATCH", 0, -0.33f, 0.018f, grey);
     } else if (a.rulesOpen && !a.nameEdit) {
         text("CHOOSE THE RULES", 0, 0.29f, 0.055f, cyan);
@@ -2748,7 +2806,10 @@ static void drawMenu(App& a) {
         const bool picked = (it.act == MenuAct::Nav && (int)it.ip == navCurrent(a)) ||
                             (it.act == MenuAct::BugCat && (int)it.ip == a.bugCat) ||
                             (it.act == MenuAct::RulesPick && (int)it.ip == (a.game.tun.advanced ? 1 : 0)) || (it.act == MenuAct::ReportWho && it.ip == a.reportWho) ||
-                            (it.act == MenuAct::ReportWhy && (int)it.ip == a.reportWhy) || (it.act == MenuAct::PtMode && (int)it.ip == a.ptMode);
+                            (it.act == MenuAct::ReportWhy && (int)it.ip == a.reportWhy) || (it.act == MenuAct::PtMode && (int)it.ip == a.ptMode) ||
+                            (it.act == MenuAct::OptBot && it.ip >= 10 &&
+                             (int)it.ip - 10 <= (a.optBotAdapt ? (int)std::lround(a.game.tun.botMatch) : a.optBotLevel)) ||
+                            (it.act == MenuAct::OptBot && it.ip == 2 && a.optBotAdapt);
         quad(it.x, it.y, it.w, it.h, 0.003f, !it.enabled && !row ? dis : ((int)i == a.menuHover || picked) ? hov : btn);
         float th = row ? 0.026f : 0.034f;
         const float tw = th * 0.75f * (float)it.label.size();          // the font's glyphs are 0.75 x their height
@@ -3363,7 +3424,8 @@ static void drawAvatarBody(App& a, const PlayerInput& in, int team, int pass, co
             for (int k = 0; k < 3; ++k) dp.emissiveAdd[k] += L.ch[avatar::CH_GLOW][k] * 0.35f;
         if (p.flags & avatar::PART_SKINNED) dp.bones = rig.skin;
         if (p.flags & avatar::PART_PULSE) dp.uvOff[1] = -(float)std::fmod(nowSeconds() - a.startTime, 1000.0) * 1.6f;   // ~40 cm/s
-        Mat4 swing[7], model = pre * p.m;
+        Mat4 swing[avatar::BONE_COUNT], model = pre * p.m;   // (hair: its own bones, the first 7; the renderer reads them all)
+        for (Mat4& b : swing) b = Mat4::identity();
         if (p.flags & avatar::PART_HAIR) {   // hair: a style that moves swings (its chains per drawn avatar); under headgear, tucked in
             auto rg = a.swingRigs.find(it->first);
             Vec3 off{0, 0, 0};
@@ -4666,6 +4728,7 @@ static void updateQueueKiosk(App& a, const PlayerInput& in) {
 static void startLobbyMatch(App& a) {
     a.game.reset(true);
     a.game.pl[0].isBot = true;
+    a.game.pl[0].botLevel = a.game.pl[1].botLevel = 3;   // (ALL-STARS: a good match to watch, whatever practice is set to)
     a.game.pl[0].in.avatar = avatar::preset(10);
     a.game.pl[1].in.avatar = avatar::preset(12);
     a.lobbySummaryT = 0;
@@ -5698,6 +5761,47 @@ static void drawWorld(App& a, int pass) {
 
 // One frame of the game for the local viewer: menus, rooms, spectating, the match, voice, events and effects.
 // The headset frame (renderFrame) and the desktop spectator window (desktopFrame) both run it.
+// RECORD MY MATCHES: from a match's start to its end, while this player plays it (not spectating, waiting or in the
+// lobby). MATCH MY LEVEL's level is kept when a match ends.
+static void recordStep(App& a, float dt) {
+    bool start = false, over = false;
+    for (const GameEvent& e : a.game.events) {
+        start |= e.type == EventType::RoundStart && e.value <= 1.f;
+        over |= e.type == EventType::MatchEnd;
+    }
+    if (over && a.game.tun.botAdapt) saveSettings(a);
+    const bool playing = a.recordOn && !a.viewing && !inLobby(a) && a.net.mode() != Net::Mode::Spectate;
+    if (a.recorder.active() && (!playing || a.game.match == MatchState::WaitingForPlayers || a.game.match == MatchState::Meet)) {
+        a.recorder.end(a.game);
+        LOGI("record: stopped (%s)", a.recorder.path().c_str());
+    }
+    if (playing && start && !a.recorder.active()) {
+        if (const char* dir = dataDir(a)) {
+            const std::string folder = std::string(dir) + "/recordings";
+#ifdef _WIN32
+            CreateDirectoryA(folder.c_str(), nullptr);
+#else
+            mkdir(folder.c_str(), 0770);
+#endif
+            rec::prune(folder, rec::kKeep - 1);
+            char name[48];
+            const time_t now = time(nullptr);
+            strftime(name, sizeof name, "/match_%Y%m%d_%H%M%S.par", localtime(&now));
+            rec::Meta m;
+            m.local = a.net.localIndex();
+            m.version = kAppVersion;
+            if (a.recorder.begin(folder + name, a.game, m)) LOGI("record: %s", a.recorder.path().c_str());
+            else LOGE("record: can't write %s", (folder + name).c_str());
+        }
+    }
+    if (!a.recorder.active()) return;
+    a.recorder.frame(a.game, dt);
+    if (over) {
+        a.recorder.end(a.game);
+        LOGI("record: match over (%s)", a.recorder.path().c_str());
+    }
+}
+
 static void stepFrame(App& a, PlayerInput in[2], int L, double t, float dt) {
     a.sparc.update(t);   // EXPERIMENTAL cross-play link (does nothing unless connected)
     if (int done = a.bugDone.exchange(0)) {
@@ -5746,7 +5850,7 @@ static void stepFrame(App& a, PlayerInput in[2], int L, double t, float dt) {
         }
         a.stateKey = key;
     }
-    if (a.game.match == MatchState::Meet && a.net.inRoom() && !a.net.localWaiting() && !a.spectating) {
+    if (meetHere(a) && !a.net.localWaiting() && !a.spectating) {
         // closer fists buzz harder (you can feel the other hand coming); otherwise a light reminder every 2 s
         const PlayerState& o = a.game.pl[1 - L];
         float best = 9.f;
@@ -5778,10 +5882,9 @@ static void stepFrame(App& a, PlayerInput in[2], int L, double t, float dt) {
         for (SpecMatch& m : a.net.matches()) if (m.ip == a.watchIp) w = &m;
         if (a.watchIp && !w) { a.watchIp = 0; LOGI("spectate: match ended, back to the hub"); }
         if (w) {   // watched match: its state and events drive the normal renderer, audio and effects
-            std::vector<CollisionTri> keep;
-            keep.swap(a.game.arena);
+            const std::shared_ptr<const ArenaData> keep = a.game.arena;   // (our arena, not the copy's)
             a.game = w->game;
-            a.game.arena.swap(keep);
+            a.game.arena = keep;
             a.game.events.swap(w->events);
             w->events.clear();
             a.watchRoom = w->room;
@@ -5822,7 +5925,15 @@ static void stepFrame(App& a, PlayerInput in[2], int L, double t, float dt) {
             a.net.noticeLocal("TEAM CAMERAS RECEIVED");
         }
     }
+    recordStep(a, dt);
     handleEvents(a);
+    {   // the last 10 seconds of a timed match or round: a very soft tick each second (owner, 2026-10-27)
+        const Game& g = a.game;
+        const int left = g.match == MatchState::InProgress && g.tun.timed() && !g.overtime && g.roundClock > 0.f && !inLobby(a)
+                             ? (int)std::ceil(g.roundClock) : 0;
+        if (left >= 1 && left <= 10 && left != a.clockTick) a.audio.play("oa_ClockTick", 0.6f);
+        a.clockTick = left;
+    }
     smoothPlayers(a, dt);
     a.fadeT = std::max(0.f, a.fadeT - dt);
     updateFx(a, dt);
@@ -6173,14 +6284,16 @@ static void saveSettings(App& a) {
     std::string f = std::string(ext) + "/settings.cfg";
     if (FILE* fp = fopen(f.c_str(), "w")) {
         fprintf(fp, "cfgver=8\n");
-        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nsparcserver=%s\nstatsnotice=%d\ncrowd=%d\nshields=%d\nknuckles=%d\nmatchtime=%.0f\nroundtime=%.0f\nturn=%d\n",
+        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nsparcserver=%s\nstatsnotice=%d\ncrowd=%d\nshields=%d\nknuckles=%d\nmatchtime=%.0f\nroundtime=%.0f\nturn=%d\nbotlevel=%d\nbotadapt=%d\nbotmatch=%.2f\nrecord=%d\nbotmeet=%d\n",
                 (a.guestRules ? a.ownRules : a.game.tun).advanced ? 1 : 0, a.game.tun.shieldPlacement, a.tunePitchDeg, a.tuneFwd, a.tuneUp, a.volume,
                 a.pointerHand, a.fxLevel, a.hideOutside ? 1 : 0, a.voiceMode, a.muteSpectators ? 1 : 0, a.mutePlayers ? 1 : 0,
                 a.muteAll ? 1 : 0, a.onlinePref ? 1 : 0, a.botFill ? 1 : 0, a.ptMode, a.ptFloor, a.ptGlass, a.ptRoom, a.ptMono ? 1 : 0, a.ptEdges ? 1 : 0, a.ptEdgeReveal ? 1 : 0, a.ptPeekOn ? 1 : 0, a.team.c_str(),
                 (a.serverOverride.empty() ? a.serverAddr : a.serverSaved).c_str(),
                 a.sparcAddr.c_str(), a.statsNoticeSeen ? 1 : 0, a.crowdMode, (a.guestRules ? a.ownRules : a.game.tun).shields ? 1 : 0,
                 (a.guestRules ? a.ownRules : a.game.tun).knuckleMode, (a.guestRules ? a.ownRules : a.game.tun).basicMatchTime,
-                (a.guestRules ? a.ownRules : a.game.tun).advancedRoundTime, a.turnMode);
+                (a.guestRules ? a.ownRules : a.game.tun).advancedRoundTime, a.turnMode, (a.guestRules ? a.ownRules : a.game.tun).botLevel,
+                (a.guestRules ? a.ownRules : a.game.tun).botAdapt ? 1 : 0, (a.guestRules ? a.ownRules : a.game.tun).botMatch, a.recordOn ? 1 : 0,
+                (a.guestRules ? a.ownRules : a.game.tun).botMeet ? 1 : 0);
         fclose(fp);
     }
 }
@@ -6224,6 +6337,11 @@ static void loadSettings(App& a) {
         else if (k == "fx") a.fxLevel = std::max(0, std::min(2, (int)v));
         else if (k == "crowd") a.crowdMode = std::max(0, std::min(2, (int)v));
         else if (k == "turn") a.turnMode = std::max(0, std::min(2, (int)v));
+        else if (k == "botlevel") a.game.tun.botLevel = std::max(0, std::min(kBotLevels - 1, (int)v));
+        else if (k == "botadapt") a.game.tun.botAdapt = v != 0;
+        else if (k == "botmatch") a.game.tun.botMatch = clampf(v, 0.f, kBotLevels - 1.f);
+        else if (k == "record") a.recordOn = v != 0;
+        else if (k == "botmeet") a.game.tun.botMeet = v != 0;
         else if (k == "shields") a.game.tun.shields = v != 0;   // MATCH OPTIONS (the last ones chosen)
         else if (k == "knuckles") a.game.tun.knuckleMode = std::max(-1, std::min(1, (int)v));
         else if (k == "matchtime") a.game.tun.basicMatchTime = clampf(v, 0.f, 3600.f);
@@ -6447,6 +6565,7 @@ struct ShotView {
     float mockDark = -1.f;   // --mockdark K: pictures only, a darker arena (GitHub #9): floor, dais and structure x K
     int winStyle = 0;           // --winscreen split|winner|camera (or 0-2): its WIN SCREEN
     bool swingTest = false;   // --swingtest: the head snaps round just before the picture (the hair mid-swing)
+    float armsUp = -1;        // --armsup DEG: the tuning scene's hands raised this far (0 forward, 90 overhead)
     float swingDeg = 60.f, swingHold = 0.1f;   // --swingdeg D, --swinghold S: how far it turned, how long ago (action scene)
     bool passthrough = false;   // --passthrough MODE (1 ARENA, 2 WINDOW, 3 OUTLINE): drawn over a stand-in room (a checkerboard)
     int ptMode = 1;
@@ -6557,6 +6676,11 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             const float s = h ? 1.f : -1.f;
             in.hand[h].tracked = true;
             in.hand[h].grip = {q * Quat::axisAngle({1, 0, 0}, -0.35f) * Quat::axisAngle({0, 0, 1}, s * 0.30f), in.head.p + q.rotate({s * 0.20f, -0.38f, -0.40f})};
+            if (v.armsUp >= 0) {   // straight arms swung up from forward (0) to overhead (90), controllers along them
+                const float a = deg2rad(v.armsUp);
+                const Vec3 sh{s * 0.18f, -0.29f, 0.04f};
+                in.hand[h].grip = {q * Quat::axisAngle({1, 0, 0}, a), in.head.p + q.rotate(sh + Vec3{s * 0.04f, std::sin(a) * 0.62f, -std::cos(a) * 0.62f})};
+            }
         }
         a.localIn = in;
         a.viewIn[0] = in;
@@ -6624,11 +6748,9 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         g.tun.advanced = false;
         g.tun.basicMatchTime = std::max(5.f, v.recordSeconds - 9.f);   // (the match ends a few seconds before the clip)
         g.tun.meetTime = 0;
-        // livelier bots for a trailer: quicker throws, fewer blocks, steadier aim (more points in a short clip)
-        g.tun.botHoldMin = 0.4f; g.tun.botHoldMax = 1.0f; g.tun.botBlockChance = 0.2f; g.tun.botAimError = 0.08f;
-        g.tun.botHandSpeed *= 1.15f;
         g.reset(true);
         g.pl[0].isBot = true;
+        g.pl[0].botLevel = g.pl[1].botLevel = 1;   // AMATEUR bots for a trailer: fewer blocks, more points in a short clip
         AvatarDesc looks[2];
         for (int p = 0; p < 2; ++p) {
             AvatarDesc d = avatar::preset(p ? 12 : 10);
@@ -6838,6 +6960,11 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             a.rulesOpen = true; a.rulesForHost = true; a.rulesStep = 1; optionsFrom(a, a.game.tun);
             if (v.menu == "options") { a.optAdvanced = false; a.optShields = false; a.optMatchTime = 0; }
             else { a.optAdvanced = true; a.optRoundTime = 120; a.optKnuckle = 1; }
+        }
+        if (v.menu == "practice" || v.menu == "practice2") {   // MATCH OPTIONS for practice: UNBEATABLE, HOTDOG / MATCH MY LEVEL
+            a.rulesOpen = true; a.rulesForHost = false; a.rulesStep = 1; optionsFrom(a, a.game.tun);
+            a.optShields = v.menu == "practice2"; a.optBotLevel = kBotLevels - 1;
+            if (v.menu == "practice2") { a.optBotAdapt = true; a.game.tun.botMatch = 3.4f; }
         }
         if (v.menu == "report") {   // a room of example people (pictures of the page only)
             const char* nm[5] = {"MOJO", "SPARKY", "QUEST7", "ZAP_ZAP", "WATCHER"};
@@ -7746,6 +7873,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--suit") && i + 1 < argc) view.suit = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--hair") && i + 1 < argc) view.hair = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--swingtest")) view.swingTest = true;
+        else if (!strcmp(argv[i], "--armsup") && i + 1 < argc) view.armsUp = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--dcshot") && i + 1 < argc) view.dcshot = argv[++i];
         else if (!strcmp(argv[i], "--layer") && i + 1 < argc) view.layer = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--keycol") && i + 1 < argc) view.keyCol = atoi(argv[++i]);

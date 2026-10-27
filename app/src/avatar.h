@@ -78,7 +78,8 @@ bool fromText(const std::string& s, AvatarDesc& d);
 // The skinned bodies (tools/build_body_parts.py, MPFB2): bind-pose joints in app space, origin = the neck base.
 struct BodyBind { Vec3 eye, neckTop, shoulder[2], elbow[2], wrist[2], thumb[2]; };
 const BodyBind& bodyBind(int body);
-enum : int { BONE_TORSO, BONE_NECK, BONE_HEAD, BONE_UPPER_L, BONE_UPPER_R, BONE_FORE_L, BONE_FORE_R, BONE_COUNT };
+enum : int { BONE_TORSO, BONE_NECK, BONE_HEAD, BONE_UPPER_L, BONE_UPPER_R, BONE_FORE_L, BONE_FORE_R, BONE_CLAV_L, BONE_CLAV_R,
+             BONE_COUNT };
 struct Build { float width, depth, arm; bool curved; };   // torso x / z scale, arm thickness
 Build buildOf(int build);
 
@@ -110,6 +111,7 @@ struct RigTuning {
     float elbowPull = 0.12f;                    // how far toward the pole (m)
     float reach = 0.07f;                        // the shoulder follows a hand out of reach by up to this (m)
     float reachStart = 0.97f;                   // ... once the hand is beyond this share of the arm's length
+    float shrug = 0.06f;                        // how far a shoulder lifts with its hand straight overhead (m)
     float torsoFollow = 0.6f;                   // how much the chest turns toward the hands
     float torsoLimitDeg = 50.f;                 // never more than this from the head's heading
     Vec3 neck{0, 0, 0};                         // the neck top against the head (head frame: up, back = +y, +z)
