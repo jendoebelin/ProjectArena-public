@@ -1,6 +1,8 @@
 """Discord posts for the Project Arena server, through channel webhooks.
   preview:  python -I tools/discord/discord_posts.py preview   (writes build/discord_draft/preview.html; sends nothing)
-  post:     python -I tools/discord/discord_posts.py post [CHANNEL ...]   (posts; the owner approves first)
+  post:     python -I tools/discord/discord_posts.py post [CHANNEL ...] [--only "TITLE" | --last N]   (posts; the owner
+            approves first; --only: just the post with that title, --last: the channel's last N posts in order, not
+            every post for the channel)
 Posts: tools/discord/posts.json (channel, title, colour, markdown text, optional picture from build/discord_draft).
 Webhooks: discord.local.cfg in the project root (gitignored), one line per channel: CHANNEL=https://discord.com/api/webhooks/...
 A webhook address lets anyone post in that channel: never print it, never commit it."""
@@ -10,6 +12,7 @@ import os
 import re
 import sys
 import urllib.request
+import time
 import uuid
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -81,16 +84,23 @@ def send(url, post):
 
 
 def main():
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # (titles with emoji, on any console)
     posts = json.load(open(POSTS, encoding='utf-8'))
     if len(sys.argv) < 2 or sys.argv[1] == 'preview':
         preview(posts)
         return
     if sys.argv[1] == 'post':
         hooks = load_hooks()
-        want = set(sys.argv[2:])
-        for p in posts:
-            if want and p['channel'] not in want:
-                continue
+        args = sys.argv[2:]
+        only = args[args.index('--only') + 1] if '--only' in args else None
+        last = int(args[args.index('--last') + 1]) if '--last' in args else 0
+        want = set(a for i, a in enumerate(args) if not a.startswith('--') and (i == 0 or args[i - 1] not in ('--only', '--last')))
+        pick = [p for p in posts if (not want or p['channel'] in want) and (not only or p['title'] == only)]
+        if last:
+            pick = pick[-last:]
+        for k, p in enumerate(pick):
+            if k:
+                time.sleep(1.5)   # (in order: each one after the last has gone)
             url = hooks.get(p['channel'])
             if not url:
                 print('no webhook for #%s (add a line "%s=..." to discord.local.cfg): skipped' % (p['channel'], p['channel']))

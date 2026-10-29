@@ -326,10 +326,12 @@ bool Net::statsFor(uint32_t hostVip, CareerStats out[2]) const {
 }
 
 void Net::relayHello() {
-    uint8_t b[38] = {};
+    uint8_t b[38 + 16] = {};   // then this build's version (length + ASCII; relays before 0.3.11 ignore it)
     std::memcpy(b, &kRelayMagic, 4); b[4] = R_HELLO;   // token: zeros
     b[21] = kVersion;
     std::memcpy(b + 22, name_, 16);
+    b[38] = (uint8_t)std::strlen(app_);
+    std::memcpy(b + 39, app_, b[38]);
     rawSend(b, sizeof b, serverIp_, serverPort_);
     lastHello_ = now_ > 0 ? now_ : monoNow();
 }
@@ -369,6 +371,10 @@ void Net::setName(const char* n) {
     std::snprintf(name_, sizeof name_, "%s", n && *n ? n : "QUEST");
     for (char* c = name_; *c; ++c) if (*c >= 'a' && *c <= 'z') *c -= 32;   // HUD font is upper-case only
     if (online_ && serverIp_) relayHello();   // the relay knows us by name (its log, player reports)
+}
+
+void Net::setAppVersion(const char* v) {
+    std::snprintf(app_, sizeof app_, "%s", v ? v : "");
 }
 
 std::vector<LanGame> Net::games() const {
@@ -524,6 +530,8 @@ static void writeState(Writer& w, const Game& g) {
     // MATCH OPTIONS (0.3.8): after everything older builds read
     w.put<uint8_t>(g.tun.shields); w.put<int8_t>((int8_t)g.tun.knuckleMode); w.put<float>(g.tun.basicMatchTime);
     w.put<float>(g.tun.advancedRoundTime);
+    // 0.3.11: which balls are on their way home, harmless (drawn faded); older builds stop reading before this
+    w.put<uint8_t>(g.pl[0].ball.scored); w.put<uint8_t>(g.pl[1].ball.scored);
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -560,6 +568,8 @@ static bool readState(Reader& r, Game& g, int localIndex) {
     } else if (r.ok) {
         g.tun.shields = true; g.tun.knuckleMode = -1; g.tun.basicMatchTime = 180.f; g.tun.advancedRoundTime = 0.f;
     }
+    if (r.ok && r.e - r.p >= 2) { g.pl[0].ball.scored = r.get<uint8_t>() != 0; g.pl[1].ball.scored = r.get<uint8_t>() != 0; }
+    else for (int p = 0; p < 2; ++p) g.pl[p].ball.scored = false;   // (hosts before 0.3.11: never faded)
     return r.ok;
 }
 

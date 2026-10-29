@@ -26,6 +26,31 @@ struct ArenaData {
 // arena.col (tools/build_open_assets.py): "SCOL", the triangle count (u32), then per triangle 9 floats and tags (u32).
 // Empty when the data isn't one (wrong magic, cut short).
 std::vector<CollisionTri> parseCollision(const uint8_t* data, size_t size);
+// The EXPERIMENTAL arenas (owner, 2026-10-29), Basic's rules in both:
+// DIAMOND (the owner's drawing, the default): the classic court rolled 45 degrees along its length, as Sparc's 2017
+// reviews describe a mode ("turns the long rectangular arena 45 degrees, making it more of a diamond shape"; Sparc's
+// files we have hold no such room). 19 m long; its end a square as wide as the court (4.96 m, from arena.col), turned
+// so its corners are straight up, down and to each side, 3.5 m from its centre (owner, 2026-10-29: Sparc's was squared
+// off, every side as far as the court is wide; the court's own 4.96 x 3.88 m end, rolled, left one side 0.8 m short).
+// The end's centre 1.2 m over the platforms' tops (y = 0): no flat floor, the two lower walls meet in a V under your
+// feet. The players on round floating platforms at their usual start, which the ball goes through (it comes up at you
+// from below; tun.solidPlatforms makes them solid); the ends are the back walls. No foul zone (owner, 2026-10-29): the
+// foul line still recharges your ball and resets your shot clock, and a short throw still comes home.
+// CORNERS: a square room turned 45 degrees, 7 m tall, its corners 9.5 m out from
+// the centre (x = -/+9.5 behind the players, z = -/+9.5 to the sides); the players on round floating platforms
+// (2.4 m across, their tops at y = 0) at their usual start, the room's floor 3 m below them and its ceiling 4 m above.
+// The ball bounces off everything, the floor below included (it can come up at you); your platform is your foul
+// zone; the corner walls behind each player (x beyond -/+7.1) are its back wall (TAG_RETURN).
+namespace exparena {
+constexpr float kCorner = 9.5f, kFloor = -3.f, kCeiling = 4.f, kPlatformR = 1.2f, kPlatformThick = 0.15f, kBackX = 7.1f;
+constexpr float kFoulLineX = 5.8f;   // the platform's front edge: past it a throw recharges the ball
+std::vector<CollisionTri> collision();   // CORNERS
+constexpr float kRollLen = 9.5f, kRollW = 4.96f, kRollH = 4.96f, kRollCY = 1.2f;   // DIAMOND: ends at x = -/+9.5; the end (square); its centre height
+constexpr float kRollReach = (0.5f * kRollW + 0.5f * kRollH) * 0.70710678f;   // the end's corners: this far up, down and to the sides
+void diamondEnd(Vec3 v[4]);   // the end's corners (x = 0), round in order: the classic end rolled 45 degrees
+std::vector<CollisionTri> diamondCollision(bool solidPlatforms = false);
+}
+enum : int { ARENA_CLASSIC, ARENA_CORNERS, ARENA_DIAMOND };
 
 struct Tunables {
     // ---- rule set. Basic = BeginnerBrawlActivityBP (the activity spawned by l_courtside_00); Advanced = BrawlActivityBP.
@@ -34,6 +59,9 @@ struct Tunables {
     //   Advanced: best of 3 rounds, each round first to 4 points, no time limit, shield breaks on hit,
     //             recharge by throwing, aim assist low
     bool advanced = false;
+    bool experimental = false;   // the rules ask for an EXPERIMENTAL arena (Basic's rules there); Game::useArena loads it
+    int expRoom = 0;             // which: 0 DIAMOND, 1 CORNERS
+    bool solidPlatforms = false; // DIAMOND: the ball bounces off the platforms (default: through them, owner 2026-10-29)
     float basicMatchTime = 180.0f;
     int advancedPointsToWin = 4, advancedRoundsToWin = 2;
     // ---- MATCH OPTIONS (the host's, 0.3.8; owner's design 2026-10-21). shields false = HOTDOG MODE (the community's
@@ -59,6 +87,8 @@ struct Tunables {
     Vec3 start[2] = {{-7.0f, 0, 0}, {7.0f, 0, 0}};           // Start_Player0/1 (UE x = -700/+700 cm)
     Vec3 spawner[2] = {{-6.48f, 0, 0}, {6.48f, 0.02f, 0}};  // ProjectileSpawner_Locator_Player0/1
     float foulLineX = 4.73f;                                  // FoulLine_Player0/1 at x = -/+473 cm
+    // a ball outside this box has left the arena (respawns): below outLow, above outHigh, |x| > outX, |z| > outZ
+    float outLow = -1.f, outHigh = 6.f, outX = 11.f, outZ = 4.f;
     float spawnerIdleHeight = 1.15f;                          // BrawlProjectIleSpawnerBP.IdleTransform z=115 cm
     float springK = 25.0f, springDamping = 16.0f;             // DampedSpring SpringConstant / DampingConstant
     float respawnDelay = 0.1f, postSpawnDelay = 0.1f;         // BrawlProjectIleSpawnerBP RespawnDelay/PostSpawnDelay
@@ -110,6 +140,11 @@ struct Tunables {
     // (below recallSpeed), heading back toward the owner, or still short after recallTime goes back to the spawner
     // (the idle spring pulls it home) instead of rattling round the owner's end.
     float recallSpeed = 2.0f, recallTime = 2.5f;
+    // Stuck balls (players and owner, 2026-10-28; kept narrow, so play feels as in Sparc): a flying ball that goes
+    // less than stuckDistance along the court in stuckTime (looping in a corner, between floor and ceiling), or that
+    // its bounces have slowed under recallSpeed anywhere (after slowGrace, so a soft block still drops nearby), goes
+    // home, harmless, as a short throw does. A fouled ball keeps its own speed (at least foulMinSpeed) to its wall.
+    float stuckDistance = 1.0f, stuckTime = 2.0f, slowGrace = 1.0f, foulMinSpeed = 5.0f;
     // Respawn the Pre_Spawn rings play (~1.5 s), then the
     // ball appears at LauncherTransform (15 cm) and the DampedSpring lifts it to IdleTransform (115 cm).
     // PORT tuning (owner): shorter hidden phase, slower and smoother rise with its own tracers + air-pressure sound.
@@ -166,6 +201,10 @@ struct Tunables {
     // grips, then Sparc's knuckle-glass point 13.7 cm out, both missed real bumps on 2026-10-17.)
     Vec3 fistBack = {0.0f, 0.0f, 0.03f}, fistFront = {0.0f, 0.0f, -0.065f};
     float fistBumpGap = 0.11f;
+    // The meeting point (owner, 2026-10-28): a ring for each player over the centre line, at chest height between the
+    // two. A fist closed inside its ring lights it (offered). A bump counts only between two fists in their rings, one
+    // of them offered for meetOfferTime first: one person offers, the other meets it; nobody can force the start.
+    float meetRingRadius = 0.22f, meetRingDepth = 0.16f, meetRingX = 0.07f, meetOfferTime = 0.2f;
     float bumpPause = 0.8f;          // after the bump: the confirmation (buzz, sound, FIST BUMP!) before the move
     float roundSummaryTime = 4.0f;
 
@@ -292,6 +331,7 @@ struct Ball {
     // a foul (owner, 2026-10-21): the ball no longer dissolves. It bounces on, off the wall it is heading for, then
     // flies home to its launch spot (homing), harmless all the way; fouled = still before that wall
     bool fouled = false, homing = false;
+    float progX = 0, progT = 0;   // stuck balls: where along the court (x) it was at progT (its timer), last metre on
 };
 
 // one point of a ball's expected flight (Game::predictBall): the step (its game time) whose move brings the ball here
@@ -330,6 +370,7 @@ struct PlayerState {
     int botLevel = -1;          // -1: tun.botLevel (the lobby's bots choose their own)
     int botStance = -1;         // STANCE_* (-1: picked as its first step of a match; no guard below PRO)
     float botBow = 0;           // 0 upright .. 1 bowed (KARATE, at the fist bump)
+    int botBumpHand = 1;        // the hand it bumps with (kept unless their fist is clearly on its other side)
     float botSteady = 0;        // 0 bobbing as its stance does .. 1 still (it steadies its head while it watches a ball)
     float botTimer = 0;         // until its next throw
     Vec3 botBody, botBodyVel;   // its head's offset from where it stands (steps, leans, ducks), and that offset's speed
@@ -389,6 +430,14 @@ public:
     Vec3 knucklePoint(int p, int h) const;
     Pose shieldPose(int p, int h) const;
     float fistGap(int p0, int h0, int p1, int h1) const;   // closest distance between two fists (segments), metres
+    // the arena to play in: the classic court's collision (kept for switching back) or the EXPERIMENTAL one; sets the
+    // foul line and the out-of-arena box with it
+    void useArena(int kind, const std::vector<CollisionTri>& classic);   // ARENA_*
+    int arenaKind = -1;   // the collision in use: ARENA_* (-1: set some other way, e.g. tests' setArena)
+    Vec3 meetRing(int p) const;           // the centre of p's ring at the meeting point
+    bool inMeetRing(int p, int h) const;  // that fist's knuckles are inside p's ring
+    bool meetLit(int p, int h) const;     // ... and closed: its ring lights up (offered)
+    float meetLitT[2] = {-1, -1};         // host: since when each player has had a fist lit in its ring (-1: not)
     Pose shieldLocal(int h) const;           // plate pose in grip space (plate normal = local +Y)
     Vec3 strikeZoneCenter(int p) const;
     Vec3 peakAngVel(int p, int h, float now) const;

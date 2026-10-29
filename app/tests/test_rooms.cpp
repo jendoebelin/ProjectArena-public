@@ -44,6 +44,7 @@ struct Node {
     PlayerInput local;
     explicit Node(const char* name, float x) {
         net.init();
+        net.setAppVersion("0.3.11");   // run_room_test.py checks the relay logs it
         net.setName(name);
         game.reset(true);
         local.headTracked = true;
@@ -204,7 +205,7 @@ int main() {
         const PlayerInput hostKeep = H.local, visKeep = V.local;
         fistAt(H, {-0.01f, 1.2f, 0.f}, {1, 0, 0});
         fistAt(V, {0.01f, 1.2f, 0.f}, {-1, 0, 0});
-        pump(ns, 1.2);
+        pump(ns, 2.0);   // (offered 0.2 s, the bump's 0.8 s confirmation, then the countdown)
         CHECK(H.game.match == MatchState::Countdown || H.game.match == MatchState::InProgress,
               "the host sees the bump and starts the countdown well before the 10 s fallback");
         CHECK(V.game.match == H.game.match, "the visitor's game follows");

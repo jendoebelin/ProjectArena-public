@@ -276,6 +276,8 @@ struct App {
     double lastTime = 0;
     float hitFlash[2] = {0, 0};
     float bumpFlash = 0;            // FIST BUMP! (1 -> 0 over a second)
+    float foulFlash = 0;            // FOUL where a ball landed in its zone (1.2 -> 0)
+    Vec3 foulAt;
     double winAt = 0;               // when the match was won (the confetti; 0 = not in MatchSummary)
     // what the world shows (the desktop spectator's VIEW LAYERS; the headset always draws everything): 0 FULL,
     // 1 NO WALLS (the court's outline instead of its glass), 2 MINIMAL (no stadium, strike zones, spawners,
@@ -369,6 +371,11 @@ struct App {
     bool settingsOpen = false;
     int pointerHand = 1;           // hand that points at menus (settings: right / left)
     int fxLevel = 0;               // hit effects: 0 full, 1 soft, 2 low (photosensitivity)
+    // FIELD OF VIEW (owner, 2026-10-29): how big the arena feels, -4..+4 in 5% steps. A headset's lenses fix its real
+    // field of view; this draws the eyes closer together (the room feels bigger) or further apart (smaller). Picture
+    // only: hands, reach and the court stay true, and the headset still gets the real eye poses.
+    int roomFeel = 0;
+    std::vector<CollisionTri> classicCol;   // the classic court's collision (arena.col), for switching back from EXPERIMENTAL
     int crowdMode = 0;             // The Crowd in the arena: 0 all, 1 no sound, 2 off (no sound, flags or flaring lights)
     int turnMode = 0;              // spectating, the right stick turns: 0 snap (30 deg), 1 smooth, 2 smooth fast (per player)
     int volume = 8;                // 0..10
@@ -403,7 +410,8 @@ struct App {
     // with its snapshots): restored on leaving, and what settings.cfg keeps (code review, 2026-10-21)
     Tunables ownRules;
     bool guestRules = false;
-    bool optAdvanced = false, optShields = true;
+    bool optAdvanced = false, optShields = true, optExperimental = false;
+    int optExpRoom = 0;            // EXPERIMENTAL's room: 0 DIAMOND, 1 CORNERS
     int optKnuckle = -1;
     float optMatchTime = 180.f, optRoundTime = 0.f;
     int optBotLevel = 2;           // the practice bot's level (botSkill, game.h)
@@ -438,6 +446,7 @@ struct App {
     int voiceMode = 0;             // 0 push-to-talk, 1 open mic, 2 off
     bool muteSpectators = false, mutePlayers = false, muteAll = false;
     bool voicePage = false;        // settings sub-page
+    bool gfxPage = false;          // settings: GRAPHICS (the arena shows around the buttons)
     bool ptt = false, talking = false, micAsked = false, micDenied = false;   // micDenied: asked, not granted (yet)
     bool micFailed = false;        // allowed, but the microphone wouldn't open (tried again every 10 s)
     double micCheckAt = 0;
@@ -1221,7 +1230,8 @@ static bool initContent(App& a) {
     g_shieldLocal = ueLocalToGrip({20, 0, 10}, {0, 0, 180}, {10, 10, 10});
     g_knuckleLocal = ueLocalToGrip({1.5f, 0, 0}, {0, 0, 0}, {1, 1, 1});   // KnuckleGuardTransform (10.5) + TempMesh (-9)
     g_plateLocal = ueLocalToGrip({0, 0, 0}, {0, 0, 180}, {10, 10, 10});   // Shield_01 plate centred, normal = grip Y
-    a.game.setArena(loadCollision());
+    a.classicCol = loadCollision();
+    a.game.useArena(ARENA_CLASSIC, a.classicCol);
     a.game.reset(true);
     // team 0 = (0.1,0.7,1.0), team 1 = (1.0,0.4,0.1)
     float c0[4] = {0.1f, 0.7f, 1.0f, 1}, c1[4] = {1.0f, 0.4f, 0.1f, 1};
@@ -1250,7 +1260,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.10";
+static const char* kAppVersion = "0.3.11";
 
 // "0.3.4" newer than "0.3.3" (dotted numbers, compared part by part)
 static bool versionNewer(const char* a, const char* b) {
@@ -1875,7 +1885,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 
 // ------------------------------------------------------------------ lobby menu
 enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute, ReportKick, StatsNoticeOk,
-                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, ReportHostKick, OptBot, Record, OptMeet };
+                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, ReportHostKick, OptBot, Record, OptMeet, GfxPage, FovDown, FovUp, OptRoom };
 struct MenuItem {
     std::string label;
     float x, y, w, h;
@@ -1888,12 +1898,15 @@ static void haptic(App& a, int hand, float amp, float seconds);
 
 // ---- MATCH OPTIONS: the page's choices <-> the rules, their labels, and whether a match is on
 static void optionsFrom(App& a, const Tunables& t) {
-    a.optAdvanced = t.advanced; a.optShields = t.shields; a.optKnuckle = t.knuckleMode;
+    a.optAdvanced = t.advanced; a.optShields = t.shields; a.optKnuckle = t.knuckleMode; a.optExperimental = t.experimental; a.optExpRoom = t.expRoom;
     a.optMatchTime = t.basicMatchTime; a.optRoundTime = t.advancedRoundTime;
     a.optBotLevel = t.botLevel; a.optBotAdapt = t.botAdapt; a.optBotMeet = t.botMeet;
 }
+// CORNERS is hidden until it becomes the 4-player room (owner, 2026-10-29): DIAMOND is the only EXPERIMENTAL room
+static constexpr bool kShowCorners = false;
+
 static void optionsInto(const App& a, Tunables& t) {
-    t.advanced = a.optAdvanced; t.shields = a.optShields; t.knuckleMode = a.optKnuckle;
+    t.advanced = a.optAdvanced; t.shields = a.optShields; t.knuckleMode = a.optKnuckle; t.experimental = a.optExperimental && !a.optAdvanced; t.expRoom = kShowCorners ? a.optExpRoom : 0;
     t.basicMatchTime = a.optMatchTime; t.advancedRoundTime = a.optRoundTime;
     t.botLevel = a.optBotLevel; t.botAdapt = a.optBotAdapt; t.botMeet = a.optBotMeet;
 }
@@ -1905,7 +1918,7 @@ static std::string timeLabel(float secs, bool rounds) {
 }
 // "ADVANCED", "BASIC - HOTDOG - 5 MIN", "ADVANCED - 2 MIN ROUNDS - KNUCKLE GUARDS": the rules and what differs
 static std::string rulesLine(const Tunables& t) {
-    std::string s = t.advanced ? "ADVANCED" : "BASIC";
+    std::string s = t.advanced ? "ADVANCED" : t.experimental ? (t.expRoom == 1 && kShowCorners ? "EXPERIMENTAL CORNERS" : "EXPERIMENTAL DIAMOND") : "BASIC";
     if (!t.shields) s += " - HOTDOG";
     if (t.advanced && t.advancedRoundTime > 0) s += " - " + std::to_string((int)t.advancedRoundTime / 60) + " MIN ROUNDS";
     if (!t.advanced && t.basicMatchTime <= 0) s += " - FREE PLAY";
@@ -2010,7 +2023,12 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         optionsInto(a, t);
         const bool bot = !a.rulesForHost;   // practice: the bot's level too (a row more: the rows closer together)
         const float y[4] = {bot ? 0.15f : 0.13f, bot ? 0.065f : 0.04f, bot ? -0.02f : -0.05f, -0.105f};
-        v.push_back({t.shields ? "SHIELDS: ON" : "SHIELDS: OFF  (HOTDOG MODE)", 0, y[0], 0.74f, 0.075f, MenuAct::OptShields, 0, true});
+        if (t.experimental && kShowCorners) {   // EXPERIMENTAL: which room, beside SHIELDS
+            v.push_back({t.shields ? "SHIELDS: ON" : "SHIELDS: OFF (HOTDOG)", -0.19f, y[0], 0.36f, 0.075f, MenuAct::OptShields, 0, true});
+            v.push_back({t.expRoom == 1 ? "ROOM: CORNERS" : "ROOM: DIAMOND", 0.19f, y[0], 0.36f, 0.075f, MenuAct::OptRoom, 0, true});
+        } else {
+            v.push_back({t.shields ? "SHIELDS: ON" : "SHIELDS: OFF  (HOTDOG MODE)", 0, y[0], 0.74f, 0.075f, MenuAct::OptShields, 0, true});
+        }
         v.push_back({t.knuckleGuards() ? "KNUCKLE GUARDS: ON" : "KNUCKLE GUARDS: OFF", 0, y[1], 0.74f, 0.075f, MenuAct::OptKnuckle, 0, true});
         const std::string tl = std::string(t.advanced ? "ROUND TIME: " : "MATCH TIME: ") + timeLabel(t.advanced ? t.advancedRoundTime : t.basicMatchTime, t.advanced);
         v.push_back({"-", -0.335f, y[2], 0.07f, 0.075f, MenuAct::OptTime, 0, true});
@@ -2035,7 +2053,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
     if (a.rulesOpen && !a.nameEdit) {
         v.push_back({"ADVANCED", 0, 0.12f, 0.70f, 0.10f, MenuAct::RulesPick, 1, true});
         v.push_back({"BASIC", 0, -0.04f, 0.70f, 0.10f, MenuAct::RulesPick, 0, true});
-        v.push_back({"EXPERIMENTAL - COMING LATER", 0, -0.20f, 0.70f, 0.08f, MenuAct::RulesPick, 2, false});
+        const bool hosting = a.rulesForHost || a.net.mode() == Net::Mode::Host || a.net.mode() == Net::Mode::Client;   // (online: next)
+        v.push_back({hosting ? "EXPERIMENTAL - PRACTICE ONLY FOR NOW" : "EXPERIMENTAL", 0, -0.20f, 0.70f, 0.08f, MenuAct::RulesPick, 2, !hosting});
         v.push_back({"BACK", 0, -0.35f, 0.36f, 0.06f, MenuAct::RulesBack, 0, true});
         return v;
     }
@@ -2069,6 +2088,21 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"BACK", 0.365f, -0.39f, 0.17f, 0.07f, MenuAct::ReportBack, 0, true});
         return v;
     }
+    // the keyboard comes before the pages that open it (the title page's CHANGE NAME, SETTINGS' SERVER): they
+    // stay open underneath, and their buttons used to be offered instead (astrobleem's report, 2026-10-27)
+    if (a.nameEdit) {   // name keyboard: four rows of keys, then SPACE / DELETE / DONE
+        static const char* rows[4] = {"1234567890", "QWERTYUIOP", "ASDFGHJKL-", "ZXCVBNM.:"};
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; rows[r][c]; ++c) {
+                char k[2] = {rows[r][c], 0};
+                float x = -0.3825f + 0.085f * c + (r == 3 ? 0.085f * 0.5f : 0.f);
+                v.push_back({k, x, 0.10f - 0.09f * r, 0.075f, 0.075f, MenuAct::Key, (uint32_t)(uint8_t)rows[r][c], true});
+            }
+        v.push_back({"SPACE", -0.25f, -0.27f, 0.30f, 0.07f, MenuAct::Key, (uint32_t)' ', true});
+        v.push_back({"DELETE", 0.06f, -0.27f, 0.24f, 0.07f, MenuAct::KeyDel, 0, !a.nameBuf.empty()});
+        v.push_back({"DONE", 0.31f, -0.27f, 0.20f, 0.07f, MenuAct::KeyDone, 0, true});
+        return v;
+    }
     if (a.helpOpen) {
         v.push_back({"GOT IT", 0, -0.33f, 0.36f, 0.07f, MenuAct::HelpDone, 0, true});
         return v;
@@ -2096,6 +2130,17 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"BACK", 0, -0.375f, 0.36f, 0.06f, MenuAct::Back, 0, true});
         return v;
     }
+    if (a.settingsOpen && a.gfxPage) {   // GRAPHICS: field of view (room size feel) and hit effects; the arena around it
+        char b[48];
+        snprintf(b, sizeof b, a.roomFeel == 0 ? "NORMAL" : "%+d%%", a.roomFeel * 5);
+        v.push_back({b, 0, -0.04f, 0.20f, 0.075f, MenuAct::None, 0, true});
+        v.push_back({"-", -0.17f, -0.04f, 0.09f, 0.075f, MenuAct::FovDown, 0, a.roomFeel > -4});
+        v.push_back({"+", 0.17f, -0.04f, 0.09f, 0.075f, MenuAct::FovUp, 0, a.roomFeel < 4});
+        static const char* fx[3] = {"HIT EFFECTS: FULL", "HIT EFFECTS: SOFT", "HIT EFFECTS: LOW"};
+        v.push_back({fx[a.fxLevel % 3], 0, -0.22f, 0.40f, 0.07f, MenuAct::Fx, 0, true});
+        v.push_back({"BACK", 0, -0.33f, 0.36f, 0.06f, MenuAct::Back, 0, true});
+        return v;
+    }
     if (a.settingsOpen && a.voicePage) {
         static const char* modes[3] = {"VOICE: PUSH TO TALK (LEFT GRIP)", "VOICE: OPEN MIC", "VOICE: OFF"};
         v.push_back({modes[a.voiceMode % 3], 0, 0.12f, 0.80f, 0.08f, MenuAct::VoiceMode, 0, true});
@@ -2115,8 +2160,7 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
                      0.19f, 0.13f, 0.36f, 0.075f, MenuAct::Passthrough, 0, a.hasPassthrough && !a.ptFailed});
         v.push_back({a.pointerHand == 1 ? "POINTER: RIGHT" : "POINTER: LEFT", -0.19f, 0.04f, 0.36f, 0.075f, MenuAct::Hand, 0, true});
         v.push_back({a.botFill ? "BOT FILLS IN: ON" : "BOT FILLS IN: OFF", 0.19f, 0.04f, 0.36f, 0.075f, MenuAct::BotFill, 0, true});
-        static const char* fx[3] = {"HIT EFFECTS: FULL", "HIT EFFECTS: SOFT", "HIT EFFECTS: LOW"};
-        v.push_back({fx[a.fxLevel % 3], -0.19f, -0.05f, 0.36f, 0.075f, MenuAct::Fx, 0, true});
+        v.push_back({"GRAPHICS AND VIEW", -0.19f, -0.05f, 0.36f, 0.075f, MenuAct::GfxPage, 0, true});
         v.push_back({a.hideOutside ? "OUTSIDE: HIDDEN" : "OUTSIDE: SHOWN", 0.19f, -0.05f, 0.36f, 0.075f, MenuAct::HideOutside, 0, true});
         v.push_back({"RULES: " + rulesLine(a.game.tun), -0.19f, -0.14f, 0.36f, 0.075f, MenuAct::Rules, 0,
                      a.net.mode() != Net::Mode::Client && a.net.mode() != Net::Mode::Spectate});
@@ -2153,19 +2197,6 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"CHANGE NAME", 0, -0.31f, 0.56f, 0.07f, MenuAct::Name, 0, true});
         v.push_back({"EXPERIMENTAL", -0.145f, -0.385f, 0.27f, 0.045f, MenuAct::Experimental, 0, true});
         v.push_back({"REPORT A BUG", 0.145f, -0.385f, 0.27f, 0.045f, MenuAct::Bug, 0, true});
-        return v;
-    }
-    if (a.nameEdit) {   // name keyboard: four rows of keys, then SPACE / DELETE / DONE
-        static const char* rows[4] = {"1234567890", "QWERTYUIOP", "ASDFGHJKL-", "ZXCVBNM.:"};
-        for (int r = 0; r < 4; ++r)
-            for (int c = 0; rows[r][c]; ++c) {
-                char k[2] = {rows[r][c], 0};
-                float x = -0.3825f + 0.085f * c + (r == 3 ? 0.085f * 0.5f : 0.f);
-                v.push_back({k, x, 0.10f - 0.09f * r, 0.075f, 0.075f, MenuAct::Key, (uint32_t)(uint8_t)rows[r][c], true});
-            }
-        v.push_back({"SPACE", -0.25f, -0.27f, 0.30f, 0.07f, MenuAct::Key, (uint32_t)' ', true});
-        v.push_back({"DELETE", 0.06f, -0.27f, 0.24f, 0.07f, MenuAct::KeyDel, 0, !a.nameBuf.empty()});
-        v.push_back({"DONE", 0.31f, -0.27f, 0.20f, 0.07f, MenuAct::KeyDone, 0, true});
         return v;
     }
     const Net::Mode m = a.net.mode();
@@ -2247,7 +2278,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         if (a.session != XR_NULL_HANDLE) xrRequestExitSession(a.session); else a.quit = true;
         break;
     case MenuAct::Nav: {
-        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen = a.helpOpen = false;
+        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen = a.helpOpen = false;
         a.statsOpen = false;
         a.nameEdit = false;
         auto go = [&](MenuAct act) { MenuItem x{"", 0, 0, 0, 0, act, 0, true}; menuActivate(a, x); };
@@ -2301,7 +2332,7 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::BugSend: bugSubmit(a); a.bugOpen = false; a.titleOpen = a.bugReturnTitle; break;
     case MenuAct::BugCancel: a.bugOpen = false; a.titleOpen = a.bugReturnTitle; break;
     case MenuAct::Report:
-        a.settingsOpen = false; a.voicePage = false; a.ptPage = false; a.reportOpen = true;
+        a.settingsOpen = false; a.voicePage = false; a.ptPage = false; a.gfxPage = false; a.reportOpen = true;
         a.reportWho = 0; a.reportName[0] = 0; a.reportWhy = -1; a.reportNote.clear();
         break;
     case MenuAct::ReportWho:
@@ -2338,11 +2369,12 @@ static void menuActivate(App& a, const MenuItem& it) {
         break;
     case MenuAct::Host: a.rulesOpen = true; a.rulesForHost = true; a.rulesEdit = false; a.rulesStep = 0; optionsFrom(a, a.game.tun); break;   // CHOOSE THE RULES, then the room opens
     case MenuAct::RulesPick:   // then MATCH OPTIONS (nothing changes until START / APPLY)
-        if (it.ip > 1) break;   // EXPERIMENTAL: not defined yet
         a.optAdvanced = it.ip == 1;
+        a.optExperimental = it.ip == 2;   // EXPERIMENTAL: the diagonal arena, Basic's rules (owner, 2026-10-29)
         a.rulesStep = 1;
         break;
     case MenuAct::OptShields: a.optShields = !a.optShields; break;
+    case MenuAct::OptRoom: a.optExpRoom = a.optExpRoom == 1 ? 0 : 1; break;
     case MenuAct::OptKnuckle: {   // stored as "as the rules say" when it matches them
         Tunables t;
         optionsInto(a, t);
@@ -2415,7 +2447,10 @@ static void menuActivate(App& a, const MenuItem& it) {
         break;
     case MenuAct::Multi: a.titleOpen = false; break;
     case MenuAct::Settings: a.settingsOpen = true; break;
-    case MenuAct::Back: if (a.voicePage) a.voicePage = false; else if (a.ptPage) a.ptPage = false; else a.settingsOpen = false; saveSettings(a); break;
+    case MenuAct::Back: if (a.voicePage) a.voicePage = false; else if (a.ptPage) a.ptPage = false; else if (a.gfxPage) a.gfxPage = false; else a.settingsOpen = false; saveSettings(a); break;
+    case MenuAct::GfxPage: a.gfxPage = true; break;
+    case MenuAct::FovDown: a.roomFeel = std::max(-4, a.roomFeel - 1); saveSettings(a); break;
+    case MenuAct::FovUp: a.roomFeel = std::min(4, a.roomFeel + 1); saveSettings(a); break;
     case MenuAct::VoicePage: a.voicePage = true; break;
     case MenuAct::Passthrough: a.ptPage = true; break;
     case MenuAct::PtMode:
@@ -2622,9 +2657,12 @@ static void drawMenu(App& a) {
     const float btn[4] = {0.03f, 0.05f, 0.08f, std::max(ua, 0.95f)}, hov[4] = {0.05f, 0.40f, 0.75f, std::max(ua, 0.98f)},
                 dis[4] = {0.015f, 0.015f, 0.02f, std::max(ua, 0.9f)};
     const float white[4] = {1, 1, 1, 1}, grey[4] = {0.35f, 0.38f, 0.42f, 1}, cyan[4] = {0.3f, 0.85f, 1.0f, 1};
-    quad(0, -0.09f, 1.04f, 0.98f, -0.002f, edge);
-    quad(0, -0.09f, 1.0f, 0.94f, 0, bg);
-    if (!a.nameEdit) {   // side menu
+    const bool airy = a.settingsOpen && a.gfxPage && !a.nameEdit;   // GRAPHICS: the arena shows around its buttons
+    if (!airy) {
+        quad(0, -0.09f, 1.04f, 0.98f, -0.002f, edge);
+        quad(0, -0.09f, 1.0f, 0.94f, 0, bg);
+    }
+    if (!a.nameEdit && !airy) {   // side menu
         quad(kNavX, -0.09f, 0.30f, 0.98f, -0.002f, edge);
         quad(kNavX, -0.09f, 0.28f, 0.94f, 0, bg);
     }
@@ -2650,7 +2688,7 @@ static void drawMenu(App& a) {
         Tunables t;
         optionsInto(a, t);
         text("MATCH OPTIONS", 0, 0.29f, 0.055f, cyan);
-        text(std::string(t.advanced ? "ADVANCED RULES" : "BASIC RULES") +
+        text(std::string(t.advanced ? "ADVANCED RULES" : t.experimental ? "EXPERIMENTAL (BASIC RULES)" : "BASIC RULES") +
              (a.rulesForHost || a.net.mode() == Net::Mode::Host ? " - ONLY THE HOST CAN CHANGE THESE" : " - FOR PRACTICE AGAINST THE BOT"),
              0, 0.215f, 0.022f, white);
         const char* hint = t.freePlay() ? "FREE PLAY: NO CLOCK AND NO WINNER - PRACTICE OR PLAY ON"
@@ -2677,7 +2715,7 @@ static void drawMenu(App& a) {
         text(a.rulesForHost ? "FOR YOUR ROOM - EVERYONE WHO JOINS PLAYS THESE RULES" : "FOR PRACTICE AGAINST THE BOT", 0, 0.215f, 0.022f, white);
         text("BEST OF 3 ROUNDS, FIRST TO 4 POINTS - LOW AIM ASSIST", 0, 0.045f, 0.019f, grey);
         text("3 MINUTE MATCH - KNUCKLE GUARDS - MORE AIM ASSIST", 0, -0.115f, 0.019f, grey);
-        text("NEW RULES TO TRY OUT - NOT READY YET", 0, -0.265f, 0.019f, grey);
+        text("DIAMOND: THE COURT ROLLED 45 DEGREES, ON FLOATING PLATFORMS", 0, -0.265f, 0.019f, grey);
     } else if (a.reportOpen && !a.nameEdit) {
         text("REPORT OR MUTE A PLAYER", 0, 0.29f, 0.050f, cyan);
         if (reportPeople(a).empty()) {
@@ -2745,8 +2783,18 @@ static void drawMenu(App& a) {
             snprintf(buf, sizeof buf, "UPDATE AVAILABLE: %s  -  FROM THE STORE LIBRARY, OR GITHUB IF YOU SIDELOADED", v);
             text(buf, 0, 0.145f, 0.020f, amber);
         }
-    } else if (a.settingsOpen) {
-        text(a.voicePage ? "VOICE CHAT" : a.ptPage ? "PASSTHROUGH" : "SETTINGS", 0, 0.29f, 0.055f, cyan);
+    } else if (a.settingsOpen && !a.nameEdit) {
+        text(a.voicePage ? "VOICE CHAT" : a.ptPage ? "PASSTHROUGH" : a.gfxPage ? "GRAPHICS AND VIEW" : "SETTINGS", 0, 0.29f, 0.055f, cyan);
+        if (a.gfxPage) {
+            const float strip[4] = {0.004f, 0.007f, 0.016f, 0.985f};
+            quad(0, -0.01f, 0.88f, 0.25f, -0.001f, strip);   // a strip behind the slider only: the arena shows around it
+            text("FIELD OF VIEW", 0, 0.08f, 0.04f, white);
+            text("HOW BIG THE ARENA FEELS: + WIDER, - CLOSER. LOOK AROUND WHILE YOU SET IT", 0, 0.03f, 0.019f, grey);
+            for (int k = -4; k <= 4; ++k) {   // the slider: a notch for each step, the chosen one lit
+                const float on[4] = {0.3f, 0.85f, 1.0f, 1}, off[4] = {0.10f, 0.16f, 0.22f, 1};
+                quad(0.035f * k, -0.10f, k == a.roomFeel ? 0.022f : 0.012f, k == a.roomFeel ? 0.04f : 0.022f, 0.004f, k == a.roomFeel ? on : off);
+            }
+        }
         if (a.voicePage) text("ONLY PEOPLE AT YOUR ARENA CAN HEAR YOU", 0, 0.205f, 0.024f, grey);
         if (a.ptPage) {
             std::string h = kPtModeHelp[a.ptMode % PT_COUNT];
@@ -2757,7 +2805,7 @@ static void drawMenu(App& a) {
                     : a.depthFailed ? "WINDOW: ROOM DEPTH COULD NOT START" : "WINDOW: STARTING ROOM DEPTH";
             text(h, 0, 0.205f, 0.022f, grey);
         }
-    } else if (a.helpOpen) {
+    } else if (a.helpOpen && !a.nameEdit) {
         text("HOW TO PLAY", 0, 0.29f, 0.055f, cyan);
         static const char* lines[] = {
             "GRAB: REACH FOR YOUR BALL, HOLD THE TRIGGER",
@@ -2805,7 +2853,7 @@ static void drawMenu(App& a) {
         if ((it.act == MenuAct::Join || it.act == MenuAct::JoinRoom || it.act == MenuAct::Watch) && it.ip) ++games;
         const bool picked = (it.act == MenuAct::Nav && (int)it.ip == navCurrent(a)) ||
                             (it.act == MenuAct::BugCat && (int)it.ip == a.bugCat) ||
-                            (it.act == MenuAct::RulesPick && (int)it.ip == (a.game.tun.advanced ? 1 : 0)) || (it.act == MenuAct::ReportWho && it.ip == a.reportWho) ||
+                            (it.act == MenuAct::RulesPick && (int)it.ip == (a.game.tun.advanced ? 1 : a.game.tun.experimental ? 2 : 0)) || (it.act == MenuAct::ReportWho && it.ip == a.reportWho) ||
                             (it.act == MenuAct::ReportWhy && (int)it.ip == a.reportWhy) || (it.act == MenuAct::PtMode && (int)it.ip == a.ptMode) ||
                             (it.act == MenuAct::OptBot && it.ip >= 10 &&
                              (int)it.ip - 10 <= (a.optBotAdapt ? (int)std::lround(a.game.tun.botMatch) : a.optBotLevel)) ||
@@ -3028,6 +3076,7 @@ static void handleEvents(App& a) {
         case EventType::KnuckleBlock: if (mine && e.hand >= 0) haptic(a, e.hand, 1.0f, 0.20f); break;
         case EventType::Throw: if (mine && e.hand >= 0) haptic(a, e.hand, 0.6f, 0.08f); break;
         case EventType::ThrowFail: if (mine && e.hand >= 0) haptic(a, e.hand, 0.4f, 0.06f); break;
+        case EventType::Foul: a.foulFlash = 1.2f; a.foulAt = e.pos; break;
         case EventType::FistBump:
             a.bumpFlash = 1.0f;
             if (!a.net.localWaiting() && !a.spectating) { haptic(a, 0, 1, 0.35f); haptic(a, 1, 1, 0.35f); }
@@ -3390,10 +3439,10 @@ static void drawAvatarBody(App& a, const PlayerInput& in, int team, int pass, co
                            float flash, int swingKey = -1) {
     avatar::Rig rig = avatar::solveRig(in, in.avatar);
     if (pass == 1 && !lod && avatar::nationOf(in.avatar)) {
-        // NATIONS: the country's flag on the upper half of the jersey's back number panel, leaning with the back
-        // (bind pose, measured from av_top_1_m / _f: the panel's surface)
+        // NATIONS: the country's flag high on the jersey's back, just under the collar, leaning with the upper back
+        // (bind pose; owner, 2026-10-29: on the number panel it sat at the waist)
         const bool fem = avatar::bodyType(in.avatar) == 1;
-        const Pose at{Quat::axisAngle({1, 0, 0}, deg2rad(fem ? 8.5f : 5.f)), fem ? Vec3{0, -0.23f, 0.068f} : Vec3{0, -0.25f, 0.114f}};
+        const Pose at{Quat::axisAngle({1, 0, 0}, deg2rad(15.f)), fem ? Vec3{0, -0.11f, 0.090f} : Vec3{0, -0.12f, 0.125f}};
         const avatar::Nation* N = avatar::nation(avatar::nationOf(in.avatar));
         const float white[4] = {1, 1, 1, 1};
         a.gfx.drawTexturedPanel(pre * rig.skin[avatar::BONE_TORSO] * Mat4::fromPose(at, {0.13f, 0.13f / 1.5f, 1}),
@@ -4785,7 +4834,7 @@ static void lobbyAction(App& a, int which, const PlayerInput& in) {
     LOGI("lobby: %s", which == kPosterCount ? "the court" : kPosters[which].title);
     auto menuPage = [&]() {
         openMenu(a, in);
-        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.bugOpen = a.reportOpen = false;
+        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.bugOpen = a.reportOpen = false;
     };
     switch (which) {
     case 0: case kPosterCount: menuPage(); a.rulesOpen = true; a.rulesForHost = false; break;   // PLAY THE BOT / the court
@@ -5387,6 +5436,154 @@ static void burstCrowdFx(App& a, int side, int count) {
     }
 }
 
+// the EXPERIMENTAL arenas' floating platforms (and the fist bump's, in the centre): pass 0 the discs, pass 1 their glow
+static void drawPlatforms(App& a, int pass, float now, float belowY) {
+    using namespace exparena;
+    const bool meeting = a.game.match == MatchState::Meet || a.bumpFlash > 0;
+    if (pass == 0) {
+        if (meeting) {
+            DrawParams mp;
+            for (int k = 0; k < 3; ++k) mp.tintMul[k] = 0.30f;
+            a.gfx.draw(a.gfx.cylinder, Mat4::fromPose({Quat{}, {0, 0, 0}}, {1.4f, kPlatformThick, 1.4f}), mp, 0);
+        }
+        for (int p = 0; p < 2; ++p) {   // a solid slab you stand on (your ball's spawner on it), steel with your colour's glow
+            DrawParams pp;
+            for (int k = 0; k < 3; ++k) { pp.tintMul[k] = 0.30f + 0.12f * a.sideRGB[p][k]; pp.emissiveAdd[k] = 0.05f * a.sideRGB[p][k]; }
+            a.gfx.draw(a.gfx.cylinder, Mat4::fromPose({Quat{}, {p ? 7.f : -7.f, 0, 0}}, {kPlatformR, kPlatformThick, kPlatformR}), pp, 0);
+        }
+        return;
+    }
+    for (int p = 0; p < 2; ++p) {   // its top: rings and lines of light, so it reads as a floor to stand on
+        const float px = p ? 7.f : -7.f;
+        const float lineC[4] = {a.sideRGB[p][0] * 0.45f, a.sideRGB[p][1] * 0.45f, a.sideRGB[p][2] * 0.45f, 1};
+        for (int k = -2; k <= 2; ++k) {
+            const float off = 0.4f * k, half = std::sqrt(std::max(0.f, kPlatformR * kPlatformR - off * off)) - 0.05f;
+            const Vec3 a0[2] = {{px + off, 0.006f, -half}, {px + off, 0.006f, half}}, a1[2] = {{px - half, 0.006f, off}, {px + half, 0.006f, off}};
+            a.gfx.drawRibbon(a0, 2, 0.006f, lineC, false);
+            a.gfx.drawRibbon(a1, 2, 0.006f, lineC, false);
+        }
+    }
+    if (meeting)
+        for (int p = 0; p < 2; ++p) {
+            const float r[4] = {a.sideRGB[p][0] * 0.8f, a.sideRGB[p][1] * 0.8f, a.sideRGB[p][2] * 0.8f, 1};
+            a.gfx.drawSpriteFlat({p ? 0.02f : -0.02f, 0.008f, 0}, 2.9f, r, {0, 1, 0}, 1);
+        }
+    for (int p = 0; p < 2; ++p) {   // a glowing rim in the player's colour, a soft glow underneath (it floats)
+        const float px = p ? 7.f : -7.f;
+        const float pulse = 0.85f + 0.15f * std::sin(now * 2.f + p * 3.f);
+        const float rim[4] = {a.sideRGB[p][0] * pulse, a.sideRGB[p][1] * pulse, a.sideRGB[p][2] * pulse, 1};
+        const float under[4] = {a.sideRGB[p][0] * 0.25f, a.sideRGB[p][1] * 0.25f, a.sideRGB[p][2] * 0.25f, 1};
+        const float rimSoft[4] = {rim[0] * 0.6f, rim[1] * 0.6f, rim[2] * 0.6f, 1};
+        a.gfx.drawSpriteFlat({px, 0.008f, 0}, 2.f * kPlatformR + 0.12f, rimSoft, {0, 1, 0}, 1);
+        a.gfx.drawSpriteFlat({px, -kPlatformThick - 0.02f, 0}, 3.4f, under, {0, -1, 0}, 0);
+        a.gfx.drawSpriteFlat({px, belowY + 0.02f, 0}, 2.6f, under, {0, 1, 0}, 0);   // its light on what is below
+    }
+}
+
+// The EXPERIMENTAL arena DIAMOND (exparena, the owner's drawing 2026-10-29): the court as a glass tube rolled 45 degrees,
+// its end at each end (its player's back wall, in its colour), a neon ring every metre along the court and the foul
+// lines in the players' colours (no foul zone here: the line recharges the ball), the floating platforms.
+static void drawDiamondArena(App& a, int pass, float now) {
+    using namespace exparena;
+    const float cy = kRollCY, len = 2.f * kRollLen;
+    Vec3 v[4];
+    diamondEnd(v);
+    if (pass == 0) { drawPlatforms(a, 0, now, cy - kRollReach); return; }
+    auto panel = [](const Vec3& c, const Vec3& ax, const Vec3& ay, float w, float h) {   // a quad from its centre and edges
+        Mat4 m = Mat4::identity();
+        const Vec3 az = normalize(cross(ax, ay));
+        m.m[0] = ax.x * w; m.m[1] = ax.y * w; m.m[2] = ax.z * w;
+        m.m[4] = ay.x * h; m.m[5] = ay.y * h; m.m[6] = ay.z * h;
+        m.m[8] = az.x; m.m[9] = az.y; m.m[10] = az.z;
+        m.m[12] = c.x; m.m[13] = c.y; m.m[14] = c.z;
+        return m;
+    };
+    const float glass[4] = {0.02f, 0.06f, 0.11f, 0.22f};
+    for (int k = 0; k < 4; ++k) {   // the four long walls (two 4.96 m across, two 3.88 m)
+        const Vec3 m = (v[k] + v[(k + 1) % 4]) * 0.5f, e = v[(k + 1) % 4] - v[k];
+        const float wide = length(e);
+        a.gfx.drawPanel(panel(m, {1, 0, 0}, e / wide, len, wide), glass);
+    }
+    for (int p = 0; p < 2; ++p) {   // the ends: the back walls
+        const Vec3 o{p ? kRollLen : -kRollLen, 0, 0};
+        const float tint[4] = {a.sideRGB[p][0] * 0.4f, a.sideRGB[p][1] * 0.4f, a.sideRGB[p][2] * 0.4f, 0.30f};
+        const Vec3 ax = v[0] - v[1], ay = v[0] - v[3];
+        a.gfx.drawPanel(panel((v[0] + v[2]) * 0.5f + o, normalize(ax), normalize(ay), length(ax), length(ay)), tint);
+    }
+    const float grid[4] = {0.06f, 0.32f, 0.55f, 1}, bright[4] = {0.25f, 0.8f, 1.0f, 1};
+    for (int k = 0; k < 4; ++k) {   // the four long edges
+        const Vec3 ln[2] = {v[k] + Vec3{-kRollLen, 0, 0}, v[k] + Vec3{kRollLen, 0, 0}};
+        a.gfx.drawRibbon(ln, 2, 0.03f, bright, false);
+    }
+    for (float x = -kRollLen; x <= kRollLen + 0.01f; x += 1.f) {   // a diamond ring every metre
+        const bool end = std::fabs(x) > kRollLen - 0.01f;
+        const Vec3 o{x, 0, 0};
+        const Vec3 ring[5] = {v[0] + o, v[1] + o, v[2] + o, v[3] + o, v[0] + o};
+        a.gfx.drawRibbon(ring, 5, end ? 0.035f : 0.010f, end ? bright : grid, false);
+    }
+    for (int p = 0; p < 2; ++p) {   // the foul lines, round the tube in each player's colour
+        const Vec3 o{p ? 4.73f : -4.73f, 0, 0};
+        const Vec3 ring[5] = {v[0] + o, v[1] + o, v[2] + o, v[3] + o, v[0] + o};
+        const float c[4] = {a.sideRGB[p][0], a.sideRGB[p][1], a.sideRGB[p][2], 1};
+        a.gfx.drawRibbon(ring, 5, 0.03f, c, false);
+    }
+    drawPlatforms(a, 1, now, cy - kRollReach);
+}
+
+// The EXPERIMENTAL arena (exparena, owner 2026-10-29): glass walls in a diamond round the court with a neon grid on
+// them and on the floor below, the corners behind the players (their back walls) lit in their colours, and the two
+// floating platforms. Pass 0: the platforms; pass 1: the rest (blended, so the crowd shows through the glass).
+static void drawExpArena(App& a, int pass, float now) {
+    using namespace exparena;
+    const Vec3 c[4] = {{-kCorner, 0, 0}, {0, 0, kCorner}, {kCorner, 0, 0}, {0, 0, -kCorner}};
+    const float side = length(c[1] - c[0]), midY = 0.5f * (kFloor + kCeiling), tall = kCeiling - kFloor;
+    if (pass == 0) { drawPlatforms(a, 0, now, kFloor); return; }
+    // the glass: four walls, the floor below (nearly solid, so it reads as a floor) and the ceiling
+    const float glass[4] = {0.02f, 0.06f, 0.11f, 0.20f}, floorC[4] = {0.006f, 0.014f, 0.03f, 0.92f}, ceil[4] = {0.012f, 0.03f, 0.06f, 0.35f};
+    for (int w = 0; w < 4; ++w) {
+        const Vec3 d = normalize(c[(w + 1) % 4] - c[w]), m = (c[w] + c[(w + 1) % 4]) * 0.5f;
+        a.gfx.drawPanel(Mat4::fromPose({Quat::axisAngle({0, 1, 0}, std::atan2(-d.z, d.x)), m + Vec3{0, midY, 0}}, {side, tall, 1}), glass);
+    }
+    const Quat flat = Quat::axisAngle({0, 1, 0}, kPi * 0.25f) * Quat::axisAngle({1, 0, 0}, -kPi * 0.5f);
+    a.gfx.drawPanel(Mat4::fromPose({flat, {0, kFloor, 0}}, {side, side, 1}), floorC);
+    a.gfx.drawPanel(Mat4::fromPose({flat, {0, kCeiling, 0}}, {side, side, 1}), ceil);
+    // the back walls: the corner behind each player, in its colour
+    for (int p = 0; p < 2; ++p) {
+        const int ci = p ? 2 : 0;
+        const float tint[4] = {a.sideRGB[p][0] * 0.35f, a.sideRGB[p][1] * 0.35f, a.sideRGB[p][2] * 0.35f, 0.22f};
+        for (int nb = -1; nb <= 1; nb += 2) {   // the two walls meeting in that corner, as far as the back wall goes
+            const Vec3 o = c[(ci + nb + 4) % 4], d = normalize(o - c[ci]);
+            const float len = (kCorner - kBackX) / std::fabs(d.x);
+            const Vec3 m = c[ci] + d * (0.5f * len);
+            a.gfx.drawPanel(Mat4::fromPose({Quat::axisAngle({0, 1, 0}, std::atan2(-d.z, d.x)), m + Vec3{0, midY, 0} - normalize(Vec3{m.x, 0, m.z}) * 0.01f}, {len, tall, 1}), tint);
+            const float edge[4] = {a.sideRGB[p][0], a.sideRGB[p][1], a.sideRGB[p][2], 1};
+            const Vec3 e = c[ci] + d * len;
+            const Vec3 ln[2] = {e + Vec3{0, kFloor, 0}, e + Vec3{0, kCeiling, 0}};
+            a.gfx.drawRibbon(ln, 2, 0.025f, edge, false);
+        }
+    }
+    // the neon grid: lines up the walls at every strip, rings round the room every metre, the corners brighter
+    const float grid[4] = {0.06f, 0.32f, 0.55f, 1}, bright[4] = {0.25f, 0.8f, 1.0f, 1};
+    for (int w = 0; w < 4; ++w)
+        for (int i = 0; i <= 8; ++i) {
+            const Vec3 q = lerp(c[w], c[(w + 1) % 4], i / 8.f);
+            const Vec3 ln[2] = {q + Vec3{0, kFloor, 0}, q + Vec3{0, kCeiling, 0}};
+            a.gfx.drawRibbon(ln, 2, i == 0 ? 0.035f : 0.010f, i == 0 ? bright : grid, false);
+        }
+    for (float y = kFloor; y <= kCeiling + 0.01f; y += 1.f) {
+        const bool rim = y <= kFloor + 0.01f || y >= kCeiling - 0.01f;
+        const Vec3 ring[5] = {c[0] + Vec3{0, y, 0}, c[1] + Vec3{0, y, 0}, c[2] + Vec3{0, y, 0}, c[3] + Vec3{0, y, 0}, c[0] + Vec3{0, y, 0}};
+        a.gfx.drawRibbon(ring, 5, rim ? 0.03f : 0.010f, rim ? bright : grid, false);
+    }
+    for (int i = 1; i < 8; ++i)   // the floor below: a grid along the walls
+        for (int k = 0; k < 2; ++k) {
+            const Vec3 a0 = lerp(c[0], c[k ? 3 : 1], i / 8.f), a1 = lerp(c[k ? 1 : 3], c[2], i / 8.f);
+            const Vec3 ln[2] = {a0 + Vec3{0, kFloor + 0.01f, 0}, a1 + Vec3{0, kFloor + 0.01f, 0}};
+            a.gfx.drawRibbon(ln, 2, 0.012f, grid, false);
+        }
+    drawPlatforms(a, 1, now, kFloor);
+}
+
 static void drawWorld(App& a, int pass) {
     if (a.spectating && !a.watchIp) { drawHub(a, pass); return; }
     Game& g = a.game;
@@ -5397,6 +5594,9 @@ static void drawWorld(App& a, int pass) {
     const int only = a.onlyPlayer;   // the win screen's close-ups: one player alone
     const bool keyBg = a.viewLayer >= 3 || only >= 0, minimal = a.viewLayer >= 2 || only >= 0, noWalls = a.viewLayer >= 1;
     const bool outline = ((ptm == PT_OUTLINE) || noWalls) && a.courtOutline.valid();
+    const bool exp = g.arenaKind == ARENA_CORNERS || g.arenaKind == ARENA_DIAMOND;   // an EXPERIMENTAL room
+    // (CORNERS reaches 9.5 m to the sides: the stadium widened to stand round it)
+    const Mat4 outside = g.arenaKind == ARENA_CORNERS ? Mat4::fromPose({Quat{}, {0, 0, 0}}, {1.35f, 1.f, 1.35f}) : Mat4::identity();
     updateSides(a);
     updateStats(a);
     // the match won: bursts of confetti over the winner, in their team colour and gold (fewer with softer effects)
@@ -5429,7 +5629,7 @@ static void drawWorld(App& a, int pass) {
     } else if (g.match != MatchState::MatchSummary) {
         a.winAt = 0;
     }
-    if (pass == 1 && a.floor.valid() && !(a.mrView && a.ptFloor <= 0.01f) && !keyBg) {
+    if (pass == 1 && a.floor.valid() && !exp && !(a.mrView && a.ptFloor <= 0.01f) && !keyBg) {
         // glossy floor: mirrored light sources (and the balls) seen through the semi-transparent floor
         DrawParams rp;
         if (!minimal) a.gfx.draw(a.floorReflect, Mat4::identity(), rp, 1);   // (MINIMAL: no stadium in the floor either)
@@ -5450,13 +5650,29 @@ static void drawWorld(App& a, int pass) {
                            tcol[p][2] * 0.25f / (1.f + b.pos.y * b.pos.y), 1};
             a.gfx.drawSpriteFlat({b.pos.x, 0.004f, b.pos.z}, 0.9f + 0.4f * b.pos.y, pc, {0, 1, 0}, 0);
         }
+        if (!minimal && !a.mrView) {   // team accents (owner, 2026-10-28): each half washed low in its player's colour,
+            for (int p = 0; p < 2; ++p) {   // on the side walls and along the floor's edges, stronger toward their end
+                const float sx = p == 0 ? -1.f : 1.f;
+                for (int i = 0; i < 12; ++i) {
+                    const float x = sx * (1.2f + 0.72f * i), k = 0.55f + 0.45f * (i / 11.f);
+                    const float wc[4] = {tcol[p][0] * 0.07f * k, tcol[p][1] * 0.07f * k, tcol[p][2] * 0.07f * k, 1};
+                    const float fc[4] = {tcol[p][0] * 0.045f * k, tcol[p][1] * 0.045f * k, tcol[p][2] * 0.045f * k, 1};
+                    for (int s = -1; s <= 1; s += 2) {
+                        a.gfx.drawSpriteFlat({x, 0.55f, s * 2.45f}, 1.7f, wc, {0, 0, -(float)s}, 0);
+                        a.gfx.drawSpriteFlat({x, 0.005f, s * 2.15f}, 1.2f, fc, {0, 1, 0}, 0);
+                    }
+                }
+            }
+        }
         DrawParams fp;
         fp.alphaMul = a.mrView ? std::min(0.998f, a.ptFloor) : 0.80f;   // PASSTHROUGH: COURT FLOOR
         a.gfx.draw(a.floor, Mat4::identity(), fp, 1);
     }
-    if (!a.mrView && !minimal) a.gfx.draw(a.environment, Mat4::identity(), dp, pass);   // PASSTHROUGH: your room instead
+    if (!a.mrView && !minimal) a.gfx.draw(a.environment, outside, dp, pass);   // PASSTHROUGH: your room instead
     if (keyBg) {
         // (nothing of the court)
+    } else if (exp) {
+        if (g.arenaKind == ARENA_DIAMOND) drawDiamondArena(a, pass, now); else drawExpArena(a, pass, now);
     } else if (outline) {
         a.gfx.draw(a.courtOutline, Mat4::identity(), dp, pass);
     } else {
@@ -5464,7 +5680,7 @@ static void drawWorld(App& a, int pass) {
         ap.glassMul = a.mrView ? a.ptGlass : 1.f;   // PASSTHROUGH: GLASS WALLS
         a.gfx.draw(a.arena, Mat4::identity(), ap, pass);
     }
-    if (pass == 1 && ptm == PT_WINDOW) {   // WINDOW: a night sky over the court, so only the glass walls look out
+    if (pass == 1 && ptm == PT_WINDOW && !exp) {   // WINDOW: a night sky over the court, so only the glass walls look out
         const float sky[4] = {0.006f, 0.010f, 0.022f, 0.998f};
         a.gfx.drawPanel(Mat4::fromPose({Quat::axisAngle({1, 0, 0}, kPi * 0.5f), {0, 4.0f, 0}}, {19.0f, 5.0f, 1}), sky);
         if (a.depthRunning && a.depthImgValid && !a.rttPass) {   // real things nearer than the glass: covered (night behind the glass)
@@ -5487,7 +5703,7 @@ static void drawWorld(App& a, int pass) {
         a.gfx.drawSpriteFlat({0, 1.004f, 5.4f}, 1.8f, pc, {0, 1, 0}, 0);
         a.gfx.drawSpriteFlat({0, 1.006f, 5.4f}, 2.0f, rc, {0, 1, 0}, 1);
     }
-    if (pass == 1 && a.nationsOn && !minimal && !a.mrView) {
+    if (pass == 1 && a.nationsOn && !minimal && !a.mrView && !exp) {   // (EXPERIMENTAL: the stadium is widened; no wall flags yet)
         // NATIONS: each country's flag on the walls outside the tank: the end wall (13.6 m out, behind the end cameras)
         // and one on each side wall on its half (owner, 2026-10-20: one flag a wall, none in front of the tank). Drawn
         // before the court's glow layers, so the rings and lines in front of a flag show over it (owner, 2026-10-21:
@@ -5504,16 +5720,16 @@ static void drawWorld(App& a, int pass) {
     if (pass == 1) {
         DrawParams xp;
         xp.uvOff[0] = now * 0.035f;   // crowd lights twinkle (env_fx = crowd lights only; they sample a scrolling twinkle strip)
-        if (!a.mrView && !minimal) a.gfx.draw(a.envFx, Mat4::identity(), xp, 1);
+        if (!a.mrView && !minimal) a.gfx.draw(a.envFx, outside, xp, 1);
         DrawParams cp;   // static glow layers: light halos, holographic rings, end-zone energy, light beams
-        if (!outline && !minimal) a.gfx.draw(a.courtFx, Mat4::identity(), cp, 1);
-        if (!a.mrView && !minimal && a.stadiumFx.valid()) a.gfx.draw(a.stadiumFx, Mat4::identity(), cp, 1);
+        if (!outline && !minimal && !exp) a.gfx.draw(a.courtFx, Mat4::identity(), cp, 1);
+        if (!a.mrView && !minimal && a.stadiumFx.valid()) a.gfx.draw(a.stadiumFx, outside, cp, 1);
         DrawParams pp;   // energy pulses racing along the neon outline
         pp.uvOff[1] = -now * 0.9f;
-        if (!keyBg) a.gfx.draw(a.courtPulse, Mat4::identity(), pp, 1);
+        if (!keyBg && !exp) a.gfx.draw(a.courtPulse, Mat4::identity(), pp, 1);
     }
     const float teamCol[2][4] = {{a.sideRGB[0][0], a.sideRGB[0][1], a.sideRGB[0][2], 1}, {a.sideRGB[1][0], a.sideRGB[1][1], a.sideRGB[1][2], 1}};
-    if (pass == 1 && !minimal && !a.mrView) drawFanFlags(a, now);   // The Crowd: flags waving in the stands
+    if (pass == 1 && !minimal && !a.mrView && !exp) drawFanFlags(a, now);   // The Crowd: flags waving in the stands (not yet in the widened stadium)
     if (pass == 1 && !minimal && !a.mrView) drawJumbotron(a);   // the screen over centre court: names, score, stats
     for (int p = 0; p < 2 && !minimal; ++p) {
         const BallState st = g.pl[p].ball.state;
@@ -5584,7 +5800,9 @@ static void drawWorld(App& a, int pass) {
         const Ball& b = ps.ball;
         if (only < 0 && b.state != BallState::Dead && (b.state != BallState::Spawning || b.pos.y > 0.f)) {
             DrawParams bp;
-            float glow = b.charged ? 2.0f : 0.6f;   // uncharged ball: "your Ball has lost its charge"
+            // on its way home after a foul, a short throw or getting stuck: harmless, so faded (owner, 2026-10-28)
+            const bool harmless = b.state == BallState::Returning && b.scored;
+            float glow = harmless ? 0.35f : b.charged ? 2.0f : 0.6f;   // uncharged ball: "your Ball has lost its charge"
             bp.tintMul[0] = teamCol[p][0] * glow; bp.tintMul[1] = teamCol[p][1] * glow; bp.tintMul[2] = teamCol[p][2] * glow;
             float s = b.scale * (g.tun.projectileRadius / 0.08f);   // visual sphere is 8 cm; collision radius 10 cm
             if (b.state == BallState::Spawning) {
@@ -5619,7 +5837,7 @@ static void drawWorld(App& a, int pass) {
                 const float now2 = float(nowSeconds() - a.startTime);
                 const uint32_t tick = (uint32_t)(now2 * 18.f);
                 const float R0 = g.ballRadius(p) * 1.08f;
-                const int nArcs = b.charged ? 3 : 1;
+                const int nArcs = harmless ? 0 : b.charged ? 3 : 1;
                 for (int k = 0; k < nArcs; ++k) {
                     uint32_t sd = fxHash(tick * 131u + (uint32_t)p * 7919u + (uint32_t)k * 104729u);
                     Vec3 ax = normalize(Vec3{fxRnd(sd, 1) - 0.5f, fxRnd(sd, 2) - 0.5f, fxRnd(sd, 3) - 0.5f} + Vec3{1e-3f, 0, 0});
@@ -5735,14 +5953,39 @@ static void drawWorld(App& a, int pass) {
             const Quat face = Quat::axisAngle({0, 1, 0}, deg2rad(L == 0 ? -90.f : 90.f));
             a.gfx.drawText("FIST BUMP!", {face, {L == 0 ? 1.6f : -1.6f, 2.30f, 0}}, 0.12f, gold);
         }
+        if (a.foulFlash > 0) {   // FOUL over the spot, rising and fading, turned to whoever is looking
+            const float amber[4] = {1.0f, 0.62f, 0.2f, std::min(1.f, a.foulFlash * 1.6f)};
+            const Vec3 at = a.foulAt + Vec3{0, 0.45f + 0.25f * (1.2f - a.foulFlash), 0};
+            const Vec3 to = a.viewHead.p - at;
+            const Quat face = Quat::axisAngle({0, 1, 0}, std::atan2(-to.x, -to.z) + kPi);
+            a.gfx.drawText("FOUL", {face, at}, 0.22f, amber);
+        }
+        if (g.match == MatchState::Meet || a.bumpFlash > 0) {   // the meeting point: a ring for each player, in their colour
+            // faded until a closed fist is in it (lit: offered), stronger as the two fists come together, gold at the bump
+            float gap = 9.f;
+            for (int h0 = 0; h0 < 2; ++h0)
+                for (int h1 = 0; h1 < 2; ++h1)
+                    if (g.inMeetRing(0, h0) && g.inMeetRing(1, h1)) gap = std::min(gap, g.fistGap(0, h0, 1, h1));
+            const float nearness = clampf(1.f - gap / 0.35f, 0.f, 1.f);
+            for (int p = 0; p < 2; ++p) {
+                const bool lit = g.meetLit(p, 0) || g.meetLit(p, 1);
+                const Vec3 c = g.meetRing(p);
+                Vec3 pts[41];
+                for (int i = 0; i < 41; ++i) {
+                    const float t = i * (6.2832f / 40.f);
+                    pts[i] = c + Vec3{0, std::sin(t), std::cos(t)} * g.tun.meetRingRadius;
+                }
+                float k = lit ? 0.75f + 0.25f * nearness : 0.10f + 0.25f * nearness;
+                float rgb[3] = {a.sideRGB[p][0], a.sideRGB[p][1], a.sideRGB[p][2]};
+                if (a.bumpFlash > 0) { k = a.bumpFlash; rgb[0] = 1.0f; rgb[1] = 0.85f; rgb[2] = 0.3f; }
+                const float col[4] = {rgb[0] * (0.4f + 1.2f * k), rgb[1] * (0.4f + 1.2f * k), rgb[2] * (0.4f + 1.2f * k), 0.25f + 0.75f * k};
+                a.gfx.drawRibbon(pts, 41, lit || a.bumpFlash > 0 ? 0.012f + 0.008f * nearness : 0.007f, col, false);
+            }
+        }
         if (g.match == MatchState::Meet && a.bumpFlash <= 0 && !a.spectating && !a.net.localWaiting()) {   // between the two players
             const float cyanT[4] = {0.3f, 0.85f, 1.0f, 1};
             const Quat face = Quat::axisAngle({0, 1, 0}, deg2rad(L == 0 ? -90.f : 90.f));
-            const float pulse = 0.5f + 0.5f * std::sin((float)nowSeconds() * 5.f);
-            const float glowT[4] = {0.3f, 0.85f, 1.0f, 0.55f + 0.35f * pulse};
-            a.gfx.drawSprite({0, 1.2f, 0}, 0.10f + 0.04f * pulse, glowT, a.viewHead.p, 0);   // meet here
-            a.gfx.drawText("BUMP HERE", {face, {L == 0 ? 0.08f : -0.08f, 1.36f, 0}}, 0.035f, cyanT);
-            a.gfx.drawText("HOLD YOUR TRIGGER AND BUMP FISTS", {face, {L == 0 ? 1.6f : -1.6f, 2.15f, 0}}, 0.08f, cyanT);   // above the other player
+            a.gfx.drawText("OFFER A FIST IN YOUR RING, OR MEET THEIRS", {face, {L == 0 ? 1.6f : -1.6f, 2.15f, 0}}, 0.07f, cyanT);   // above the other player
             snprintf(buf, sizeof buf, "OR THE MATCH STARTS IN %d", (int)std::ceil(g.stateTimer));
             a.gfx.drawText(buf, {face, {L == 0 ? 1.6f : -1.6f, 2.03f, 0}}, 0.05f, white);
         }
@@ -5804,6 +6047,11 @@ static void recordStep(App& a, float dt) {
 
 static void stepFrame(App& a, PlayerInput in[2], int L, double t, float dt) {
     a.sparc.update(t);   // EXPERIMENTAL cross-play link (does nothing unless connected)
+    // the EXPERIMENTAL arena: practice against the bot for now (the lobby, rooms and spectating stay on the classic court)
+    const Net::Mode nm = a.net.mode();
+    const bool exp = a.game.tun.experimental && !inLobby(a) && !a.spectating && !a.net.inRoom() &&
+                     nm != Net::Mode::Host && nm != Net::Mode::Client && nm != Net::Mode::Spectate;
+    a.game.useArena(!exp ? ARENA_CLASSIC : a.game.tun.expRoom == 1 && kShowCorners ? ARENA_CORNERS : ARENA_DIAMOND, a.classicCol);
     if (int done = a.bugDone.exchange(0)) {
         std::lock_guard<std::mutex> lk(a.bugMx);
         if (!a.bugStatus.empty()) a.net.noticeLocal(a.bugStatus.c_str());
@@ -5813,6 +6061,7 @@ static void stepFrame(App& a, PlayerInput in[2], int L, double t, float dt) {
     a.localIn = in[L];
     a.viewHead = in[L].head;
     a.bumpFlash = std::max(0.f, a.bumpFlash - dt);
+    a.foulFlash = std::max(0.f, a.foulFlash - dt);
     updateCrowd(a, dt);
     {   // a guest plays by the host's rules; ours come back when we leave (and are never saved over)
         const bool guest = a.net.mode() == Net::Mode::Client || a.net.mode() == Net::Mode::Spectate;
@@ -5844,7 +6093,7 @@ static void stepFrame(App& a, PlayerInput in[2], int L, double t, float dt) {
         if (a.stateKey != 0xFFFFFFFFu && key != a.stateKey) {
             if (a.dirOpen) { a.dirOpen = false; a.infoKind = -1; }
             if (a.menuOpen && !a.nameEdit && !a.bugOpen && !a.reportOpen) {
-                a.menuOpen = false; a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.helpOpen = a.xpOpen = a.rulesOpen = false;
+                a.menuOpen = false; a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.helpOpen = a.xpOpen = a.rulesOpen = false;
                 LOGI("menu: closed (moved to %s)", a.net.status());
             }
         }
@@ -6046,7 +6295,7 @@ static bool renderFrame(App& a) {
         if (a.ptReveal < 0.003f) a.ptReveal = 0.f;
     }
     updatePassthrough(a);
-    a.mrView = a.ptRunning && a.ptMode != PT_OFF;
+    a.mrView = a.ptRunning && a.ptMode != PT_OFF && !(a.menuOpen && a.settingsOpen && a.gfxPage);   // (GRAPHICS: the arena)
     updateDepth(a, predicted);
     XrCompositionLayerPassthroughFB ptl{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
     const bool ptOn = a.ptRunning;
@@ -6083,6 +6332,10 @@ static bool renderFrame(App& a) {
             else glClearColor(0.01f, 0.012f, 0.02f, 1);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             Pose eye = a.trackToWorld * fromXr(a.views[i].pose);
+            if (a.roomFeel != 0 && nv >= 2) {   // FIELD OF VIEW: eye separation x 1/(1 + 5% a step); the headset gets the real poses
+                const Vec3 mid = (a.trackToWorld * fromXr(a.views[0].pose)).p * 0.5f + (a.trackToWorld * fromXr(a.views[1].pose)).p * 0.5f;
+                eye.p = mid + (eye.p - mid) * (1.f / (1.f + 0.05f * a.roomFeel));
+            }
             a.ptFadeNow = ptOn ? a.ptReveal : 0.f;   // ROOM AT EDGES / PEEK (drawWorld fades the world under the menus)
             a.curEye = (int)i;
             const XrFovf& f = a.views[i].fov;
@@ -6284,7 +6537,7 @@ static void saveSettings(App& a) {
     std::string f = std::string(ext) + "/settings.cfg";
     if (FILE* fp = fopen(f.c_str(), "w")) {
         fprintf(fp, "cfgver=8\n");
-        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nsparcserver=%s\nstatsnotice=%d\ncrowd=%d\nshields=%d\nknuckles=%d\nmatchtime=%.0f\nroundtime=%.0f\nturn=%d\nbotlevel=%d\nbotadapt=%d\nbotmatch=%.2f\nrecord=%d\nbotmeet=%d\n",
+        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nsparcserver=%s\nstatsnotice=%d\ncrowd=%d\nshields=%d\nknuckles=%d\nmatchtime=%.0f\nroundtime=%.0f\nturn=%d\nbotlevel=%d\nbotadapt=%d\nbotmatch=%.2f\nrecord=%d\nbotmeet=%d\nroomfeel=%d\nexperimental=%d\nexproom=%d\n",
                 (a.guestRules ? a.ownRules : a.game.tun).advanced ? 1 : 0, a.game.tun.shieldPlacement, a.tunePitchDeg, a.tuneFwd, a.tuneUp, a.volume,
                 a.pointerHand, a.fxLevel, a.hideOutside ? 1 : 0, a.voiceMode, a.muteSpectators ? 1 : 0, a.mutePlayers ? 1 : 0,
                 a.muteAll ? 1 : 0, a.onlinePref ? 1 : 0, a.botFill ? 1 : 0, a.ptMode, a.ptFloor, a.ptGlass, a.ptRoom, a.ptMono ? 1 : 0, a.ptEdges ? 1 : 0, a.ptEdgeReveal ? 1 : 0, a.ptPeekOn ? 1 : 0, a.team.c_str(),
@@ -6293,7 +6546,7 @@ static void saveSettings(App& a) {
                 (a.guestRules ? a.ownRules : a.game.tun).knuckleMode, (a.guestRules ? a.ownRules : a.game.tun).basicMatchTime,
                 (a.guestRules ? a.ownRules : a.game.tun).advancedRoundTime, a.turnMode, (a.guestRules ? a.ownRules : a.game.tun).botLevel,
                 (a.guestRules ? a.ownRules : a.game.tun).botAdapt ? 1 : 0, (a.guestRules ? a.ownRules : a.game.tun).botMatch, a.recordOn ? 1 : 0,
-                (a.guestRules ? a.ownRules : a.game.tun).botMeet ? 1 : 0);
+                (a.guestRules ? a.ownRules : a.game.tun).botMeet ? 1 : 0, a.roomFeel, (a.guestRules ? a.ownRules : a.game.tun).experimental ? 1 : 0, (a.guestRules ? a.ownRules : a.game.tun).expRoom);
         fclose(fp);
     }
 }
@@ -6335,6 +6588,9 @@ static void loadSettings(App& a) {
         else if (k == "volume") a.volume = std::max(0, std::min(10, (int)v));
         else if (k == "hand") a.pointerHand = ((int)v) ? 1 : 0;
         else if (k == "fx") a.fxLevel = std::max(0, std::min(2, (int)v));
+        else if (k == "roomfeel") a.roomFeel = std::max(-4, std::min(4, (int)v));
+        else if (k == "experimental") a.game.tun.experimental = v != 0;
+        else if (k == "exproom") a.game.tun.expRoom = (int)v == 1 ? 1 : 0;
         else if (k == "crowd") a.crowdMode = std::max(0, std::min(2, (int)v));
         else if (k == "turn") a.turnMode = std::max(0, std::min(2, (int)v));
         else if (k == "botlevel") a.game.tun.botLevel = std::max(0, std::min(kBotLevels - 1, (int)v));
@@ -6380,6 +6636,7 @@ static void savePlayerName(App& a, const char* name) {
 
 // Lobby name: <externalDataPath>/player_name.txt (editable over adb); generated once as "PLAYER nnn".
 static void loadPlayerName(App& a) {
+    a.net.setAppVersion(kAppVersion);   // (the relay logs it)
     const char* ext = dataDir(a);
     if (!ext) return;
     std::string f = std::string(ext) + "/player_name.txt";
@@ -6631,12 +6888,28 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
     if (v.custom) eye = {Quat::axisAngle({0, 1, 0}, deg2rad(v.yaw)) * Quat::axisAngle({1, 0, 0}, deg2rad(v.pitch)), v.p};
     const float ty = std::tan(deg2rad(v.fovY) * 0.5f), tx = ty * W / H;
     a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(tx), std::atan(tx), std::atan(ty), -std::atan(ty), 0.05f, 2000.f), eye.p);
-    if (v.scene == "meet") {   // the fist bump start: both players face to face in the centre, right fists out
+    if (v.scene.rfind("stance", 0) == 0 && v.scene.size() == 7) {   // stance0..5: the practice bot standing in that stance
+        Game& g = a.game;
+        g.reset(true);
+        g.match = MatchState::Countdown;
+        g.stateTimer = 100.f;
+        g.pl[1].botStance = v.scene[6] - '0';
+        a.viewing = true;
+        PlayerInput in[2];
+        in[0].headTracked = true;
+        in[0].head = {Quat::axisAngle({0, 1, 0}, -kPi * 0.5f), g.tun.start[0] + Vec3{0, 1.65f, 0}};
+        for (int i = 0; i < 72 * 3; ++i) { PlayerInput tmp[2] = {in[0], in[1]}; g.step(1.f / 72, tmp); }
+        for (int p = 0; p < 2; ++p) { a.viewIn[p] = g.pl[p].in; a.viewInValid[p] = true; }
+    }
+    if (v.scene == "meet" || v.scene == "meetoffer") {   // the fist bump start: both players face to face in the centre, right fists out
         Game& g = a.game;
         g.match = MatchState::Meet;
         g.stateTimer = 7.f;
         a.viewing = true;
-        const AvatarDesc looks[2] = {avatar::preset(10), avatar::preset(12)};
+        AvatarDesc looks[2] = {avatar::preset(10), avatar::preset(12)};
+        for (int p = 0; p < 2; ++p)   // --nations: each in their country's kit (the presets' own suits otherwise)
+            for (int n = 1; n <= avatar::nationCount(); ++n)
+                if (v.nations[p] == avatar::nation(n)->code) avatar::setNation(looks[p], n);
         for (int p = 0; p < 2; ++p) {
             const float side = p ? 1.f : -1.f;
             PlayerInput in;
@@ -6646,11 +6919,21 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             in.avatar = looks[p];
             for (int h = 0; h < 2; ++h) in.hand[h].tracked = true;
             in.hand[1].grip = {q, in.head.p + q.rotate({0.10f, -0.42f, -0.36f})};
-            in.hand[0].grip = {q, in.head.p + q.rotate({-0.22f, -0.62f, -0.08f})};
+            // the other arm hangs by the side, the hand pointing down (at the hip, pointing forward, it folded into the body)
+            in.hand[0].grip = {q * Quat::axisAngle({1, 0, 0}, deg2rad(-88.f)), in.head.p + q.rotate({-0.20f, -0.85f, -0.02f})};
             a.viewIn[p] = in;
             a.viewInValid[p] = true;
             g.pl[p].in = in;
             g.pl[p].isBot = false;
+        }
+        if (v.scene == "meetoffer") {   // orange offers a fist in its ring, blue's closed fist on its way to it
+            for (int p = 0; p < 2; ++p) {
+                HandInput& hi = g.pl[p].in.hand[1];
+                const Vec3 front = g.meetRing(p) + Vec3{p ? -0.03f : -0.10f, 0.f, 0.f};
+                hi.grip.p = front - hi.grip.q.rotate(g.tun.fistFront);
+                hi.trigger = 1;
+                a.viewIn[p] = g.pl[p].in;
+            }
         }
         // every kind of event through the real handlers (logs, sounds, haptics): a missing name once crashed both headsets
         for (int t = 0; t <= (int)EventType::FistBump; ++t) {
@@ -6660,6 +6943,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         }
         handleEvents(a);
         g.events.clear();
+        a.bumpFlash = a.foulFlash = a.hitFlash[0] = a.hitFlash[1] = 0;   // (the picture shows the meeting, not those events' flashes)
         LOGI("selftest: all %d event kinds handled", (int)EventType::FistBump + 1);
     }
     if (v.scene == "tuning") {   // the developer tuning tool: you in front of its mirror, hands up, the panel beside
@@ -6693,7 +6977,8 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         a.tuneRow = v.tuneRow;
         a.tuneHover = 2 * 1 + 1;
     }
-    if (v.scene == "action") {   // store art: blue throws, orange raises a shield, the ball mid-court
+    if (v.scene == "action" || v.scene == "foul" || v.scene == "exp" || v.scene == "expcorners" || v.scene == "throw" ||
+        v.scene == "block" || v.scene == "strike") {   // store art: blue throws, orange raises a shield, the ball mid-court
         Game& g = a.game;
         g.match = MatchState::InProgress;
         g.pl[0].score = 3;
@@ -6718,10 +7003,12 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             for (int h = 0; h < 2; ++h) in.hand[h].tracked = true;
             if (p == 0) {   // follow-through of a throw: right arm reaching down the court, left arm back
                 in.hand[1].grip = {q * Quat::axisAngle({1, 0, 0}, 0.25f), in.head.p + q.rotate({0.24f, -0.18f, -0.55f})};
-                in.hand[0].grip = {q * Quat::axisAngle({1, 0, 0}, -0.9f), in.head.p + q.rotate({-0.30f, -0.55f, -0.05f})};
-            } else {        // shield up on the right arm, left fist guarding
-                in.hand[1].grip = {q * Quat::axisAngle({1, 0, 0}, -0.15f), in.head.p + q.rotate({0.14f, -0.32f, -0.42f})};
-                in.hand[0].grip = {q * Quat::axisAngle({1, 0, 0}, -0.45f), in.head.p + q.rotate({-0.22f, -0.42f, -0.32f})};
+                // (the left arm swung back and clear of the body: at the hip, the hand sank into the shorts)
+                in.hand[0].grip = {q * Quat::axisAngle({1, 0, 0}, -1.3f), in.head.p + q.rotate({-0.34f, -0.66f, 0.20f})};
+            } else {        // shield up on the right arm, left fist guarding: hands tipped up and outside the chest, so the
+                            // elbows stay down by the ribs (across the chest the upper arm sank into the body)
+                in.hand[1].grip = {q * Quat::axisAngle({1, 0, 0}, 0.60f), in.head.p + q.rotate({0.24f, -0.30f, -0.38f})};
+                in.hand[0].grip = {q * Quat::axisAngle({1, 0, 0}, 0.60f), in.head.p + q.rotate({-0.22f, -0.36f, -0.30f})};
             }
             a.viewIn[p] = in;
             a.viewInValid[p] = true;
@@ -6742,6 +7029,17 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         b1.scale = 1.f;
         b1.pos = g.launcherPoint(1, 1);
         g.pl[1].hands[1].shieldUp = true;
+        if (v.scene == "exp") { g.tun.experimental = true; g.tun.expRoom = 0; g.useArena(ARENA_DIAMOND, a.classicCol); }   // the EXPERIMENTAL rooms
+        if (v.scene == "expcorners") { g.tun.experimental = true; g.tun.expRoom = 1; g.useArena(ARENA_CORNERS, a.classicCol); }
+        if (v.scene == "foul") {   // blue's own throw landed in blue's own foul zone: FOUL there, the ball faded on its way home
+            b0.state = BallState::Returning; b0.scored = true; b0.homing = true; b0.scale = 1.f;
+            b0.pos = {-5.0f, 0.45f, -1.15f}; b0.vel = {-6.f, 2.f, 1.f};
+            a.foulFlash = 0.9f; a.foulAt = {-5.0f, 0.17f, -1.35f};
+        }
+        // (manual and box pictures) the ball just leaving blue's hand; meeting orange's shield; through orange's strike ring
+        if (v.scene == "throw") { b0.scale = 1.f; b0.pos = g.pl[0].in.hand[1].grip.p + Vec3{0.45f, 0.02f, -0.02f}; }
+        if (v.scene == "block") { b0.scale = 1.3f; b0.pos = g.shieldPose(1, 1).p + Vec3{-0.30f, 0.f, 0.f}; }
+        if (v.scene == "strike") { b0.scale = 1.f; b0.pos = g.strikeZoneCenter(1) + Vec3{-0.05f, 0.10f, 0.42f}; }   // (beside orange, in the ring)
     }
     if (!v.recordDir.empty() && v.recordSeconds > 0) {   // --record: a bot-vs-bot match, frame by frame
         Game& g = a.game;
@@ -6934,6 +7232,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         desktopRender(a, eye, W, H, 1.f / 60.f);
         if (dcWinSplit(a)) desktopRender(a, eye, W, H, 1.f / 60.f);   // (a second frame: the close-ups have settled)
     } else {
+        a.viewHead = eye;   // (what turns to the viewer, FOUL and the sprites, turns to the picture's camera)
         drawWorld(a, 0);
         drawWorld(a, 1);
     }
@@ -6941,11 +7240,14 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         a.menuOpen = true;
         a.titleOpen = v.menu == "title";
         a.xpOpen = v.menu == "xp";
-        a.settingsOpen = v.menu == "settings" || v.menu == "voice";
+        a.settingsOpen = v.menu == "settings" || v.menu == "voice" || v.menu == "graphics";
         a.voicePage = v.menu == "voice";
+        a.gfxPage = v.menu == "graphics";
+        if (a.gfxPage) a.roomFeel = 2;
         if (v.menu == "passthrough") { a.settingsOpen = true; a.ptPage = true; a.hasPassthrough = true; a.ptMode = PT_WINDOW; a.ptFloor = 1.f; }
         a.helpOpen = v.menu == "help";
         if (v.menu == "name") { a.nameEdit = true; a.editTarget = 0; a.nameBuf = "MOJO"; }
+        if (v.menu == "titlename") { a.titleOpen = true; a.nameEdit = true; a.editTarget = 0; a.nameBuf = "MOJO"; }   // (CHANGE NAME pressed on the title page)
         if (v.menu == "spectate") a.net.spectate();
         if (v.menu == "statsnotice") a.statsNoticeOpen = true;
         if (v.menu == "stats") {   // MY STATS with a made-up career
@@ -6956,6 +7258,11 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         }
         if (v.menu == "bug") { a.bugOpen = true; a.bugCat = 1; a.bugNote = "BALL WENT THROUGH THE WALL"; }
         if (v.menu == "rules") { a.rulesOpen = true; a.rulesForHost = true; a.game.tun.advanced = true; }
+        if (v.menu == "rulesprac") { a.rulesOpen = true; a.rulesForHost = false; a.game.tun.advanced = false; a.game.tun.experimental = true; }
+        if (v.menu == "optionsexp") {   // MATCH OPTIONS for practice, EXPERIMENTAL: the room choice
+            a.rulesOpen = true; a.rulesForHost = false; a.rulesStep = 1; optionsFrom(a, a.game.tun);
+            a.optAdvanced = false; a.optExperimental = true; a.optExpRoom = 0;
+        }
         if (v.menu == "options" || v.menu == "options2") {   // MATCH OPTIONS: Basic, hotdog, free play / Advanced, 2 min rounds
             a.rulesOpen = true; a.rulesForHost = true; a.rulesStep = 1; optionsFrom(a, a.game.tun);
             if (v.menu == "options") { a.optAdvanced = false; a.optShields = false; a.optMatchTime = 0; }

@@ -1,6 +1,6 @@
 # Project Arena privacy policy
 
-_Last updated: 26 October 2026. Contact: vrsportsfan@gmail.com._
+_Last updated: 29 October 2026. Contact: vrsportsfan@gmail.com._
 
 Project Arena is a free, open-source VR game. This policy explains what the game and the community servers do with
 information about you.
@@ -127,7 +127,8 @@ kept on the phone only. The page sets no cookies and uses no analytics or advert
 
 A community server forwards game and voice packets between players. It sees your IP address, as any internet
 service does, and does not show it to other players. The official server keeps a short log of when a player name
-joins and leaves, to keep the service running and to deal with abuse. It does not store voice or game content.
+joins and leaves, with the game's version number (from 0.3.11), to keep the service running, to see who needs an
+update and to deal with abuse. It does not store voice or game content.
 Community servers run by other people follow their own rules.
 
 ## What we do not do

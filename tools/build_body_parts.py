@@ -1516,12 +1516,11 @@ def build_details(b, n, shell, mesh, mats):
     bands = lambda T, w, h, k, A=(), R=(): [add_trace(mesh, None, q, 0.0, width=w, height=h, key=k) for q in surface_paths(b, shell, T, A, R)]
     first = lambda T: (surface_paths(b, shell, T) or [[None]])[0]
     did = []
-    if n == 1:   # ARENA JERSEY: ribbed bands, side seams, a blank number panel on the back
+    if n == 1:   # ARENA JERSEY: ribbed bands, side seams (no number panel: the country's flag sits high on the back
+        # instead, and the empty panel under it looked like a stain; owner, 2026-10-29)
         add_bindings(mesh, shell, 0.016, 0.0032, key('av_secondary'), joined=True); did.append('ribbed bands')
         bands([[(0.25, ay - 0.01), (0.25, wy + 0.03)], [(-0.25, ay - 0.01), (-0.25, wy + 0.03)]], 0.006, 0.0016, key('av_secondary'))
-        add_panel(mesh, shell, uy_field(b, lambda u, y, d, at, ph: np.where(torso(d), np.minimum.reduce(
-            [np.abs(u) - 0.41, y - (sy - 0.30), (sy - 0.07) - y]), -1.0)), 0.0025, key('av_secondary'), 'rim:av_secondary_dk')
-        did += ['side seams', 'number panel']
+        did += ['side seams']
     elif n == 3:  # STREET JACKET: zipper (tape, teeth, pull), waistband, cuffs, chest pocket welts
         zip_path = [[(0.0, 0.055), (0.0, sy - 0.02), (0.0, wy + 0.045)]]
         bands(zip_path, 0.016, 0.0022, key('av_secondary_dk'))

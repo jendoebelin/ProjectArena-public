@@ -7,7 +7,8 @@ So hosting, the games list, joining and spectating work online exactly as on a h
 each other's real IP address.
 
 Protocol (little endian), client -> server: magic 'OARL' (u32), type (u8), token (16 bytes), body
-  HELLO  1  body: game protocol version (u8), name (16 bytes)      (token = zeros)
+  HELLO  1  body: game protocol version (u8), name (16 bytes)      (token = zeros), then from 0.3.11 the game's
+             own version: length (u8) + ASCII (e.g. "0.3.11"), for the log; older games stop after the name
   SEND   3  body: destination virtual address (u32, 0xFFFFFFFF = everyone), game packet
   PING   4  keep-alive (every ~2 s; clients silent for 10 s are dropped); answered with a PING
   BYE    5
@@ -111,16 +112,25 @@ def clean_name(raw):
     return s[:16] or 'PLAYER'
 
 
+def app_version(body):
+    """The game's own version after HELLO's name ('' from games before 0.3.11): digits and dots only."""
+    if len(body) < 18:
+        return ''
+    raw = body[18:18 + min(body[17], 15)]
+    return ''.join(chr(b) for b in raw if chr(b).isdigit() or b == ord('.'))
+
+
 def ip_text(v):
     return '%d.%d.%d.%d' % (v >> 24 & 255, v >> 16 & 255, v >> 8 & 255, v & 255)
 
 
 class Client:
-    __slots__ = ('addr', 'token', 'vip', 'version', 'name', 'seen', 'bucket', 'bucket_t', 'joined', 'key', 'tank',
+    __slots__ = ('addr', 'token', 'vip', 'version', 'app', 'name', 'seen', 'bucket', 'bucket_t', 'joined', 'key', 'tank',
                  'last_match', 'last_req')
 
     def __init__(self, addr, vip, version, name):
         self.addr, self.vip, self.version, self.name = addr, vip, version, name
+        self.app = ''
         self.token = os.urandom(16)
         self.seen = self.bucket_t = self.joined = time.monotonic()
         self.bucket = RATE
@@ -333,9 +343,11 @@ class Relay(asyncio.DatagramProtocol):
                     self.error(addr, 'SERVER FULL')
                     return
                 c = Client(addr, self.alloc_vip(), version, name)
+                c.app = app_version(body)
                 self.by_addr[addr] = c
                 self.by_vip[c.vip] = c
-                self.log('join   %-16s v%d (%d online)' % (name, version, len(self.by_addr)))
+                self.log('join   %-16s %s v%d (%d online)' % (name, c.app or 'pre-0.3.11', version,
+                                                             len(self.by_addr)))
             c.version, c.name, c.seen = version, name, now
             v = self.latest.get() if self.latest else b''
             self.send(addr, WELCOME, c.token + struct.pack('<I', c.vip) + bytes([len(v)]) + v)

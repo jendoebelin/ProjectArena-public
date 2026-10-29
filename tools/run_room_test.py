@@ -16,10 +16,11 @@ if os.path.exists(stats_db):
 latest = os.path.join(ROOT, 'build', 'tests', 'latest_version.txt')   # the relay announces a current release
 with open(latest, 'w') as f:
     f.write('9.9.9')
+relay_log = os.path.join(ROOT, 'build', 'tests', 'room_test_relay.log')
 relay = subprocess.Popen([sys.executable, '-I', os.path.join(ROOT, 'server', 'projectarena_relay.py'), '--port', '47781',
                           '--bind', '127.0.0.1', '--latest', latest,
                           '--stats', os.path.join(ROOT, 'build', 'tests', 'room_test_stats.db'),
-                          '--crowd', '127.0.0.1:47782'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                          '--crowd', '127.0.0.1:47782'], stdout=open(relay_log, 'w'), stderr=subprocess.STDOUT)
 try:
     time.sleep(1.0)
     env = dict(os.environ)
@@ -29,4 +30,8 @@ try:
     code = r.returncode
 finally:
     relay.kill()
-sys.exit(code)
+    relay.wait()
+joins = [l for l in open(relay_log).read().splitlines() if ' join ' in l]
+ok = bool(joins) and all(' 0.3.11 v' in l for l in joins)   # the game's own version, from its HELLO
+print('  ok   ' if ok else '  FAIL ', 'the relay logs each game\'s version (%d joins)' % len(joins))
+sys.exit(code or (0 if ok else 1))

@@ -115,6 +115,8 @@ and wording, which Meta changes from time to time:
   From 0.3.7: an online host's live match (player names, countries, score) is shown on the public web page The Crowd
   while the arena is open; not stored.
 - **Diagnostics:** bug reports and player reports with the game's recent log, **only when the user sends one**.
+  From 0.3.11: the game's version number is sent at each connection and written in the server's log next to the
+  player name (to see who needs an update).
 - **Network:** IP addresses are processed to connect players and are kept only inside reports and the ban list.
 - **Not collected:** name, email, location, contacts, photos, payment, health, fitness or body data; passthrough
   camera images and room depth stay on the headset.

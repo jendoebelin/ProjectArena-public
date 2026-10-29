@@ -1,90 +1,145 @@
 [
-  {
-    "channel": "rules",
-    "title": "Server rules",
-    "color": "#ff4d6a",
-    "text": "Welcome to Project Arena! Keep it friendly, keep it fun.\n\n**1. Be respectful.** No harassment, bullying, hate speech, slurs or threats, here or in the game.\n**2. Keep it clean.** No NSFW, gore or shock content. Players here are 13 and older.\n**3. Play fair.** No cheating, exploits or modified game files in online play. Found a bug that gives an edge? Report it, don't use it.\n**4. Protect privacy.** Don't share anyone's personal information: real names, addresses, photos or accounts, yours included.\n**5. No spam.** No flooding, chain messages or unrelated advertising. Streamers: share your streams and clips in #streaming and #highlights.\n**6. Use the right channel.** Bugs in #bug-reports, ideas in #feedback-and-ideas, finding a match in #looking-for-match.\n**7. Report problems, don't fight them.** Trouble with a player in the game? Use MENU > REPORT PLAYER (and MUTE). Here, message a moderator.\n**8. Follow Discord's rules:** https://discord.com/terms and https://discord.com/guidelines\n\nModerators may warn, mute or remove anyone who breaks these rules, and serious cases can be banned from the game's servers too. By staying here you agree to them. Have fun out there!"
-  },
-  {
-    "channel": "the-crowd",
-    "title": "The Crowd: cheer from your phone",
-    "color": "#ff6a1a",
-    "image": "action.png",
-    "text": "Follow any online match live on your phone, no app or sign-in needed:\n**https://crowd.aftersparc.com**\n\n1. Open the link on your phone (Android or iPhone). Live matches show up by themselves.\n2. Tap a match to see the score, the clock, both players' flags and their stats.\n3. Tap **CHEER** for a side, as fast as you like. Turn on **SHAKE TO CHEER** to cheer by shaking your phone.\n4. **WAVE FLAG** puts your side's flag up in the stands.\n5. **CALL IT**: guess who scores next to earn fan points.\n\nThe players hear you: the crowd gets louder, their end's lights flash, and hearts and stars burst from the stands.\nTip: add the page to your home screen to open it like an app."
-  },
-  {
-    "channel": "bug-reports",
-    "title": "How to report a bug",
-    "color": "#ffd34d",
-    "image": "bug.png",
-    "text": "**Best way: report it in the game, right after it happens.**\nMENU > **REPORT A BUG** > pick what kind of problem > add a short note > **SEND REPORT**.\nIt sends your note, your settings and the game's recent log, which shows us what went wrong. Nothing else.\n\n**Or post it here.** Please include:\n- what happened, and what you expected\n- Quest or PC, and your game version (bottom of the main menu)\n- a picture or clip if you have one\n\n**On GitHub:** https://github.com/jendoebelin/ProjectArena-public/issues\n\nGood ideas get credited by name in the release notes."
-  },
-  {
-    "channel": "streaming",
-    "title": "Streaming Project Arena (OBS)",
-    "color": "#a46bff",
-    "text": "The PC version can draw **only the players and balls, with nothing behind them**, so you can put any background behind them in OBS.\n\n1. Start the spectator: `ProjectArena.exe --spectate --layer 3`, or press **V** in the spectator window until the view is **KEY**.\n2. In OBS, add a **Game Capture**: Capture specific window > **Project Arena - Spectator**, and tick **Allow Transparency**.\n3. Put a background under it: a picture, a video, or one from the streaming kit.\n\n**Streaming kit** (backgrounds, camera guides and the full guide): the streaming-kit zip on\n**https://github.com/jendoebelin/ProjectArena-public/releases**\n\nIn the spectator window, **F1** shows all the controls. An Xbox or PlayStation controller works too."
-  },
-  {
-    "channel": "announcements",
-    "title": "Project Arena 0.3.7: THE CROWD",
-    "color": "#4dffa6",
-    "image": "action.png",
-    "text": "Fans can now follow online matches live on their phones at **https://crowd.aftersparc.com**: the score, flags, live stats and careers.\n\nEvery cheer reaches the arena: a crowd that gets louder, flashing end lights, hearts and stars bursting from the stands, and a flag in the stands for every fan waving one.\n\nAlso new: **SETTINGS > CROWD** to turn the crowd down or off, and strikes now count in your stats.\n\n**Join the alpha:** https://www.meta.com/s/4NDP5YlGM\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases\nBugs > **#bug-reports** | Ideas > **#feedback-and-ideas**"
-  },
-  {
-    "channel": "quest-board",
-    "title": "The Quest Board",
-    "color": "#ff4d6a",
-    "text": "What we are working on and looking at, thanks to your reports and ideas.\n\n**Coming in 0.3.8**\n- **Host match options:** shields on or off (HOTDOG MODE), knuckle guards on or off, match time (including no limit), round timers for Advanced\n- Hosts can remove a player from their arena\n- Smooth turning (a setting, for players and spectators)\n- A foul ball bounces back instead of dissolving\n- SAVE AND APPLY in the avatar builder\n- Push-to-talk that suits each controller (Index, Vive, Windows Mixed Reality)\n- Smoother frame times\n\n**On the board** (we are looking at these)\n- Body turning, ducking and bending when you dodge; smoother bot movement\n- A country banner separate from your outfit\n- The arena's look: darker floor and frame, a sky\n\nGot an idea? Post it in **#feedback-and-ideas**."
-  },
-  {
-    "channel": "announcements",
-    "title": "Project Arena 0.3.8: MATCH OPTIONS & HOTDOG MODE",
-    "color": "#4dffa6",
-    "image": "action.png",
-    "text": "**Hosts choose the match:** shields on or off (**HOTDOG MODE** 🌭), knuckle guards on or off, match time from 1 to 15 minutes or **FREE PLAY**, and round timers for Advanced.\n\nAlso new: hosts can remove a player; hot dogs and smiley faces in HOTDOG cheers; foam fingers for players without a country; stairs through the stands and smooth walls; stats for HOTDOG and custom matches; foul balls bounce back to you; smooth turning for spectators; SAVE AND APPLY in the avatar builder; better push-to-talk on Index.\n\nThanks to **R0gueICE** for testing and ideas!\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
-  },
-  {
-    "channel": "quest-board",
-    "title": "The Quest Board (updated for 0.3.8)",
-    "color": "#ff4d6a",
-    "text": "**Done in 0.3.8** ✅\n- Host match options: shields (HOTDOG MODE), knuckle guards, match time and FREE PLAY, round timers\n- Hosts can remove a player\n- Smooth turning for spectators\n- A foul ball bounces back instead of dissolving\n- SAVE AND APPLY in the avatar builder\n- Push-to-talk that suits each controller\n- Smoother frame times (part one)\n- Smooth walls and stairs through the stands\n\n**On the board** (we are looking at these)\n- The arena's look: darker floor and frame, a sky (mock-ups for review: https://github.com/jendoebelin/ProjectArena-public/issues/9)\n- Body turning, ducking and bending when you dodge; smoother bot movement\n- A country banner separate from your outfit\n- Higher process priority on PC; flicker on the coloured borders\n- Free play: switching players when others wait\n\nGot an idea? Post it in **#feedback-and-ideas**, or on GitHub: https://github.com/jendoebelin/ProjectArena-public/issues"
-  },
-  {
-    "channel": "get-the-game",
-    "title": "Get the game: which version?",
-    "color": "#1ab3ff",
-    "text": "**Project Arena is free.** Pick the version for your setup:\n\n🥽 **Meta Quest 2, 3, 3S or Pro** → the Meta Store alpha (below). Easiest, and it updates itself.\n🖥️ **PC VR** (Valve Index, Vive, Windows Mixed Reality, or a Quest on Link) → the PC version from GitHub.\n👀 **No headset?** → the PC version too: without a headset it opens as a spectator window, so you can watch live matches.\n📱 **Just want to cheer?** → The Crowd on your phone: https://crowd.aftersparc.com\n🎮 **Steam:** coming soon.\n\nQuest and PC players meet in the same rooms online."
-  },
-  {
-    "channel": "get-the-game",
-    "title": "Meta Quest: get the alpha",
-    "color": "#1ab3ff",
-    "text": "1. On your phone or computer, sign in to the **Meta account your headset uses**.\n2. Open **https://www.meta.com/s/4NDP5YlGM** and accept the invite. Access is instant.\n3. In the headset, open the **Store** or your **Library**, find **Project Arena** and install it.\n\n**Updates** install by themselves. If the game says **UPDATE AVAILABLE**, open your Library and update it: the alpha needs everyone on the newest version to play online.\n\n**Already sideloading the APK from GitHub?** The store version and the GitHub APK can't be installed over each other. To switch, uninstall the old one first (this starts your statistics fresh)."
-  },
-  {
-    "channel": "get-the-game",
-    "title": "PC VR, or watching on a PC",
-    "color": "#1ab3ff",
-    "text": "1. Download the PC zip: **https://github.com/jendoebelin/ProjectArena-public/releases/latest**\n2. Unzip it anywhere (keep the **assets** folder next to **ProjectArena.exe**).\n3. **To play:** start SteamVR (or Quest Link), put your headset on, then run **ProjectArena.exe**.\n4. **To watch:** run **ProjectArena.exe** without a headset. It finds a live match by itself. **F1** shows the controls.\n\n**Updating:** download the new zip and unzip it over the old folder (or into a new one). Your settings and avatar are kept in **%APPDATA%\\ProjectArena**.\n**Streamers:** see **#streaming** for OBS."
-  },
-  {
-    "channel": "faq",
-    "title": "Frequently asked questions",
-    "color": "#ffd34d",
-    "text": "**Is it free?** Yes, on Quest and PC.\n\n**How do I get it?** See **#get-the-game**.\n\n**Can Quest and PC players play together?** Yes, in the same online rooms.\n\n**Do I need a headset to watch?** No. The PC version opens as a spectator window without a headset, and The Crowd works on any phone: https://crowd.aftersparc.com\n\n**It says UPDATE AVAILABLE.** Update from your Quest Library (or download the new PC zip). Online play needs everyone on the newest version.\n\n**How do I find a match?** MULTIPLAYER > check **ONLINE: ON** > **HOST A ROOM**, or pick a room to join. Or ask in **#looking-for-match**.\n\n**How do I talk?** Hold the **left grip** in a room (push to talk). SETTINGS > VOICE AND MUTES has open mic and mutes.\n\n**What is HOTDOG MODE?** A match with shields off: the host sets it in MATCH OPTIONS.\n\n**What do you keep about me?** Your player name and your online match statistics (public in the game). Delete them any time: **MY STATS > DELETE MY STATS**. Voice is never recorded. Privacy policy: https://github.com/jendoebelin/ProjectArena-public/blob/main/docs/PRIVACY.md\n\n**Is it on Steam?** Coming soon.\n\n**Something's broken?** Report it in the game (MENU > REPORT A BUG) or in **#bug-reports**. Stuck? Ask in **#help**."
-  },
-  {
-    "channel": "help",
-    "title": "How to get help (please read)",
-    "color": "#a46bff",
-    "text": "Stuck installing, connecting or playing? Ask here. You'll get an answer faster if you include:\n\n1. **Quest or PC** (and which headset)\n2. **Your game version** (bottom of the main menu)\n3. **What you tried, and what happened** (an error message or a picture helps)\n\nCheck **#faq** first: the answer may be there.\nFound a bug? **#bug-reports** (or MENU > REPORT A BUG in the game, which sends us the details).\nNever share passwords, account details or personal information here."
-  },
-  {
-    "channel": "faq",
-    "title": "How to play your first match",
-    "color": "#1ab3ff",
-    "text": "**Practice:** MAIN MENU > **PLAY PRACTICE** > pick the rules > **START PRACTICE**. You play the bot.\n\n**Online:** MAIN MENU > **MULTIPLAYER**, check it says **ONLINE: ON**, then\n- **HOST A ROOM** to open your own arena: pick the rules, set **MATCH OPTIONS**, then **OPEN MY ARENA**, or\n- pick an arena in the list to join it.\n\nWaiting outside the tank? Press **JOIN QUEUE** to play next. Two players meet in the middle: **bump fists** to start.\n\n**The rules:** BASIC is a timed match (3 minutes unless the host changes it). ADVANCED is best of three rounds, first to 4 points.\n**MATCH OPTIONS** (the host's): shields on or off (**HOTDOG MODE** 🌭), knuckle guards, match time or **FREE PLAY** (no clock, no winner), and round timers for Advanced.\n\n**Talk:** hold the **left grip** (push to talk).\n**Re-centre:** press **B** or click a thumbstick.\n**More help in the game:** MENU > **HOW TO PLAY**."
-  }
+ {
+  "channel": "rules",
+  "title": "Server rules",
+  "color": "#ff4d6a",
+  "text": "Welcome to Project Arena! Keep it friendly, keep it fun.\n\n**1. Be respectful.** No harassment, bullying, hate speech, slurs or threats, here or in the game.\n**2. Keep it clean.** No NSFW, gore or shock content. Players here are 13 and older.\n**3. Play fair.** No cheating, exploits or modified game files in online play. Found a bug that gives an edge? Report it, don't use it.\n**4. Protect privacy.** Don't share anyone's personal information: real names, addresses, photos or accounts, yours included.\n**5. No spam.** No flooding, chain messages or unrelated advertising. Streamers: share your streams and clips in #streaming and #highlights.\n**6. Use the right channel.** Bugs in #bug-reports, ideas in #feedback-and-ideas, finding a match in #looking-for-match.\n**7. Report problems, don't fight them.** Trouble with a player in the game? Use MENU > REPORT PLAYER (and MUTE). Here, message a moderator.\n**8. Follow Discord's rules:** https://discord.com/terms and https://discord.com/guidelines\n\nModerators may warn, mute or remove anyone who breaks these rules, and serious cases can be banned from the game's servers too. By staying here you agree to them. Have fun out there!"
+ },
+ {
+  "channel": "the-crowd",
+  "title": "The Crowd: cheer from your phone",
+  "color": "#ff6a1a",
+  "image": "action.png",
+  "text": "Follow any online match live on your phone, no app or sign-in needed:\n**https://crowd.aftersparc.com**\n\n1. Open the link on your phone (Android or iPhone). Live matches show up by themselves.\n2. Tap a match to see the score, the clock, both players' flags and their stats.\n3. Tap **CHEER** for a side, as fast as you like. Turn on **SHAKE TO CHEER** to cheer by shaking your phone.\n4. **WAVE FLAG** puts your side's flag up in the stands.\n5. **CALL IT**: guess who scores next to earn fan points.\n\nThe players hear you: the crowd gets louder, their end's lights flash, and hearts and stars burst from the stands.\nTip: add the page to your home screen to open it like an app."
+ },
+ {
+  "channel": "bug-reports",
+  "title": "How to report a bug",
+  "color": "#ffd34d",
+  "image": "bug.png",
+  "text": "**Best way: report it in the game, right after it happens.**\nMENU > **REPORT A BUG** > pick what kind of problem > add a short note > **SEND REPORT**.\nIt sends your note, your settings and the game's recent log, which shows us what went wrong. Nothing else.\n\n**Or post it here.** Please include:\n- what happened, and what you expected\n- Quest or PC, and your game version (bottom of the main menu)\n- a picture or clip if you have one\n\n**On GitHub:** https://github.com/jendoebelin/ProjectArena-public/issues\n\nGood ideas get credited by name in the release notes."
+ },
+ {
+  "channel": "streaming",
+  "title": "Streaming Project Arena (OBS)",
+  "color": "#a46bff",
+  "text": "The PC version can draw **only the players and balls, with nothing behind them**, so you can put any background behind them in OBS.\n\n1. Start the spectator: `ProjectArena.exe --spectate --layer 3`, or press **V** in the spectator window until the view is **KEY**.\n2. In OBS, add a **Game Capture**: Capture specific window > **Project Arena - Spectator**, and tick **Allow Transparency**.\n3. Put a background under it: a picture, a video, or one from the streaming kit.\n\n**Streaming kit** (backgrounds, camera guides and the full guide): the streaming-kit zip on\n**https://github.com/jendoebelin/ProjectArena-public/releases**\n\nIn the spectator window, **F1** shows all the controls. An Xbox or PlayStation controller works too."
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.7: THE CROWD",
+  "color": "#4dffa6",
+  "image": "action.png",
+  "text": "Fans can now follow online matches live on their phones at **https://crowd.aftersparc.com**: the score, flags, live stats and careers.\n\nEvery cheer reaches the arena: a crowd that gets louder, flashing end lights, hearts and stars bursting from the stands, and a flag in the stands for every fan waving one.\n\nAlso new: **SETTINGS > CROWD** to turn the crowd down or off, and strikes now count in your stats.\n\n**Join the alpha:** https://www.meta.com/s/4NDP5YlGM\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases\nBugs > **#bug-reports** | Ideas > **#feedback-and-ideas**"
+ },
+ {
+  "channel": "quest-board",
+  "title": "The Quest Board",
+  "color": "#ff4d6a",
+  "text": "What we are working on and looking at, thanks to your reports and ideas.\n\n**Coming in 0.3.8**\n- **Host match options:** shields on or off (HOTDOG MODE), knuckle guards on or off, match time (including no limit), round timers for Advanced\n- Hosts can remove a player from their arena\n- Smooth turning (a setting, for players and spectators)\n- A foul ball bounces back instead of dissolving\n- SAVE AND APPLY in the avatar builder\n- Push-to-talk that suits each controller (Index, Vive, Windows Mixed Reality)\n- Smoother frame times\n\n**On the board** (we are looking at these)\n- Body turning, ducking and bending when you dodge; smoother bot movement\n- A country banner separate from your outfit\n- The arena's look: darker floor and frame, a sky\n\nGot an idea? Post it in **#feedback-and-ideas**."
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.8: MATCH OPTIONS & HOTDOG MODE",
+  "color": "#4dffa6",
+  "image": "action.png",
+  "text": "**Hosts choose the match:** shields on or off (**HOTDOG MODE** 🌭), knuckle guards on or off, match time from 1 to 15 minutes or **FREE PLAY**, and round timers for Advanced.\n\nAlso new: hosts can remove a player; hot dogs and smiley faces in HOTDOG cheers; foam fingers for players without a country; stairs through the stands and smooth walls; stats for HOTDOG and custom matches; foul balls bounce back to you; smooth turning for spectators; SAVE AND APPLY in the avatar builder; better push-to-talk on Index.\n\nThanks to **R0gueICE** for testing and ideas!\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
+ },
+ {
+  "channel": "quest-board",
+  "title": "The Quest Board (updated for 0.3.8)",
+  "color": "#ff4d6a",
+  "text": "**Done in 0.3.8** ✅\n- Host match options: shields (HOTDOG MODE), knuckle guards, match time and FREE PLAY, round timers\n- Hosts can remove a player\n- Smooth turning for spectators\n- A foul ball bounces back instead of dissolving\n- SAVE AND APPLY in the avatar builder\n- Push-to-talk that suits each controller\n- Smoother frame times (part one)\n- Smooth walls and stairs through the stands\n\n**On the board** (we are looking at these)\n- The arena's look: darker floor and frame, a sky (mock-ups for review: https://github.com/jendoebelin/ProjectArena-public/issues/9)\n- Body turning, ducking and bending when you dodge; smoother bot movement\n- A country banner separate from your outfit\n- Higher process priority on PC; flicker on the coloured borders\n- Free play: switching players when others wait\n\nGot an idea? Post it in **#feedback-and-ideas**, or on GitHub: https://github.com/jendoebelin/ProjectArena-public/issues"
+ },
+ {
+  "channel": "get-the-game",
+  "title": "Get the game: which version?",
+  "color": "#1ab3ff",
+  "text": "**Project Arena is free.** Pick the version for your setup:\n\n🥽 **Meta Quest 2, 3, 3S or Pro** → the Meta Store alpha (below). Easiest, and it updates itself.\n🖥️ **PC VR** (Valve Index, Vive, Windows Mixed Reality, or a Quest on Link) → the PC version from GitHub.\n👀 **No headset?** → the PC version too: without a headset it opens as a spectator window, so you can watch live matches.\n📱 **Just want to cheer?** → The Crowd on your phone: https://crowd.aftersparc.com\n🎮 **Steam:** coming soon.\n\nQuest and PC players meet in the same rooms online."
+ },
+ {
+  "channel": "get-the-game",
+  "title": "Meta Quest: get the alpha",
+  "color": "#1ab3ff",
+  "text": "1. On your phone or computer, sign in to the **Meta account your headset uses**.\n2. Open **https://www.meta.com/s/4NDP5YlGM** and accept the invite. Access is instant.\n3. In the headset, open the **Store** or your **Library**, find **Project Arena** and install it.\n\n**Updates** install by themselves. If the game says **UPDATE AVAILABLE**, open your Library and update it: the alpha needs everyone on the newest version to play online.\n\n**Already sideloading the APK from GitHub?** The store version and the GitHub APK can't be installed over each other. To switch, uninstall the old one first (this starts your statistics fresh)."
+ },
+ {
+  "channel": "get-the-game",
+  "title": "PC VR, or watching on a PC",
+  "color": "#1ab3ff",
+  "text": "1. Download the PC zip: **https://github.com/jendoebelin/ProjectArena-public/releases/latest**\n2. Unzip it anywhere (keep the **assets** folder next to **ProjectArena.exe**).\n3. **To play:** start SteamVR (or Quest Link), put your headset on, then run **ProjectArena.exe**.\n4. **To watch:** run **ProjectArena.exe** without a headset. It finds a live match by itself. **F1** shows the controls.\n\n**Updating:** download the new zip and unzip it over the old folder (or into a new one). Your settings and avatar are kept in **%APPDATA%\\ProjectArena**.\n**Streamers:** see **#streaming** for OBS."
+ },
+ {
+  "channel": "faq",
+  "title": "Frequently asked questions",
+  "color": "#ffd34d",
+  "text": "**Is it free?** Yes, on Quest and PC.\n\n**How do I get it?** See **#get-the-game**.\n\n**Can Quest and PC players play together?** Yes, in the same online rooms.\n\n**Do I need a headset to watch?** No. The PC version opens as a spectator window without a headset, and The Crowd works on any phone: https://crowd.aftersparc.com\n\n**It says UPDATE AVAILABLE.** Update from your Quest Library (or download the new PC zip). Online play needs everyone on the newest version.\n\n**How do I find a match?** MULTIPLAYER > check **ONLINE: ON** > **HOST A ROOM**, or pick a room to join. Or ask in **#looking-for-match**.\n\n**How do I talk?** Hold the **left grip** in a room (push to talk). SETTINGS > VOICE AND MUTES has open mic and mutes.\n\n**What is HOTDOG MODE?** A match with shields off: the host sets it in MATCH OPTIONS.\n\n**What do you keep about me?** Your player name and your online match statistics (public in the game). Delete them any time: **MY STATS > DELETE MY STATS**. Voice is never recorded. Privacy policy: https://github.com/jendoebelin/ProjectArena-public/blob/main/docs/PRIVACY.md\n\n**Is it on Steam?** Coming soon.\n\n**Something's broken?** Report it in the game (MENU > REPORT A BUG) or in **#bug-reports**. Stuck? Ask in **#help**."
+ },
+ {
+  "channel": "help",
+  "title": "How to get help (please read)",
+  "color": "#a46bff",
+  "text": "Stuck installing, connecting or playing? Ask here. You'll get an answer faster if you include:\n\n1. **Quest or PC** (and which headset)\n2. **Your game version** (bottom of the main menu)\n3. **What you tried, and what happened** (an error message or a picture helps)\n\nCheck **#faq** first: the answer may be there.\nFound a bug? **#bug-reports** (or MENU > REPORT A BUG in the game, which sends us the details).\nNever share passwords, account details or personal information here."
+ },
+ {
+  "channel": "faq",
+  "title": "How to play your first match",
+  "color": "#1ab3ff",
+  "text": "**Practice:** MAIN MENU > **PLAY PRACTICE** > pick the rules > **START PRACTICE**. You play the bot.\n\n**Online:** MAIN MENU > **MULTIPLAYER**, check it says **ONLINE: ON**, then\n- **HOST A ROOM** to open your own arena: pick the rules, set **MATCH OPTIONS**, then **OPEN MY ARENA**, or\n- pick an arena in the list to join it.\n\nWaiting outside the tank? Press **JOIN QUEUE** to play next. Two players meet in the middle: **bump fists** to start.\n\n**The rules:** BASIC is a timed match (3 minutes unless the host changes it). ADVANCED is best of three rounds, first to 4 points.\n**MATCH OPTIONS** (the host's): shields on or off (**HOTDOG MODE** 🌭), knuckle guards, match time or **FREE PLAY** (no clock, no winner), and round timers for Advanced.\n\n**Talk:** hold the **left grip** (push to talk).\n**Re-centre:** press **B** or click a thumbstick.\n**More help in the game:** MENU > **HOW TO PLAY**."
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.10: A NEW PRACTICE BOT",
+  "color": "#4dffa6",
+  "image": "practice_0310.png",
+  "text": "**A new practice bot.** It moves like a person: it steps, leans and ducks out of the way, uses either hand, catches its own ball, and stands one of six ways each match (yes, there's a monkey 🐒).\n\n**Choose its level** in PRACTICE > MATCH OPTIONS, from ROOKIE to **UNBEATABLE** (can you score one?), or turn on **MATCH MY LEVEL** and it follows you: better when you score, easier when it does. **FIST BUMP FIRST** meets it in the centre before the match.\n\nAlso new: a soft tick in the last 10 seconds of a timed match or round; avatar shoulders that rise with your arms; a blocked ball can't instantly count against the one who blocked it; **RECORD MY MATCHES** (off unless you turn it on, and it stays on your headset).\n\nSince the last post, 0.3.9 fixed stats for points from returned balls and voice after a late microphone yes. Thanks to **astrobleem** for finding both, and to **R0gueICE** for the bot ideas!\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
+ },
+ {
+  "channel": "announcements",
+  "title": "WHAT'S IN PROJECT ARENA ⚡ THE SPORT",
+  "color": "#4dffa6",
+  "image": "show_sport.png",
+  "text": "- **Curve it.** Spin your wrist on the throw and the ball bends in the air.\n- **Bank it** off the walls to come at someone from the side.\n- **Punch it back** with your knuckle guards. A punch adds your fist's speed.\n- **Block it** with the shield that powers up from the ball in your hand.\n- **Catch your own ball** as it comes home, or get hit by it.\n- **Strikes** make your next ball bigger and faster.\n- **Basic or Advanced rules.** Hosts set shields, knuckle guards and the clock, or go **HOTDOG MODE** 🌭: no shields at all."
+ },
+ {
+  "channel": "announcements",
+  "title": "🌐 PLAY ANYONE",
+  "color": "#4dffa6",
+  "image": "show_meet.png",
+  "text": "- **Quest and PC players in the same rooms.**\n- Host a room or join one, queue up, and **start every match with a fist bump** in the centre.\n- **Voice chat**, push-to-talk or open mic.\n- **Free and open source.**"
+ },
+ {
+  "channel": "announcements",
+  "title": "🤖 THE BOT",
+  "color": "#4dffa6",
+  "text": "- **Six levels, ROOKIE to UNBEATABLE.** It moves like a person: reaction time, arm's reach, hand speed. It steps, leans and ducks, and uses either hand.\n- **UNBEATABLE** reads every ball's real physics. In our tests: 4,800 hard throws, never hit once.\n- **MATCH MY LEVEL** keeps every match close.\n- **Six stances**, monkey included. It'll fist bump you (the karate one bows)."
+ },
+ {
+  "channel": "announcements",
+  "title": "🧍 YOU",
+  "color": "#4dffa6",
+  "image": "show_you.png",
+  "text": "- **Build your avatar:** two body types, four faces each, 14 outfits including LIVE suits with pulses running through them.\n- **Hair that swings** as you move.\n- **Play for your country:** over 200 flags, with team kits.\n- **Career stats** on the big screen over the court for everyone to see, and a **MY STATS** dashboard."
+ },
+ {
+  "channel": "announcements",
+  "title": "🎥 WATCH & STREAM",
+  "color": "#4dffa6",
+  "image": "show_watch.png",
+  "text": "- **Spectate any live match in VR.** Fly the camera, save camera spots, share them with your team.\n- **On PC, no headset needed:** a spectator window with controller support, broadcast close-ups at the fist bump, a VS screen, view layers and a transparent background for OBS.\n- A ready-made **streaming kit**."
+ },
+ {
+  "channel": "announcements",
+  "title": "📱 THE CROWD",
+  "color": "#4dffa6",
+  "image": "show_crowd.png",
+  "text": "- **Fans cheer from their phones** at crowd.aftersparc.com.\n- **Their flags rise in the stands**, cheers burst out as hearts and stars, and **the arena roars** with them.\n\nBonus: **passthrough**, so you can see your own room around the court.\n\n**Quest:** https://www.meta.com/s/4NDP5YlGM\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.11: THE DIAMOND ROOM",
+  "color": "#4dffa6",
+  "image": "diamond_0311.png",
+  "text": "**Project Arena** is a free, open-source VR disc sport inspired by Sparc, for Meta Quest and PC VR, with online play between the two.\n\n**💎 New: EXPERIMENTAL, the DIAMOND room.** The court rolled 45 degrees: no flat floor, corners straight up, down and to each side. You each stand on a floating platform, and the ball flies right through the platforms and the V below them, so it can come up at you from underneath. Basic rules with all the options (shields or HOTDOG 🌭, knuckle guards, match time). PRACTICE > EXPERIMENTAL against the bot for now; online rooms are next.\n\n**👁 FIELD OF VIEW** (SETTINGS > GRAPHICS AND VIEW): make the arena feel bigger or closer, from -20% to +20%. You see the arena while you set it.\n\n**🤜🤛 A real fist bump.** Each player has a ring over the centre line: hold a closed fist in yours to offer it, or meet theirs. Nobody can force the start, and the bot plays along.\n\n**Also new:** each half of the court glows in its player's colour; the bot's elbows stay down in its stances and it stands still at the fist bump; no more balls stuck bouncing in a corner; a foul ball looks faded with FOUL shown where it landed; your ball blocked into the other player's foul zone comes back at you live; the jersey's flag sits high on the back; CHANGE NAME works on the main menu again. Thanks to **astrobleem** for the bug report!\n\n**Discord:** https://discord.gg/KuNkSbVHzh\n**Quest (Meta store alpha):** https://www.meta.com/s/4NDP5YlGM\n**PC and source (GitHub):** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
+ }
 ]

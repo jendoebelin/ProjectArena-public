@@ -89,6 +89,7 @@ public:
     int spectatorCount() const { return (int)spectators_.size(); }
     void setName(const char* name);
     const char* name() const { return name_; }
+    void setAppVersion(const char* v);   // this build ("0.3.11"): told to the relay in HELLO, for its log
     uint32_t session() const { return session_; }
     std::vector<LanGame> games() const;   // hosts seen in the last 2 s
     const char* noticeText() const;       // short-lived banner ("PLAYER JOINED", "HOST LOST", ...) or null
@@ -280,6 +281,7 @@ private:
     Vec3 presPos_;
     uint32_t presWatch_ = 0;
     char name_[17] = "QUEST";
+    char app_[16] = {};
     mutable char status_[64] = {};
     char notice_[48] = {};
     double noticeUntil_ = 0;

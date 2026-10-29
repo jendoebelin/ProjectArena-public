@@ -20,11 +20,11 @@ def check(cond, msg):
 
 
 class Fake:
-    def __init__(self, name, version=7):
+    def __init__(self, name, version=7, app=None):
         self.s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.s.bind(('127.0.0.1', 0))
         self.s.settimeout(0.5)
-        self.name, self.version = name, version
+        self.name, self.version, self.app = name, version, app
         self.token, self.vip = b'\0' * 16, 0
 
     def raw(self, ptype, body=b'', token=None):
@@ -38,7 +38,8 @@ class Fake:
             return None
 
     def hello(self):
-        self.raw(R.HELLO, bytes([self.version]) + self.name.encode().ljust(16, b'\0'))
+        tail = b'' if self.app is None else bytes([len(self.app)]) + self.app
+        self.raw(R.HELLO, bytes([self.version]) + self.name.encode().ljust(16, b'\0') + tail)
         d = self.recv()
         if d and struct.unpack_from('<IB', d)[1] == R.WELCOME:
             self.token, self.vip = d[5:21], struct.unpack_from('<I', d, 21)[0]
@@ -54,14 +55,20 @@ def game_packet(tag):
 
 async def run():
     loop = asyncio.get_running_loop()
-    relay = R.Relay(3, log=lambda m: None)
+    logged = []
+    relay = R.Relay(3, log=logged.append)
     tr, _ = await loop.create_datagram_endpoint(lambda: relay, local_addr=('127.0.0.1', PORT))
 
     def blocking():
-        a, b, c, old = Fake('HOST'), Fake('JOINER'), Fake('WATCHER'), Fake('OLDVER', version=6)
+        a, b, c, old = Fake('HOST'), Fake('JOINER'), Fake('WATCHER', app=b'0.3.11'), Fake('OLDVER', version=6)
         check(a.hello() is not None and a.vip != 0, 'hello gets a token and a virtual address')
         b.hello(); c.hello()
         check(len({a.vip, b.vip, c.vip}) == 3, 'virtual addresses are unique')
+        joins = [m for m in logged if m.startswith('join')]
+        check(any('WATCHER' in m and ' 0.3.11 v7' in m for m in joins), 'the log names a game\'s own version')
+        check(any('HOST' in m and 'pre-0.3.11 v7' in m for m in joins), 'older games log as pre-0.3.11')
+        check(R.app_version(bytes(17) + bytes([9]) + b'0.3<x>.1;') == '0.3.1', 'the version keeps digits and dots')
+        check(R.app_version(bytes(17) + bytes([200]) + b'1' * 40) == '1' * 15, 'the version is capped at 15')
         a.send(R.BROADCAST, game_packet(b'beacon'))
         rb, rc = b.recv(), c.recv()
         check(rb is not None and rb.endswith(b'beacon') and struct.unpack_from('<I', rb, 5)[0] == a.vip,

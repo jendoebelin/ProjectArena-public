@@ -78,7 +78,7 @@ public:
     // flat sprite lying in the plane with normal `n` (e.g. a glow on the floor)
     void drawSpriteFlat(const Vec3& c, float size, const float rgba[4], const Vec3& n, int tex = 0);
     // camera-facing additive light ribbon through pts[0..n) (oldest first); width/alpha taper toward the tail
-    void drawRibbon(const Vec3* pts, int n, float width, const float rgba[4]);
+    void drawRibbon(const Vec3* pts, int n, float width, const float rgba[4], bool taper = true);   // taper: a trail (thin, faint tail)
     GLuint texture(const char* name, bool srgb) { return loadTexture(name, srgb); }   // tex/<name>.tex, cached
     // a hair tuck map (w x h radius bytes, rows from straight down; tools/build_open_assets.py write_tuck) as a texture
     GLuint tuckTexture(int w, int h, const uint8_t* v);
@@ -96,7 +96,7 @@ public:
     // uv: a part of the texture (scale u, scale v, offset u, offset v; for loaded images), e.g. one strip of a flag
     void drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4], bool flipV = true, const float* uv = nullptr);
 
-    Model sphere, box, quad;
+    Model sphere, box, quad, cylinder;   // cylinder: radius 1, from y = -1 up to its top at y = 0 (the experimental platforms)
 
 private:
     GLuint loadTexture(const std::string& rel, bool srgb);

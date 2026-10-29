@@ -696,6 +696,7 @@ static void stanceTests(const std::vector<CollisionTri>& tris) {
 }
 
 int main(int argc, char** argv) {
+    setvbuf(stdout, nullptr, _IONBF, 0);   // (unbuffered: a crash shows where it stopped)
     const char* col = argc > 1 ? argv[1] : "app/assets/arena.col";
     auto tris = loadCol(col);
     std::printf("loaded %zu collision tris\n", tris.size());
@@ -728,8 +729,13 @@ int main(int argc, char** argv) {
         CHECK(length(in[0].hand[1].grip.p - in[1].hand[1].grip.p) > 0.12f, "(test setup: fists front to front, grips 15 cm apart)");
         run(g, in, 0.2f);
         CHECK(g.match == MatchState::Meet, "fists together, neither trigger pulled: no bump");
-        in[1].hand[1].trigger = 1;   // one player holds the trigger: enough
+        // the meeting point (owner, 2026-10-28): one offers, the other meets it there
+        placeFist(in[0], {-0.30f, 1.2f, 0.f});
+        in[1].hand[1].trigger = 1;   // orange offers: a closed fist held in its ring
+        run(g, in, 0.3f);
+        CHECK(g.meetLit(1, 1) && !g.meetLit(0, 1) && g.match == MatchState::Meet, "a closed fist in its ring lights it; nothing yet");
         std::vector<GameEvent> log;
+        placeFist(in[0], {-0.01f, 1.2f, 0.f});   // blue meets it (trigger half pulled: one trigger held is enough)
         run(g, in, 0.05f, &log);
         CHECK(hasEvent(log, EventType::FistBump) && g.match == MatchState::Meet, "fist bump (one trigger held): confirmed first (buzz, sound)");
         log.clear();
@@ -749,6 +755,257 @@ int main(int argc, char** argv) {
         PlayerInput in3[2] = {standing(g3, 0), {}};
         run(g3, in3, 0.1f);
         CHECK(g3.match == MatchState::Countdown, "against the bot: no meeting");
+        {   // nobody can force the start: away from the meeting point, or a fist slammed in before either was offered
+            Game g4; g4.setArena(tris); g4.reset(false);
+            PlayerInput in4[2] = {standing(g4, 0), standing(g4, 1)};
+            run(g4, in4, 0.1f);
+            auto place = [&](PlayerInput& pi, const Vec3& at) { pi.hand[1].grip.p = at - pi.hand[1].grip.q.rotate(g4.tun.fistFront); };
+            in4[0].hand[1].trigger = in4[1].hand[1].trigger = 1;
+            place(in4[0], {-0.01f, 1.2f, 1.2f}); place(in4[1], {0.01f, 1.2f, 1.2f});   // fists together, off to the side
+            std::vector<GameEvent> log4;
+            run(g4, in4, 1.0f, &log4);
+            CHECK(!hasEvent(log4, EventType::FistBump), "fists together away from the meeting point: no bump");
+            in4[0].hand[1].trigger = in4[1].hand[1].trigger = 0;
+            place(in4[0], {-0.30f, 1.2f, 0.f}); place(in4[1], {0.01f, 1.2f, 0.f});   // orange's fist in its ring, not closed
+            run(g4, in4, 0.3f, &log4);
+            in4[0].hand[1].trigger = 1;
+            place(in4[0], {-0.01f, 1.2f, 0.f});   // blue slams a closed fist into it at once
+            log4.clear();
+            run(g4, in4, 0.1f, &log4);
+            CHECK(!hasEvent(log4, EventType::FistBump), "a fist slammed into one that was not offered: no bump");
+        }
+        {   // the bot: meets a fist you offer; offers its own when you don't; never reaches for a fist elsewhere
+            auto meetBot = [&](int mode, float& took) {
+                Game g; g.setArena(tris); g.tun.botMeet = true; g.tun.botLevel = 2; g.reset(true);
+                PlayerInput pin[2] = {standing(g, 0), {}};
+                Quat fq = kFaceP0;
+                auto place = [&](const Vec3& at) { pin[0].hand[1].grip = {fq, at - fq.rotate(g.tun.fistFront)}; };
+                took = -1;
+                bool bumped = false;
+                for (int i = 0; i < 72 * 8 && !bumped; ++i) {
+                    const float t = i / 72.f;
+                    pin[0].head.p = {-g.tun.meetSpot, 1.65f, 0};   // standing at its spot in the centre
+                    if (mode == 0) { pin[0].hand[1].trigger = 1; place(g.meetRing(0) + Vec3{0.03f, 0, 0}); }   // offer
+                    else if (mode == 1) {   // wait, then bring the fist to the bot's offered one
+                        const Vec3 bf = g.pl[1].in.hand[0].grip.transform(g.tun.fistFront), bf1 = g.pl[1].in.hand[1].grip.transform(g.tun.fistFront);
+                        const bool lit0 = g.meetLit(1, 0), lit1 = g.meetLit(1, 1);
+                        pin[0].hand[1].trigger = 1;
+                        if (lit0 || lit1) place((lit1 ? bf1 : bf) + Vec3{-0.02f, 0, 0}); else place({-0.6f, 1.0f, 0.3f});
+                    } else { pin[0].hand[1].trigger = 1; place({-0.05f, 1.2f, 1.0f}); }   // a fist held out, off to the side
+                    PlayerInput tmp[2] = {pin[0], pin[1]};
+                    g.step(1.f / 72, tmp);
+                    if (g.match == MatchState::Meet || hasEvent(g.events, EventType::FistBump)) took = t;
+                    bumped = hasEvent(g.events, EventType::FistBump);
+                }
+                return bumped;
+            };
+            float took;
+            CHECK(meetBot(0, took) && took < 2.5f, "the bot meets a fist you offer in your ring");
+            CHECK(meetBot(1, took), "it offers its own fist when you don't, and you can meet it");
+            CHECK(!meetBot(2, took), "it never reaches for a fist away from the meeting point");
+            {   // its fist held out, waiting: its body holds still (a sway folded the arm into the torso, 2026-10-29)
+                Game g; g.setArena(tris); g.tun.botMeet = true; g.tun.botLevel = 2; g.tun.meetTime = 30.f; g.reset(true);
+                PlayerInput pin[2] = {standing(g, 0), {}};
+                pin[0].head.p = {-g.tun.meetSpot, 1.65f, 0};
+                float lo = 9.f, hi = -9.f;
+                for (int i = 0; i < 72 * 8; ++i) {
+                    PlayerInput tmp[2] = {pin[0], pin[1]};
+                    g.step(1.f / 72, tmp);
+                    if (i > 72 * 4) { lo = std::min(lo, g.pl[1].in.head.p.z); hi = std::max(hi, g.pl[1].in.head.p.z); }
+                }
+                CHECK(g.meetLit(1, 0) || g.meetLit(1, 1), "(it is offering its fist)");
+                CHECK(hi - lo < 0.01f, "while it offers, its body does not sway");
+            }
+        }
+    }
+    {
+        std::printf("[EXPERIMENTAL arena CORNERS: the diagonal room, floating platforms]\n");
+        auto expGame = [&](PlayerInput in[2]) {
+            Game g; g.setArena(tris); g.tun.meetTime = 0; g.useArena(ARENA_CORNERS, tris); g.reset(false);
+            in[0] = standing(g, 0); in[1] = standing(g, 1);
+            run(g, in, 3.6f);
+            return g;
+        };
+        auto fire = [&](Game& g, PlayerInput in[2], Vec3 from, Vec3 vel, float seconds, std::vector<GameEvent>& log, float* lowest = nullptr) {
+            Ball& b = g.pl[0].ball;
+            b.state = BallState::Flying; b.instigator = 0; b.rechargePending = true; b.scored = false; b.spin = {};
+            b.pos = from; b.vel = vel; b.speedLimit = length(vel); b.timer = 0; b.progX = from.x; b.progT = 0; b.bounces = 0;
+            b.fouled = b.homing = false; b.heldHand = -1;
+            for (int i = 0; i < int(72 * seconds); ++i) {
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+                if (lowest) *lowest = std::min(*lowest, b.pos.y);
+                if (b.state != BallState::Flying && b.state != BallState::Returning) break;
+            }
+        };
+        {
+            PlayerInput in[2]; Game g = expGame(in);
+            CHECK(g.arenaKind == 1 && g.tun.foulLineX > 5.f && g.tun.outLow < -3.f, "the EXPERIMENTAL arena: its collision, foul line and bounds");
+            std::vector<GameEvent> log;
+            const Vec3 from = g.pl[0].ball.pos;
+            fire(g, in, from, normalize(g.chestPoint(1) - from) * 14.f, 3.f, log);
+            CHECK(hasEvent(log, EventType::HitPlayer, 1), "a throw straight at the other player hits them, corner to corner");
+        }
+        {
+            PlayerInput in[2]; Game g = expGame(in);
+            std::vector<GameEvent> log;
+            float lowest = 9.f;
+            fire(g, in, {-4.0f, 0.8f, 0.f}, normalize(Vec3{1.f, -0.9f, 0.1f}) * 12.f, 2.5f, log, &lowest);
+            bool up = false;
+            for (const GameEvent& e : log) up |= e.type == EventType::Bounce && e.pos.y < exparena::kFloor + 0.3f;
+            CHECK(up && lowest < exparena::kFloor + 0.5f && !hasEvent(log, EventType::SpawnRise),
+                  "past the platforms the ball drops to the floor below and bounces back up (no respawn)");
+        }
+        {
+            PlayerInput in[2]; Game g = expGame(in);
+            std::vector<GameEvent> log;
+            fire(g, in, g.pl[0].ball.pos, normalize(Vec3{0.3f, -1.f, 0.4f}) * 6.f, 3.f, log);
+            CHECK(hasEvent(log, EventType::Foul, 0) && g.pl[0].ball.state == BallState::Idle, "your throw onto your own platform: a foul, back to your start");
+        }
+        {
+            PlayerInput in[2]; Game g = expGame(in);
+            std::vector<GameEvent> log;
+            fire(g, in, {-5.5f, 1.4f, 0.f}, normalize(Vec3{1.f, 0.05f, 0.06f}) * 14.f, 3.f, log);   // over their shoulder into their corner
+            bool fromTheirCorner = false;
+            for (const GameEvent& e : log) fromTheirCorner |= e.type == EventType::Returned && e.player == 0 && e.pos.x > exparena::kBackX;
+            CHECK(fromTheirCorner || hasEvent(log, EventType::HitPlayer, 1), "the corner behind the other player is their back wall (the ball returns)");
+        }
+        {   // many random throws: every one ends (hit, return, foul, home), nothing escapes or goes on for ever
+            PlayerInput in[2]; Game g = expGame(in);
+            uint32_t seed = 777;
+            auto rnd = [&]() { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; return (seed & 0xFFFFFF) / float(0xFFFFFF); };
+            int ended = 0, escaped = 0, n = 600;
+            for (int k = 0; k < n; ++k) {
+                g.match = MatchState::InProgress; g.roundClock = 1e6f;
+                g.pl[0].score = g.pl[1].score = 0; g.pl[0].strikesAgainst = g.pl[1].strikesAgainst = 0;
+                const float yaw = (rnd() - 0.5f) * 3.f, pitch = (rnd() - 0.5f) * 1.8f;
+                const Vec3 d{std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw)};
+                std::vector<GameEvent> log;
+                Ball& b = g.pl[0].ball;
+                fire(g, in, g.idlePoint(0), d * (2.f + rnd() * 17.f), 25.f, log);   // (a block restarts its 10 s)
+                const bool fine = std::isfinite(b.pos.x) && std::fabs(b.pos.x) < g.tun.outX && std::fabs(b.pos.z) < g.tun.outZ;
+                ended += b.state != BallState::Flying && b.state != BallState::Returning;
+                escaped += !fine;
+            }
+            std::printf("       %d random throws: %d ended within 25 s, %d left the room\n", n, ended, escaped);
+            CHECK(ended == n && escaped == 0, "every throw ends, and none leaves the room");
+        }
+        {   // the bot plays there: two bots, a minute and a half
+            Game g; g.setArena(tris); g.useArena(ARENA_CORNERS, tris); g.reset(true);
+            g.pl[0].isBot = true;
+            PlayerInput in[2] = {standing(g, 0), {}};
+            std::vector<GameEvent> log;
+            run(g, in, 90.f, &log);
+            int throws[2] = {0, 0}, nan = 0, pts = 0;
+            for (const GameEvent& e : log) { if (e.type == EventType::Throw && e.player >= 0) ++throws[e.player]; pts += e.type == EventType::HitPlayer; }
+            for (int p = 0; p < 2; ++p) nan += !std::isfinite(g.pl[p].ball.pos.x) || !std::isfinite(g.pl[p].in.head.p.x);
+            std::printf("       bots in the EXPERIMENTAL arena: %d and %d throws, %d points\n", throws[0], throws[1], pts);
+            CHECK(throws[0] > 3 && throws[1] > 3 && nan == 0 && pts > 0, "the bot plays in the EXPERIMENTAL arena (throws, scores)");
+        }
+        {
+            PlayerInput in[2]; Game g = expGame(in);
+            g.useArena(ARENA_CLASSIC, tris);
+            CHECK(g.arenaKind == 0 && std::fabs(g.tun.foulLineX - 4.73f) < 1e-4f && g.tun.outZ < 5.f, "and back to the classic court");
+        }
+    }
+    {
+        std::printf("[EXPERIMENTAL arena DIAMOND: the classic court rolled 45 degrees, floating platforms]\n");
+        auto rolled = [&](PlayerInput in[2]) {
+            Game g; g.setArena(tris); g.tun.meetTime = 0; g.useArena(ARENA_DIAMOND, tris); g.reset(false);
+            in[0] = standing(g, 0); in[1] = standing(g, 1);
+            run(g, in, 3.6f);
+            return g;
+        };
+        auto fire = [&](Game& g, PlayerInput in[2], Vec3 from, Vec3 vel, float seconds, std::vector<GameEvent>& log) {
+            Ball& b = g.pl[0].ball;
+            b.state = BallState::Flying; b.instigator = 0; b.rechargePending = true; b.scored = false; b.spin = {};
+            b.pos = from; b.vel = vel; b.speedLimit = length(vel); b.timer = 0; b.progX = from.x; b.progT = 0; b.bounces = 0;
+            b.fouled = b.homing = false; b.heldHand = -1;
+            for (int i = 0; i < int(72 * seconds); ++i) {
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+                if (b.state != BallState::Flying && b.state != BallState::Returning) break;
+            }
+        };
+        {
+            PlayerInput in[2]; Game g = rolled(in);
+            CHECK(g.arenaKind == ARENA_DIAMOND && std::fabs(g.tun.foulLineX - 4.73f) < 1e-4f && g.tun.outLow < -1.5f,
+                  "the DIAMOND arena: its collision, the classic foul line, its bounds");
+            std::vector<GameEvent> log;
+            const Vec3 from = g.pl[0].ball.pos;
+            fire(g, in, from, normalize(g.chestPoint(1) - from) * 14.f, 3.f, log);
+            CHECK(hasEvent(log, EventType::HitPlayer, 1), "a throw straight at the other player hits them");
+        }
+        {
+            PlayerInput in[2]; Game g = rolled(in);
+            std::vector<GameEvent> log;
+            fire(g, in, {-3.0f, 0.6f, 0.f}, normalize(Vec3{1.f, -1.2f, 0.3f}) * 11.f, 2.5f, log);   // down past the platforms
+            bool low = false;
+            for (const GameEvent& e : log) low |= e.type == EventType::Bounce && e.pos.y < -0.6f;
+            CHECK(low && !hasEvent(log, EventType::SpawnRise) && !hasEvent(log, EventType::Foul), "the V below the platforms: the ball bounces back up");
+        }
+        {
+            PlayerInput in[2]; Game g = rolled(in);
+            std::vector<GameEvent> log;
+            fire(g, in, g.pl[0].ball.pos, normalize(Vec3{0.3f, -1.f, 0.4f}) * 6.f, 3.f, log);
+            bool offPlatform = false;
+            for (const GameEvent& e : log)
+                offPlatform |= e.type == EventType::Bounce && std::fabs(e.pos.y) < 0.25f && length(Vec3{e.pos.x + 7.f, 0, e.pos.z}) < exparena::kPlatformR;
+            CHECK(!offPlatform, "the ball goes through the platforms (it can come up at you from below)");
+            Game gs; gs.setArena(tris); gs.tun.meetTime = 0; gs.tun.solidPlatforms = true; gs.useArena(ARENA_DIAMOND, tris); gs.reset(false);
+            PlayerInput ins[2] = {standing(gs, 0), standing(gs, 1)};
+            run(gs, ins, 3.6f);
+            std::vector<GameEvent> logs;
+            fire(gs, ins, gs.pl[0].ball.pos, normalize(Vec3{0.3f, -1.f, 0.4f}) * 6.f, 3.f, logs);
+            bool bounced = false;
+            for (const GameEvent& e : logs) bounced |= e.type == EventType::Bounce && std::fabs(e.pos.y) < 0.25f;
+            CHECK(bounced && !hasEvent(logs, EventType::Foul), "solid platforms (an option): the ball bounces off them, no foul");
+            PlayerInput in2[2]; Game g2 = rolled(in2);
+            std::vector<GameEvent> log2;
+            fire(g2, in2, g2.pl[0].ball.pos, normalize(Vec3{0.2f, 0.9f, 1.f}) * 8.f, 3.f, log2);   // up into a slanted wall of your end
+            CHECK(!hasEvent(log2, EventType::Foul), "no foul zone in DIAMOND: a throw into your own end's walls just bounces");
+        }
+        {
+            PlayerInput in[2]; Game g = rolled(in);
+            std::vector<GameEvent> log;
+            fire(g, in, {-4.0f, 2.2f, 0.f}, normalize(Vec3{1.f, 0.02f, 0.03f}) * 15.f, 3.f, log);   // over their head into their end
+            bool back = false;
+            for (const GameEvent& e : log) back |= e.type == EventType::Returned && e.player == 0 && e.pos.x > 9.f;
+            CHECK(back || hasEvent(log, EventType::HitPlayer, 1), "the far end is their back wall (the ball returns)");
+        }
+        {
+            PlayerInput in[2]; Game g = rolled(in);
+            uint32_t seed = 4242;
+            auto rnd = [&]() { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; return (seed & 0xFFFFFF) / float(0xFFFFFF); };
+            int ended = 0, escaped = 0, n = 600;
+            for (int k = 0; k < n; ++k) {
+                g.match = MatchState::InProgress; g.roundClock = 1e6f;
+                g.pl[0].score = g.pl[1].score = 0; g.pl[0].strikesAgainst = g.pl[1].strikesAgainst = 0;
+                const float yaw = (rnd() - 0.5f) * 3.f, pitch = (rnd() - 0.5f) * 1.8f;
+                const Vec3 d{std::cos(pitch) * std::cos(yaw), std::sin(pitch), std::cos(pitch) * std::sin(yaw)};
+                std::vector<GameEvent> log;
+                Ball& b = g.pl[0].ball;
+                fire(g, in, g.idlePoint(0), d * (2.f + rnd() * 17.f), 25.f, log);
+                ended += b.state != BallState::Flying && b.state != BallState::Returning;
+                escaped += !std::isfinite(b.pos.x) || std::fabs(b.pos.x) > g.tun.outX || std::fabs(b.pos.z) > g.tun.outZ;
+            }
+            std::printf("       %d random throws: %d ended within 25 s, %d left the room\n", n, ended, escaped);
+            CHECK(ended == n && escaped == 0, "every throw ends, and none leaves the room");
+        }
+        {
+            Game g; g.setArena(tris); g.useArena(ARENA_DIAMOND, tris); g.reset(true);
+            g.pl[0].isBot = true;
+            PlayerInput in[2] = {standing(g, 0), {}};
+            std::vector<GameEvent> log;
+            run(g, in, 90.f, &log);
+            int throws[2] = {0, 0}, nan = 0, pts = 0;
+            for (const GameEvent& e : log) { if (e.type == EventType::Throw && e.player >= 0) ++throws[e.player]; pts += e.type == EventType::HitPlayer; }
+            for (int p = 0; p < 2; ++p) nan += !std::isfinite(g.pl[p].ball.pos.x) || !std::isfinite(g.pl[p].in.head.p.x);
+            std::printf("       bots in the DIAMOND arena: %d and %d throws, %d points\n", throws[0], throws[1], pts);
+            CHECK(throws[0] > 3 && throws[1] > 3 && nan == 0 && pts > 0, "the bot plays in the DIAMOND arena (throws, scores)");
+        }
     }
     {
         std::printf("[lobby: two bots play each other]\n");
@@ -1172,6 +1429,67 @@ int main(int argc, char** argv) {
     }
     {
         std::printf("[foul ball: stays in the arena (owner, 2026-10-21)]\n");
+        {   // a low ball landing just short of the far foul line: it bounces on as off the floor (2026-10-28: the zone's
+            // edge sent it nearly straight up, then it bounced between floor and ceiling)
+            PlayerInput in[2]; Game g0 = makeGame(tris, in);
+            int upright = 0;
+            for (int k = 0; k < 40 * 5; ++k) {   // landing spots 1 cm apart across the line, for every ball size
+                Game g = g0;
+                Ball& b = g.pl[0].ball;
+                g.pl[1].strikesAgainst = k / 40;
+                b.scale = 1.f + g.tun.scaleIncreasePerStrike * (k / 40);
+                b.state = BallState::Flying; b.instigator = 0; b.rechargePending = false; b.scored = false; b.spin = {};
+                b.pos = {4.0f + 0.01f * (k % 40), 0.6f, -1.6f};
+                b.speedLimit = 7.f; b.vel = normalize(Vec3{6.5f, -3.7f, 2.0f}) * 7.f;
+                const float vx = b.vel.x;
+                bool bounced = false;
+                for (int i = 0; i < 72 && !bounced; ++i) {
+                    PlayerInput tmp[2] = {in[0], in[1]};
+                    g.step(1.f / 72, tmp);
+                    bounced = hasEvent(g.events, EventType::Bounce, 0);
+                }
+                if (!bounced || b.vel.x < 0.8f * vx) ++upright;
+            }
+            CHECK(upright == 0, "a ball landing at the foul line bounces on along the court, not straight up");
+        }
+        {   // your throw landing in the OTHER player's foul zone is no foul: it bounces on as off any floor (owner, 2026-10-28)
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            Ball& b = g.pl[0].ball;
+            b.state = BallState::Flying; b.instigator = 0; b.rechargePending = false; b.scored = false; b.spin = {};
+            b.pos = {4.6f, 1.0f, 1.0f}; b.speedLimit = 9.f; b.vel = normalize(Vec3{6.2f, 0.f, 1.2f} - b.pos) * 9.f;
+            b.progX = b.pos.x; b.progT = 0; b.timer = 0;
+            std::vector<GameEvent> log;
+            bool bounced = false;
+            for (int i = 0; i < 36 && !bounced; ++i) {
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+                bounced = hasEvent(g.events, EventType::Bounce, 0);
+            }
+            CHECK(bounced && !hasEvent(log, EventType::Foul) && b.state == BallState::Flying && b.vel.y > 0 && !b.homing,
+                  "your throw landing in their foul zone just bounces (no foul)");
+        }
+        {   // your ball blocked or punched into THEIR own foul zone: their strike, and it comes back at you as from their
+            // back wall, live (owner, 2026-10-29)
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            Ball& b = g.pl[0].ball;
+            b.state = BallState::Flying; b.instigator = 1; b.rechargePending = false; b.scored = false; b.spin = {};   // (their touch)
+            b.pos = {5.6f, 0.9f, 0.3f}; b.speedLimit = 8.f; b.vel = normalize(Vec3{0.4f, -1.f, 0.f}) * 8.f;
+            b.progX = b.pos.x; b.progT = 0; b.timer = 0;
+            std::vector<GameEvent> log;
+            for (int i = 0; i < 72 * 4 && !hasEvent(log, EventType::HitPlayer); ++i) {
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+            }
+            bool strikeThem = false, hitMe = false;
+            for (const GameEvent& e : log) {
+                strikeThem |= e.type == EventType::Strike && e.player == 1;
+                hitMe |= e.type == EventType::HitPlayer && e.player == 0;
+            }
+            CHECK(strikeThem && hasEvent(log, EventType::Returned, 0), "their block into their own foul zone: their strike, and it comes back");
+            CHECK(hitMe, "... live: standing still, its owner is hit by it");
+        }
         {   // past the foul line, then back down into its own foul zone: bounce, wall, home; harmless
             PlayerInput in[2]; Game g = makeGame(tris, in);
             Ball& b = g.pl[0].ball;
@@ -1212,6 +1530,47 @@ int main(int argc, char** argv) {
             CHECK(!dissolved && b.state == BallState::Idle && length(b.pos - g.idlePoint(0)) < 0.2f,
                   "a ball that never crossed the foul line bounces and is drawn back to its float position (no dissolving)");
             CHECK(home > 0 && home < 1.0f, "and it is back within a second (the magnetic pull)");
+        }
+        {   // stuck balls (2026-10-28): no headway along the court, or slowed to a crawl, go home harmless
+            auto fly = [&](Vec3 pos, Vec3 vel, float seconds, std::vector<GameEvent>& log, bool& home, float& at) {
+                PlayerInput in[2]; Game g = makeGame(tris, in);
+                Ball& b = g.pl[0].ball;
+                b.state = BallState::Flying; b.instigator = 0; b.rechargePending = false; b.scored = false; b.spin = {};
+                b.pos = pos; b.vel = vel; b.speedLimit = length(vel); b.timer = 0; b.progX = pos.x; b.progT = 0;
+                home = false; at = -1;
+                for (int i = 0; i < int(72 * seconds); ++i) {
+                    PlayerInput tmp[2] = {in[0], in[1]};
+                    g.step(1.f / 72, tmp);
+                    log.insert(log.end(), g.events.begin(), g.events.end());
+                    if (b.homing && at < 0) at = i / 72.f;
+                    home |= b.state == BallState::Idle;
+                }
+            };
+            std::vector<GameEvent> log;
+            bool home; float at;
+            fly({1.0f, 1.8f, 0.3f}, {0.2f, 9.f, 0.1f}, 6.f, log, home, at);   // between floor and ceiling, all but upright
+            CHECK(home && at > 1.8f && at < 2.6f && !hasEvent(log, EventType::HitPlayer),
+                  "a ball bouncing up and down without getting anywhere goes home after 2 s, harmless");
+            log.clear();
+            fly({-2.0f, 1.5f, 0.f}, {1.7f, 0.f, 0.3f}, 4.f, log, home, at);   // a crawl past the foul line
+            CHECK(home && at > 0.9f && at < 1.2f, "a ball crawling under 2 m/s goes home (after a second)");
+            log.clear();
+            fly({-2.0f, 1.5f, 0.f}, {12.f, 0.5f, 3.f}, 1.2f, log, home, at);   // a real throw: untouched
+            CHECK(at < 0, "a throw on its way down the court is left alone");
+        }
+        {   // a fouled ball keeps its own speed to the wall, not a jump to 12 m/s (2026-10-28)
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            Ball& b = g.pl[1].ball;   // orange's ball, knocked back into orange's own zone
+            b.state = BallState::Flying; b.instigator = 1; b.rechargePending = false; b.scored = false; b.spin = {};
+            b.pos = {5.4f, 0.8f, 0.3f}; b.speedLimit = 6.f; b.vel = normalize(Vec3{0.6f, -1.f, 0.f}) * 6.f;
+            b.progX = b.pos.x; b.progT = 0; b.timer = 0;
+            float speedAfter = -1;
+            for (int i = 0; i < 72 && speedAfter < 0; ++i) {
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                if (hasEvent(g.events, EventType::Foul)) speedAfter = b.speedLimit;
+            }
+            CHECK(speedAfter > 5.9f && speedAfter < 6.1f, "a fouled ball keeps its own speed");
         }
         {   // a weak throw that never reaches the foul line: drawn home by the same pull
             PlayerInput in[2]; Game g = makeGame(tris, in);

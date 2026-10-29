@@ -439,6 +439,33 @@ bool Renderer::init() {
             }
         buildPrimitive(sphere, v, idx);
     }
+    // cylinder: radius 1, y from -1 to 0 (its top), capped
+    {
+        std::vector<float> v; std::vector<uint32_t> idx;
+        const int S = 40;
+        for (int k = 0; k < 2; ++k) {   // the caps: top (y 0, facing up), bottom (y -1, facing down)
+            const float y = k ? -1.f : 0.f, ny = k ? -1.f : 1.f;
+            const uint32_t c = v.size() / 8;
+            v.insert(v.end(), {0, y, 0, 0, ny, 0, 0.5f, 0.5f});
+            for (int j = 0; j <= S; ++j) {
+                const float ph = 2 * kPi * j / S, x = std::cos(ph), z = std::sin(ph);
+                v.insert(v.end(), {x, y, z, 0, ny, 0, 0.5f + 0.5f * x, 0.5f + 0.5f * z});
+            }
+            for (int j = 0; j < S; ++j)
+                if (k) idx.insert(idx.end(), {c, c + 1 + j, c + 2 + j}); else idx.insert(idx.end(), {c, c + 2 + j, c + 1 + j});
+        }
+        const uint32_t base = v.size() / 8;   // the side
+        for (int j = 0; j <= S; ++j) {
+            const float ph = 2 * kPi * j / S, x = std::cos(ph), z = std::sin(ph);
+            v.insert(v.end(), {x, 0, z, x, 0, z, float(j) / S, 0});
+            v.insert(v.end(), {x, -1, z, x, 0, z, float(j) / S, 1});
+        }
+        for (int j = 0; j < S; ++j) {
+            const uint32_t a = base + 2 * j;
+            idx.insert(idx.end(), {a, a + 2, a + 1, a + 1, a + 2, a + 3});
+        }
+        buildPrimitive(cylinder, v, idx);
+    }
     // unit cube [-1,1]
     {
         std::vector<float> v; std::vector<uint32_t> idx;
@@ -716,7 +743,7 @@ void Renderer::drawText(const std::string& s, const Pose& pose, float height, co
     glDepthMask(GL_TRUE);
 }
 
-void Renderer::drawRibbon(const Vec3* pts, int n, float width, const float rgba[4]) {
+void Renderer::drawRibbon(const Vec3* pts, int n, float width, const float rgba[4], bool taper) {
     if (n < 2) return;
     if (!ribbonVao_) {
         glGenVertexArrays(1, &ribbonVao_);
@@ -739,8 +766,8 @@ void Renderer::drawRibbon(const Vec3* pts, int n, float width, const float rgba[
         Vec3 d = (i + 1 < n) ? pts[i + 1] - pts[i] : pts[i] - pts[i - 1];
         Vec3 side = normalize(cross(d, eye_ - pts[i]));
         float t = float(i) / float(n - 1);          // 0 = tail, 1 = head
-        float w = width * (0.15f + 0.85f * t);
-        uint8_t a = uint8_t(255 * t * t);
+        float w = taper ? width * (0.15f + 0.85f * t) : width;
+        uint8_t a = taper ? uint8_t(255 * t * t) : 255;
         for (int k = 0; k < 2; ++k) {
             V& v = buf[i * 2 + k];
             Vec3 q = pts[i] + side * (k ? w : -w);

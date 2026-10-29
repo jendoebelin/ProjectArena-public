@@ -88,6 +88,7 @@ void Game::deflectMoving(Ball& b, const Vec3& n, const Vec3& vs, int deflector, 
     b.scored = false;
     b.spin *= 0.5f;
     b.timer = 0;   // (the self-hit grace, after a block as after a throw)
+    b.progX = b.pos.x; b.progT = 0;
 }
 Pose Game::shieldLocal(int h) const {
     // Candidate placements (grip space: +X right, +Y up/thumb, -Z forward). side = +1 right hand, -1 left hand.
@@ -176,6 +177,7 @@ const char* eventName(EventType t) {
 }
 
 void Game::setArena(const std::vector<CollisionTri>& tris) {
+    arenaKind = -1;
     auto A = std::make_shared<ArenaData>();
     A->tris = tris;
     if (tris.empty()) { arena = A; return; }
@@ -240,6 +242,7 @@ void Game::reset(bool player1IsBot) {
     match = MatchState::WaitingForPlayers;
     stateTimer = 0;
     meetBumped = false;
+    meetLitT[0] = meetLitT[1] = -1;
     round = 0;
     overtime = false;
     roundClock = tun.advanced ? tun.advancedRoundTime : tun.basicMatchTime;
@@ -247,6 +250,38 @@ void Game::reset(bool player1IsBot) {
     events.clear();
 }
 
+Vec3 Game::meetRing(int p) const {
+    float y = 0.5f * ((pl[0].in.headTracked ? pl[0].in.head.p.y : 1.62f) + (pl[1].in.headTracked ? pl[1].in.head.p.y : 1.62f));
+    return {p == 0 ? -tun.meetRingX : tun.meetRingX, clampf(y - 0.45f, 0.9f, 1.5f), 0.f};   // chest height between them
+}
+bool Game::inMeetRing(int p, int h) const {
+    const HandInput& hi = pl[p].in.hand[h];
+    if (!hi.tracked) return false;
+    const Vec3 d = hi.grip.transform(tun.fistFront) - meetRing(p);
+    return std::fabs(d.x) < tun.meetRingDepth && d.y * d.y + d.z * d.z < tun.meetRingRadius * tun.meetRingRadius;
+}
+bool Game::meetLit(int p, int h) const {
+    const HandInput& hi = pl[p].in.hand[h];
+    return (hi.trigger > 0.5f || hi.squeeze > 0.5f) && inMeetRing(p, h);
+}
+void Game::useArena(int kind, const std::vector<CollisionTri>& classic) {
+    using namespace exparena;
+    if (arenaKind != kind) {   // (the collision only when it changes: callers may ask every frame)
+        setArena(kind == ARENA_CORNERS ? collision() : kind == ARENA_DIAMOND ? diamondCollision(tun.solidPlatforms) : classic);
+        arenaKind = kind;
+    }
+    if (kind == ARENA_CORNERS) {
+        tun.foulLineX = kFoulLineX;
+        tun.outLow = kFloor - 0.6f; tun.outHigh = kCeiling + 0.6f; tun.outX = tun.outZ = kCorner + 0.7f;
+    } else if (kind == ARENA_DIAMOND) {
+        tun.foulLineX = 4.73f;
+        tun.outLow = kRollCY - kRollReach - 0.6f; tun.outHigh = kRollCY + kRollReach + 0.6f;
+        tun.outX = kRollLen + 0.7f; tun.outZ = kRollReach + 0.35f * (kRollW - kRollH) + 0.6f;
+    } else {
+        tun.foulLineX = 4.73f;
+        tun.outLow = -1.f; tun.outHigh = 6.f; tun.outX = 11.f; tun.outZ = 4.f;
+    }
+}
 void Game::spawnBall(int p) {
     Ball& b = pl[p].ball;
     b.state = BallState::Spawning;
@@ -288,6 +323,7 @@ void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin) {
     b.bounces = 0;
     b.timer = 0;
     b.fouled = b.homing = false;
+    b.progX = b.pos.x; b.progT = 0;
     emit(EventType::Throw, p, h, b.pos, b.speedLimit);
 }
 
@@ -303,6 +339,7 @@ void Game::deflect(Ball& b, const Vec3& n, int deflector, float assistDeg, const
     b.scored = false;
     b.spin *= 0.5f;
     b.timer = 0;   // (the self-hit grace, after a block as after a throw)
+    b.progX = b.pos.x; b.progT = 0;
 }
 
 bool Game::sweepArena(const Vec3& from, const Vec3& to, float r, Vec3& hitPos, Vec3& hitN, uint32_t& tags) const {
@@ -344,6 +381,9 @@ bool Game::sweepArena(const Vec3& from, const Vec3& to, float r, Vec3& hitPos, V
         float dist = length(d);
         if (dist >= r) return;
         Vec3 n = dist > 1e-6f ? d / dist : t.n;
+        // the foul zones are a slab 5 cm over the floor with no face at the line: a ball touching its edge bounced off
+        // the corner, nearly straight up, then between floor and ceiling (players, 2026-10-28). They bounce as floor.
+        if (t.tags & TAG_FOUL) n = t.n;
         if (dot(motion, n) >= 0) return;   // already separating
         float score = dist - ((t.tags & (TAG_FOUL | TAG_RETURN)) ? 0.05f : 0.f);
         if (score < best) { best = score; hitPos = q + n * r; hitN = n; tags = t.tags; hit = true; }
@@ -495,22 +535,36 @@ void Game::stepBall(int p, float dt) {
         const Vec3 want = normalize(d) * tun.foulReturnSpeed;
         b.vel += (want - b.vel) * std::min(1.f, dt * 7.f);
     }
+    auto goHome = [&]() {   // drawn home, harmless, by the same magnetic pull as a foul
+        b.state = BallState::Returning;
+        b.heldHand = -1;
+        b.instigator = p;
+        b.spin = {};
+        b.scored = true;
+        b.fouled = false;
+        b.homing = true;
+        b.rechargePending = false;
+        b.timer = 0;
+        b.speedLimit = tun.foulReturnSpeed;
+        emit(EventType::ThrowFail, p, -1, b.pos, length(b.vel));
+    };
     // a short throw goes home: not yet past the owner's foul line, and slow, heading back, or taking too long
     if (b.state == BallState::Flying && b.instigator == p && b.rechargePending) {
         const bool behind = p == 0 ? b.pos.x < -tun.foulLineX : b.pos.x > tun.foulLineX;
         const float forward = p == 0 ? b.vel.x : -b.vel.x;   // toward the opponent
-        if (behind && (b.speedLimit < tun.recallSpeed || forward < 0 || b.timer > tun.recallTime)) {
-            b.state = BallState::Returning;   // drawn home by the same magnetic pull as a foul
-            b.heldHand = -1;
-            b.spin = {};
-            b.scored = true;
-            b.homing = true;
-            b.rechargePending = false;
-            b.timer = 0;
-            b.speedLimit = tun.foulReturnSpeed;
-            emit(EventType::ThrowFail, p, -1, b.pos, length(b.vel));
-            return;
-        }
+        if (behind && (b.speedLimit < tun.recallSpeed || forward < 0 || b.timer > tun.recallTime)) { goHome(); return; }
+    }
+    // a stuck ball goes home: no headway along the court, or slowed to a crawl by its bounces (see Tunables)
+    if (b.state == BallState::Flying) {
+        if (std::fabs(b.pos.x - b.progX) >= tun.stuckDistance) { b.progX = b.pos.x; b.progT = b.timer; }
+        if (b.timer - b.progT > tun.stuckTime || (b.speedLimit < tun.recallSpeed && b.timer > tun.slowGrace)) { goHome(); return; }
+    }
+    // a fouled ball that finds no wall to turn home from (bouncing between floor and ceiling) turns home anyway
+    if (b.fouled && b.timer > tun.stuckTime) {
+        b.fouled = false;
+        b.homing = true;
+        b.timer = 0;
+        b.speedLimit = tun.foulReturnSpeed;
     }
     const float r = ballRadius(p);
     const int sub = std::max(1, int(std::ceil(length(b.vel) * dt / 0.02f)));
@@ -603,7 +657,24 @@ void Game::stepBall(int p, float dt) {
                     // crossed its owner's foul line springs straight back to its float position; one that did bounces on,
                     // off the wall it is heading for, and flies home, harmless (it can't hit or score; its owner can catch it)
                     emit(EventType::Foul, b.instigator, -1, hp, float(zoneTeam));
-                    if (b.instigator != p) addStrike(b.instigator, hp, p);
+                    if (b.instigator != p) {
+                        // blocked or punched into the blocker's own zone: their strike, and the ball comes back to its
+                        // owner as from their back wall, live: catch it, move, or be hit (owner, 2026-10-29)
+                        addStrike(b.instigator, hp, p);
+                        emit(EventType::Returned, p, -1, hp, 0.f);
+                        b.state = BallState::Returning;
+                        b.instigator = p;
+                        b.rechargePending = false;
+                        b.scored = false;
+                        b.fouled = b.homing = false;
+                        b.pos = hp + hn * 0.01f;
+                        b.vel = normalize(chestPoint(p) - b.pos) * tun.returnSpeed;
+                        b.speedLimit = tun.returnSpeed;
+                        b.spin *= 0.3f;
+                        b.bounces = 0;
+                        b.timer = 0;
+                        return;
+                    }
                     if (b.instigator == p && b.rechargePending) {   // bounce off, then drawn home (owner: faster, magnetic)
                         b.state = BallState::Returning;
                         b.heldHand = -1;
@@ -625,7 +696,7 @@ void Game::stepBall(int p, float dt) {
                     b.fouled = true;
                     b.homing = false;
                     b.timer = 0;
-                    b.speedLimit = std::max(12.f, std::min(b.speedLimit, tun.foulReturnSpeed));
+                    b.speedLimit = std::max(tun.foulMinSpeed, std::min(b.speedLimit, tun.foulReturnSpeed));   // its own speed
                     b.vel = normalize(b.vel - hn * (2 * dot(b.vel, hn))) * b.speedLimit;   // bounce off the floor
                     b.pos = hp + hn * 0.01f;
                     return;
@@ -678,7 +749,7 @@ void Game::stepBall(int p, float dt) {
             }
         }
         b.pos = to;
-        if (b.pos.y < -1 || b.pos.y > 6 || std::fabs(b.pos.x) > 11 || std::fabs(b.pos.z) > 4) { spawnBall(p); return; }
+        if (b.pos.y < tun.outLow || b.pos.y > tun.outHigh || std::fabs(b.pos.x) > tun.outX || std::fabs(b.pos.z) > tun.outZ) { spawnBall(p); return; }
     }
     if (b.timer > 10.f) spawnBall(p);
 }
@@ -779,12 +850,14 @@ BotSkill Game::botSkillOf(int p) const {
 // and its controller's pitch / yaw / roll (degrees), how low it crouches, and how much it bobs
 struct BotStance { const char* name; Vec3 pos[2]; Vec3 rot[2]; float crouch, bob; };
 static const BotStance kStances[kBotStances] = {
-    {"KITTEN",  {{-0.25f, -0.40f, -0.25f}, {0.25f, -0.40f, -0.25f}}, {{-20, 0, 0}, {-20, 0, 0}}, 0.00f, 1.0f},     // paws up
-    {"RELAXED", {{-0.24f, -0.74f, -0.04f}, {0.24f, -0.74f, -0.04f}}, {{-80, 0, 0}, {-80, 0, 0}}, 0.00f, 0.7f},     // arms down
-    {"BOXER",   {{-0.11f, -0.17f, -0.34f}, {0.13f, -0.21f, -0.22f}}, {{15, -10, 25}, {15, 10, -25}}, 0.05f, 1.8f},  // fists up
-    {"KARATE",  {{-0.06f, -0.34f, -0.44f}, {0.22f, -0.60f, 0.02f}}, {{0, 0, 70}, {0, 0, -90}}, 0.08f, 0.8f},     // lead hand out, one chambered
-    {"MANTIS",  {{-0.14f, -0.10f, -0.34f}, {0.14f, -0.10f, -0.34f}}, {{-70, 0, 0}, {-70, 0, 0}}, 0.06f, 1.0f},    // raised, wrists hooked
-    {"MONKEY",  {{-0.30f, -0.60f, -0.30f}, {0.30f, -0.60f, -0.30f}}, {{-60, 0, 0}, {-60, 0, 0}}, 0.18f, 2.2f},    // low, loose, bouncing
+    // (the avatar puts an elbow behind its hand, along the hand's direction: hands tipped up keep the elbows down by
+    // the ribs; owner, 2026-10-28: elbows stuck out in every stance. Where the hands are is the bot's defence: kept)
+    {"KITTEN",  {{-0.25f, -0.40f, -0.25f}, {0.25f, -0.40f, -0.25f}}, {{28, 0, 0}, {28, 0, 0}}, 0.00f, 1.0f},       // paws up
+    {"RELAXED", {{-0.19f, -0.86f, -0.02f}, {0.19f, -0.86f, -0.02f}}, {{-88, 0, 0}, {-88, 0, 0}}, 0.00f, 0.7f},     // arms down
+    {"BOXER",   {{-0.11f, -0.17f, -0.34f}, {0.13f, -0.21f, -0.22f}}, {{50, -10, 25}, {50, 10, -25}}, 0.05f, 1.8f},  // fists up
+    {"KARATE",  {{-0.06f, -0.34f, -0.44f}, {0.22f, -0.60f, 0.02f}}, {{10, 0, 70}, {0, 0, -90}}, 0.08f, 0.8f},     // lead hand out, one chambered
+    {"MANTIS",  {{-0.14f, -0.10f, -0.34f}, {0.14f, -0.10f, -0.34f}}, {{40, 0, 0}, {40, 0, 0}}, 0.06f, 1.0f},      // raised, forearms up
+    {"MONKEY",  {{-0.30f, -0.60f, -0.30f}, {0.30f, -0.60f, -0.30f}}, {{-20, 0, 0}, {-20, 0, 0}}, 0.18f, 2.2f},    // low, loose, bouncing
 };
 const char* botStanceName(int stance) { return kStances[stance < 0 ? 0 : stance >= kBotStances ? kBotStances - 1 : stance].name; }
 
@@ -1243,7 +1316,9 @@ void Game::stepBot(int p, float dt) {
         s.botStance = level < 1.5f ? kOpen[(int)(rnd() * 3) % 3] : (int)(rnd() * kBotStances) % kBotStances;
     }
     const BotStance& st = kStances[s.botStance >= kBotStances ? 0 : s.botStance];
-    s.botSteady += ((s.botRead[0].mode || s.botRead[1].mode ? 1.f : 0.f) - s.botSteady) * std::min(1.f, dt * 5.f);
+    // (steady while it watches a ball, and at the fist bump: a body swaying against a fist held out folded the arm into
+    // the torso, owner's report 2026-10-29)
+    s.botSteady += ((s.botRead[0].mode || s.botRead[1].mode || meet ? 1.f : 0.f) - s.botSteady) * std::min(1.f, dt * 5.f);
     auto bob = [&]() { return Vec3{0, 0.03f * st.bob * (1.f - s.botSteady) * std::sin(now * 2.1f * std::sqrt(st.bob)), 0}; };
     // a bow (KARATE, at the fist bump): the head down and forward
     s.botBow += ((s.botStance == STANCE_KARATE && meet && meetBumped ? 1.f : 0.f) - s.botBow) * std::min(1.f, dt * 6.f);
@@ -1288,7 +1363,7 @@ void Game::stepBot(int p, float dt) {
     float speed[2] = {sk.handSpeed, sk.handSpeed};
     if (b.state == BallState::Held) want[b.heldHand].p = s.in.head.p + Vec3{0, -0.15f, 0} + side(b.heldHand) * 0.30f - fwd * 0.10f;
     // (it stops swaying while it watches a ball)
-    Vec3 bodyWant = right * (0.15f * std::sin(now * 0.9f)) - Vec3{0, st.crouch, 0};
+    Vec3 bodyWant = right * (meet ? 0.f : 0.15f * std::sin(now * 0.9f)) - Vec3{0, st.crouch, 0};
     bool threatened = false;
     for (const PlayerState::BotRead* r : reads) {
         threatened |= r->mode != 0;   // (no throw while a ball comes at it: a wind-up could swing its shield into it)
@@ -1384,21 +1459,35 @@ void Game::stepBot(int p, float dt) {
         s.botBody = o;
     }
     s.in.head = headAt();
-    int bump = -1;   // the fist bump: one fist out to the middle, ready; the other's fist reaching it, it meets it
+    int bump = -1;   // the fist bump (owner, 2026-10-28): one offers a fist in its ring, the other meets it there
+    bool bumpClosed = false;
     if (meet && !meetBumped) {
         int oh = -1;
         float ox = 9.f;
         for (int k = 0; k < 2; ++k)
             if (pl[opp].in.hand[k].tracked && std::fabs(pl[opp].in.hand[k].grip.p.x) < ox) { ox = std::fabs(pl[opp].in.hand[k].grip.p.x); oh = k; }
-        bump = 1;
-        if (oh >= 0) bump = dot(pl[opp].in.hand[oh].grip.p - s.in.head.p, right) > 0 ? 1 : 0;   // (the nearer fist)
+        int lit = -1;   // their fist offered in their ring
+        for (int k = 0; k < 2; ++k) if (meetLit(opp, k)) lit = k;
+        if (lit >= 0) oh = lit;
+        if (oh >= 0) {   // the nearer fist; a fist straight in front keeps the hand it has (no switching back and forth)
+            const float across = dot(pl[opp].in.hand[oh].grip.p - s.in.head.p, right);
+            if (std::fabs(across) > 0.08f) s.botBumpHand = across > 0 ? 1 : 0;
+        }
+        bump = s.botBumpHand;
         const Quat fq = q;   // the fist level, knuckles to the front
-        Vec3 at = s.in.head.p + fwd * 0.36f - Vec3{0, 0.30f, 0} + side(bump) * 0.06f;   // offered
-        if (oh >= 0) {
-            const Vec3 theirs = pl[opp].in.hand[oh].grip.transform(tun.fistFront);
-            if (length(theirs - at) < 0.45f) at = theirs - fq.rotate(tun.fistFront) + fwd * -0.02f;   // fist to fist
+        const float waited = tun.meetTime - stateTimer;
+        Vec3 at;
+        if (lit >= 0 && meetLitT[opp] >= 0 && now - meetLitT[opp] > sk.reaction + 0.15f) {   // they offer: meet it, there
+            at = pl[opp].in.hand[lit].grip.transform(tun.fistFront) - fq.rotate(tun.fistFront);
+            bumpClosed = true;
+        } else if (waited > 1.5f + sk.reaction) {   // nobody has offered (or not yet seen): it offers, its fist still in its ring
+            at = meetRing(p) + fwd * 0.03f - fq.rotate(tun.fistFront);
+            bumpClosed = true;
+        } else {   // ready: the hand low in front, by its body
+            at = s.in.head.p + fwd * 0.10f - Vec3{0, 0.55f, 0} + side(bump) * 0.15f;   // (outside its ring)
         }
         want[bump] = {fq, at};
+        speed[bump] = std::min(speed[bump], 1.6f);   // a calm reach, not a punch
         carried[bump].y = 1e9f;
     }
     for (int h = 0; h < 2; ++h)   // the hands it holds still go with the body (in step with it, as its tryouts have them)
@@ -1410,7 +1499,7 @@ void Game::stepBot(int p, float dt) {
         s.botHand[h] = botInReach(p, h, {s.botHandQ[h], s.botHand[h]});   // (an arm comes along with the body)
         HandInput& hi = s.in.hand[h];
         hi.grip = {s.botHandQ[h], s.botHand[h]};
-        hi.trigger = (b.state == BallState::Held && b.heldHand == h) || h == bump ? 1.f : 0.f;   // (a fist for the bump)
+        hi.trigger = (b.state == BallState::Held && b.heldHand == h) || (h == bump && bumpClosed) ? 1.f : 0.f;   // (a fist for the bump)
     }
     // a catch: its own ball, in its catcher
     const PlayerState::BotRead& c = s.botRead[1];
@@ -1453,6 +1542,13 @@ void Game::stepMatch(float dt) {
         Vec3 at;
         float best = 9.f;
         auto closed = [](const HandInput& x) { return x.trigger > 0.5f || x.squeeze > 0.5f; };   // a fist
+        bool offered[2];
+        for (int p = 0; p < 2; ++p) {   // a fist lit in its ring: offered once it has been there meetOfferTime
+            const bool lit = meetLit(p, 0) || meetLit(p, 1);
+            if (!lit) meetLitT[p] = -1;
+            else if (meetLitT[p] < 0) meetLitT[p] = now;
+            offered[p] = meetLitT[p] >= 0 && now - meetLitT[p] >= tun.meetOfferTime;
+        }
         for (int h0 = 0; h0 < 2; ++h0)
             for (int h1 = 0; h1 < 2; ++h1) {
                 const HandInput& a = pl[0].in.hand[h0];
@@ -1462,7 +1558,9 @@ void Game::stepMatch(float dt) {
                 best = std::min(best, gap);
                 // either fist closed is enough: in the headset the two triggers were rarely held at the same moment
                 // (log 2026-10-17: fists 1-3 cm apart with triggers 1/0, 0/1)
-                if ((closed(a) || closed(b)) && gap < tun.fistBumpGap) {
+                // only at the meeting point, and one of them offered first (nobody can force the start)
+                if ((closed(a) || closed(b)) && gap < tun.fistBumpGap && inMeetRing(0, h0) && inMeetRing(1, h1) &&
+                    (offered[0] || offered[1])) {
                     bump = true;
                     at = (a.grip.transform(tun.fistFront) + b.grip.transform(tun.fistFront)) * 0.5f;
                 }
@@ -1555,6 +1653,107 @@ void Game::step(float dt, PlayerInput in[2]) {
     stepMatch(dt);
     for (int p = 0; p < 2; ++p) stepPlayer(p, dt);
     for (int p = 0; p < 2; ++p) stepBall(p, dt);
+}
+
+namespace exparena {
+std::vector<CollisionTri> collision() {
+    std::vector<CollisionTri> out;
+    auto tri = [&](Vec3 a, Vec3 b, Vec3 c, Vec3 in, uint32_t tags) {   // in: the side its face looks to
+        Vec3 n = normalize(cross(b - a, c - a));
+        if (dot(n, in) < 0) { std::swap(b, c); n = -n; }
+        CollisionTri t;
+        t.a = a; t.b = b; t.c = c; t.n = n; t.tags = tags;
+        out.push_back(t);
+    };
+    auto quad = [&](Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 in, uint32_t tags) { tri(a, b, c, in, tags); tri(a, c, d, in, tags); };
+    const Vec3 corner[4] = {{-kCorner, 0, 0}, {0, 0, kCorner}, {kCorner, 0, 0}, {0, 0, -kCorner}};
+    const int kSeg = 8;
+    for (int w = 0; w < 4; ++w) {   // the walls, in strips; near a player's corner they are its back wall
+        const Vec3 c0 = corner[w], c1 = corner[(w + 1) % 4];
+        for (int i = 0; i < kSeg; ++i) {
+            const Vec3 a = lerp(c0, c1, i / float(kSeg)), b = lerp(c0, c1, (i + 1) / float(kSeg)), mid = (a + b) * 0.5f;
+            uint32_t tags = TAG_ARENA;
+            if (std::fabs(mid.x) > kBackX) tags |= TAG_RETURN | (mid.x < 0 ? TAG_TEAM0 : TAG_TEAM1);
+            quad(a + Vec3{0, kFloor, 0}, b + Vec3{0, kFloor, 0}, b + Vec3{0, kCeiling, 0}, a + Vec3{0, kCeiling, 0},
+                 Vec3{-mid.x, 0, -mid.z}, tags);
+        }
+    }
+    for (int k = 0; k < 2; ++k) {   // the floor below and the ceiling
+        const float y = k ? kCeiling : kFloor;
+        quad(corner[0] + Vec3{0, y, 0}, corner[1] + Vec3{0, y, 0}, corner[2] + Vec3{0, y, 0}, corner[3] + Vec3{0, y, 0},
+             Vec3{0, k ? -1.f : 1.f, 0}, TAG_ARENA);
+    }
+    const int kRim = 24;
+    for (int p = 0; p < 2; ++p) {   // the platforms: the top is its player's foul zone; the rim and underside bounce
+        const Vec3 c{p ? 7.f : -7.f, 0, 0};
+        const uint32_t team = p ? TAG_TEAM1 : TAG_TEAM0;
+        for (int i = 0; i < kRim; ++i) {
+            const float a0 = i * (6.2831853f / kRim), a1 = (i + 1) * (6.2831853f / kRim);
+            const Vec3 r0{std::cos(a0) * kPlatformR, 0, std::sin(a0) * kPlatformR}, r1{std::cos(a1) * kPlatformR, 0, std::sin(a1) * kPlatformR};
+            const Vec3 dn{0, -kPlatformThick, 0};
+            tri(c, c + r0, c + r1, {0, 1, 0}, TAG_ARENA | TAG_FOUL | team);
+            tri(c + dn, c + r0 + dn, c + r1 + dn, {0, -1, 0}, TAG_ARENA);
+            quad(c + r0, c + r1, c + r1 + dn, c + r0 + dn, (r0 + r1) * 0.5f, TAG_ARENA);
+        }
+    }
+    return out;
+}
+
+void diamondEnd(Vec3 v[4]) {
+    const float c = 0.70710678f, hw = 0.5f * kRollW, hh = 0.5f * kRollH;
+    const float zy[4][2] = {{hw, hh}, {-hw, hh}, {-hw, -hh}, {hw, -hh}};
+    // (shifted sideways so the V's bottom corner is straight under the platforms, were the end not square)
+    const float shift = c * (hw - hh);
+    for (int k = 0; k < 4; ++k) v[k] = {0, kRollCY + c * (zy[k][0] + zy[k][1]), c * (zy[k][0] - zy[k][1]) + shift};
+}
+
+std::vector<CollisionTri> diamondCollision(bool solidPlatforms) {
+    std::vector<CollisionTri> out;
+    auto tri = [&](Vec3 a, Vec3 b, Vec3 c, Vec3 in, uint32_t tags) {   // in: the side its face looks to
+        Vec3 n = normalize(cross(b - a, c - a));
+        if (dot(n, in) < 0) { std::swap(b, c); n = -n; }
+        CollisionTri t;
+        t.a = a; t.b = b; t.c = c; t.n = n; t.tags = tags;
+        out.push_back(t);
+    };
+    auto quad = [&](Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 in, uint32_t tags) { tri(a, b, c, in, tags); tri(a, c, d, in, tags); };
+    const Vec3 ctr{0, kRollCY, 0};
+    Vec3 v[4];
+    diamondEnd(v);
+    // along the court in strips (no foul zone in DIAMOND, owner 2026-10-29: every wall just bounces)
+    std::vector<float> xs = {-kRollLen, -4.73f};
+    for (float x = -4.f; x <= 4.01f; x += 1.f) xs.push_back(x);
+    xs.push_back(4.73f); xs.push_back(kRollLen);
+    for (size_t i = 0; i + 1 < xs.size(); ++i) {
+        const float x0 = xs[i], x1 = xs[i + 1];
+        const uint32_t tags = TAG_ARENA;
+        for (int k = 0; k < 4; ++k) {
+            const Vec3 a = v[k], b = v[(k + 1) % 4];
+            const Vec3 in = ctr - (a + b) * 0.5f;
+            quad(a + Vec3{x0, 0, 0}, b + Vec3{x0, 0, 0}, b + Vec3{x1, 0, 0}, a + Vec3{x1, 0, 0}, {0, in.y, in.z}, tags);
+        }
+    }
+    for (int p = 0; p < 2; ++p) {   // the ends: the back walls
+        const float x = p ? kRollLen : -kRollLen;
+        const Vec3 o{x, 0, 0};
+        quad(v[0] + o, v[1] + o, v[2] + o, v[3] + o, {p ? -1.f : 1.f, 0, 0}, TAG_ARENA | TAG_RETURN | (p ? TAG_TEAM1 : TAG_TEAM0));
+    }
+    // the platforms: the ball goes through them by default (owner, 2026-10-29: so it comes up at you from below);
+    // tun.solidPlatforms puts them back (they bounce; no foul zone in DIAMOND)
+    const int kRim = solidPlatforms ? 24 : 0;
+    for (int p = 0; p < 2; ++p) {   // the platforms, as in CORNERS
+        const Vec3 c{p ? 7.f : -7.f, 0, 0};
+        for (int i = 0; i < kRim; ++i) {
+            const float a0 = i * (6.2831853f / kRim), a1 = (i + 1) * (6.2831853f / kRim);
+            const Vec3 r0{std::cos(a0) * kPlatformR, 0, std::sin(a0) * kPlatformR}, r1{std::cos(a1) * kPlatformR, 0, std::sin(a1) * kPlatformR};
+            const Vec3 dn{0, -kPlatformThick, 0};
+            tri(c, c + r0, c + r1, {0, 1, 0}, TAG_ARENA);
+            tri(c + dn, c + r0 + dn, c + r1 + dn, {0, -1, 0}, TAG_ARENA);
+            quad(c + r0, c + r1, c + r1 + dn, c + r0 + dn, (r0 + r1) * 0.5f, TAG_ARENA);
+        }
+    }
+    return out;
+}
 }
 
 std::vector<CollisionTri> parseCollision(const uint8_t* d, size_t size) {

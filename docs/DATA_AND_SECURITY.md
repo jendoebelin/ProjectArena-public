@@ -2,15 +2,17 @@
 
 Everything Project Arena and the official community server handle, where it is kept, who can see it, how long it is
 kept, and what protects it. The player-facing version is `docs/PRIVACY.md`; keep the two in step (the release
-checklist, `docs/RELEASE_CHECKLIST.md`, says when). Last reviewed: 27 October 2026 (version 0.3.10: match recordings, MATCH MY LEVEL).
+checklist, `docs/RELEASE_CHECKLIST.md`, says when). Last reviewed: 29 October 2026 (version 0.3.11: the game's version in the server log; earlier, 0.3.10: match
+recordings, MATCH MY LEVEL).
 
 ## 1. Inventory
 
 | Data | Where | Who sees it | Kept | Notes |
 |---|---|---|---|---|
 | Player name | The device (`player_name.txt`); sent to everyone in a room or watching; the server log | Other players, spectators, the server operator | On the device until uninstalled; server log lines are rotated by the system journal | Chosen by the player; A-Z, 0-9, space, `-`, `.` only |
+| Game version (0.3.11+) | Sent to the official server at each connection; its log | The operator | Server log lines are rotated by the system journal | The version number only (e.g. 0.3.11), written next to the player name when they join: to see who needs an update |
 | Avatar (look, COUNTRY) | The device (`avatar.cfg`); sent to other players | Other players, spectators | On the device | Cosmetic; the country is only a choice of kit, not a location |
-| Settings, camera positions | The device (`settings.cfg`, `warps.cfg`) | Nobody else | On the device | |
+| Settings, camera positions | The device (`settings.cfg`, `warps.cfg`) | Nobody else | On the device | Includes FIELD OF VIEW (0.3.11) and the EXPERIMENTAL choice |
 | Diagnostic log | The device (`projectarena_log.txt`) | Nobody else, unless in a report | On the device (rotated) | |
 | Match recordings (off unless turned on: MY STATS > RECORD MY MATCHES) | The device (`recordings/match_*.par`, `app/src/record.h`) | Nobody else, unless the player sends one | The newest 20 (older ones deleted) | The player's own head and hand movement, both balls, the game's events, frame by frame; never another person's movement (a bot's, yes). For tuning the practice bot (`tools/analyze_play.py`, `docs/BOT_TUNING.md`) |
 | MATCH MY LEVEL | The device (`settings.cfg`: botmatch) | Nobody else | On the device | One number: the practice bot's level |
