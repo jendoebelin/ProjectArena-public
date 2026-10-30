@@ -483,6 +483,24 @@ def s_overtime():
     return room(mix(swell, beats, pad_), 0.15, 1.0)
 
 
+def s_target_hit():
+    """TRAINING: a target taken: a bright glassy ping over a quick sparkle of breaking light (0.3.12)"""
+    sec = 0.9
+    ping = (osc(1760.0, 0.8) * 0.22 + osc(2637.0, 0.8) * 0.10 + osc(3520.0, 0.8) * 0.05) * env(0.8, 0.002, 0.28)
+    knock = lp(noise(0.06), 2500) * env(0.06, 0.001, 0.03) * 0.35
+    sparkle = hp(noise(0.5), 6000) * env(0.5, 0.01, 0.16) * 0.10
+    return room(mix(ping, knock, delay(sparkle, 0.02), length=n_(sec)), 0.12, 0.8)
+
+
+def s_lead_change():
+    """FOUR CORNERS: someone new leads: a bright rising three-note chime with a light shimmer (0.3.12)"""
+    sec = 1.0
+    notes = [(784.0, 0.0), (987.8, 0.09), (1318.5, 0.18)]
+    parts = [delay(osc(f, 0.6) * env(0.6, 0.003, 0.22) * 0.28 + osc(2 * f, 0.6) * env(0.6, 0.002, 0.08) * 0.06, d) for f, d in notes]
+    shimmer = lp(noise(0.5), 9000) * env(0.5, 0.05, 0.2) * 0.04
+    return room(mix(*parts, delay(shimmer, 0.18), length=n_(sec)), 0.14, 1.0)
+
+
 def s_fist_bump():
     """two gauntlets bumping: a solid friendly knock and a warm pulse blooming out"""
     sec = 0.8
@@ -531,6 +549,8 @@ SOUNDS = [
     ('MatchEndLose', lambda: s_match_end(False)), ('Recharge', s_recharge), ('Strike', s_strike),
     ('Overtime', s_overtime), ('FistBump', s_fist_bump), ('Ambience', s_ambience), ('ClockTick', s_clock_tick),
     ('Crowd', s_crowd), ('Cheer', s_cheer),   # (last: the sounds above keep their random draws)
+    ('LeadChange', s_lead_change),            # (0.3.12, after them: the earlier sounds stay exactly as they were)
+    ('TargetHit', s_target_hit),              # (TRAINING, 0.3.12)
 ]
 
 

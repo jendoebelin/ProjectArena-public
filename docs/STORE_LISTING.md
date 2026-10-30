@@ -114,6 +114,8 @@ and wording, which Meta changes from time to time:
 - **App activity / gameplay:** match statistics (public in the game), with first / last seen times for abuse checks.
   From 0.3.7: an online host's live match (player names, countries, score) is shown on the public web page The Crowd
   while the arena is open; not stored.
+  From 0.3.12: TRAINING's results for the leaderboards (each passed lesson's best time and accuracy, with the player
+  name; public in the game; under the same hashed key; deleted with the statistics).
 - **Diagnostics:** bug reports and player reports with the game's recent log, **only when the user sends one**.
   From 0.3.11: the game's version number is sent at each connection and written in the server's log next to the
   player name (to see who needs an update).

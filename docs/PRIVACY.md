@@ -17,6 +17,7 @@ The game keeps these in its own folder on your headset or PC (`%APPDATA%\Project
 - a diagnostic log;
 - a private random player key (made once; it is what your statistics are kept under, below);
 - MATCH MY LEVEL's level for the practice bot (one number);
+- your TRAINING bests (from version 0.3.12: each lesson's best time and accuracy, which lessons you passed);
 - your match recordings, only if you turn them on (below).
 
 They are not sent to us, except in a bug report you choose to send (below). Uninstalling the game removes them on
@@ -106,6 +107,20 @@ RETURNS); those no longer count toward your throw accuracy.
   its folder on PC) makes a new player key, so a reinstalled game starts new statistics; ask
   vrsportsfan@gmail.com to remove old ones.
 - Statistics are kept until you delete them, or for 24 months after you were last seen.
+
+## TRAINING leaderboards (from version 0.3.12)
+
+When you pass a TRAINING lesson, your game sends your best time and best accuracy for that lesson to the official
+server (and sends your bests again when it connects, so results from offline play arrive later). The server keeps,
+for each lesson you passed: your best time, your best accuracy (how many of how many), the player name you used, and
+when it was last improved.
+- They are kept under the same scrambled form of your player key as your statistics; no IP address, real name or
+  account.
+- They are **public in the game**: the leaderboards show the top ten names and results, and your own place.
+- **MENU → MY STATS → DELETE MY STATS** erases them together with your statistics. They are also removed 24 months
+  after your last improvement.
+- Results that can't be real for a lesson (too fast, more throws than it has) are refused and noted in the server's log
+  with the player name.
 
 ## The Crowd (live matches on the web, from version 0.3.7)
 

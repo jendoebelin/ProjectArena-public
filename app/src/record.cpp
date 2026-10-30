@@ -38,7 +38,7 @@ bool Recorder::begin(const std::string& path, const Game& g, const Meta& m) {
     put<uint8_t>(fp_, g.tun.advanced ? 1 : 0);
     put<uint8_t>(fp_, g.tun.shields ? 1 : 0);
     put<int8_t>(fp_, (int8_t)g.tun.knuckleMode);
-    put<uint8_t>(fp_, 0);
+    put<uint8_t>(fp_, (uint8_t)std::max(0, std::min(255, m.lesson)));
     put<float>(fp_, g.tun.basicMatchTime);
     put<float>(fp_, g.tun.advancedRoundTime);
     char ver[16] = {};
@@ -101,6 +101,56 @@ void Recorder::end(const Game& g) {
 void Recorder::close() {
     if (fp_) std::fclose(fp_);
     fp_ = nullptr;
+}
+
+bool Replay::load(const uint8_t* d, size_t n) {
+    frames.clear();
+    size_t at = 0;
+    bool ok = true;
+    auto take = [&](void* out, size_t k) { if (at + k > n) { ok = false; std::memset(out, 0, k); return; } std::memcpy(out, d + at, k); at += k; };
+    auto u8 = [&]() { uint8_t v; take(&v, 1); return v; };
+    auto i8 = [&]() { int8_t v; take(&v, 1); return v; };
+    auto f32 = [&]() { float v; take(&v, 4); return v; };
+    auto vec = [&]() { Vec3 v; v.x = f32(); v.y = f32(); v.z = f32(); return v; };
+    auto pose = [&]() { Pose p; p.p = vec(); p.q.x = f32(); p.q.y = f32(); p.q.z = f32(); p.q.w = f32(); return p; };
+    if (n < 6 || std::memcmp(d, "PAREC1", 6) != 0) return false;
+    at = 6;
+    local = u8() & 1;
+    u8(); u8(); u8(); f32(); u8(); u8(); i8();
+    lesson = u8();
+    f32(); f32();
+    char ver[16];
+    take(ver, 16);
+    while (ok && at < n) {
+        const uint8_t tag = u8();
+        if (tag == 'F') {
+            Frame f;
+            f.t = f32(); f32();
+            f.match = (MatchState)u8(); u8(); u8();
+            for (int p = 0; p < 2; ++p) {
+                f.kept[p] = u8() != 0;
+                if (!f.kept[p]) continue;
+                PlayerInput& in = f.in[p];
+                in.headTracked = true;
+                in.head = pose();
+                for (HandInput& hi : in.hand) { hi.grip = pose(); hi.trigger = f32(); hi.squeeze = f32(); hi.tracked = u8() != 0; }
+            }
+            for (int p = 0; p < 2; ++p) {
+                BallAt& b = f.ball[p];
+                b.state = (BallState)u8(); b.instigator = i8();
+                b.pos = vec(); b.vel = vec(); b.spin = vec();
+                b.scale = f32(); b.charged = u8() != 0; b.heldHand = i8();
+            }
+            if (ok) frames.push_back(f);
+        } else if (tag == 'E') {
+            GameEvent e{};
+            e.type = (EventType)u8(); e.player = i8(); e.hand = i8(); e.ball = i8(); e.pos = vec(); e.value = f32();
+            if (ok && !frames.empty()) frames.back().events.push_back(e);
+        } else {
+            break;   // 'X' (the end), or something this build doesn't know
+        }
+    }
+    return !frames.empty();
 }
 
 void prune(const std::string& dir, int keep) {

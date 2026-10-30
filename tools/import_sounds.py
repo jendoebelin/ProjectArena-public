@@ -37,6 +37,8 @@ SLOTS = {
     'Overtime': (2.5, -22, False), 'FistBump': (0.9, -24, False), 'Ambience': (40.0, -34, True),
     # The Crowd (fans on phones): a loop whose volume follows the hype, and a cheer when an end's hype jumps
     'Crowd': (12.0, -26, True), 'Cheer': (3.5, -22, False),
+    'LeadChange': (1.1, -27, False),   # FOUR CORNERS: a new leader (0.3.12)
+    'TargetHit': (0.9, -22, False),    # TRAINING: a target taken (0.3.12)
 }
 
 

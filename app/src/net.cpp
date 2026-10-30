@@ -31,8 +31,9 @@ static double monoNow() { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); retu
 static const uint16_t kPort = 47777;
 static const uint32_t kMagic = 0x43525053;   // 'SPRC'
 // 3: event log in STATE; 4: named beacons, LEAVE; 5: SpawnRise; 6: spectators; 7: avatars; 8: rooms (waiting players,
-// queue, rotation, spectator presence)
-static const uint8_t kVersion = 8;
+// queue, rotation, spectator presence); 9 (0.3.12): FOUR CORNERS (four places), compact snapshots, the EXPERIMENTAL
+// rooms' rules in beacons and snapshots
+static const uint8_t kVersion = 9;
 // PING / PONG: the round trip between a host and each player (logged with the net stats). Builds without them ignore
 // both, so the protocol version stays.
 enum : uint8_t { MSG_BEACON = 1, MSG_JOIN = 2, MSG_INPUT = 3, MSG_STATE = 4, MSG_LEAVE = 5, MSG_SPECTATE = 6,
@@ -44,7 +45,8 @@ static const uint32_t kRelayMagic = 0x4C52414F;   // 'OARL'
 static const uint16_t kRelayPort = 47780;
 enum : uint8_t { R_HELLO = 1, R_WELCOME = 2, R_SEND = 3, R_PING = 4, R_BYE = 5, R_DELIVER = 6, R_ERROR = 7,
                  R_KEY = 8, R_TANK = 9, R_MATCH = 10, R_STATSREQ = 11, R_STATS = 12, R_CONFIRM = 13, R_DELETE = 14,
-                 R_MYSTATS = 15, R_LIVE = 16, R_CROWD = 17 };   // (8-15: player statistics; 16-17: The Crowd)
+                 R_MYSTATS = 15, R_LIVE = 16, R_CROWD = 17,     // (8-15: player statistics; 16-17: The Crowd)
+                 R_TRAIN = 18, R_BOARDREQ = 19, R_BOARD = 20 };  // (18-20: TRAINING's leaderboards, 0.3.12)
 static const double kRotateDelay = 6.0;          // match summary -> both players out, the queue in
 static const double kMemberTimeout = 4.0;
 
@@ -74,6 +76,38 @@ static void readInput(Reader& r, PlayerInput& in) {
     in.avatar = r.get<AvatarDesc>();
     avatar::sanitize(in.avatar);   // never trust indices from the network
 }
+// the tank players in STATE (0.3.12): what the others draw and the host's game needs, quantised so four of them fit
+// the relay's 1200 bytes: rotations as four 16-bit numbers, triggers as bytes, no angular velocity (the host's alone)
+static void putQuat(Writer& w, const Quat& q) {
+    const float c[4] = {q.x, q.y, q.z, q.w};
+    for (float v : c) w.put<int16_t>((int16_t)std::lround(clampf(v, -1.f, 1.f) * 32767.f));
+}
+static Quat getQuat(Reader& r) {
+    Quat q;
+    q.x = r.get<int16_t>() / 32767.f; q.y = r.get<int16_t>() / 32767.f; q.z = r.get<int16_t>() / 32767.f; q.w = r.get<int16_t>() / 32767.f;
+    const float l = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if (l > 1e-3f && std::isfinite(l)) { q.x /= l; q.y /= l; q.z /= l; q.w /= l; } else q = Quat{};
+    return q;
+}
+static uint8_t byteOf(float v) { return (uint8_t)std::lround(clampf(v, 0.f, 1.f) * 255.f); }
+static void writeTankInput(Writer& w, const PlayerInput& in) {
+    putQuat(w, in.head.q); w.put(in.head.p);
+    w.put<uint8_t>((in.headTracked ? 1 : 0) | (in.buttonA ? 2 : 0) | (in.hand[0].tracked ? 4 : 0) | (in.hand[1].tracked ? 8 : 0));
+    for (int h = 0; h < 2; ++h) { putQuat(w, in.hand[h].grip.q); w.put(in.hand[h].grip.p); w.put(byteOf(in.hand[h].trigger)); w.put(byteOf(in.hand[h].squeeze)); }
+    w.put(in.avatar);
+}
+static void readTankInput(Reader& r, PlayerInput& in) {
+    in.head.q = getQuat(r); in.head.p = r.get<Vec3>();
+    const uint8_t f = r.get<uint8_t>();
+    in.headTracked = f & 1; in.buttonA = (f & 2) != 0; in.hand[0].tracked = (f & 4) != 0; in.hand[1].tracked = (f & 8) != 0;
+    for (int h = 0; h < 2; ++h) {
+        in.hand[h].grip.q = getQuat(r); in.hand[h].grip.p = r.get<Vec3>();
+        in.hand[h].trigger = r.get<uint8_t>() / 255.f; in.hand[h].squeeze = r.get<uint8_t>() / 255.f;
+        in.hand[h].angVel = {};
+    }
+    in.avatar = r.get<AvatarDesc>();
+    avatar::sanitize(in.avatar);
+}
 // waiting players in ROOM packets: poses and look only
 static void writePose(Writer& w, const PlayerInput& in) {
     w.pose(in.head); w.put<uint8_t>(in.headTracked);
@@ -92,7 +126,9 @@ static void header(Writer& w, uint8_t type, uint32_t session, uint32_t seq) {
 }
 
 static void writeRoom(Writer& w, const RoomInfo& ri, uint32_t seq) {
-    w.put(seq); w.put(ri.slot[0]); w.put(ri.slot[1]); w.put<uint8_t>(ri.bot);
+    w.put(seq);
+    for (int p = 0; p < kMaxPlayers; ++p) w.put(ri.slot[p]);
+    w.put<uint8_t>(ri.botMask);
     w.put<uint8_t>((uint8_t)std::min<size_t>(ri.members.size(), 8));
     for (size_t i = 0; i < ri.members.size() && i < 8; ++i) {
         const RoomInfo::Member& m = ri.members[i];
@@ -123,7 +159,9 @@ static void writeName(Writer& w, const char* name) {
 static bool readRoom(Reader& r, RoomInfo& ri, uint32_t& lastSeq) {
     uint32_t seq = r.get<uint32_t>();
     RoomInfo n;
-    n.slot[0] = r.get<uint32_t>(); n.slot[1] = r.get<uint32_t>(); n.bot = r.get<uint8_t>() != 0;
+    for (int p = 0; p < kMaxPlayers; ++p) n.slot[p] = r.get<uint32_t>();
+    n.botMask = r.get<uint8_t>() & 0x0F;
+    n.bot = n.isBot(1);
     uint8_t nm = r.get<uint8_t>();
     for (uint8_t i = 0; i < nm && i < 8 && r.ok; ++i) {
         RoomInfo::Member m;
@@ -268,7 +306,7 @@ uint32_t Net::roomHostVip() const {
 }
 
 void Net::reportMatch(int winner, const MatchStats st[2], const uint8_t score[4], int mode) {
-    if (mode_ != Mode::Host || !online_ || !vip_ || winner < 0 || winner > 1 || !slot_[0] || !slot_[1]) return;
+    if (mode_ != Mode::Host || !online_ || !vip_ || np_ != 2 || winner < 0 || winner > 1 || !slot_[0] || !slot_[1]) return;
     uint8_t b[38];
     b[33] = (uint8_t)std::max(0, std::min(2, mode));   // (relays before 0.3.8 read the first 33 bytes)
     std::memcpy(b + 34, &st[0].returnHits, 2);         // (0.3.9: the points from returns; older relays: 34 bytes)
@@ -310,6 +348,27 @@ const CrowdInfo* Net::crowd(uint32_t hostIp) const {
     if (mode_ == Mode::Spectate) { for (const SpecMatch& m : matches_) if (m.ip == hostIp) c = &m.crowd; }
     else if (inRoom()) c = &crowd_;
     return c && now_ - c->at < 3.0 ? c : nullptr;
+}
+
+void Net::submitTraining(int lessonId, float seconds, int successes, int attempts) {
+    if (lessonId < 1 || lessonId > 255 || successes < 0 || attempts < 1) return;
+    std::vector<uint8_t> b(8);
+    b[0] = (uint8_t)lessonId; b[1] = 1;
+    const uint32_t ms = (uint32_t)std::max(0.f, std::min(3600.f, seconds) * 1000.f);
+    std::memcpy(&b[2], &ms, 4);
+    b[6] = (uint8_t)std::min(255, successes); b[7] = (uint8_t)std::min(255, attempts);
+    for (const auto& q : trainQ_) if (q == b) return;
+    trainQ_.push_back(b);
+}
+
+void Net::requestBoard(int lessonId, int kind) {
+    const uint8_t b[2] = {(uint8_t)lessonId, (uint8_t)(kind ? 1 : 0)};
+    relaySend(R_BOARDREQ, b, 2);
+}
+
+const Net::Board* Net::board(int lessonId, int kind) const {
+    for (const Board& x : boards_) if (x.lesson == lessonId && x.kind == kind) return &x;
+    return nullptr;
 }
 
 void Net::requestMyStats() { relaySend(R_MYSTATS, nullptr, 0); }
@@ -393,7 +452,7 @@ void Net::host() {
     Member me;
     me.id = session_; me.local = true; me.seen = now_;
     members_.push_back(me);
-    slot_[0] = slot_[1] = 0;   // the host starts in the room's waiting area too: JOIN QUEUE to play (owner request)
+    for (uint32_t& s : slot_) s = 0;   // the host starts in the room's waiting area too: JOIN QUEUE to play (owner request)
     queue_.clear();
     rotateAt_ = 0;
     hostRoomInfo();
@@ -429,7 +488,7 @@ void Net::leave() {
     spectators_.clear();
     members_.clear();
     queue_.clear();
-    slot_[0] = slot_[1] = 0;
+    for (uint32_t& s : slot_) s = 0;
     room_ = RoomInfo();
 }
 
@@ -463,16 +522,15 @@ void Net::queue(bool want) {
         sendTo(w.b.data(), (int)w.b.size(), peerIp_, kPort);
     } else if (mode_ == Mode::Host) {
         auto it = std::find(queue_.begin(), queue_.end(), session_);
-        const bool inTank = slot_[0] == session_ || slot_[1] == session_;
-        if (want && it == queue_.end() && !inTank && (int)queue_.size() < kMaxQueue) queue_.push_back(session_);
+        if (want && it == queue_.end() && !inTank(session_) && (int)queue_.size() < np_) queue_.push_back(session_);
         if (!want && it != queue_.end()) queue_.erase(it);
         hostRoomInfo();   // the tank fills on the next exchange
     }
 }
 
 int Net::localSlot() const {
-    if (mode_ == Mode::Host) return slot_[0] == session_ ? 0 : slot_[1] == session_ ? 1 : -1;
-    if (mode_ == Mode::Client) return room_.slot[0] == session_ ? 0 : room_.slot[1] == session_ ? 1 : -1;
+    if (mode_ == Mode::Host) { for (int p = 0; p < kMaxPlayers; ++p) if (slot_[p] == session_) return p; return -1; }
+    if (mode_ == Mode::Client) { for (int p = 0; p < kMaxPlayers; ++p) if (room_.slot[p] == session_) return p; return -1; }
     return 0;
 }
 
@@ -488,7 +546,7 @@ int Net::localSpot() const {
 
 bool Net::slotFilled(int p) const {
     if (!inRoom()) return true;
-    return room_.slot[p] != 0 || (p == 1 && room_.bot);
+    return room_.slot[p] != 0 || room_.isBot(p);
 }
 
 const char* Net::status() const {
@@ -503,8 +561,12 @@ const char* Net::status() const {
         int s = localSlot(), q = localQueuePos();
         int waiting = 0;
         for (const RoomInfo::Member& m : room_.members) waiting += m.role == RoomInfo::WAITING;
-        if (s >= 0) snprintf(status_, sizeof status_, "%s %s - %s%s", where, mode_ == Mode::Host ? "HOST" : "ARENA",
-                             room_.slot[1 - s] ? "VS PLAYER" : room_.bot ? "VS BOT" : "WAITING FOR AN OPPONENT",
+        int others = 0;
+        for (int p = 0; p < kMaxPlayers; ++p) others += p != s && room_.slot[p];
+        if (s >= 0 && np_ == 4) snprintf(status_, sizeof status_, "%s %s - FOUR CORNERS%s", where, mode_ == Mode::Host ? "HOST" : "ARENA",
+                                         waiting ? " - PLAYERS WAITING" : "");
+        else if (s >= 0) snprintf(status_, sizeof status_, "%s %s - %s%s", where, mode_ == Mode::Host ? "HOST" : "ARENA",
+                             others ? "VS PLAYER" : room_.bot ? "VS BOT" : "WAITING FOR AN OPPONENT",
                              waiting ? " - PLAYERS WAITING" : "");
         else if (q >= 0) snprintf(status_, sizeof status_, "%s - QUEUED %s", where, q == 0 ? "NEXT" : "SECOND");
         else snprintf(status_, sizeof status_, "%s - WAITING OUTSIDE THE TANK", where);
@@ -516,22 +578,23 @@ const char* Net::status() const {
 
 // ------------------------------------------------------------------ snapshot
 static void writeState(Writer& w, const Game& g) {
-    w.put<uint8_t>((uint8_t)g.match); w.put(g.stateTimer); w.put(g.roundClock); w.put<int32_t>(g.round);
+    w.put<uint8_t>((uint8_t)g.match); w.put(g.stateTimer); w.put(g.roundClock); w.put<int16_t>((int16_t)g.round);
     w.put<int8_t>((int8_t)g.lastRoundWinner); w.put<int8_t>((int8_t)g.matchWinner); w.put<uint8_t>(g.overtime); w.put<uint8_t>(g.tun.advanced);
-    for (int p = 0; p < 2; ++p) {
-        const PlayerState& s = g.pl[p];
-        writeInput(w, s.in);
-        w.put<uint8_t>(s.hands[0].shieldUp); w.put<uint8_t>(s.hands[1].shieldUp);
-        w.put<uint8_t>(s.hands[0].knuckleUp); w.put<uint8_t>(s.hands[1].knuckleUp);
-        w.put<int32_t>(s.score); w.put<int32_t>(s.roundWins); w.put<int32_t>(s.strikesAgainst);
-        w.put<uint8_t>((uint8_t)s.ball.state); w.put(s.ball.pos); w.put(s.ball.vel); w.put<int8_t>((int8_t)s.ball.heldHand);
-        w.put<uint8_t>(s.ball.charged); w.put<int8_t>((int8_t)s.ball.instigator); w.put(s.ball.scale);
-    }
-    // MATCH OPTIONS (0.3.8): after everything older builds read
+    // the rules: MATCH OPTIONS, and (0.3.12) the EXPERIMENTAL room, its players and teams
     w.put<uint8_t>(g.tun.shields); w.put<int8_t>((int8_t)g.tun.knuckleMode); w.put<float>(g.tun.basicMatchTime);
     w.put<float>(g.tun.advancedRoundTime);
-    // 0.3.11: which balls are on their way home, harmless (drawn faded); older builds stop reading before this
-    w.put<uint8_t>(g.pl[0].ball.scored); w.put<uint8_t>(g.pl[1].ball.scored);
+    w.put<uint8_t>(g.tun.experimental); w.put<uint8_t>((uint8_t)g.tun.expRoom); w.put<uint8_t>((uint8_t)g.np);
+    w.put<uint8_t>((uint8_t)g.tun.teamMode); w.put<uint8_t>((uint8_t)g.tun.theOne);
+    for (int p = 0; p < g.np; ++p) {
+        const PlayerState& s = g.pl[p];
+        writeTankInput(w, s.in);
+        w.put<uint8_t>((s.hands[0].shieldUp ? 1 : 0) | (s.hands[1].shieldUp ? 2 : 0) | (s.hands[0].knuckleUp ? 4 : 0) |
+                       (s.hands[1].knuckleUp ? 8 : 0) | (s.ball.charged ? 16 : 0) | (s.ball.scored ? 32 : 0) | (s.isBot ? 64 : 0));
+        w.put<int16_t>((int16_t)s.score); w.put<uint8_t>((uint8_t)s.roundWins); w.put<uint8_t>((uint8_t)s.strikesAgainst);
+        w.put<uint8_t>((uint8_t)s.strikesFor);
+        w.put<uint8_t>((uint8_t)s.ball.state); w.put(s.ball.pos); w.put(s.ball.vel); w.put<int8_t>((int8_t)s.ball.heldHand);
+        w.put<int8_t>((int8_t)s.ball.instigator); w.put(s.ball.scale);
+    }
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -547,29 +610,35 @@ static void writeEvents(Writer& w, const std::deque<Net::SentEvent>& log) {
 }
 
 static bool readState(Reader& r, Game& g, int localIndex) {
-    g.match = (MatchState)r.get<uint8_t>(); g.stateTimer = r.get<float>(); g.roundClock = r.get<float>(); g.round = r.get<int32_t>();
+    g.match = (MatchState)r.get<uint8_t>(); g.stateTimer = r.get<float>(); g.roundClock = r.get<float>(); g.round = r.get<int16_t>();
     g.lastRoundWinner = r.get<int8_t>(); g.matchWinner = r.get<int8_t>(); g.overtime = r.get<uint8_t>(); g.tun.advanced = r.get<uint8_t>();
-    for (int p = 0; p < 2; ++p) {
+    g.tun.shields = r.get<uint8_t>() != 0;
+    g.tun.knuckleMode = std::max(-1, std::min(1, (int)r.get<int8_t>()));
+    const float mt = r.get<float>(), rt = r.get<float>();
+    if (std::isfinite(mt) && mt >= 0 && mt <= 3600) g.tun.basicMatchTime = mt;
+    if (std::isfinite(rt) && rt >= 0 && rt <= 3600) g.tun.advancedRoundTime = rt;
+    g.tun.experimental = r.get<uint8_t>() != 0;
+    g.tun.expRoom = r.get<uint8_t>() == 1 ? 1 : 0;
+    const int np = r.get<uint8_t>() == 4 ? 4 : 2;
+    g.tun.teamMode = std::min(2, (int)r.get<uint8_t>());
+    g.tun.theOne = r.get<uint8_t>() & 3;
+    if (!r.ok) return false;
+    g.np = np;
+    g.tun.players = np;
+    for (int p = 0; p < np; ++p) {
         PlayerState& s = g.pl[p];
-        PlayerInput in; readInput(r, in);
+        PlayerInput in; readTankInput(r, in);
         if (p != localIndex) s.in = in;   // keep our own latest local poses for latency-free hands
-        s.hands[0].shieldUp = r.get<uint8_t>(); s.hands[1].shieldUp = r.get<uint8_t>();
-        s.hands[0].knuckleUp = r.get<uint8_t>(); s.hands[1].knuckleUp = r.get<uint8_t>();
-        s.score = r.get<int32_t>(); s.roundWins = r.get<int32_t>(); s.strikesAgainst = r.get<int32_t>();
-        s.ball.state = (BallState)r.get<uint8_t>(); s.ball.pos = r.get<Vec3>(); s.ball.vel = r.get<Vec3>(); s.ball.heldHand = r.get<int8_t>();
-        s.ball.charged = r.get<uint8_t>(); s.ball.instigator = r.get<int8_t>(); s.ball.scale = r.get<float>();
+        const uint8_t f = r.get<uint8_t>();
+        s.hands[0].shieldUp = f & 1; s.hands[1].shieldUp = (f & 2) != 0; s.hands[0].knuckleUp = (f & 4) != 0; s.hands[1].knuckleUp = (f & 8) != 0;
+        s.ball.charged = (f & 16) != 0; s.ball.scored = (f & 32) != 0; s.isBot = (f & 64) != 0;
+        s.score = r.get<int16_t>(); s.roundWins = r.get<uint8_t>(); s.strikesAgainst = r.get<uint8_t>(); s.strikesFor = r.get<uint8_t>();
+        s.ball.state = (BallState)std::min<uint8_t>(r.get<uint8_t>(), (uint8_t)BallState::Returning);
+        s.ball.pos = r.get<Vec3>(); s.ball.vel = r.get<Vec3>(); s.ball.heldHand = r.get<int8_t>();
+        if (s.ball.heldHand < -1 || s.ball.heldHand > 1) s.ball.heldHand = -1;
+        s.ball.instigator = r.get<int8_t>(); s.ball.scale = r.get<float>();
+        if (!std::isfinite(s.ball.scale) || s.ball.scale < 0.1f || s.ball.scale > 10.f) s.ball.scale = 1.f;
     }
-    if (r.ok && r.e - r.p >= 10) {   // MATCH OPTIONS (hosts from 0.3.8; older ones: the rules as they come)
-        g.tun.shields = r.get<uint8_t>() != 0;
-        g.tun.knuckleMode = std::max(-1, std::min(1, (int)r.get<int8_t>()));
-        const float mt = r.get<float>(), rt = r.get<float>();
-        if (std::isfinite(mt) && mt >= 0 && mt <= 3600) g.tun.basicMatchTime = mt;
-        if (std::isfinite(rt) && rt >= 0 && rt <= 3600) g.tun.advancedRoundTime = rt;
-    } else if (r.ok) {
-        g.tun.shields = true; g.tun.knuckleMode = -1; g.tun.basicMatchTime = 180.f; g.tun.advancedRoundTime = 0.f;
-    }
-    if (r.ok && r.e - r.p >= 2) { g.pl[0].ball.scored = r.get<uint8_t>() != 0; g.pl[1].ball.scored = r.get<uint8_t>() != 0; }
-    else for (int p = 0; p < 2; ++p) g.pl[p].ball.scored = false;   // (hosts before 0.3.11: never faded)
     return r.ok;
 }
 
@@ -588,22 +657,33 @@ Net::Member* Net::member(uint32_t id) {
     return nullptr;
 }
 
-int Net::humans() const { return (slot_[0] ? 1 : 0) + (slot_[1] ? 1 : 0); }
+int Net::humans() const { int n = 0; for (int p = 0; p < kMaxPlayers; ++p) n += p < np_ && slot_[p] ? 1 : 0; return n; }
+uint8_t Net::wantBots() const {   // the empty places a bot plays (two players: slot 1 only, as it always was)
+    if (np_ == 2) return slot_[1] == 0 && botFill_ ? 2 : 0;
+    uint8_t m = 0;
+    if (botFill_ && slot_[0]) for (int p = 1; p < np_; ++p) if (!slot_[p]) m |= (uint8_t)(1u << p);
+    return m;
+}
 
 void Net::freeSpot(Member& m) {   // the lowest holding-area spot no other waiting member stands on
     bool used[4] = {false, false, false, false};
     for (const Member& o : members_)
-        if (&o != &m && o.id != slot_[0] && o.id != slot_[1]) used[o.spot & 3] = true;
+        if (&o != &m && !inTank(o.id)) used[o.spot & 3] = true;
     if (!used[m.spot & 3]) return;
     for (int s = 0; s < 4; ++s) if (!used[s]) { m.spot = (uint8_t)s; return; }
 }
 
 // humans fill slot 0 first; one human plays the bot; any change of who is in the tank restarts the match
 void Net::compactTank(Game& g, bool reset) {
-    if (!slot_[0] && slot_[1]) { slot_[0] = slot_[1]; slot_[1] = 0; }
-    for (Member& m : members_) if (m.id != slot_[0] && m.id != slot_[1]) freeSpot(m);
+    np_ = g.tun.players == 4 ? 4 : 2;
+    for (int p = np_; p < kMaxPlayers; ++p)   // (fewer places: those beyond them go back to waiting)
+        if (slot_[p]) { if (Member* m = member(slot_[p])) freeSpot(*m); slot_[p] = 0; }
+    int k = 0;   // the people in the first places, in order
+    for (int p = 0; p < np_; ++p) if (slot_[p]) { const uint32_t id = slot_[p]; slot_[p] = 0; slot_[k++] = id; }
+    for (Member& m : members_) if (!inTank(m.id)) freeSpot(m);
     if (reset) {
-        g.reset(slot_[1] == 0 && botFill_);
+        if (np_ == 4 && g.tun.teamMode == TEAMS_3V1) g.tun.theOne = (g.tun.theOne + 1) % 4;   // (online: THE ONE goes round)
+        g.resetWithBots(wantBots());
         rotateAt_ = 0;
         eventLog_.clear();
     }
@@ -613,11 +693,12 @@ void Net::compactTank(Game& g, bool reset) {
 // the queue goes into the tank whenever it has a free place (or only the bot): never into a match of two humans
 void Net::fillTank(Game& g) {
     bool changed = false;
-    while (!queue_.empty() && humans() < 2) {
+    np_ = g.tun.players == 4 ? 4 : 2;
+    while (!queue_.empty() && humans() < np_) {
         uint32_t id = queue_.front();
         queue_.erase(queue_.begin());
         if (!member(id)) continue;
-        if (!slot_[0]) slot_[0] = id; else slot_[1] = id;
+        for (int p = 0; p < np_; ++p) if (!slot_[p]) { slot_[p] = id; break; }
         changed = true;
         LOGI("net: queue -> tank");
     }
@@ -627,7 +708,7 @@ void Net::fillTank(Game& g) {
 // match over: both players leave the tank (to the holding area), the queue goes in
 void Net::rotate(Game& g) {
     LOGI("net: rotation (%d queued)", (int)queue_.size());
-    slot_[0] = slot_[1] = 0;
+    for (uint32_t& s : slot_) s = 0;
     compactTank(g, false);
     fillTank(g);
     if (!humans()) compactTank(g, true);
@@ -641,19 +722,19 @@ void Net::removeMember(uint32_t id, Game& g) {
     LOGI("net: %s left the room", ipStr(it->ip));
     members_.erase(it);
     queue_.erase(std::remove(queue_.begin(), queue_.end(), id), queue_.end());
-    bool wasPlaying = slot_[0] == id || slot_[1] == id;
-    if (slot_[0] == id) slot_[0] = 0;
-    if (slot_[1] == id) slot_[1] = 0;
+    bool wasPlaying = inTank(id);
+    for (uint32_t& s : slot_) if (s == id) s = 0;
     if (wasPlaying) { compactTank(g, true); fillTank(g); notice("PLAYER LEFT"); }
     else hostRoomInfo();
 }
 
 void Net::hostRoomInfo() {
-    room_.slot[0] = slot_[0]; room_.slot[1] = slot_[1];
-    room_.bot = slot_[0] != 0 && slot_[1] == 0 && botFill_;
+    for (int p = 0; p < kMaxPlayers; ++p) room_.slot[p] = slot_[p];
+    room_.botMask = slot_[0] ? wantBots() : 0;
+    room_.bot = room_.isBot(1);
     room_.members.clear();
     for (const Member& m : members_) {
-        if (m.id == slot_[0] || m.id == slot_[1]) continue;
+        if (inTank(m.id)) continue;
         RoomInfo::Member rm;
         rm.id = m.id; rm.role = RoomInfo::WAITING; rm.spot = m.spot; rm.in = m.in;
         auto q = std::find(queue_.begin(), queue_.end(), m.id);
@@ -764,7 +845,7 @@ void Net::reject(uint32_t ip, const char* why) {
 // body: speaker id (u32, set by the host), role (u8), kVoiceSamples mu-law bytes
 void Net::sendVoice(const uint8_t* ulaw) {
     if (mode_ == Mode::Host) {   // we talk: straight to everyone in our room
-        const uint8_t role = (slot_[0] == session_ || slot_[1] == session_) ? VOICE_PLAYER : VOICE_WAITING;
+        const uint8_t role = inTank(session_) ? VOICE_PLAYER : VOICE_WAITING;
         forwardVoice(session_, role, ulaw, 0, session_);
         return;
     }
@@ -813,7 +894,7 @@ bool Net::takeCameras(char team[17], std::vector<uint8_t>& blob) {
 }
 
 // ------------------------------------------------------------------ per-frame
-bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float dt) {
+bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt) {
     if (kickNow_ && mode_ == Mode::Host) {   // VOTE TO REMOVE passed: out of the room, and not back this session
         if (Member* m = member(kickNow_)) {
             Removed x; x.id = m->id; x.ip = m->ip; std::memcpy(x.name, m->name, 16);
@@ -880,6 +961,30 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                 }
                 continue;
             }
+            if (t == R_BOARD) {   // a TRAINING leaderboard
+                if (rr.e - rr.p < 3) continue;
+                Board bd;
+                bd.lesson = rr.p[0]; bd.kind = rr.p[1];
+                const int n = std::min<int>(rr.p[2], 20);
+                if (rr.e - rr.p < 3 + 20 * n + 8) continue;
+                for (int i = 0; i < n; ++i) {
+                    const uint8_t* q = rr.p + 3 + 20 * i;
+                    BoardRow row{};
+                    for (int k = 0; k < 16; ++k) row.name[k] = (q[k] >= 32 && q[k] < 127) ? (char)q[k] : 0;
+                    std::memcpy(&row.value, q + 16, 4);
+                    bd.rows.push_back(row);
+                }
+                const uint8_t* q = rr.p + 3 + 20 * n;
+                uint16_t place, count;
+                std::memcpy(&place, q, 2); std::memcpy(&bd.myValue, q + 2, 4); std::memcpy(&count, q + 6, 2);
+                bd.myPlace = place; bd.players = count;
+                bd.at = now_;
+                boards_.erase(std::remove_if(boards_.begin(), boards_.end(),
+                                             [&](const Board& x) { return x.lesson == bd.lesson && x.kind == bd.kind; }),
+                              boards_.end());
+                boards_.push_back(bd);
+                continue;
+            }
             if (t == R_CROWD) {   // our fans (we host an online match): keep them, and pass them on to the room
                 if (mode_ != Mode::Host || !readCrowd(rr.p, rr.e, crowd_, now_)) continue;
                 Writer w; header(w, MSG_CROWD, session_, 0);
@@ -929,6 +1034,13 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                 lg.matchTime = r.get<float>(); lg.roundTime = r.get<float>();
                 if (!std::isfinite(lg.matchTime) || lg.matchTime < 0) lg.matchTime = 180.f;
                 if (!std::isfinite(lg.roundTime) || lg.roundTime < 0) lg.roundTime = 0.f;
+            }
+            if (r.ok && r.e - r.p >= 12) {   // 0.3.12: the EXPERIMENTAL room, its players and teams, the teams' scores
+                lg.experimental = r.get<uint8_t>() != 0;
+                lg.expRoom = r.get<uint8_t>() == 1 ? 1 : 0;
+                lg.players = r.get<uint8_t>() == 4 ? 4 : 2;
+                lg.teamMode = std::min(2, (int)r.get<uint8_t>());
+                for (int& t : lg.teamScores) t = r.get<int16_t>();
             }
             for (char& c : lg.name) if (c && (c < 32 || c > 'Z')) c = ' ';
             if (r.ok) {
@@ -985,7 +1097,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             mode_ = Mode::Offline; peerIp_ = 0; peerSeen_ = 0; room_ = RoomInfo();
         } else if (type == MSG_JOIN && mode_ == Mode::Host) {
             if (Member* m = member(session)) { if (m->ip == fromIp) m->seen = now_; continue; }
-            if ((int)members_.size() >= 2 + kMaxWaiting) { reject(fromIp, "ARENA FULL"); continue; }
+            if ((int)members_.size() >= np_ + kMaxWaiting) { reject(fromIp, "ARENA FULL"); continue; }
             Member m;
             m.ip = fromIp; m.id = session; m.seen = now_;
             r.get<uint8_t>();   // "play now" from older builds: everyone now starts in the room's waiting area
@@ -1020,7 +1132,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             if (seq > fromMember->lastSeq) {
                 fromMember->lastSeq = seq;
                 readInput(r, fromMember->in);
-                if (fromMember->id == slot_[0] || fromMember->id == slot_[1]) countSeq(seq);
+                if (inTank(fromMember->id)) countSeq(seq);
             }
         } else if (type == MSG_KICKVOTE && fromMember) {
             const uint32_t target = r.get<uint32_t>();
@@ -1030,8 +1142,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             if (v == 2) { forfeit_ = session; continue; }
             bool want = v != 0;
             auto it = std::find(queue_.begin(), queue_.end(), session);
-            const bool inTank = slot_[0] == session || slot_[1] == session;
-            if (want && it == queue_.end() && !inTank && (int)queue_.size() < kMaxQueue) queue_.push_back(session);   // full: stays waiting
+            if (want && it == queue_.end() && !inTank(session) && (int)queue_.size() < np_) queue_.push_back(session);   // full: stays waiting
             if (!want && it != queue_.end()) queue_.erase(it);
             hostRoomInfo();
         } else if (type == MSG_VOICE) {
@@ -1042,7 +1153,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                 Spectator* sp = nullptr;
                 for (Spectator& x : spectators_) if (x.ip == fromIp && x.id == session && x.where == 1) sp = &x;
                 if (fromMember)
-                    forwardVoice(session, (session == slot_[0] || session == slot_[1]) ? VOICE_PLAYER : VOICE_WAITING, pcm, fromIp, session);
+                    forwardVoice(session, inTank(session) ? VOICE_PLAYER : VOICE_WAITING, pcm, fromIp, session);
                 else if (sp)
                     forwardVoice(session, VOICE_SPECTATOR, pcm, fromIp, session);
             } else if (fromHost || (mode_ == Mode::Spectate && presWhere_ == 1 && fromIp == presWatch_)) {
@@ -1097,10 +1208,15 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
         bool anyKey = false;
         for (uint8_t k : statsKey_) anyKey |= k != 0;
         if (vip_ && anyKey && !keySent_) { relaySend(R_KEY, statsKey_, 16); keySent_ = true; }
+        for (int k = 0; k < 4 && vip_ && keySent_ && !trainQ_.empty(); ++k) {   // (TRAINING results, a few at a time)
+            relaySend(R_TRAIN, trainQ_.front().data(), (int)trainQ_.front().size());
+            LOGI("stats: training result sent (lesson %d)", trainQ_.front()[0]);
+            trainQ_.erase(trainQ_.begin());
+        }
         if (vip_ && mode_ == Mode::Host && now_ - lastTank_ > 3.0) {   // who is in the tank (stats go to them)
             lastTank_ = now_;
             uint32_t v[2] = {0, 0};
-            for (int k = 0; k < 2; ++k) {
+            for (int k = 0; k < 2 && np_ == 2; ++k) {   // (four players: no careers, they compare one-on-one matches)
                 if (!slot_[k]) continue;
                 for (const Member& m : members_) if (m.id == slot_[k]) v[k] = m.local ? vip_ : m.ip;
             }
@@ -1168,8 +1284,9 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
                        matches_.end());
         return false;   // the local game is not simulated while spectating
     }
-    case Mode::Offline:
-        if (!g.pl[1].isBot) g.reset(true);
+    case Mode::Offline:   // practice: the bot in slot 1 (FOUR CORNERS: bots in the other three corners)
+        if (g.tun.players == 4 ? g.np != 4 || !(g.pl[1].isBot && g.pl[2].isBot && g.pl[3].isBot) : g.np != 2 || !g.pl[1].isBot)
+            g.resetWithBots(g.tun.players == 4 ? 0xEu : 2u);
         in[0] = local;
         return true;
     case Mode::Searching:
@@ -1185,17 +1302,18 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
         if (forfeit_) {   // a player gave up: out to the waiting area, the bot or the queue takes the place
             const uint32_t id = forfeit_;
             forfeit_ = 0;
-            if (slot_[0] == id || slot_[1] == id) {
-                if (slot_[0] == id) slot_[0] = 0;
-                if (slot_[1] == id) slot_[1] = 0;
+            if (inTank(id)) {
+                for (uint32_t& s : slot_) if (s == id) s = 0;
                 compactTank(g, true);
                 notice("PLAYER FORFEITED");
                 LOGI("net: forfeit -> waiting area");
             }
         }
+        if ((g.tun.players == 4 ? 4 : 2) != g.np || np_ != g.np) compactTank(g, true);   // the rules changed the places
         fillTank(g);
-        // rotation: a finished match of two humans (or with someone queued) empties the tank after a short pause
-        const bool rotateRule = humans() == 2 || (humans() == 1 && !queue_.empty());
+        // rotation: a finished match of two humans (four: a full tank) or with someone queued empties the tank after a
+        // short pause
+        const bool rotateRule = humans() == np_ || (humans() >= 1 && !queue_.empty());
         if (rotateRule && g.match == MatchState::MatchSummary) {
             if (rotateAt_ == 0) { rotateAt_ = now_ + kRotateDelay; notice("NEXT PLAYERS UP SOON"); }
             else if (now_ > rotateAt_) rotate(g);
@@ -1208,37 +1326,41 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
             int waiting = (int)room_.members.size();
             Writer w; header(w, MSG_BEACON, session_, 0);   // beacons stay out of the sequence (loss stats)
             for (int i = 0; i < 16; ++i) w.put<uint8_t>((uint8_t)name_[i]);
-            w.put<uint8_t>(g.tun.advanced); w.put<uint8_t>((int)members_.size() >= 2 + kMaxWaiting);
-            w.put<int16_t>((int16_t)g.pl[0].score); w.put<int16_t>((int16_t)g.pl[1].score); w.put<float>(g.roundClock);
+            w.put<uint8_t>(g.tun.advanced); w.put<uint8_t>((int)members_.size() >= np_ + kMaxWaiting);
+            w.put<int16_t>((int16_t)g.teamScore(0)); w.put<int16_t>((int16_t)g.teamScore(1)); w.put<float>(g.roundClock);
             w.put<uint8_t>((uint8_t)std::min<size_t>(255, spectators_.size()));
             w.put<uint8_t>((uint8_t)waiting); w.put<uint8_t>((uint8_t)queue_.size()); w.put<uint8_t>((uint8_t)humans());
             w.put<uint8_t>(g.tun.shields); w.put<int8_t>((int8_t)g.tun.knuckleMode);   // MATCH OPTIONS (0.3.8)
             w.put<float>(g.tun.basicMatchTime); w.put<float>(g.tun.advancedRoundTime);
+            w.put<uint8_t>(g.tun.experimental); w.put<uint8_t>((uint8_t)g.tun.expRoom);   // 0.3.12
+            w.put<uint8_t>((uint8_t)g.np); w.put<uint8_t>((uint8_t)g.tun.teamMode);
+            for (int t = 0; t < 4; ++t) w.put<int16_t>((int16_t)(t < g.teamCount() ? g.teamScore(t) : 0));
             sendTo(w.b.data(), (int)w.b.size(), INADDR_BROADCAST, kPort);
         }
         if (now_ - lastRoomSent_ > 1.0 / 15.0) { lastRoomSent_ = now_; sendRoom(); }
-        // the game is stepped with the tank players' inputs; slot 1 empty = the bot (Game fills its input)
-        for (int p = 0; p < 2; ++p) {
+        // the game is stepped with the tank players' inputs; an empty place = a bot (Game fills its input)
+        for (int p = 0; p < kMaxPlayers; ++p) {
             in[p] = PlayerInput();
-            if (!slot_[p]) continue;
+            if (!slot_[p] || p >= np_) continue;
             if (Member* m = member(slot_[p])) in[p] = m->local ? local : m->in;
         }
-        if (rotateRule) { in[0].buttonA = false; in[1].buttonA = false; }   // no skipping the rotation with A
+        if (rotateRule) for (int p = 0; p < kMaxPlayers; ++p) in[p].buttonA = false;   // no skipping the rotation with A
         if (!humans()) return false;   // empty tank: the arena idles until someone queues
-        const bool wantBot = slot_[1] == 0 && botFill_;
-        if (g.pl[1].isBot != wantBot) g.reset(wantBot);
+        const uint8_t bots = wantBots();
+        uint8_t now = 0;
+        for (int p = 0; p < g.np; ++p) now |= g.pl[p].isBot ? (uint8_t)(1u << p) : 0;
+        if (now != bots) g.resetWithBots(bots);
         return true;   // caller steps; snapshot is sent via sendState
     }
     case Mode::Client: {
         // the snapshots do not say who is a bot: take it from the room (only slot 1 can be the host's bot). A flag
         // left over from practice or the lobby made the host flicker between its own look and the bot's, unsmoothed.
-        g.pl[0].isBot = false;
-        g.pl[1].isBot = room_.bot;
+        for (int p = 0; p < kMaxPlayers; ++p) g.pl[p].isBot = room_.isBot(p);
         if (localSlot() < 0)
             for (const LanGame& lg : games_) if (lg.ip == peerIp_ && now_ - lg.seen < 3.0) g.tun.advanced = lg.advanced;
         Writer w; header(w, MSG_INPUT, session_, ++seq_); writeInput(w, local);
         sendTo(w.b.data(), (int)w.b.size(), peerIp_, kPort);
-        const bool known = room_.slot[0] == session_ || room_.slot[1] == session_ ||
+        const bool known = localSlot() >= 0 ||
                            std::any_of(room_.members.begin(), room_.members.end(), [&](const RoomInfo::Member& m) { return m.id == session_; });
         if (!known && now_ - lastJoin_ > 1.0) {   // the JOIN may have been lost: ask again until the room lists us
             lastJoin_ = now_;
@@ -1264,6 +1386,13 @@ bool Net::exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float d
     return true;
 }
 
+size_t Net::snapshotBytes(const Game& g) {
+    std::deque<SentEvent> log;
+    for (int i = 0; i < 24; ++i) log.push_back({(uint32_t)i + 1, 0.0, GameEvent{EventType::Bounce, 0, -1, {}, 0.f}});
+    Writer w; header(w, MSG_STATE, 1, 1); writeEvents(w, log); writeState(w, g);
+    return w.b.size();
+}
+
 void Net::sendState(const Game& g) {
     if (mode_ != Mode::Host) return;
     for (const GameEvent& e : g.events) eventLog_.push_back({nextEventId_++, now_, e});
@@ -1278,7 +1407,7 @@ void Net::sendState(const Game& g) {
     Writer w; header(w, MSG_STATE, session_, ++seq_); writeEvents(w, eventLog_); writeState(w, g);
     for (const Member& m : members_) {
         if (m.local) continue;
-        const bool player = m.id == slot_[0] || m.id == slot_[1];
+        const bool player = inTank(m.id);
         if (player || slow) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
     }
     if (slow) for (const Spectator& sp : spectators_) sendTo(w.b.data(), (int)w.b.size(), sp.ip, kPort);

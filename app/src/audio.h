@@ -21,10 +21,12 @@ public:
     void pause();
     void resume();
     void play(const std::string& clip, float gain = 1.f, float pan = 0.f, bool loop = false);
+    bool cue(const std::string& key, float gain = 1.f, float pan = 0.f);   // an events.txt sound by its name (false: none)
     // one looping clip at a volume that can change every frame (The Crowd's crowd sound); 0 stops it
     void setLoop(const std::string& clip, float gain);
     // local: the listener's player index (HitPlayer names the victim, RoundEnd / MatchEnd the winner)
-    void onEvent(const GameEvent& e, const Vec3& listener, int local = 0);
+    // ours: the event is on the listener's side (they were hit, their team won); right: the listener's right, flat
+    void onEvent(const GameEvent& e, const Vec3& listener, bool ours, const Vec3& right = {0, 0, 1});
     void setVolume(float v) { volume_ = v < 0 ? 0 : v > 1 ? 1 : v; }   // master 0..1
     // voice chat (16 kHz mono): capture through a second, input stream (Quest: needs RECORD_AUDIO); each speaker's
     // frames go through a small jitter buffer and are mixed into the output

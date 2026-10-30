@@ -5,7 +5,8 @@
 // a bot opponent's motion is kept too (it is not a person).
 // File (little-endian): "PAREC1", then the header, then records, each starting with a tag byte:
 //   header: u8 local player, u8 opponent is a bot, u8 bot level, u8 MATCH MY LEVEL on, f32 its level then,
-//           u8 Advanced, u8 shields, i8 knuckle mode, u8 0, f32 match time, f32 round time, char[16] game version
+//           u8 Advanced, u8 shields, i8 knuckle mode, u8 TRAINING's lesson (its id; 0: none, and before 0.3.12),
+//           f32 match time, f32 round time, char[16] game version
 //   'F' a step: f32 game time, f32 step length, u8 match state, u8 score[2]; per player: u8 motion kept, and if so
 //       head (pos xyz, quat xyzw), per hand (pos, quat, trigger, squeeze, u8 tracked); per player's ball: u8 state,
 //       i8 instigator, pos, vel, spin, f32 scale, u8 charged, i8 held hand
@@ -14,6 +15,7 @@
 #pragma once
 #include <cstdio>
 #include <string>
+#include <vector>
 #include "game.h"
 
 namespace rec {
@@ -24,6 +26,7 @@ constexpr float kMaxSeconds = 900.f;   // one recording ends after 15 minutes of
 struct Meta {
     int local = 0;
     const char* version = "";
+    int lesson = 0;    // TRAINING: the lesson played (its id)
 };
 
 class Recorder {
@@ -42,6 +45,22 @@ private:
     int local_ = 0;
     bool keepOpp_ = false;
     float seconds_ = 0;
+};
+
+// A recording read back (TRAINING's tutorial videos replay one): each step's players and balls, and its events
+struct Replay {
+    struct BallAt { BallState state; int instigator, heldHand; Vec3 pos, vel, spin; float scale; bool charged; };
+    struct Frame {
+        float t = 0;
+        MatchState match = MatchState::WaitingForPlayers;
+        bool kept[2] = {false, false};   // that player's motion is in it
+        PlayerInput in[2];
+        BallAt ball[2];
+        std::vector<GameEvent> events;
+    };
+    int local = 0, lesson = 0;
+    std::vector<Frame> frames;
+    bool load(const uint8_t* data, size_t size);   // false: not a recording (or cut short before its first step)
 };
 
 // the recordings in `dir` beyond the newest `keep` are deleted (names sort by time: match_YYYYMMDD_HHMMSS.par)

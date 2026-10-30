@@ -59,7 +59,7 @@ int main(int argc, char** argv) {
                 if (!gs.empty()) { net.join(gs[0].ip); joined = true; std::printf("[%5.1fs] joining %s\n", t, gs[0].name); }
             }
         }
-        PlayerInput in[2];
+        PlayerInput in[kMaxPlayers];
         // a hosting probe plays as a bot itself (else a dummy stands still mid-court and the bot plays alone)
         if (role == "host" && net.localIndex() == 0 && !net.localWaiting()) g.pl[0].isBot = true;
         if (net.exchange(local, in, g, 1.f / 90.f)) { g.step(1.f / 90.f, in); net.sendState(g); }

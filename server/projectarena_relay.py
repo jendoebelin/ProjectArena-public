@@ -56,6 +56,17 @@ The Crowd (2026-10-21; games from 0.3.7 on): fans follow live matches on their p
   anyway: host name, score, clock, rules) and the tank players' names from TANK; no match statistics or flags.
   Fans are anonymous: the web page sends no name or account; the relay keeps them in memory only (no file, no log
   line per fan) and counts at most 10 connections per address.
+TRAINING leaderboards (games from 0.3.12; the player's KEY says whose, as for careers):
+  TRAIN   18  player -> server  body: a lesson passed: the lesson (u8 id, LESSONS below), 1 (u8), its time (u32 ms; 0 for
+                                a lesson without a clock), successes (u8), attempts (u8). Kept per player and lesson: the
+                                best time and the best accuracy (successes / attempts), with the player's name. A result
+                                that can't be real for that lesson is refused (logged). The game sends its bests again at
+                                each connection: the server keeps only what is better.
+  BOARDREQ 19 player -> server  body: lesson (u8; 0 = the overall board), board (u8: 0 TIME, 1 ACCURACY)
+  BOARD   20  server -> asker   body: lesson (u8), board (u8), count (u8), then that many places: name (16), value (u32:
+                                the time in ms; accuracy in tenths of a percent; overall: every lesson's best accuracy
+                                added up), then the asker's own place (u16, 0 = none), value (u32), and how many are on
+                                the board (u16)
 Privacy: the server never stores a player's key, only a salted hash of it (HMAC-SHA256 with a secret salt kept beside
 the table, --stats + '.salt'); both files are readable by the server's own account only. first_seen / last_seen are
 kept for abuse checks (spam, the same player connected from two places, which is logged).
@@ -95,6 +106,15 @@ GAME_MAGIC = 0x43525053     # 'SPRC' (the game's LAN packets)
 HELLO, WELCOME, SEND, PING, BYE, DELIVER, ERROR = 1, 2, 3, 4, 5, 6, 7
 KEY, TANK, MATCH, STATSREQ, STATS, CONFIRM, DELETE, MYSTATS = 8, 9, 10, 11, 12, 13, 14, 15
 LIVE, CROWD = 16, 17
+TRAIN, BOARDREQ, BOARD = 18, 19, 20
+# TRAINING's lessons (app/src/training.cpp; their ids never change): id -> (has a clock, the goal, throws or tries in it).
+# The goal: THROW lessons every target (one throw each at least), the others successes to pass. A passed run can't be
+# quicker than about 1.4 s a target (each takes your ball, which comes back in 1.7 s).
+# Three tracks (owner, 2026-10-29): throwing 1-8, blocking 21-25, dodging 41-44.
+LESSONS = {1: (1, 5, 15), 2: (1, 8, 22), 3: (1, 5, 15), 4: (1, 4, 16), 5: (1, 4, 16), 6: (1, 6, 18), 7: (1, 5, 15), 8: (0, 5, 8),
+           21: (0, 7, 10), 22: (0, 7, 10), 23: (0, 7, 10), 24: (0, 9, 12), 25: (1, 3, 15),
+           41: (0, 7, 10), 42: (0, 7, 10), 43: (0, 7, 10), 44: (0, 8, 12)}
+DEFENSE_TRIES = (8, 21, 22, 23, 24, 41, 42, 43, 44)   # every try counts: attempts are the lesson's tries
 MODE_NAMES = ('standard', 'hotdog', 'custom')   # MATCH's mode byte (0.3.8)
 SELF = 0xFFFFFFFF           # STATS for MYSTATS: "host" SELF, slot 0 = the asker
 CONFIRM_WINDOW = 60.0       # seconds: a host's result and the other player's confirmation must meet within this
@@ -126,7 +146,7 @@ def ip_text(v):
 
 class Client:
     __slots__ = ('addr', 'token', 'vip', 'version', 'app', 'name', 'seen', 'bucket', 'bucket_t', 'joined', 'key', 'tank',
-                 'last_match', 'last_req')
+                 'last_match', 'last_req', 'trains', 'last_board')
 
     def __init__(self, addr, vip, version, name):
         self.addr, self.vip, self.version, self.name = addr, vip, version, name
@@ -135,6 +155,7 @@ class Client:
         self.seen = self.bucket_t = self.joined = time.monotonic()
         self.bucket = RATE
         self.key, self.tank, self.last_match, self.last_req = None, (0, 0), -1e9, -1e9
+        self.trains, self.last_board = 0, -1e9
 
 
 class Stats:
@@ -161,6 +182,8 @@ class Stats:
         self.db.execute('CREATE TABLE IF NOT EXISTS player_modes (key TEXT, mode INTEGER, ' +
                         ', '.join('%s INTEGER DEFAULT 0' % f for f in STAT_FIELDS) +
                         ', top_speed INTEGER DEFAULT 0, PRIMARY KEY (key, mode))')
+        self.db.execute('CREATE TABLE IF NOT EXISTS training (key TEXT, lesson INTEGER, name TEXT, best_ms INTEGER DEFAULT 0, '
+                        'succ INTEGER DEFAULT 0, att INTEGER DEFAULT 0, updated INTEGER, PRIMARY KEY (key, lesson))')
         for table in ('players', 'player_modes'):   # (0.3.9: the points from returns)
             if 'return_hits' not in [r[1] for r in self.db.execute('PRAGMA table_info(%s)' % table)]:
                 self.db.execute('ALTER TABLE %s ADD COLUMN return_hits INTEGER DEFAULT 0' % table)
@@ -173,6 +196,7 @@ class Stats:
         """The privacy policy's promise: statistics go after 24 months unseen (at start and once a day)."""
         n = self.db.execute('DELETE FROM players WHERE last_seen < ?', (int(time.time()) - months * 30 * 86400,)).rowcount
         self.db.execute('DELETE FROM player_modes WHERE key NOT IN (SELECT key FROM players)')
+        self.db.execute('DELETE FROM training WHERE updated < ?', (int(time.time()) - months * 30 * 86400,))
         self.db.commit()
         if n:
             self.log('stats: %d players unseen for %d months removed' % (n, months))
@@ -200,14 +224,77 @@ class Stats:
 
     def delete(self, key):
         self.db.execute('DELETE FROM player_modes WHERE key = ?', (key,))
+        self.db.execute('DELETE FROM training WHERE key = ?', (key,))
         n = self.db.execute('DELETE FROM players WHERE key = ?', (key,)).rowcount
         self.db.commit()
         return n
+
+    def train(self, key, name, lesson, ms, succ, att):
+        """A passed lesson: keeps the better time and the better accuracy (the name as the player is called now).
+        True when something improved."""
+        t = int(time.time())
+        self.db.execute('INSERT OR IGNORE INTO training (key, lesson, name, updated) VALUES (?, ?, ?, ?)', (key, lesson, name, t))
+        best_ms, s0, a0 = self.db.execute('SELECT best_ms, succ, att FROM training WHERE key = ? AND lesson = ?', (key, lesson)).fetchone()
+        better = False
+        if ms > 0 and (best_ms == 0 or ms < best_ms):
+            best_ms, better = ms, True
+        if a0 == 0 or succ * 1000 // att > s0 * 1000 // a0 or (succ * 1000 // att == s0 * 1000 // a0 and succ > s0):
+            s0, a0, better = succ, att, True
+        self.db.execute('UPDATE training SET best_ms = ?, succ = ?, att = ?, updated = ? WHERE key = ? AND lesson = ?',
+                        (best_ms, s0, a0, t, key, lesson))
+        self.db.execute('UPDATE training SET name = ? WHERE key = ?', (name, key))
+        self.db.commit()
+        return better
+
+    def board(self, key, lesson, kind, n=10):
+        """(the top n [(name, value)], the asker's place (0: none), its value, how many are on the board)"""
+        if lesson == 0:   # overall: each player's lessons' best accuracies added up
+            q = 'SELECT key, MAX(name), SUM(succ * 1000 / att) AS v FROM training WHERE att > 0 GROUP BY key'
+            rows = self.db.execute(q + ' ORDER BY v DESC, MAX(updated) ASC LIMIT ?', (n,)).fetchall()
+            mine = self.db.execute('SELECT SUM(succ * 1000 / att) FROM training WHERE key = ? AND att > 0', (key,)).fetchone()[0]
+            count = self.db.execute('SELECT COUNT(DISTINCT key) FROM training WHERE att > 0').fetchone()[0]
+            place = 0
+            if mine is not None:
+                place = 1 + self.db.execute('SELECT COUNT(*) FROM (' + q + ') WHERE v > ?', (mine,)).fetchone()[0]
+            return [(r[1], r[2]) for r in rows], place, mine or 0, count
+        if kind == 0:
+            where = 'lesson = ? AND best_ms > 0'
+            rows = self.db.execute('SELECT name, best_ms FROM training WHERE ' + where + ' ORDER BY best_ms ASC, updated ASC LIMIT ?',
+                                   (lesson, n)).fetchall()
+            mine = self.db.execute('SELECT best_ms FROM training WHERE key = ? AND ' + where, (key, lesson)).fetchone()
+            count = self.db.execute('SELECT COUNT(*) FROM training WHERE ' + where, (lesson,)).fetchone()[0]
+            place = 0 if mine is None else 1 + self.db.execute('SELECT COUNT(*) FROM training WHERE ' + where + ' AND best_ms < ?',
+                                                               (lesson, mine[0])).fetchone()[0]
+            return [(r[0], r[1]) for r in rows], place, mine[0] if mine else 0, count
+        where = 'lesson = ? AND att > 0'
+        rows = self.db.execute('SELECT name, succ * 1000 / att AS v FROM training WHERE ' + where +
+                               ' ORDER BY v DESC, succ DESC, updated ASC LIMIT ?', (lesson, n)).fetchall()
+        mine = self.db.execute('SELECT succ * 1000 / att FROM training WHERE key = ? AND ' + where, (key, lesson)).fetchone()
+        count = self.db.execute('SELECT COUNT(*) FROM training WHERE ' + where, (lesson,)).fetchone()[0]
+        place = 0 if mine is None else 1 + self.db.execute('SELECT COUNT(*) FROM training WHERE ' + where + ' AND succ * 1000 / att > ?',
+                                                           (lesson, mine[0])).fetchone()[0]
+        return [(r[0], r[1]) for r in rows], place, mine[0] if mine else 0, count
 
     def get(self, key):
         """(name, matches, wins, throws, on_target, hits, blocks, faced, catches, top_speed, return_hits) or None"""
         return self.db.execute('SELECT name, ' + ', '.join(STAT_FIELDS) + ', top_speed, return_hits FROM players WHERE key = ?',
                                (key,)).fetchone()
+
+
+def train_ok(lesson, ms, succ, att):
+    """Could a passed run of this lesson have gone so?"""
+    if lesson not in LESSONS:
+        return False
+    timed, goal, tries = LESSONS[lesson]
+    if att < 1 or att > tries or succ > att or succ < goal:
+        return False
+    if lesson in DEFENSE_TRIES and att != tries:   # (defense and CATCH: every try counts)
+        return False
+    if lesson not in DEFENSE_TRIES and lesson not in (7, 25) and succ != goal:   # (THROW: every target, once)
+        return False
+    if timed and (ms < 800 + 1400 * (goal - 1) or ms > 3600 * 1000):
+        return False
+    return True
 
 
 class Latest:
@@ -374,7 +461,7 @@ class Relay(asyncio.DatagramProtocol):
             if self.crowd is not None:
                 self.crowd.live(c, body, now)
             return
-        if ptype in (KEY, TANK, MATCH, STATSREQ, CONFIRM, DELETE, MYSTATS):
+        if ptype in (KEY, TANK, MATCH, STATSREQ, CONFIRM, DELETE, MYSTATS, TRAIN, BOARDREQ):
             self.stats_message(c, ptype, body, now)
             return
         if ptype != SEND or len(body) < 4 + 5:
@@ -439,6 +526,28 @@ class Relay(asyncio.DatagramProtocol):
                 return
             self.confirms[hv] = dict(t=now, key=c.key, vip=c.vip, winner=winner, score=tuple(body[5:9]))
             self.settle(hv, now)
+        elif ptype == TRAIN and len(body) >= 8 and st is not None and c.key is not None:
+            lesson, _, ms, succ, att = struct.unpack_from('<BBIBB', body)
+            c.trains += 1
+            if c.trains > 100 or not train_ok(lesson, ms, succ, att):   # (a game sends its dozen bests per connection)
+                self.log('stats: training result from %s refused (lesson %d, %d ms, %d / %d)' % (c.name, lesson, ms, succ, att))
+                return
+            if st.train(c.key, c.name, lesson, ms if LESSONS[lesson][0] else 0, succ, att):
+                self.log('stats: %s: a training best (lesson %d, %.1f s, %d / %d)' % (c.name, lesson, ms / 1000.0, succ, att))
+        elif ptype == BOARDREQ and len(body) >= 2 and st is not None:
+            if now - c.last_board < 0.25:
+                return
+            c.last_board = now
+            lesson, kind = body[0], 1 if body[1] else 0
+            if lesson != 0 and lesson not in LESSONS:
+                return
+            if lesson != 0 and kind == 0 and not LESSONS[lesson][0]:
+                kind = 1
+            rows, place, mine, count = st.board(c.key or '', lesson, kind)
+            out = struct.pack('<BBB', lesson, kind, len(rows))
+            for name, v in rows:
+                out += struct.pack('<16sI', (name or 'PLAYER').encode('ascii', 'replace')[:16], int(v))
+            self.send(c.addr, BOARD, out + struct.pack('<HIH', min(65535, place), int(mine), min(65535, count)))
         elif ptype == DELETE and st is not None and c.key is not None:
             n = st.delete(c.key)
             self.log('stats: %s deleted their statistics (%d row)' % (c.name, n))

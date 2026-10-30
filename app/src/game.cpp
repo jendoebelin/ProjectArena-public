@@ -70,15 +70,17 @@ void Game::deflectMoving(Ball& b, const Vec3& n, const Vec3& vs, int deflector, 
         // a knuckle-guard hit is a punch: follow the fist's motion and always send the ball toward the opponent's end
         float hs = length(vs);
         if (hs > 1.5f) out = normalize(lerp(normalize(out), vs / hs, 0.5f)) * length(out);
-        float toward = deflector == 0 ? 1.f : -1.f;   // +X is toward player 1's end
+        // (toward: the deflector's facing; two players: +X for player 0, -X for player 1, as it always was)
+        const Vec3 toward = facing(deflector);
         float sp0 = length(out);
-        Vec3 d = sp0 > 1e-4f ? out / sp0 : Vec3{toward, 0, 0};
-        if (d.x * toward < 0.35f) { d.x = 0.35f * toward; d = normalize(d); }
+        Vec3 d = sp0 > 1e-4f ? out / sp0 : toward;
+        const float along = dot(d, toward);
+        if (along < 0.35f) { d = d - toward * along + toward * 0.35f; d = normalize(d); }
         out = d * sp0;
     }
-    float cap = tun.projectileMaxSpeed + tun.speedIncreasePerStrike * pl[1 - deflector].strikesAgainst;
+    float cap = tun.projectileMaxSpeed + tun.speedIncreasePerStrike * strikesHeld(deflector);
     float sp = clampf(length(out), tun.minSpeed, cap);
-    Vec3 dir = normalize(out), tgt = normalize(chestPoint(1 - deflector) - from);
+    Vec3 dir = normalize(out), tgt = assistDir(deflector, from, normalize(out));
     float ang = std::acos(clampf(dot(dir, tgt), -1.f, 1.f));
     if (ang > 1e-4f) dir = normalize(lerp(dir, tgt, std::min(1.f, deg2rad(assistDeg) / ang)));
     b.vel = dir * sp;
@@ -88,7 +90,7 @@ void Game::deflectMoving(Ball& b, const Vec3& n, const Vec3& vs, int deflector, 
     b.scored = false;
     b.spin *= 0.5f;
     b.timer = 0;   // (the self-hit grace, after a block as after a throw)
-    b.progX = b.pos.x; b.progT = 0;
+    b.progX = b.pos.x; b.progZ = b.pos.z; b.progT = 0;
 }
 Pose Game::shieldLocal(int h) const {
     // Candidate placements (grip space: +X right, +Y up/thumb, -Z forward). side = +1 right hand, -1 left hand.
@@ -121,8 +123,11 @@ float Game::fistGap(int p0, int h0, int p1, int h1) const {
 }
 Pose Game::shieldPose(int p, int h) const { return pl[p].in.hand[h].grip * shieldLocal(h); }
 Vec3 Game::strikeZoneCenter(int p) const {
-    float back = p == 0 ? -1.f : 1.f;   // behind player 0 is -X
-    return tun.start[p] + Vec3{back * tun.strikeZoneBack, tun.strikeZoneHeight, 0};
+    if (p < 2) {   // (as it always was: behind player 0 is -X)
+        float back = p == 0 ? -1.f : 1.f;
+        return tun.start[p] + Vec3{back * tun.strikeZoneBack, tun.strikeZoneHeight, 0};
+    }
+    return tun.start[p] - facing(p) * tun.strikeZoneBack + Vec3{0, tun.strikeZoneHeight, 0};
 }
 Vec3 Game::peakAngVel(int p, int h, float t) const {
     const HandState& hs = pl[p].hands[h];
@@ -135,11 +140,56 @@ Vec3 Game::peakAngVel(int p, int h, float t) const {
     return best;
 }
 Vec3 Game::chestPoint(int p) const { return pl[p].in.head.p - Vec3{0, 0.35f, 0}; }
+int Game::team(int p) const {
+    if (np == 2) return p;
+    if (tun.teamMode == TEAMS_2V2) return p < 2 ? 0 : 1;   // partners in opposite corners
+    if (tun.teamMode == TEAMS_3V1) return p == tun.theOne ? 1 : 0;
+    return p;
+}
+int Game::leader() const {
+    int w = -1, top = -1;
+    for (int t = 0; t < teamCount(); ++t) {
+        const int sc = teamScore(t);
+        if (sc > top) { top = sc; w = t; } else if (sc == top) w = -1;
+    }
+    return w;
+}
+int Game::teamScore(int t) const {
+    int s = 0;
+    for (int p = 0; p < np; ++p) if (team(p) == t) s += pl[p].score;
+    return s;
+}
+Vec3 Game::facing(int p) const {
+    Vec3 d{-tun.start[p].x, 0, -tun.start[p].z};
+    const float l = length(d);
+    return l > 1e-4f ? d / l : Vec3{p == 1 ? -1.f : 1.f, 0, 0};
+}
+int Game::aimTarget(int p, const Vec3& from, const Vec3& dir) const {
+    if (np == 2) return 1 - p;
+    int best = -1;
+    float bd = -2.f;
+    for (int q = 0; q < np; ++q) {
+        if (!rivals(p, q)) continue;
+        const float d = dot(normalize(chestPoint(q) - from), dir);
+        if (d > bd) { bd = d; best = q; }
+    }
+    return best >= 0 ? best : (p + 1) % np;
+}
 
+Vec3 Game::assistDir(int p, const Vec3& from, const Vec3& dir) const {
+    if (aimAt[p].empty()) return normalize(chestPoint(aimTarget(p, from, dir)) - from);
+    Vec3 to = dir;   // (TRAINING: the point nearest the ball's line)
+    float best = -2.f;
+    for (const Vec3& t : aimAt[p]) {
+        const Vec3 d = normalize(t - from);
+        if (dot(d, dir) > best) { best = dot(d, dir); to = d; }
+    }
+    return to;
+}
 float Game::throwSpeedFromHandSpeed(float s, int thrower) const {
     // lerp(minThrown, maxThrown + strikes * SpeedIncreasePerStrike, t)
     float t = clampf((s - tun.minInputSpeed) / std::max(1e-3f, tun.maxInputSpeed - tun.minInputSpeed), 0.f, 1.f);
-    int strikes = pl[1 - thrower].strikesAgainst;
+    int strikes = strikesHeld(thrower);
     return lerpf(tun.projectileMinSpeed, tun.projectileMaxSpeed + strikes * tun.speedIncreasePerStrike, t);
 }
 
@@ -171,7 +221,7 @@ const char* eventName(EventType t) {
     case EventType::Countdown: return "Countdown";       case EventType::KnuckleBlock: return "KnuckleBlock";
     case EventType::Recharge: return "Recharge";         case EventType::Strike: return "Strike";
     case EventType::Overtime: return "Overtime";         case EventType::SpawnRise: return "SpawnRise";
-    case EventType::FistBump: return "FistBump";
+    case EventType::FistBump: return "FistBump";       case EventType::LeadChange: return "LeadChange";
     }
     return "?";
 }
@@ -228,11 +278,15 @@ void Game::setArena(const std::vector<CollisionTri>& tris) {
     arena = A;
 }
 
-void Game::reset(bool player1IsBot) {
-    for (int p = 0; p < 2; ++p) {
+void Game::reset(bool player1IsBot) { resetWithBots(player1IsBot ? 2u : 0u); }
+void Game::resetWithBots(uint32_t botMask) {
+    np = tun.players == 4 ? 4 : 2;
+    if (np == 4) tun.advanced = false;   // FOUR CORNERS: Basic's rules (and no shot clock: stepPlayer)
+    for (int p = 0; p < kMaxPlayers; ++p) {
         PlayerState& s = pl[p];
         s = PlayerState{};
-        s.isBot = (p == 1 && player1IsBot);
+        if (p >= np) continue;
+        s.isBot = (botMask >> p) & 1u;
         s.botStance = -1;   // (a bot's stance: picked as its first step, new each match)
         s.in.head.p = tun.start[p] + Vec3{0, 1.65f, 0};
         spawnBall(p);
@@ -267,10 +321,11 @@ bool Game::meetLit(int p, int h) const {
 void Game::useArena(int kind, const std::vector<CollisionTri>& classic) {
     using namespace exparena;
     if (arenaKind != kind) {   // (the collision only when it changes: callers may ask every frame)
-        setArena(kind == ARENA_CORNERS ? collision() : kind == ARENA_DIAMOND ? diamondCollision(tun.solidPlatforms) : classic);
+        setArena(kind == ARENA_CORNERS ? collision() : kind == ARENA_FOURCORNERS ? collision(true)
+                 : kind == ARENA_DIAMOND ? diamondCollision(tun.solidPlatforms) : classic);
         arenaKind = kind;
     }
-    if (kind == ARENA_CORNERS) {
+    if (kind == ARENA_CORNERS || kind == ARENA_FOURCORNERS) {
         tun.foulLineX = kFoulLineX;
         tun.outLow = kFloor - 0.6f; tun.outHigh = kCeiling + 0.6f; tun.outX = tun.outZ = kCorner + 0.7f;
     } else if (kind == ARENA_DIAMOND) {
@@ -295,7 +350,7 @@ void Game::spawnBall(int p) {
     b.rechargePending = false;
     b.bounces = 0;
     b.fouled = b.homing = false;
-    b.scale = strikeScale(pl[1 - p].strikesAgainst);
+    b.scale = strikeScale(strikesHeld(p));
 }
 
 float Game::strikeScale(int n) const {
@@ -303,13 +358,14 @@ float Game::strikeScale(int n) const {
     return std::min(tun.maxBallScale, 1.f + tun.scaleIncreasePerStrike * early + tun.lateScaleIncreasePerStrike * late);
 }
 
-void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin) {
+void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist) {
     Ball& b = pl[p].ball;
-    int opp = 1 - p;
-    float assist = tun.advanced ? tun.aimCorrectAdvancedDeg : tun.aimCorrectBasicDeg;
-    Vec3 to = normalize(chestPoint(opp) - b.pos);
-    float ang = std::acos(clampf(dot(dir, to), -1.f, 1.f));
-    if (ang > 1e-4f) dir = normalize(lerp(dir, to, std::min(1.f, deg2rad(assist) / ang)));
+    if (assist) {
+        const Vec3 to = assistDir(p, b.pos, dir);
+        const float deg = tun.advanced ? tun.aimCorrectAdvancedDeg : tun.aimCorrectBasicDeg;
+        const float ang = std::acos(clampf(dot(dir, to), -1.f, 1.f));
+        if (ang > 1e-4f) dir = normalize(lerp(dir, to, std::min(1.f, deg2rad(deg) / ang)));
+    }
     float sl = length(spin);
     if (sl > tun.maxSpin) spin *= tun.maxSpin / sl;
     b.state = BallState::Flying;
@@ -323,14 +379,52 @@ void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin) {
     b.bounces = 0;
     b.timer = 0;
     b.fouled = b.homing = false;
-    b.progX = b.pos.x; b.progT = 0;
+    b.progX = b.pos.x; b.progZ = b.pos.z; b.progT = 0;
     emit(EventType::Throw, p, h, b.pos, b.speedLimit);
+}
+
+void Game::serve(int p, const Vec3& from, const Vec3& dir, float speed, const Vec3& spin, bool assist) {
+    pl[p].ball.pos = from;
+    launch(p, -1, normalize(dir), speed, spin, assist);
+    served_.push_back(events.back());   // (served between steps: the next step's events say so)
+}
+
+void Game::parkBall(int p) {
+    Ball& b = pl[p].ball;
+    b.state = BallState::Dead;
+    b.timer = 1e9f;
+    b.vel = b.spin = {};
+    b.heldHand = -1;
+    b.pos = tun.spawner[p] + Vec3{0, -2.f * tun.spawnDepth, 0};
+}
+
+void Game::trialFlight(int p, const Vec3& from, const Vec3& dir, float speed, const Vec3& spin, bool assist, float horizon,
+                       float dt, std::vector<BallPathPt>& out) const {
+    out.clear();
+    Game g = *this;
+    for (int q = 0; q < np; ++q) {   // (everyone out of the way)
+        g.pl[q].in.head.p = {0, -50, 0};
+        g.pl[q].in.headTracked = false;
+        for (HandState& hs : g.pl[q].hands) hs.shieldUp = hs.knuckleUp = false;
+    }
+    g.serve(p, from, dir, speed, spin, assist);
+    const Ball& b = g.pl[p].ball;
+    out.push_back({g.now, b.pos, b.vel, false, b});
+    for (float t = 0; t < horizon; t += dt) {
+        g.now += dt;
+        g.events.clear();
+        g.stepBall(p, dt);
+        bool strike = false;
+        for (const GameEvent& e : g.events) strike |= e.type == EventType::Strike;
+        out.push_back({g.now, b.pos, b.vel, strike, b});
+        if (b.state != BallState::Flying) break;
+    }
 }
 
 void Game::deflect(Ball& b, const Vec3& n, int deflector, float assistDeg, const Vec3& from) {
     float sp = length(b.vel);
     Vec3 r = b.vel - n * (2 * dot(b.vel, n));
-    Vec3 dir = normalize(r), tgt = normalize(chestPoint(1 - deflector) - from);
+    Vec3 dir = normalize(r), tgt = assistDir(deflector, from, dir);
     float ang = std::acos(clampf(dot(dir, tgt), -1.f, 1.f));
     if (ang > 1e-4f) dir = normalize(lerp(dir, tgt, std::min(1.f, deg2rad(assistDeg) / ang)));
     b.vel = dir * sp;
@@ -339,7 +433,7 @@ void Game::deflect(Ball& b, const Vec3& n, int deflector, float assistDeg, const
     b.scored = false;
     b.spin *= 0.5f;
     b.timer = 0;   // (the self-hit grace, after a block as after a throw)
-    b.progX = b.pos.x; b.progT = 0;
+    b.progX = b.pos.x; b.progZ = b.pos.z; b.progT = 0;
 }
 
 bool Game::sweepArena(const Vec3& from, const Vec3& to, float r, Vec3& hitPos, Vec3& hitN, uint32_t& tags) const {
@@ -441,19 +535,22 @@ bool Game::hitsShield(int p, int h, const Vec3& from, const Vec3& to, float r, V
     return true;
 }
 
-void Game::scorePoint(int scorer, const Vec3& where, int ball) {
+void Game::scorePoint(int scorer, int victim, const Vec3& where, int ball) {
     if (match != MatchState::InProgress) return;
-    int victim = 1 - scorer;
-    pl[scorer].score++;
-    if (tun.botAdapt && pl[scorer].isBot != pl[victim].isBot)   // MATCH MY LEVEL: toward close matches
+    const int ledBy = np == 4 ? leader() : -1;
+    // (3 v 1: THE ONE's hits count double)
+    pl[scorer].score += np == 4 && tun.teamMode == TEAMS_3V1 && scorer == tun.theOne ? tun.onePoints : 1;
+    if (np == 2 && tun.botAdapt && pl[scorer].isBot != pl[victim].isBot)   // MATCH MY LEVEL: toward close matches
         tun.botMatch = clampf(tun.botMatch + (pl[scorer].isBot ? -tun.botMatchStep : tun.botMatchStep), 0.f, kBotLevels - 1.f);
     pl[victim].strikesAgainst = 0;   // "If you get hit, any strikes against you are removed."
+    pl[victim].strikesFor = 0;       // (four players: and the strikes they held)
     emit(EventType::HitPlayer, victim, -1, where, float(scorer), ball);
+    if (np == 4 && !overtime && leader() >= 0 && leader() != ledBy) emit(EventType::LeadChange, -1, -1, {}, float(leader()));
     if (!tun.advanced) {
         if (overtime) {   // sudden death
-            matchWinner = scorer;
+            matchWinner = team(scorer);
             match = MatchState::MatchSummary;
-            emit(EventType::MatchEnd, scorer, -1, {}, 0);
+            emit(EventType::MatchEnd, matchWinner, -1, {}, 0);   // (the winning team, as on the clock)
         }
     } else if (overtime || pl[scorer].score >= tun.advancedPointsToWin) {   // (overtime: a timed round's sudden death)
         endRound(scorer);
@@ -468,10 +565,11 @@ void Game::endRound(int scorer) {
     emit(EventType::RoundEnd, scorer, -1, {}, float(round));
 }
 
-void Game::addStrike(int against, const Vec3& where, int ball) {
+void Game::addStrike(int against, const Vec3& where, int ball, int by) {
     if (match != MatchState::InProgress) return;
     if (pl[against].strikesAgainst >= tun.maxStrikes) return;
     pl[against].strikesAgainst++;
+    if (np == 4 && by >= 0 && by < np && pl[by].strikesFor < tun.maxStrikes) pl[by].strikesFor++;
     emit(EventType::Strike, against, -1, where, float(pl[against].strikesAgainst), ball);
 }
 
@@ -480,7 +578,7 @@ void Game::stepBall(int p, float dt) {
     Ball& b = s.ball;
     // stepped growth: ease toward the size for the current strike count
     {
-        float tgt = strikeScale(pl[1 - p].strikesAgainst);
+        float tgt = strikeScale(strikesHeld(p));
         b.scale += (tgt - b.scale) * std::min(1.f, dt * tun.scaleGrowRate);
     }
     switch (b.state) {
@@ -550,13 +648,16 @@ void Game::stepBall(int p, float dt) {
     };
     // a short throw goes home: not yet past the owner's foul line, and slow, heading back, or taking too long
     if (b.state == BallState::Flying && b.instigator == p && b.rechargePending) {
-        const bool behind = p == 0 ? b.pos.x < -tun.foulLineX : b.pos.x > tun.foulLineX;
-        const float forward = p == 0 ? b.vel.x : -b.vel.x;   // toward the opponent
+        // (along the player's facing: two players, +X or -X exactly as it always was)
+        const bool behind = dot(b.pos, facing(p)) < -tun.foulLineX;
+        const float forward = dot(b.vel, facing(p));   // toward the opponent
         if (behind && (b.speedLimit < tun.recallSpeed || forward < 0 || b.timer > tun.recallTime)) { goHome(); return; }
     }
     // a stuck ball goes home: no headway along the court, or slowed to a crawl by its bounces (see Tunables)
     if (b.state == BallState::Flying) {
-        if (std::fabs(b.pos.x - b.progX) >= tun.stuckDistance) { b.progX = b.pos.x; b.progT = b.timer; }
+        // (headway: along the court; four players, across the room's floor plan)
+        const float moved = np == 2 ? std::fabs(b.pos.x - b.progX) : length(Vec3{b.pos.x - b.progX, 0, b.pos.z - b.progZ});
+        if (moved >= tun.stuckDistance) { b.progX = b.pos.x; b.progZ = b.pos.z; b.progT = b.timer; }
         if (b.timer - b.progT > tun.stuckTime || (b.speedLimit < tun.recallSpeed && b.timer > tun.slowGrace)) { goHome(); return; }
     }
     // a fouled ball that finds no wall to turn home from (bouncing between floor and ceiling) turns home anyway
@@ -578,25 +679,31 @@ void Game::stepBall(int p, float dt) {
         }
         Vec3 from = b.pos, to = b.pos + b.vel * h;
         // recharge once the owner's throw crosses the owner's foul line
-        if (b.rechargePending && b.instigator == p && (p == 0 ? to.x > -tun.foulLineX : to.x < tun.foulLineX)) {
+        if (b.rechargePending && b.instigator == p && dot(to, facing(p)) > -tun.foulLineX) {
             b.rechargePending = false;
             if (!b.charged) emit(EventType::Recharge, p, -1, to);
             b.charged = true;
             pl[p].shotClock = tun.shotClockSeconds;                         // throw past the foul line resets it
-            if (tun.useShotClock && pl[1 - p].shotClock <= 0) addStrike(1 - p, to);   // automatic strike (no ball's doing)
+            if (np == 2 && tun.useShotClock && pl[1 - p].shotClock <= 0) addStrike(1 - p, to);   // automatic strike (no ball's doing)
         }
         bool handled = b.state == BallState::Returning;   // a returning ball can't be blocked / score
-        // shields and knuckle guards of the player who did NOT last touch the ball
-        int q = 1 - b.instigator;
+        // shields and knuckle guards of the player who did NOT last touch the ball (four players: every rival of the
+        // one who did; a teammate's ball passes through you)
         // shields take priority over the knuckle bumpers when both are in the ball's path
+        const int by0 = b.instigator;
         for (int pass = 0; pass < 2 && !handled; ++pass)
+        for (int qi = 0; qi < np && !handled; ++qi) {
+        const int q = np == 2 ? 1 - by0 : qi;
+        if (np == 2 ? qi > 0 : !rivals(by0, q)) continue;
         for (int hh = 0; hh < 2 && !handled; ++hh) {
             Vec3 n;
             if (pass == 0 && hitsShield(q, hh, from, to, r, n)) {
                 Vec3 vs = recentHandVel(q, hh, shieldLocal(hh).p, now);
                 deflectMoving(b, n, vs, q, tun.advanced ? tun.shieldAimAssistAdvancedDeg : tun.shieldAimAssistBasicDeg, from);
-                pl[q].ball.charged = false;            // "Shield breaks on hit": the held ball loses its charge
-                pl[q].hands[hh].shieldUp = false;
+                if (!(np == 4 && tun.teamMode == TEAMS_3V1 && q == tun.theOne)) {   // (THE ONE's shield never breaks)
+                    pl[q].ball.charged = false;        // "Shield breaks on hit": the held ball loses its charge
+                    pl[q].hands[hh].shieldUp = false;
+                }
                 emit(EventType::ShieldBlock, q, hh, from, 0, p);
                 emit(EventType::ShieldBreak, q, hh, from);
                 to = from + b.vel * h;
@@ -615,22 +722,36 @@ void Game::stepBall(int p, float dt) {
                 handled = true;
             }
         }
-        // the player who did not last touch the ball gets hit
-        int victim = 1 - b.instigator;
+        }
+        // the player who did not last touch the ball gets hit (four players: any rival of the one who did)
+        for (int vi = 0; vi < np; ++vi) {
+        const int victim = np == 2 ? 1 - b.instigator : vi;
+        if (np == 2 ? vi > 0 : !rivals(b.instigator, victim)) continue;
         if (b.state == BallState::Flying) {   // strike: the ball crosses the victim's strike-zone ring inside its radius
             Vec3 c = strikeZoneCenter(victim);
-            if ((from.x - c.x) * (to.x - c.x) <= 0 && std::fabs(to.x - from.x) > 1e-6f) {
-                float t = (c.x - from.x) / (to.x - from.x);
-                Vec3 x = from + (to - from) * t;
-                if (length(Vec3{0, x.y - c.y, x.z - c.z}) < tun.strikeZoneRadius) addStrike(victim, x, p);
+            if (np == 2) {
+                if ((from.x - c.x) * (to.x - c.x) <= 0 && std::fabs(to.x - from.x) > 1e-6f) {
+                    float t = (c.x - from.x) / (to.x - from.x);
+                    Vec3 x = from + (to - from) * t;
+                    if (length(Vec3{0, x.y - c.y, x.z - c.z}) < tun.strikeZoneRadius) addStrike(victim, x, p);
+                }
+            } else {   // (the ring faces its player's facing)
+                const Vec3 f = facing(victim);
+                const float a0 = dot(from - c, f), a1 = dot(to - c, f);
+                if (a0 * a1 <= 0 && std::fabs(a1 - a0) > 1e-6f) {
+                    const Vec3 x = from + (to - from) * (a0 / (a0 - a1));
+                    const Vec3 off = x - c;
+                    if (length(off - f * dot(off, f)) < tun.strikeZoneRadius) addStrike(victim, x, p, b.instigator);
+                }
             }
         }
         if (!handled && !b.scored && hitsBody(victim, to, r)) {
             b.scored = true;
-            scorePoint(b.instigator, to, p);
+            scorePoint(b.instigator, victim, to, p);
             b.state = BallState::Dead;
             b.timer = tun.respawnDelay + tun.postSpawnDelay + 0.5f;
             return;
+        }
         }
         // your own ball can hit you on its way back (rebound or slow return); the opponent gets the point
         {
@@ -639,7 +760,7 @@ void Game::stepBall(int p, float dt) {
             if (tun.selfHitScores && !b.scored && b.timer > tun.selfHitGrace && dot(b.vel, toSelf) > 0 &&
                 pl[self].in.headTracked && hitsBody(self, to, r)) {
                 b.scored = true;
-                scorePoint(1 - self, to, p);
+                if (np == 2) scorePoint(1 - self, self, to, p);   // (four players: nobody's point, the ball is spent)
                 b.state = BallState::Dead;
                 b.timer = tun.respawnDelay + tun.postSpawnDelay + 0.5f;
                 return;
@@ -648,7 +769,7 @@ void Game::stepBall(int p, float dt) {
         {
             Vec3 hp, hn; uint32_t tags = 0;
             if (sweepArena(from, to, r, hp, hn, tags)) {
-                int zoneTeam = (tags & TAG_TEAM0) ? 0 : (tags & TAG_TEAM1) ? 1 : -1;
+                int zoneTeam = (tags & TAG_TEAM0) ? 0 : (tags & TAG_TEAM1) ? 1 : (tags & TAG_TEAM2) ? 2 : (tags & TAG_TEAM3) ? 3 : -1;
                 bool own = (zoneTeam >= 0 && zoneTeam == b.instigator);   // team gating
                 bool returning = b.state == BallState::Returning;
                 if ((tags & TAG_FOUL) && own && !returning) {
@@ -758,8 +879,8 @@ void Game::stepPlayer(int p, float dt) {
     PlayerState& s = pl[p];
     Ball& b = s.ball;
     // shot clock runs while my ball is in my end of the court
-    if (match == MatchState::InProgress && tun.useShotClock) {
-        bool inMyEnd = (b.state != BallState::Flying) || (p == 0 ? b.pos.x < -tun.foulLineX : b.pos.x > tun.foulLineX);
+    if (match == MatchState::InProgress && tun.useShotClock && np == 2) {
+        bool inMyEnd = (b.state != BallState::Flying) || dot(b.pos, facing(p)) < -tun.foulLineX;
         if (inMyEnd) s.shotClock = std::max(0.f, s.shotClock - dt);
     } else {
         s.shotClock = tun.shotClockSeconds;
@@ -819,13 +940,13 @@ void Game::stepPlayer(int p, float dt) {
 // raised 2026-10-27 from the owner's recorded matches (their median throw 14.5 m/s, at the game's top speed): ROOKIE
 // about 9 m/s, PRO 12, UNBEATABLE 14 (the most a throw gives)
 static const BotSkill kBotSkills[kBotLevels] = {
-    //  name         react  defend reads  misread hand body  accel throw  aim    hold         catch plan   strikes
-    {"ROOKIE",      0.45f, 0.30f, false, 0.30f, 2.5f, 1.0f, 4.f,  4.2f, 0.60f, 2.0f, 4.0f, 0.2f, false, false},
-    {"AMATEUR",     0.35f, 0.50f, false, 0.18f, 3.0f, 1.4f, 6.f,  4.8f, 0.45f, 1.6f, 3.4f, 0.5f, false, false},
-    {"PRO",         0.25f, 0.65f, true,  0.10f, 3.8f, 1.8f, 7.f,  5.6f, 0.35f, 1.2f, 3.0f, 0.7f, false, false},
-    {"ALL-STAR",    0.20f, 0.80f, true,  0.05f, 4.5f, 2.2f, 9.f,  6.0f, 0.20f, 0.9f, 2.2f, 0.9f, true,  false},
-    {"CHAMPION",    0.17f, 0.92f, true,  0.02f, 5.2f, 2.6f, 11.f, 6.3f, 0.10f, 0.7f, 1.6f, 1.0f, true,  true},
-    {"UNBEATABLE",  0.15f, 1.00f, true,  0.00f, 6.0f, 3.0f, 12.f, 6.5f, 0.00f, 0.6f, 1.2f, 1.0f, true,  true},
+    //  name         react  defend reads  misread hand body  accel throw  aim    hold         catch plan   strikes slap
+    {"ROOKIE",      0.45f, 0.30f, false, 0.30f, 2.5f, 1.0f, 4.f,  4.2f, 0.60f, 2.0f, 4.0f, 0.2f, false, false, 0.00f},
+    {"AMATEUR",     0.35f, 0.50f, false, 0.18f, 3.0f, 1.4f, 6.f,  4.8f, 0.45f, 1.6f, 3.4f, 0.5f, false, false, 0.00f},
+    {"PRO",         0.25f, 0.65f, true,  0.10f, 3.8f, 1.8f, 7.f,  5.6f, 0.35f, 1.2f, 3.0f, 0.7f, false, false, 0.30f},
+    {"ALL-STAR",    0.20f, 0.80f, true,  0.05f, 4.5f, 2.2f, 9.f,  6.0f, 0.20f, 0.9f, 2.2f, 0.9f, true,  false, 0.50f},
+    {"CHAMPION",    0.17f, 0.92f, true,  0.02f, 5.2f, 2.6f, 11.f, 6.3f, 0.10f, 0.7f, 1.6f, 1.0f, true,  true,  0.65f},
+    {"UNBEATABLE",  0.15f, 1.00f, true,  0.00f, 6.0f, 3.0f, 12.f, 6.5f, 0.00f, 0.6f, 1.2f, 1.0f, true,  true,  0.75f},
 };
 const BotSkill& botSkill(int level) { return kBotSkills[level < 0 ? 0 : level >= kBotLevels ? kBotLevels - 1 : level]; }
 BotSkill botSkillAt(float level) {
@@ -837,7 +958,7 @@ BotSkill botSkillAt(float level) {
     auto mix = [&](float BotSkill::*m) { s.*m = a.*m + (b.*m - a.*m) * f; };
     for (float BotSkill::*m : {&BotSkill::reaction, &BotSkill::defend, &BotSkill::readError, &BotSkill::handSpeed, &BotSkill::bodySpeed,
                                &BotSkill::bodyAccel, &BotSkill::throwHand, &BotSkill::aimError, &BotSkill::holdMin, &BotSkill::holdMax,
-                               &BotSkill::catchChance})
+                               &BotSkill::catchChance, &BotSkill::slap})
         mix(m);
     return s;
 }
@@ -928,7 +1049,7 @@ Pose Game::botBlockGrip(int p, int h, int plan, const BallPathPt& x) const {
     const Vec3 d = normalize(x.vel);
     Vec3 n = -d;
     if (plan != BOT_CATCH && botSkillOf(p).readsFlight) {
-        const Vec3 aim = normalize(normalize(chestPoint(1 - p) - x.pos) - d);
+        const Vec3 aim = normalize(normalize(chestPoint(botAim(p)) - x.pos) - d);
         n = dot(aim, -d) >= 0.5f ? aim : normalize(aim - d);
     }
     // turn `g` about n so that its local `upLocal` is as near `upWorld` as it goes
@@ -992,7 +1113,7 @@ int Game::botTry(int p, int k, int owner, int plan, int h, const Pose& grip, con
         }
         // done: it stops, the opponent sends it back (a new ball to read), or it goes home to the opponent
         if (b.state != BallState::Flying && b.state != BallState::Returning) break;
-        if ((touched || by == p) && b.instigator == 1 - p) break;
+        if ((touched || by == p) && rivals(b.instigator, p)) break;
         if (b.state == BallState::Returning && b.instigator != p) break;
     }
     return result;
@@ -1008,14 +1129,14 @@ bool Game::botReachable(int p, int h, const Pose& grip, float by) const {
 void Game::botWatch(int p, int k, const BotSkill& sk) {
     PlayerState& s = pl[p];
     PlayerState::BotRead& r = s.botRead[k];
-    const int owner = k == 0 ? 1 - p : p;
+    const int owner = k == 0 ? botThreat(p) : p;
     const Ball& B = pl[owner].ball;
     int mode = 0;
-    if (B.state == BallState::Flying && B.instigator == 1 - p && !B.scored) mode = 1;   // coming at it
+    if (B.state == BallState::Flying && rivals(B.instigator, p) && !B.scored) mode = 1;   // coming at it
     else if ((B.state == BallState::Flying || (B.state == BallState::Returning && owner == p)) && B.instigator == p &&
              !B.homing && !B.scored && dot(B.vel, s.in.head.p - B.pos) > 0)
         mode = 2;   // one it threw or deflected, coming back at it (off a wall, or returned)
-    if (mode != r.mode) { r = PlayerState::BotRead{}; r.mode = mode; }   // (a new ball, or one that changed hands)
+    if (mode != r.mode || owner != r.owner) { r = PlayerState::BotRead{}; r.mode = mode; r.owner = owner; }   // (a new ball, or one that changed hands)
     if (!mode) return;
     if (r.noticeT < 0) {
         r.noticeT = now;
@@ -1070,10 +1191,39 @@ void Game::botWatch(int p, int k, const BotSkill& sk) {
     botPlan(p, k, sk);
 }
 
+int Game::botThreat(int p) const {
+    if (np == 2) return 1 - p;
+    // the attack that reaches it soonest (and nearest): a ball a rival last touched, flying its way. It keeps the one it
+    // watches unless another is clearly sooner (a read changing every step would never get anywhere)
+    const Vec3 head = pl[p].in.head.p;
+    const int cur = pl[p].botRead[0].owner;
+    int best = cur >= 0 && cur != p ? cur : -1;
+    float bu = 1e9f, cu = 1e9f;
+    for (int o = 0; o < np; ++o) {
+        if (o == p) continue;
+        const Ball& B = pl[o].ball;
+        if (B.state != BallState::Flying || B.scored || !rivals(B.instigator, p)) continue;
+        const Vec3 d = head - B.pos;
+        const float v2 = length2(B.vel);
+        if (v2 < 1e-4f || dot(B.vel, d) <= 0) continue;
+        const float tca = dot(d, B.vel) / v2, miss = length(B.pos + B.vel * tca - head);
+        const float u = tca + 0.25f * miss;
+        if (o == cur) cu = u;
+        if (u < bu) { bu = u; best = o; }
+    }
+    if (cur >= 0 && cur != p && cu < 1e8f && cu < bu + 0.15f) return cur;
+    return best >= 0 ? best : (p + 1) % np;
+}
+int Game::botPickTarget(int p) {
+    int r[kMaxPlayers], n = 0;
+    for (int q = 0; q < np; ++q) if (rivals(p, q)) r[n++] = q;
+    return n ? r[std::min(n - 1, (int)(rnd() * n))] : -1;
+}
+
 void Game::botPlan(int p, int k, const BotSkill& sk) {
     PlayerState& s = pl[p];
     PlayerState::BotRead& r = s.botRead[k];
-    const Ball& B = pl[k == 0 ? 1 - p : p].ball;
+    const Ball& B = pl[k == 0 ? (s.botRead[0].owner >= 0 ? s.botRead[0].owner : botThreat(p)) : p].ball;
     const float br = tun.projectileRadius * B.scale;
     // (it plans from where it stands still: r.body, chosen when it noticed the ball; its hands hold where they come
     // to rest now)
@@ -1108,7 +1258,7 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
     for (int i : near)
         if (bodyTouchesPath(head, r.path[i - 1].pos, r.path[i].pos, br + 0.06f)) { r.hitT = r.path[i].t; break; }
     if (!r.act && !r.catchIt) return;
-    const int owner = k == 0 ? 1 - p : p;
+    const int owner = k == 0 ? (s.botRead[0].owner >= 0 ? s.botRead[0].owner : botThreat(p)) : p;
     const bool tries = sk.guardsStrikes;   // (the best try their answer out first)
     botTriesOut = false;
     struct Again {   // a plan that ran out of tryouts, with nothing found yet, goes on next step
@@ -1254,7 +1404,7 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
 
 void Game::botPlanShot(int p, const BotSkill& sk) {
     PlayerState& s = pl[p];
-    const int opp = 1 - p, k = s.botShotsTried++, h = s.ball.heldHand;
+    const int opp = botAim(p), k = s.botShotsTried++, h = s.ball.heldHand;
     const Vec3 fwd = s.in.head.q.rotate({0, 0, -1});
     const Vec3 rel = botShoulder(p, h) + fwd * 0.45f;   // about where its hand lets go
     Vec3 aim = chestPoint(opp) + Vec3{rnd() - 0.5f, rnd() - 0.5f, rnd() - 0.5f} * 0.15f, spin{};
@@ -1304,12 +1454,15 @@ void Game::stepBot(int p, float dt) {
     // can: a body that steps, leans and ducks, two arms of a person's reach and speed, either hand for everything
     PlayerState& s = pl[p];
     const BotSkill& sk = botSkillOf(p);
-    const int opp = 1 - p;
-    const Quat q = Quat::axisAngle(kUp, deg2rad(p == 0 ? -90.f : 90.f));
+    if (np == 4 && (s.botTarget < 0 || !rivals(p, s.botTarget))) s.botTarget = botPickTarget(p);
+    const int opp = botAim(p);
+    // (facing the centre: two players exactly as they always were)
+    const Quat q = Quat::axisAngle(kUp, p < 2 ? deg2rad(p == 0 ? -90.f : 90.f) : std::atan2(-facing(p).x, -facing(p).z));
     const Vec3 right = q.rotate({1, 0, 0}), fwd = q.rotate({0, 0, -1});
     // where it stands: its end, or its side of the centre for a fist bump
     const bool meet = match == MatchState::Meet;
     const Vec3 stand = meet ? Vec3{p == 0 ? -tun.meetSpot : tun.meetSpot, 1.62f, 0} : tun.start[p] + Vec3{0, 1.62f, 0};
+    if (s.botStance < 0 && s.coach.on) s.botStance = s.coach.stance;
     if (s.botStance < 0) {   // its stance this match. Beginners hold no guard (hands up in front block by themselves)
         static const int kOpen[3] = {STANCE_KITTEN, STANCE_RELAXED, STANCE_MONKEY};
         const float level = s.botLevel >= 0 ? (float)s.botLevel : tun.botAdapt ? tun.botMatch : (float)tun.botLevel;
@@ -1348,7 +1501,7 @@ void Game::stepBot(int p, float dt) {
     }
     s.botTimer -= dt;
     botTriesLeft = kBotTriesPerStep;
-    if (!botFrozen) {   // (in a tryout: the plan being tried, as it is)
+    if (!botFrozen && !(s.coach.on && !s.coach.watch)) {   // (in a tryout: the plan being tried, as it is)
         botWatch(p, 0, sk);
         botWatch(p, 1, sk);
     }
@@ -1366,7 +1519,9 @@ void Game::stepBot(int p, float dt) {
     Vec3 bodyWant = right * (meet ? 0.f : 0.15f * std::sin(now * 0.9f)) - Vec3{0, st.crouch, 0};
     bool threatened = false;
     for (const PlayerState::BotRead* r : reads) {
-        threatened |= r->mode != 0;   // (no throw while a ball comes at it: a wind-up could swing its shield into it)
+        // (no throw while a ball comes at it: a wind-up could swing its shield into it. Four players: only an attack that
+        // reaches it within a second, or there would always be one on its way and the bot would hardly ever throw)
+        threatened |= r->mode != 0 && (np == 2 || (r->mode == 1 && r->hitT >= 0 && r->hitT - now < 1.0f));
         if (r->plan == BOT_SHIELD || r->plan == BOT_KNUCKLE || r->plan == BOT_CATCH) want[r->hand] = {r->gripQ, r->grip};
         if (r->mode && r->plan != BOT_CATCH && (r == reads[0] || !reads[0]->mode)) bodyWant = r->body;   // (still while it watches; or its dodge)
     }
@@ -1384,31 +1539,44 @@ void Game::stepBot(int p, float dt) {
                 carried[h] = want[h].p - s.in.head.p;
             }
     }
-    // its ball off the spawner, with the nearer free hand
-    if (match == MatchState::InProgress && b.state == BallState::Idle && !watching) {
+    // its ball off the spawner, with the nearer free hand (four players: unless an attack reaches it within a second;
+    // there is nearly always a ball to watch)
+    bool soon = false;
+    for (const PlayerState::BotRead* r : reads) soon |= r->mode == 1 && r->hitT >= 0 && r->hitT - now < 1.0f;
+    if (match == MatchState::InProgress && b.state == BallState::Idle && (np == 2 ? !watching : !soon)) {
         int h = -1;
         float bd = 1e9f;
         for (int k = 0; k < 2; ++k) {
             const float d = length(botShoulder(p, k) - b.pos);
             if (!handBusy(k) && d < bd) { bd = d; h = k; }
         }
+        if (s.coach.on && !handBusy(s.coach.hand)) h = s.coach.hand;
         if (h >= 0) {
             want[h] = {restQ, b.pos - restQ.rotate(tun.launcherOffset)};
             if (length(launcherPoint(p, h) - b.pos) < 0.25f) {
                 b.state = BallState::Held; b.heldHand = h; b.vel = {};
                 emit(EventType::Grab, p, h, b.pos);
-                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd());
+                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f);   // (four players: quicker, more to aim at)
                 s.botThrow = 0; s.botShotsTried = 0; s.botShotScore = -1e9f;
             }
         }
     }
     // a throw: wind up behind the shoulder, swing through at a throw's hand speed, let go
     const bool holding = b.state == BallState::Held;
-    if (!holding || threatened || match != MatchState::InProgress) s.botThrow = 0;
-    if (holding && !b.charged) s.botTimer = std::min(s.botTimer, 0.35f);   // recharge by throwing
-    if (holding && !threatened && match == MatchState::InProgress) {
+    if (!holding || match != MatchState::InProgress) s.botSlap = false;
+    if (!holding || (threatened && !s.botSlap) || match != MatchState::InProgress) s.botThrow = 0;   // (a slap shot goes on)
+    if (holding && !b.charged && !s.coach.on) s.botTimer = std::min(s.botTimer, 0.35f);   // recharge by throwing
+    if (holding && (!threatened || s.botSlap) && match == MatchState::InProgress) {
         const int h = b.heldHand;
-        if (s.botThrow == 0) {
+        if (s.botThrow == 0 && s.coach.on) {   // a coach: the throw it is told, when it is told
+            if (s.coach.fire) {
+                s.coach.fire = false;
+                s.botShotDir = normalize(s.coach.dir);
+                s.botShotSpin = s.coach.spin;
+                s.botThrow = 1;
+                s.botThrowT = now;
+            }
+        } else if (s.botThrow == 0) {
             // one try a step while it waits (not in a step its reads already spent tryouts in)
             if (sk.planShots && s.botShotsTried < 12 && botTriesLeft == kBotTriesPerStep) botPlanShot(p, sk);
             // the best keep their ball (their shield) while the opponent can throw, unless their shot clock runs low
@@ -1421,7 +1589,10 @@ void Game::stepBot(int p, float dt) {
                     const Vec3 rel = botShoulder(p, h) + fwd * 0.45f;
                     Vec3 target = chestPoint(opp) + Vec3{rnd() - 0.5f, rnd() - 0.5f, rnd() - 0.5f} * sk.aimError;
                     s.botShotSpin = {};
-                    if (rnd() < 0.3f) target.z += (rnd() < 0.5f ? -1.f : 1.f) * 3.0f;
+                    if (rnd() < 0.3f) {   // off a side wall (four players: to one side of the line to them)
+                        const float sw = (rnd() < 0.5f ? -1.f : 1.f) * 3.0f;
+                        if (np == 2) target.z += sw; else target += normalize(cross(kUp, target - rel)) * sw;
+                    }
                     else if (rnd() < 0.4f) s.botShotSpin = kUp * ((rnd() < 0.5f ? -1.f : 1.f) * lerpf(12.f, 28.f, rnd()));
                     s.botShotDir = normalize(target - rel);
                 } else {   // the planned throw, made as well as it can
@@ -1431,21 +1602,29 @@ void Game::stepBot(int p, float dt) {
                 s.botThrowT = now;
             }
         }
-        if (s.botThrow == 1) {   // wind up
+        if (s.botThrow == 1) {   // wind up (a coach: always as long, so its throws leave when they are planned to)
             want[h].p = botShoulder(p, h) + Vec3{0, 0.12f, 0} - fwd * 0.22f + side(h) * 0.06f;
-            if (length(s.botHand[h] - want[h].p) < 0.06f || now - s.botThrowT > 0.6f) { s.botThrow = 2; s.botThrowT = now; }
+            if (s.coach.on ? now - s.botThrowT >= 0.45f - 1e-4f : length(s.botHand[h] - want[h].p) < 0.06f || now - s.botThrowT > 0.6f) {
+                s.botThrow = 2; s.botThrowT = now;
+            }
         } else if (s.botThrow == 2) {   // the swing, forward along the throw
             Vec3 flat = s.botShotDir;
             flat.y *= 0.3f;
             want[h].p = botShoulder(p, h) + normalize(flat) * 0.50f;
-            speed[h] = sk.throwHand;
-            if (length(s.botHand[h] - want[h].p) < 0.15f || now - s.botThrowT > 0.4f) {
+            speed[h] = s.coach.on ? std::max(2.f, s.coach.speed / 2.2f) : sk.throwHand;
+            if (s.coach.on ? now - s.botThrowT >= 0.25f - 1e-4f : length(s.botHand[h] - want[h].p) < 0.15f || now - s.botThrowT > 0.4f) {
                 b.pos = launcherPoint(p, h);
-                launch(p, h, s.botShotDir, throwSpeedFromHandSpeed(sk.throwHand, p), s.botShotSpin);
+                if (s.coach.on) {   // (the direction as it is now: a coach throwing at you aims where you are)
+                    b.pos = s.coach.from;
+                    launch(p, h, normalize(s.coach.dir), s.coach.speed, s.coach.spin, false);
+                }
+                else launch(p, h, s.botShotDir, throwSpeedFromHandSpeed(sk.throwHand, p), s.botShotSpin);
                 s.botThrow = 0;
-                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd());
+                s.botSlap = false;
+                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f);   // (four players: quicker, more to aim at)
                 s.botShotsTried = 0;
                 s.botShotScore = -1e9f;
+                if (np == 4) s.botTarget = botPickTarget(p);   // (four players: someone, maybe someone else, next)
             }
         }
     }
@@ -1508,8 +1687,24 @@ void Game::stepBot(int p, float dt) {
         if (length(catcherPoint(p, c.hand) - b.pos) < tun.catchHalfHeight + ballRadius(p)) {
             b.state = BallState::Held; b.heldHand = c.hand; b.vel = {}; b.spin = {};
             emit(EventType::Caught, p, c.hand, b.pos);
-            s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd());
+            s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f);   // (four players: quicker, more to aim at)
             s.botThrow = 0; s.botShotsTried = 0; s.botShotScore = -1e9f;
+            // the slap shot (owner, 2026-10-29): caught on the swing and sent straight back, no hold, no wind-up
+            if (!s.coach.on && match == MatchState::InProgress && sk.slap > 0.f && rnd() < sk.slap) {   // (its shot chosen as its throws are)
+                const Vec3 from = launcherPoint(p, c.hand);
+                Vec3 to = chestPoint(opp) + Vec3{rnd() - 0.5f, rnd() - 0.5f, rnd() - 0.5f} * sk.aimError;
+                s.botShotSpin = {};
+                if (rnd() < 0.3f) {   // off a side wall
+                    const float sw = (rnd() < 0.5f ? -1.f : 1.f) * 3.0f;
+                    if (np == 2) to.z += sw; else to += normalize(cross(kUp, to - from)) * sw;
+                } else if (rnd() < 0.6f) {
+                    s.botShotSpin = kUp * ((rnd() < 0.5f ? -1.f : 1.f) * lerpf(12.f, 28.f, rnd()));
+                }
+                s.botShotDir = normalize(to - from);
+                s.botThrow = 2;
+                s.botThrowT = now;
+                s.botSlap = true;
+            }
         }
     }
 }
@@ -1525,10 +1720,13 @@ void Game::startCountdown() {
 
 void Game::stepMatch(float dt) {
     switch (match) {
-    case MatchState::WaitingForPlayers:
-        if (pl[0].in.headTracked && pl[1].in.headTracked) {
-            // two people meet in the centre first; a person and the bot too when asked (practice); two bots never
-            if ((pl[0].isBot != pl[1].isBot ? tun.botMeet : !pl[0].isBot) && tun.meetTime > 0) {
+    case MatchState::WaitingForPlayers: {
+        bool all = true;
+        for (int p = 0; p < np; ++p) all &= pl[p].in.headTracked;
+        if (all) {
+            // two people meet in the centre first; a person and the bot too when asked (practice); two bots never;
+            // four players never (the centre is far from every corner)
+            if (np == 2 && (pl[0].isBot != pl[1].isBot ? tun.botMeet : !pl[0].isBot) && tun.meetTime > 0) {
                 match = MatchState::Meet;
                 stateTimer = tun.meetTime;
             } else {
@@ -1536,6 +1734,7 @@ void Game::stepMatch(float dt) {
             }
         }
         break;
+    }
     case MatchState::Meet: {
         stateTimer -= dt;
         bool bump = false;
@@ -1595,8 +1794,8 @@ void Game::stepMatch(float dt) {
             roundClock -= dt;
             if (roundClock <= 0) {
                 roundClock = 0;
-                if (pl[0].score != pl[1].score) {
-                    const int w = pl[0].score > pl[1].score ? 0 : 1;
+                const int w = leader();   // the team ahead (a tie: sudden death)
+                if (w >= 0) {
                     if (tun.advanced) endRound(w);   // the round goes to the one ahead
                     else {
                         matchWinner = w;
@@ -1614,7 +1813,7 @@ void Game::stepMatch(float dt) {
         stateTimer -= dt;
         if (stateTimer <= 0) {
             int w = pl[0].roundWins >= tun.advancedRoundsToWin ? 0 : pl[1].roundWins >= tun.advancedRoundsToWin ? 1 : -1;
-            for (int p = 0; p < 2; ++p) { pl[p].strikesAgainst = 0; spawnBall(p); }
+            for (int p = 0; p < np; ++p) { pl[p].strikesAgainst = 0; pl[p].strikesFor = 0; spawnBall(p); }
             if (w >= 0) {
                 matchWinner = w;
                 match = MatchState::MatchSummary;
@@ -1632,31 +1831,33 @@ void Game::stepMatch(float dt) {
         break;
     case MatchState::MatchSummary:
         if (pl[0].in.buttonA) {
-            bool bot = pl[1].isBot;
-            reset(bot);
+            uint32_t bots = 0;
+            for (int p = 0; p < np; ++p) bots |= pl[p].isBot ? 1u << p : 0u;
+            resetWithBots(bots);
         }
         break;
     }
 }
 
-void Game::step(float dt, PlayerInput in[2]) {
+void Game::step(float dt, PlayerInput* in) {
     events.clear();
+    events.swap(served_);
     if (dt <= 0) return;
     dt = std::min(dt, 0.05f);
     now += dt;
     lastDt = dt;
-    for (int p = 0; p < 2; ++p) {
+    for (int p = 0; p < np; ++p) {
         if (pl[p].isBot) stepBot(p, dt);
         else pl[p].in = in[p];
         in[p] = pl[p].in;
     }
     stepMatch(dt);
-    for (int p = 0; p < 2; ++p) stepPlayer(p, dt);
-    for (int p = 0; p < 2; ++p) stepBall(p, dt);
+    for (int p = 0; p < np; ++p) stepPlayer(p, dt);
+    for (int p = 0; p < np; ++p) stepBall(p, dt);
 }
 
 namespace exparena {
-std::vector<CollisionTri> collision() {
+std::vector<CollisionTri> collision(bool four) {
     std::vector<CollisionTri> out;
     auto tri = [&](Vec3 a, Vec3 b, Vec3 c, Vec3 in, uint32_t tags) {   // in: the side its face looks to
         Vec3 n = normalize(cross(b - a, c - a));
@@ -1674,6 +1875,7 @@ std::vector<CollisionTri> collision() {
             const Vec3 a = lerp(c0, c1, i / float(kSeg)), b = lerp(c0, c1, (i + 1) / float(kSeg)), mid = (a + b) * 0.5f;
             uint32_t tags = TAG_ARENA;
             if (std::fabs(mid.x) > kBackX) tags |= TAG_RETURN | (mid.x < 0 ? TAG_TEAM0 : TAG_TEAM1);
+            else if (four && std::fabs(mid.z) > kBackX) tags |= TAG_RETURN | (mid.z < 0 ? TAG_TEAM2 : TAG_TEAM3);
             quad(a + Vec3{0, kFloor, 0}, b + Vec3{0, kFloor, 0}, b + Vec3{0, kCeiling, 0}, a + Vec3{0, kCeiling, 0},
                  Vec3{-mid.x, 0, -mid.z}, tags);
         }
@@ -1683,7 +1885,7 @@ std::vector<CollisionTri> collision() {
         quad(corner[0] + Vec3{0, y, 0}, corner[1] + Vec3{0, y, 0}, corner[2] + Vec3{0, y, 0}, corner[3] + Vec3{0, y, 0},
              Vec3{0, k ? -1.f : 1.f, 0}, TAG_ARENA);
     }
-    const int kRim = 24;
+    const int kRim = four ? 0 : 24;   // (FOUR CORNERS: the ball goes through the platforms, as in DIAMOND)
     for (int p = 0; p < 2; ++p) {   // the platforms: the top is its player's foul zone; the rim and underside bounce
         const Vec3 c{p ? 7.f : -7.f, 0, 0};
         const uint32_t team = p ? TAG_TEAM1 : TAG_TEAM0;

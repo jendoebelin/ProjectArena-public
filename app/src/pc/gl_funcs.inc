@@ -62,5 +62,6 @@
     X(glVertexAttribPointer, PFNGLVERTEXATTRIBPOINTERPROC) \
     X(glViewport, PFNGLVIEWPORTPROC) \
     X(glGetError, PFNGLGETERRORPROC) \
+    X(glGetIntegerv, PFNGLGETINTEGERVPROC) \
     X(glReadPixels, PFNGLREADPIXELSPROC) \
     X(glFinish, PFNGLFINISHPROC) \

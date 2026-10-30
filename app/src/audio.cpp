@@ -175,19 +175,27 @@ void Audio::setLoop(const std::string& name, float gain) {
     if (g > 0.0005f) voices_.push_back({c, 0, g, g, true});
 }
 
-void Audio::onEvent(const GameEvent& e, const Vec3& listener, int local) {
+bool Audio::cue(const std::string& key, float gain, float pan) {
+    auto it = eventMap_.find(key);
+    if (it == eventMap_.end()) return false;
+    play(it->second, gain, pan);
+    return true;
+}
+
+void Audio::onEvent(const GameEvent& e, const Vec3& listener, bool ours, const Vec3& right) {
     std::string key = eventName(e.type);
     // from the listener's side (it used to be player 0's: the orange player heard "you were hit" when they scored)
-    if (e.type == EventType::HitPlayer) key = (e.player == local) ? "HitPlayerSelf" : "HitPlayerOpponent";
-    if (e.type == EventType::RoundEnd || e.type == EventType::MatchEnd) key += (e.player == local) ? "Win" : "Lose";
+    if (e.type == EventType::HitPlayer) key = ours ? "HitPlayerSelf" : "HitPlayerOpponent";
+    if (e.type == EventType::RoundEnd || e.type == EventType::MatchEnd) key += ours ? "Win" : "Lose";
     if (e.type == EventType::Throw) key = e.value < 6 ? "ThrowSlow" : e.value < 9 ? "ThrowMed" : e.value < 12 ? "ThrowFast" : "ThrowFull";
     auto it = eventMap_.find(key);
     if (it == eventMap_.end()) it = eventMap_.find(eventName(e.type));
     if (it == eventMap_.end() && e.type == EventType::FistBump) it = eventMap_.find("KnuckleBlock");   // a solid knock
+    if (it == eventMap_.end() && e.type == EventType::LeadChange) it = eventMap_.find("Recharge");    // (sets without the chime)
     if (it == eventMap_.end()) return;
     float d = length(e.pos - listener);
     float gain = (e.pos.x == 0 && e.pos.y == 0 && e.pos.z == 0) ? 1.f : clampf(2.0f / (1.0f + d), 0.15f, 1.f);
-    float pan = clampf((e.pos.z - listener.z) * 0.4f, -0.8f, 0.8f);   // court-relative pan, player faces +X (+Z = right)
+    float pan = clampf(dot(e.pos - listener, right) * 0.4f, -0.8f, 0.8f);   // court-relative pan, toward the listener's right
     play(it->second, gain, pan);
 }
 

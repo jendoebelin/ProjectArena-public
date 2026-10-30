@@ -1,4 +1,4 @@
-// Desktop test of arena rooms (protocol v8): one host, six visitors and a spectator, each a real Net instance,
+// Desktop test of arena rooms (protocol v9): one host, six visitors and a spectator, each a real Net instance,
 // talking through a local copy of the community relay (server/projectarena_relay.py on 127.0.0.1:47781).
 // Build / run: tools/run_room_test.bat
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -57,7 +57,7 @@ static void pump(std::vector<std::unique_ptr<Node>>& ns, double seconds) {
     const double t0 = (double)std::chrono::steady_clock::now().time_since_epoch().count() * 1e-9;
     for (;;) {
         for (auto& n : ns) {
-            PlayerInput in[2];
+            PlayerInput in[kMaxPlayers];
             if (n->net.exchange(n->local, in, n->game, 1.f / 90.f)) { n->game.step(1.f / 90.f, in); n->net.sendState(n->game); }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(11));
@@ -455,6 +455,58 @@ int main() {
         CHECK(!B.net.hostKick(B.net.session()), "the host can't remove itself");
     }
     for (auto& n : ns) { if (n->net.online()) n->net.goOffline(); n->net.shutdown(); }
+    std::printf("[FOUR CORNERS and DIAMOND online (0.3.12, network version 9)]\n");
+    {
+        std::vector<std::unique_ptr<Node>> fs;
+        const char* fnames[] = {"QUAD HOST", "QUAD ONE", "QUAD TWO", "QUAD THREE", "DIAMOND HOST", "DIAMOND ONE"};
+        for (int i = 0; i < 6; ++i) fs.emplace_back(new Node(fnames[i], -3.f + i));
+        for (auto& n : fs) n->net.goOnline(server);
+        pump(fs, 1.0);
+        Node& Q = *fs[0];
+        Q.game.tun.experimental = true; Q.game.tun.expRoom = 1; Q.game.tun.players = 4; Q.game.tun.teamMode = TEAMS_2V2;
+        Q.net.host();
+        Node& D = *fs[4];
+        D.game.tun.experimental = true; D.game.tun.expRoom = 0;
+        D.net.host();
+        pump(fs, 1.0);
+        uint32_t qip = 0, dip = 0;
+        bool listed = false;
+        for (const LanGame& lg : fs[1]->net.games()) {
+            if (std::strcmp(lg.name, "QUAD HOST") == 0) { qip = lg.ip; listed = lg.experimental && lg.expRoom == 1 && lg.players == 4 && lg.teamMode == TEAMS_2V2; }
+            if (std::strcmp(lg.name, "DIAMOND HOST") == 0) dip = lg.ip;
+        }
+        CHECK(listed, "a FOUR CORNERS room says so in the games list (4 players, 2 v 2)");
+        for (int i = 1; i <= 2; ++i) fs[i]->net.join(qip, false);
+        fs[5]->net.join(dip, false);
+        pump(fs, 1.0);
+        Q.net.queue(true);
+        for (int i = 1; i <= 2; ++i) fs[i]->net.queue(true);
+        pump(fs, 2.0);
+        CHECK(Q.game.np == 4 && Q.net.room().slot[0] && Q.net.room().slot[1] && Q.net.room().slot[2], "three people queue into a FOUR CORNERS tank");
+        CHECK(Q.net.room().isBot(3) && Q.game.pl[3].isBot && fs[1]->game.pl[3].isBot, "the empty corner: a bot (host and visitors agree)");
+        fs[3]->net.join(qip, false);
+        pump(fs, 1.0);
+        fs[3]->net.queue(true);
+        pump(fs, 2.5);
+        bool four = Q.net.room().slot[3] != 0 && !Q.net.room().isBot(3);
+        for (int i = 1; i <= 3; ++i) four &= fs[i]->net.localSlot() >= 0 && fs[i]->game.np == 4 && fs[i]->game.tun.players == 4;
+        CHECK(four, "a fourth person takes the bot's corner: four people, every game with four players");
+        bool agree = true;
+        for (int i = 1; i <= 3; ++i)
+            for (int p = 0; p < 4; ++p) agree &= length(fs[i]->game.pl[p].in.head.p - Q.game.pl[p].in.head.p) < 0.05f || p == fs[i]->net.localSlot();
+        CHECK(agree, "everyone sees the same four players where the host does");
+        CHECK(fs[2]->game.tun.experimental && fs[2]->game.tun.expRoom == 1 && fs[2]->game.tun.teamMode == TEAMS_2V2, "and plays the host's rules (FOUR CORNERS, 2 v 2)");
+        const size_t bytes = Net::snapshotBytes(Q.game);
+        char msg[96];
+        std::snprintf(msg, sizeof msg, "a four-player snapshot with a full event log fits the relay (%d of 1200 bytes)", (int)bytes);
+        CHECK(bytes <= 1200, msg);
+        fs[5]->net.queue(true);
+        D.net.queue(true);
+        pump(fs, 2.0);
+        CHECK(fs[5]->game.tun.experimental && fs[5]->game.tun.expRoom == 0 && fs[5]->game.np == 2 && fs[5]->net.localSlot() >= 0,
+              "a DIAMOND room: its player gets the host's EXPERIMENTAL rules");
+        for (auto& n : fs) { if (n->net.online()) n->net.goOffline(); n->net.shutdown(); }
+    }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

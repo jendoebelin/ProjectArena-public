@@ -6,7 +6,12 @@
 #include "math3d.h"
 
 // collision tag bits (match tools/build_open_assets.py)
-enum : uint32_t { TAG_ARENA = 1, TAG_RETURN = 2, TAG_FOUL = 4, TAG_TEAM0 = 8, TAG_TEAM1 = 16 };
+enum : uint32_t { TAG_ARENA = 1, TAG_RETURN = 2, TAG_FOUL = 4, TAG_TEAM0 = 8, TAG_TEAM1 = 16,
+                  TAG_TEAM2 = 32, TAG_TEAM3 = 64 };   // (2, 3: the FOUR CORNERS players' zones)
+// up to four players (FOUR CORNERS, 0.3.12); every other mode is two (slots 0 and 1)
+constexpr int kMaxPlayers = 4;
+// FOUR CORNERS' teams: everyone for themselves; partners in opposite corners (0 with 1, 2 with 3); THE ONE alone
+enum : int { TEAMS_FFA, TEAMS_2V2, TEAMS_3V1 };
 
 struct CollisionTri {
     Vec3 a, b, c, n; uint32_t tags;
@@ -44,13 +49,14 @@ std::vector<CollisionTri> parseCollision(const uint8_t* data, size_t size);
 namespace exparena {
 constexpr float kCorner = 9.5f, kFloor = -3.f, kCeiling = 4.f, kPlatformR = 1.2f, kPlatformThick = 0.15f, kBackX = 7.1f;
 constexpr float kFoulLineX = 5.8f;   // the platform's front edge: past it a throw recharges the ball
-std::vector<CollisionTri> collision();   // CORNERS
+// CORNERS; four: FOUR CORNERS (a platform in each corner, the ball through them, no foul zone, every corner a back wall)
+std::vector<CollisionTri> collision(bool four = false);
 constexpr float kRollLen = 9.5f, kRollW = 4.96f, kRollH = 4.96f, kRollCY = 1.2f;   // DIAMOND: ends at x = -/+9.5; the end (square); its centre height
 constexpr float kRollReach = (0.5f * kRollW + 0.5f * kRollH) * 0.70710678f;   // the end's corners: this far up, down and to the sides
 void diamondEnd(Vec3 v[4]);   // the end's corners (x = 0), round in order: the classic end rolled 45 degrees
 std::vector<CollisionTri> diamondCollision(bool solidPlatforms = false);
 }
-enum : int { ARENA_CLASSIC, ARENA_CORNERS, ARENA_DIAMOND };
+enum : int { ARENA_CLASSIC, ARENA_CORNERS, ARENA_DIAMOND, ARENA_FOURCORNERS };
 
 struct Tunables {
     // ---- rule set. Basic = BeginnerBrawlActivityBP (the activity spawned by l_courtside_00); Advanced = BrawlActivityBP.
@@ -84,8 +90,16 @@ struct Tunables {
     }
 
     // ---- arena / layout
-    Vec3 start[2] = {{-7.0f, 0, 0}, {7.0f, 0, 0}};           // Start_Player0/1 (UE x = -700/+700 cm)
-    Vec3 spawner[2] = {{-6.48f, 0, 0}, {6.48f, 0.02f, 0}};  // ProjectileSpawner_Locator_Player0/1
+    Vec3 start[kMaxPlayers] = {{-7.0f, 0, 0}, {7.0f, 0, 0},        // Start_Player0/1 (UE x = -700/+700 cm);
+                               {0, 0, -7.0f}, {0, 0, 7.0f}};      // 2, 3: FOUR CORNERS' other two corners
+    Vec3 spawner[kMaxPlayers] = {{-6.48f, 0, 0}, {6.48f, 0.02f, 0},  // ProjectileSpawner_Locator_Player0/1
+                                 {0, 0, -6.48f}, {0, 0, 6.48f}};
+    // FOUR CORNERS (0.3.12): four players (2 otherwise), their teams, and 3 v 1's lone player: their hits count
+    // onePoints and their shield never breaks
+    int players = 2;
+    int teamMode = TEAMS_FFA;
+    int theOne = 0;
+    int onePoints = 2;
     float foulLineX = 4.73f;                                  // FoulLine_Player0/1 at x = -/+473 cm
     // a ball outside this box has left the arena (respawns): below outLow, above outHigh, |x| > outX, |z| > outZ
     float outLow = -1.f, outHigh = 6.f, outX = 11.f, outZ = 4.f;
@@ -245,6 +259,7 @@ struct BotSkill {
     float catchChance;          // its own ball coming back
     bool planShots;             // tries out throws (direct, curved, banked) on a copy of the game and picks the best
     bool guardsStrikes;         // also blocks balls heading for its strike zone
+    float slap;                 // chance it sends its returning ball straight back as it catches it (the slap shot)
 };
 constexpr int kBotLevels = 6;
 // how the bot holds its hands when it has nothing to do (owner, 2026-10-27: more than the one "kitten hands"): one
@@ -284,7 +299,8 @@ enum class BallState : uint8_t { Spawning, Idle, Held, Flying, Dead, Returning }
 enum class MatchState : uint8_t { WaitingForPlayers, Countdown, InProgress, RoundSummary, MatchSummary, Meet };
 enum class EventType : uint8_t { Spawn, Grab, Throw, ThrowFail, Bounce, ShieldBlock, ShieldBreak, HitPlayer,
                                  Returned, Caught, Foul, RoundStart, RoundEnd, MatchEnd, Countdown,
-                                 KnuckleBlock, Recharge, Strike, Overtime, SpawnRise, FistBump };
+                                 KnuckleBlock, Recharge, Strike, Overtime, SpawnRise, FistBump,
+                                 LeadChange };   // (FOUR CORNERS: a new team leads; value = that team)
 
 // the event's name (logs, sound mapping). One table for everything: two private copies once fell behind the enum
 // and a new event (FistBump) read past their end and crashed both headsets. Unknown values give "?".
@@ -292,7 +308,7 @@ const char* eventName(EventType t);
 
 struct GameEvent {
     EventType type;
-    int player;     // owning / affected player
+    int player;     // owning / affected player (MatchEnd: the winning team; two players: the winner)
     int hand;       // hand index where relevant (-1 otherwise)
     Vec3 pos;
     float value;
@@ -332,6 +348,7 @@ struct Ball {
     // flies home to its launch spot (homing), harmless all the way; fouled = still before that wall
     bool fouled = false, homing = false;
     float progX = 0, progT = 0;   // stuck balls: where along the court (x) it was at progT (its timer), last metre on
+    float progZ = 0;              // (four players: across the room too)
 };
 
 // one point of a ball's expected flight (Game::predictBall): the step (its game time) whose move brings the ball here
@@ -364,6 +381,7 @@ struct PlayerState {
     int score = 0;          // points (this round in Advanced)
     int roundWins = 0;
     int strikesAgainst = 0; // strikes the opponent holds against this player
+    int strikesFor = 0;     // four players: the strikes this player holds (its ball grows with them); lost when hit
     float shotClock = 0;    // seconds remaining on this player's shot clock
     bool isBot = false;
     // bot (Game::stepBot)
@@ -392,22 +410,34 @@ struct PlayerState {
         std::vector<std::pair<uint32_t, int8_t>> tried;   // this read's tryouts so far (which answer, how it went)
         Vec3 rel[2];            // where its hands hold still (from its head) while it watches the ball (as planned)
         Quat relQ[2];
+        int owner = -1;              // whose ball it is (read 0: the attack it watches; four players: the most urgent)
         int plan = 0, hand = -1;
         float hitT = -1;             // when the ball would reach its body (or, missing it, its own hands where they are)
         Vec3 grip, body;             // the grip (block, catch) it moves to; its body offset (where it stands, or its dodge)
         Quat gripQ;
     } botRead[2];
     int botThrow = 0;                      // 0 holding, 1 winding up, 2 swinging
+    bool botSlap = false;                  // the swing is a slap shot (it goes on whatever comes at it)
     float botThrowT = 0;
     Vec3 botShotDir, botShotSpin;          // the throw it will make, and how good it looked (planned shots)
     float botShotScore = -1e9f;
     int botShotsTried = 0;
+    int botTarget = -1;                    // four players: whom it throws at next (-1: to choose)
+    // TRAINING's coach (a bot): it throws only when told (fire), exactly the throw it is given, from `from` with the
+    // hand it holds the ball in (it takes it with `hand`); watch false: it stands still, defending nothing
+    struct Coach {
+        bool on = false, fire = false, watch = true;
+        int hand = 1, stance = STANCE_RELAXED;
+        Vec3 from, dir, spin;
+        float speed = 8.f;
+    } coach;
 };
 
 class Game {
 public:
     Tunables tun;
-    PlayerState pl[2];
+    PlayerState pl[kMaxPlayers];
+    int np = 2;                 // the players in this match (tun.players, taken at reset)
     MatchState match = MatchState::WaitingForPlayers;
     float stateTimer = 0;
     bool meetBumped = false;    // host: the fist bump happened; the short pause before both go to their ends
@@ -421,8 +451,30 @@ public:
     void setArena(const std::vector<CollisionTri>& tris);
     void rngSeed(uint32_t seed) { rng = seed ? seed : 1u; }   // (the bot's chances; tests vary them)
     void reset(bool player1IsBot);
-    // Advance the simulation. `in` is overwritten for bot players.
-    void step(float dt, PlayerInput in[2]);
+    void resetWithBots(uint32_t botMask);   // bit p: player p is a bot (four players: any of them)
+    // Advance the simulation. `in` (np entries) is overwritten for bot players.
+    void step(float dt, PlayerInput* in);
+    // teams: two players are each their own; FOUR CORNERS by tun.teamMode. Rivals: different teams
+    int team(int p) const;
+    int teamCount() const { return np == 2 ? 2 : tun.teamMode == TEAMS_FFA ? 4 : 2; }
+    int teamScore(int t) const;
+    int leader() const;          // the team ahead on its own (-1: level at the top)
+    bool rivals(int a, int b) const { return a >= 0 && b >= 0 && a != b && team(a) != team(b); }
+    Vec3 facing(int p) const;    // flat, from the player's start toward the centre
+    int strikesHeld(int p) const { return np == 2 ? pl[1 - p].strikesAgainst : pl[p].strikesFor; }
+    // the rival a ball leaving `from` along `dir` is aimed at most nearly (two players: the other one)
+    int aimTarget(int p, const Vec3& from, const Vec3& dir) const;
+    // TRAINING: aim assist for p's throws toward the nearest of these points (the targets) instead of a rival
+    std::vector<Vec3> aimAt[kMaxPlayers];
+    Vec3 assistDir(int p, const Vec3& from, const Vec3& dir) const;   // where aim assist turns p's ball toward (unit)
+    // TRAINING (and tests): p's ball thrown from `from` as a hand would (a Throw; aim assist unless !assist)
+    void serve(int p, const Vec3& from, const Vec3& dir, float speed, const Vec3& spin, bool assist = true);
+    void respawnBall(int p) { spawnBall(p); }
+    void parkBall(int p);   // out of play, hidden under its spawner, until served or respawned
+    // where p's ball goes if served so now, nobody in its way (every body and hand out of it), for up to `horizon`
+    // seconds in steps of dt; ends where it stops flying (a returning ball: its first point)
+    void trialFlight(int p, const Vec3& from, const Vec3& dir, float speed, const Vec3& spin, bool assist, float horizon,
+                     float dt, std::vector<BallPathPt>& out) const;
 
     // helpers exposed for rendering / tests
     Vec3 launcherPoint(int p, int h) const;
@@ -446,7 +498,8 @@ public:
     Vec3 idlePoint(int p) const { return tun.spawner[p] + Vec3{0, tun.spawnerIdleHeight, 0}; }
     Vec3 chestPoint(int p) const;
     float throwSpeedFromHandSpeed(float handSpeed, int thrower) const;
-    void addStrike(int againstPlayer, const Vec3& where, int ball = -1);   // public for tests; ball: whose ball did it
+    // public for tests; ball: whose ball did it; by: who earns it (four players: their ball grows)
+    void addStrike(int againstPlayer, const Vec3& where, int ball = -1, int by = -1);
     Vec3 handVelocity(int p, int h, float now) const;
     float ballRadius(int p) const { return tun.projectileRadius * pl[p].ball.scale; }
     float strikeScale(int strikes) const;
@@ -465,9 +518,9 @@ public:
     bool bodyTouchesPath(const Vec3& head, const Vec3& from, const Vec3& to, float r) const;   // anywhere from `from` to `to`
     float now = 0;
 
+    void startCountdown();   // round 1 of a new match: the 3-2-1
 private:
     void stepMatch(float dt);
-    void startCountdown();   // round 1 of a new match: the 3-2-1
     void endRound(int winner);   // Advanced: a round won (by points, at time, or in sudden death)
     float lastFistLog = 0;
 public:
@@ -486,6 +539,7 @@ private:
     // its strike zone), 0 it is hit; -1 not known yet (no tryouts left this step)
     int botTry(int p, int k, int owner, int plan, int h, const Pose& grip, const Vec3& body, int tuck) const;
     bool botFrozen = false;
+    std::vector<GameEvent> served_;   // throws served since the last step
     float lastDt = 1.f / 72;    // the last step's length (the bot's reads run in the same steps)
     // the bot's tryouts left this step (six at most: the rest of a plan waits for the next step), and whether a plan
     // wanted more
@@ -495,7 +549,7 @@ private:
     void botPlanShot(int p, const BotSkill& sk);               // tries one more throw (planned shots)
     BotSkill botSkillOf(int p) const;
     Pose botBlockGrip(int p, int h, int plan, const BallPathPt& at) const;   // the grip that puts the shield / guard / catcher on the ball
-    void launch(int p, int h, Vec3 dir, float speed, Vec3 spin);
+    void launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist = true);
     void spawnBall(int p);
     void deflect(Ball& b, const Vec3& n, int deflector, float assistDeg, const Vec3& from);
     bool sweepArena(const Vec3& from, const Vec3& to, float r, Vec3& hitPos, Vec3& hitN, uint32_t& tags) const;
@@ -504,7 +558,10 @@ private:
     bool hitsBox(const Pose& box, const Vec3& half, const Vec3& from, const Vec3& to, float r, Vec3& n) const;
     void deflectMoving(Ball& b, const Vec3& n, const Vec3& surfaceVel, int deflector, float assistDeg, const Vec3& from,
                        bool punch = false);
-    void scorePoint(int scorer, const Vec3& where, int ball);
+    void scorePoint(int scorer, int victim, const Vec3& where, int ball);
+    int botThreat(int p) const;   // four players: whose ball read 0 watches (the most urgent attack); two: the other
+    int botAim(int p) const { return np == 2 ? 1 - p : pl[p].botTarget >= 0 ? pl[p].botTarget : aimTarget(p, pl[p].in.head.p, facing(p)); }
+    int botPickTarget(int p);     // four players: a rival to throw at (random)
     void emit(EventType t, int p, int h, const Vec3& pos, float v = 0, int ball = -1) {
         events.push_back({t, p, h, pos, v, ball});
     }

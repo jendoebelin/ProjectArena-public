@@ -4,6 +4,9 @@
 #include "../src/game.h"
 #include "../src/avatar.h"
 #include "../src/record.h"
+#include "../src/training.h"
+#include <functional>
+#include <string>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -561,12 +564,14 @@ static void matchLevelTests(const std::vector<CollisionTri>& tris) {
     std::printf("[MATCH MY LEVEL: it follows the player]\n");
     {   // someone who never throws back: every point is the bot's, so it eases down to ROOKIE and stays there
         Game g; g.setArena(tris); g.tun.botAdapt = true; g.tun.botMatch = 2.f; g.tun.basicMatchTime = 0; g.reset(true);
+        g.tun.selfHitScores = false;   // (its own ball coming back at it would give the other side points: not theirs to earn)
         PlayerInput in[2] = {standing(g, 0), {}};
+        for (HandInput& h : in[0].hand) h.tracked = false;   // (no hands up: still fists would knock its throws back at it)
         std::vector<GameEvent> log;
         run(g, in, 400.f, &log);
-        int pts = 0;
-        for (const GameEvent& e : log) pts += e.type == EventType::HitPlayer && e.player == 0;
-        std::printf("       a player who doesn't play: the bot scored %d, its level %.2f\n", pts, g.tun.botMatch);
+        int pts = 0, own = 0;
+        for (const GameEvent& e : log) { pts += e.type == EventType::HitPlayer && e.player == 0; own += e.type == EventType::HitPlayer && e.player == 1; }
+        std::printf("       a player who doesn't play: the bot scored %d (hit by its own ball %d), its level %.2f\n", pts, own, g.tun.botMatch);
         CHECK(pts > 5 && g.tun.botMatch == 0.f, "against someone who doesn't play back it eases down to ROOKIE");
     }
     {   // a strong player: from ROOKIE it climbs until the points even out
@@ -695,6 +700,130 @@ static void stanceTests(const std::vector<CollisionTri>& tris) {
     }
 }
 
+// TRAINING: every lesson can be passed. The throwing lessons by a perfect thrower (the coach's planner, from where a
+// person stands), STRIKE ZONE and CATCH by a scripted player, the defense lessons by the coach-bot in your place; and
+// the coach's demonstrations take their targets.
+static void trainingTests(const std::vector<CollisionTri>& tris) {
+    using namespace training;
+    std::printf("[TRAINING: lessons]\n");
+    const float dt = 1.f / 72;
+    auto person = [&](const Game& g) { return standing(g, 0); };   // at your end, facing the far wall, hands down
+    // play lesson i: `act` drives the player each step (it may serve the ball); until done or `limit` seconds
+    auto play = [&](int i, float limit, const std::function<void(Game&, Trainer&, PlayerInput&)>& act, bool botPlayer = false) {
+        Game g; g.setArena(tris); g.tun.botLevel = 2;
+        Trainer tr;
+        tr.begin(g, i, tris);
+        PlayerInput in[kMaxPlayers];
+        for (int k = 0; k < 72; ++k) { in[0] = person(g); tr.step(g, dt, in); }   // the card a moment
+        tr.start(g);
+        if (botPlayer) {   // the coach's own skills in your place: it holds its ball and meets the throws
+            g.pl[0].isBot = true; g.pl[0].botLevel = kBotLevels - 1;
+            g.pl[0].coach = PlayerState::Coach{}; g.pl[0].coach.on = true;
+            g.pl[0].coach.stance = STANCE_KITTEN;
+        }
+        int cueN[32] = {0};
+        for (float t = 0; t < limit && tr.phase != Phase::Done; t += dt) {
+            in[0] = person(g);
+            if (tr.phase == Phase::Play) act(g, tr, in[0]);
+            tr.step(g, dt, in);
+            for (const CueEvent& c : tr.cues) ++cueN[(int)c.cue];
+        }
+        if (botPlayer)
+            std::printf("       (blocked %d, punched %d, dodged %d, hit %d, let through %d, body %d)\n", cueN[(int)Cue::Blocked],
+                        cueN[(int)Cue::Punched], cueN[(int)Cue::Dodged], cueN[(int)Cue::Hit], cueN[(int)Cue::Dropped], cueN[(int)Cue::BodyHit]);
+        return tr;
+    };
+    const Vec3 hand{-6.6f, 1.35f, 0.1f};   // where a person's throw leaves
+    int planned = 0, plannedOk = 0;
+    for (int i = 0; i < (int)lessons().size(); ++i) {
+        const Lesson& L = lessons()[i];
+        if (L.kind != THROW) continue;
+        {   // every target, by itself, can be had from where you stand (aim assist on, as you throw)
+            Game g; g.setArena(tris);
+            Trainer tr; tr.begin(g, i, tris);
+            std::vector<Target> T = tr.targets;
+            for (int k = 0; k < (int)T.size(); ++k) {
+                for (int j = 0; j < (int)T.size(); ++j) T[j].live = j == k;
+                const Shot s = planShot(g, 0, hand, L, T, k, 1.f + 0.7f * k, true);
+                ++planned; plannedOk += s.ok;
+                if (!s.ok) std::printf("       %s: target %d not reached\n", L.name, k);
+            }
+        }
+        // a perfect thrower: the planned throw at the first target up, each time the ball is ready
+        Trainer r = play(i, 120.f, [&](Game& gg, Trainer& t, PlayerInput&) {
+            if (gg.pl[0].ball.state != BallState::Idle) return;
+            int k = -1;
+            for (int j = 0; j < (int)t.targets.size() && k < 0; ++j) if (t.targets[j].live && !t.targets[j].down) k = j;
+            if (k < 0) return;
+            const Shot s = planShot(gg, 0, hand, L, t.targets, k, t.clock, true);
+            gg.serve(0, hand, s.dir, s.speed, s.spin, true);
+        });
+        std::printf("       %-16s %d / %d in %.1f s (%d throws)\n", L.name, r.successes, (int)r.targets.size(), r.clock, r.attempts);
+        CHECK(r.phase == Phase::Done && r.result.passed && r.result.attempts == (int)L.targets.size(),
+              (std::string(L.name) + ": a perfect thrower clears it, a throw a target").c_str());
+    }
+    CHECK(planned > 0 && plannedOk == planned, "every throwing lesson's targets can be reached (planned throws)");
+    for (int i = 0; i < (int)lessons().size(); ++i) {   // a person's throws, by the hands (grab, swing back, sweep, let go) count
+        const Lesson& L = lessons()[i];
+        if (L.kind == DEFEND) continue;
+        Thrower th;
+        Trainer r = play(i, 150.f, [&](Game& g, Trainer& t, PlayerInput& in) { in = th.step(g, 0, L, t.targets, t.clock, dt); });
+        std::printf("       by hand: %-16s %d / %d in %d tries, %.1f s\n", L.name, r.successes, L.goal(), r.attempts, r.clock);
+        CHECK(r.phase == Phase::Done && r.result.passed, (std::string(L.name) + ": thrown by hand (the trigger let go mid-swing), it is passed").c_str());
+    }
+    {   // STRIKE ZONE: past the coach's body, through its ring
+        const int i = lessonById(7);
+        int n = 0;
+        Trainer r = play(i, 120.f, [&](Game& g, Trainer&, PlayerInput&) {
+            if (g.pl[0].ball.state != BallState::Idle) return;
+            const Vec3 at = g.strikeZoneCenter(1) + Vec3{0, 0.02f, (n++ & 1) ? 0.45f : -0.45f};
+            g.serve(0, hand, at - hand, 11.5f, {}, true);
+        });
+        std::printf("       %-16s %d strikes in %d throws, %.1f s\n", lessons()[i].name, r.successes, r.attempts, r.clock);
+        CHECK(r.result.passed && r.result.attempts <= 6, "STRIKE ZONE: throws past the coach earn strikes; passed");
+    }
+    {   // CATCH: at the far wall, then a hand (trigger held) where the ball comes back
+        const int i = lessonById(8);
+        Trainer r = play(i, 120.f, [&](Game& g, Trainer&, PlayerInput& in) {
+            Ball& b = g.pl[0].ball;
+            if (b.state == BallState::Idle) g.serve(0, hand, Vec3{9.5f, 1.7f, 0.3f} - hand, 10.f, {}, true);
+            if (b.state == BallState::Returning && length(b.pos - in.head.p) < 1.2f) {
+                in.hand[1].trigger = 1;
+                in.hand[1].grip.p = b.pos - in.hand[1].grip.q.rotate(g.tun.catcherOffset);
+            }
+        });
+        std::printf("       %-16s %d / %d caught\n", lessons()[i].name, r.successes, r.attempts);
+        CHECK(r.result.passed && r.successes == r.attempts, "CATCH: each ball back from the far wall is caught; passed");
+    }
+    for (int i = 0; i < (int)lessons().size(); ++i) {   // the defense lessons: the far end's bot skills in your place
+        const Lesson& L = lessons()[i];
+        if (L.kind != DEFEND) continue;
+        Trainer r = play(i, 150.f, [&](Game&, Trainer&, PlayerInput&) {}, true);
+        std::printf("       %-16s %d / %d (pass %d), %.1f s\n", L.name, r.successes, r.attempts, L.goal(), r.clock);
+        if (L.guard == G_SENDBACK) CHECK(r.phase == Phase::Done && r.successes > 0, "SEND IT BACK: blocks take targets");
+        else if (L.guard == G_SHIELD || L.guard == G_EITHER)   // (the bot keeps its ball in its right hand: the throws to its left it lets by)
+            CHECK(r.phase == Phase::Done && r.attempts == L.budget && r.successes >= L.budget / 3,
+                  (std::string(L.name) + ": the throws all come; a shield held where they come blocks them").c_str());
+        else CHECK(r.phase == Phase::Done && r.result.passed && r.attempts == L.budget,
+                   (std::string(L.name) + ": the coach throws them all; met well, it is passed").c_str());
+    }
+    {   // bests: a better run replaces them; the next lesson opens once one is passed; saved and read back
+        Bests b;
+        const int b0 = lessonById(21), d0 = lessonById(41);
+        CHECK(b.unlocked(0) && !b.unlocked(1) && b.unlocked(b0) && !b.unlocked(b0 + 1) && b.unlocked(d0), "only each track's first lesson is open at first");
+        Result r; r.lesson = 0; r.passed = false; r.successes = 3; r.attempts = 15; r.time = 30;
+        CHECK(!b.add(r) && !b.unlocked(1), "a run not passed counts for nothing");
+        r.passed = true; r.successes = 5; r.attempts = 9; r.time = 40;
+        CHECK(b.add(r) && b.unlocked(1) && !b.unlocked(2), "passed: the next lesson opens");
+        Result faster = r; faster.time = 25; faster.attempts = 12;
+        CHECK(b.add(faster) && b.b[1].time == 25 && b.b[1].attempts == 9, "a faster run keeps the time; the accuracy stays the better one's");
+        Bests c; c.load(b.save());
+        CHECK(c.b[1].passed && c.b[1].time == 25 && c.b[1].successes == 5 && c.total() == 555, "bests saved and read back");
+        c.load("1 1 -5 9 3\n300 1 1 1 1\n");
+        CHECK(c.b[1].time == 25, "nonsense lines are ignored");
+    }
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);   // (unbuffered: a crash shows where it stopped)
     const char* col = argc > 1 ? argv[1] : "app/assets/arena.col";
@@ -744,7 +873,7 @@ int main(int argc, char** argv) {
         for (const GameEvent& e : log) bumps += e.type == EventType::FistBump;
         CHECK(g.match == MatchState::Countdown && bumps == 0, "... then the countdown, once (holding the fists together does not repeat it)");
         bool named = true;
-        for (int t = 0; t <= (int)EventType::FistBump; ++t) named &= std::strcmp(eventName((EventType)t), "?") != 0;
+        for (int t = 0; t <= (int)EventType::LeadChange; ++t) named &= std::strcmp(eventName((EventType)t), "?") != 0;
         CHECK(named, "every event has a name (logs and sounds read it: a missing one crashed both headsets)");
         Game g2; g2.setArena(tris); g2.reset(false);
         PlayerInput in2[2] = {standing(g2, 0), standing(g2, 1)};
@@ -1005,6 +1134,154 @@ int main(int argc, char** argv) {
             for (int p = 0; p < 2; ++p) nan += !std::isfinite(g.pl[p].ball.pos.x) || !std::isfinite(g.pl[p].in.head.p.x);
             std::printf("       bots in the DIAMOND arena: %d and %d throws, %d points\n", throws[0], throws[1], pts);
             CHECK(throws[0] > 3 && throws[1] > 3 && nan == 0 && pts > 0, "the bot plays in the DIAMOND arena (throws, scores)");
+        }
+    }
+    {
+        std::printf("[FOUR CORNERS: four players, teams]\n");
+        // a person standing at corner p, facing the centre
+        auto stand4 = [&](const Game& g, int p) {
+            PlayerInput in;
+            in.headTracked = true;
+            const Vec3 f = g.facing(p);
+            const Quat face = Quat::axisAngle({0, 1, 0}, std::atan2(-f.x, -f.z));
+            in.head = {face, g.tun.start[p] + Vec3{0, 1.65f, 0}};
+            for (int h = 0; h < 2; ++h) {
+                in.hand[h].tracked = true;
+                in.hand[h].grip = {face, g.tun.start[p] + Vec3{0, 1.0f, 0} + f * 0.2f + face.rotate({h == 0 ? -0.3f : 0.3f, 0, 0})};
+            }
+            return in;
+        };
+        auto make4 = [&](int mode, uint32_t bots, PlayerInput in[4]) {
+            Game g; g.setArena(tris); g.tun.players = 4; g.tun.teamMode = mode; g.tun.meetTime = 0;
+            g.useArena(ARENA_FOURCORNERS, tris); g.resetWithBots(bots);
+            for (int p = 0; p < 4; ++p) in[p] = stand4(g, p);
+            for (int i = 0; i < int(72 * 3.6f); ++i) { PlayerInput tmp[4] = {in[0], in[1], in[2], in[3]}; g.step(1.f / 72, tmp); }
+            return g;
+        };
+        auto fire = [&](Game& g, PlayerInput in[4], int owner, Vec3 from, Vec3 vel, float seconds, std::vector<GameEvent>& log) {
+            Ball& b = g.pl[owner].ball;
+            b.state = BallState::Flying; b.instigator = owner; b.rechargePending = true; b.scored = false; b.spin = {};
+            b.pos = from; b.vel = vel; b.speedLimit = length(vel); b.timer = 0; b.progX = from.x; b.progZ = from.z; b.progT = 0;
+            b.bounces = 0; b.fouled = b.homing = false; b.heldHand = -1;
+            for (int i = 0; i < int(72 * seconds); ++i) {
+                PlayerInput tmp[4] = {in[0], in[1], in[2], in[3]};
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+                if (b.state != BallState::Flying && b.state != BallState::Returning) break;
+            }
+        };
+        {
+            PlayerInput in[4]; Game g = make4(TEAMS_FFA, 0, in);
+            CHECK(g.np == 4 && g.match == MatchState::InProgress && g.arenaKind == ARENA_FOURCORNERS, "four players in FOUR CORNERS: the match starts (no fist bump)");
+            bool facesIn = true;
+            for (int p = 0; p < 4; ++p) facesIn &= dot(g.facing(p), Vec3{0, 0, 0} - g.tun.start[p]) > 6.9f;
+            CHECK(facesIn && g.teamCount() == 4, "each faces the centre; free-for-all: four teams");
+        }
+        {   // 2 v 2: partners in opposite corners
+            PlayerInput in[4]; Game g = make4(TEAMS_2V2, 0, in);
+            CHECK(g.team(0) == g.team(1) && g.team(2) == g.team(3) && g.team(0) != g.team(2), "2 v 2: partners in opposite corners");
+            std::vector<GameEvent> log;
+            const Vec3 from = g.tun.start[0] + Vec3{1.6f, 1.3f, 0};
+            fire(g, in, 0, from, normalize(g.chestPoint(1) - from) * 12.f, 2.f, log);
+            CHECK(!hasEvent(log, EventType::HitPlayer), "a ball thrown at your partner goes through them");
+            PlayerInput in2[4]; Game g2 = make4(TEAMS_2V2, 0, in2);
+            std::vector<GameEvent> log2;
+            const Vec3 from2 = g2.tun.start[0] + Vec3{1.6f, 1.3f, 0};
+            fire(g2, in2, 0, from2, normalize(g2.chestPoint(2) - from2) * 12.f, 2.f, log2);
+            CHECK(hasEvent(log2, EventType::HitPlayer, 2) && g2.teamScore(0) == 1 && g2.teamScore(1) == 0, "a hit on a rival scores for your team");
+        }
+        {   // 3 v 1: THE ONE's hits count double
+            PlayerInput in[4]; Game g = make4(TEAMS_3V1, 0, in);
+            CHECK(g.team(0) != g.team(1) && g.team(1) == g.team(2) && g.team(2) == g.team(3), "3 v 1: THE ONE (slot 0) against the other three");
+            std::vector<GameEvent> log;
+            const Vec3 from = g.tun.start[0] + Vec3{1.6f, 1.3f, 0};
+            fire(g, in, 0, from, normalize(g.chestPoint(3) - from) * 12.f, 2.f, log);
+            CHECK(hasEvent(log, EventType::HitPlayer, 3) && g.pl[0].score == 2, "THE ONE's hit counts two");
+        }
+        {   // the clock: the most points wins; a tie, sudden death
+            PlayerInput in[4]; Game g = make4(TEAMS_FFA, 0, in);
+            g.pl[2].score = 3; g.pl[0].score = 1; g.roundClock = 0.01f;
+            for (int i = 0; i < 3; ++i) { PlayerInput tmp[4] = {in[0], in[1], in[2], in[3]}; g.step(1.f / 72, tmp); }
+            CHECK(g.match == MatchState::MatchSummary && g.matchWinner == 2, "at time, the player with the most points wins");
+            PlayerInput in2[4]; Game g2 = make4(TEAMS_FFA, 0, in2);
+            g2.pl[1].score = 2; g2.pl[3].score = 2; g2.roundClock = 0.01f;
+            for (int i = 0; i < 3; ++i) { PlayerInput tmp[4] = {in2[0], in2[1], in2[2], in2[3]}; g2.step(1.f / 72, tmp); }
+            CHECK(g2.match == MatchState::InProgress && g2.overtime, "a tie at the top: sudden death");
+        }
+        {   // a new leader on its own: the lead-change cue (not on a tie, not on the deciding point)
+            auto leads = [](const std::vector<GameEvent>& log, float& to) {
+                int n = 0;
+                for (const GameEvent& e : log) if (e.type == EventType::LeadChange) { ++n; to = e.value; }
+                return n;
+            };
+            PlayerInput in[4]; Game g = make4(TEAMS_FFA, 0, in);
+            std::vector<GameEvent> log;
+            const Vec3 from = g.tun.start[0] + Vec3{1.6f, 1.3f, 0};
+            fire(g, in, 0, from, normalize(g.chestPoint(2) - from) * 12.f, 2.f, log);
+            float to = -1;
+            CHECK(hasEvent(log, EventType::HitPlayer, 2) && leads(log, to) == 1 && to == 0.f && g.leader() == 0, "the first point: a new leader, the cue");
+            PlayerInput in2[4]; Game g2 = make4(TEAMS_FFA, 0, in2);
+            g2.pl[3].score = 1;
+            std::vector<GameEvent> log2;
+            fire(g2, in2, 0, from, normalize(g2.chestPoint(2) - from) * 12.f, 2.f, log2);
+            CHECK(hasEvent(log2, EventType::HitPlayer, 2) && leads(log2, to) == 0 && g2.leader() == -1, "level at the top: no cue");
+            PlayerInput in3[4]; Game g3 = make4(TEAMS_3V1, 0, in3);
+            g3.pl[2].score = 1;
+            std::vector<GameEvent> log3;
+            fire(g3, in3, 0, from, normalize(g3.chestPoint(3) - from) * 12.f, 2.f, log3);
+            CHECK(leads(log3, to) == 1 && to == float(g3.team(0)) && g3.leader() == g3.team(0), "THE ONE's double overtakes the three: the cue");
+            PlayerInput in4[4]; Game g4 = make4(TEAMS_2V2, 0, in4);
+            g4.overtime = true;
+            std::vector<GameEvent> log4;
+            const Vec3 from4 = g4.tun.start[1] + Vec3{-1.6f, 1.3f, 0};
+            fire(g4, in4, 1, from4, normalize(g4.chestPoint(2) - from4) * 12.f, 2.f, log4);
+            CHECK(g4.match == MatchState::MatchSummary && g4.matchWinner == 0 && hasEvent(log4, EventType::MatchEnd, 0) && leads(log4, to) == 0,
+                  "sudden death: the match ends (the event names the winning team), no lead cue");
+        }
+        {   // every corner is its player's back wall; past your platform's edge a throw recharges
+            PlayerInput in[4]; Game g = make4(TEAMS_FFA, 0, in);
+            std::vector<GameEvent> log;
+            const Vec3 from{-2.f, 3.0f, -3.f};
+            fire(g, in, 0, from, normalize(Vec3{1.6f, 3.2f, -9.2f} - from) * 13.f, 2.f, log);
+            bool back = false;
+            for (const GameEvent& e : log) back |= e.type == EventType::Returned && e.player == 0 && e.pos.z < -7.f;
+            CHECK(back, "a ball into another player's corner comes back to its thrower");
+            PlayerInput in2[4]; Game g2 = make4(TEAMS_FFA, 0, in2);
+            std::vector<GameEvent> log2;
+            g2.pl[2].ball.charged = false;
+            fire(g2, in2, 2, g2.idlePoint(2), Vec3{0.3f, 0.1f, 1.f} * 10.f, 0.4f, log2);
+            CHECK(!g2.pl[2].ball.rechargePending && g2.pl[2].ball.charged, "a corner player's throw past the platform's edge recharges");
+            PlayerInput in3[4]; Game g3 = make4(TEAMS_FFA, 0, in3);
+            in3[2].head.p.x += 1.6f;   // standing aside: the ring behind them is open
+            for (int i = 0; i < 4; ++i) { PlayerInput tmp[4] = {in3[0], in3[1], in3[2], in3[3]}; g3.step(1.f / 72, tmp); }
+            std::vector<GameEvent> log3;
+            fire(g3, in3, 0, {0, 1.28f, -3.f}, Vec3{0, 0, -12.f}, 0.6f, log3);
+            CHECK(hasEvent(log3, EventType::Strike, 2) && g3.pl[0].strikesFor == 1, "through a corner player's strike ring: a strike, held by the thrower");
+        }
+        for (int mode = 0; mode < 3; ++mode) {   // four bots, a match each way
+            Game g; g.setArena(tris); g.tun.players = 4; g.tun.teamMode = mode; g.tun.basicMatchTime = 0; g.tun.botLevel = 1;
+            g.useArena(ARENA_FOURCORNERS, tris); g.resetWithBots(0xF);
+            PlayerInput in[4];
+            std::vector<GameEvent> log;
+            for (int i = 0; i < 72 * 120; ++i) {
+                PlayerInput tmp[4] = {in[0], in[1], in[2], in[3]};
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+            }
+            int throws[4] = {0, 0, 0, 0}, hits[4] = {0, 0, 0, 0}, nan = 0;
+            for (const GameEvent& e : log) {
+                if (e.type == EventType::Throw && e.player >= 0) ++throws[e.player];
+                if (e.type == EventType::HitPlayer && e.value >= 0) ++hits[(int)e.value];
+            }
+            for (int p = 0; p < 4; ++p) nan += !std::isfinite(g.pl[p].ball.pos.x) || !std::isfinite(g.pl[p].in.head.p.x);
+            int scorers = 0, sum = 0;
+            for (int p = 0; p < 4; ++p) { scorers += hits[p] > 0; sum += g.pl[p].score; }
+            static const char* names[3] = {"FREE-FOR-ALL", "2 V 2", "3 V 1"};
+            std::printf("       %s, four AMATEUR bots, 2 min: throws %d %d %d %d, hits %d %d %d %d, team scores %d / %d\n", names[mode], throws[0],
+                        throws[1], throws[2], throws[3], hits[0], hits[1], hits[2], hits[3], g.teamScore(0), g.teamScore(1));
+            char msg[96];
+            std::snprintf(msg, sizeof msg, "%s: four bots all throw and score, nothing breaks", names[mode]);
+            CHECK(throws[0] > 4 && throws[1] > 4 && throws[2] > 4 && throws[3] > 4 && scorers >= 2 && nan == 0 && sum > 0, msg);
         }
     }
     {
@@ -1665,6 +1942,28 @@ int main(int argc, char** argv) {
     matchLevelTests(tris);
     stanceTests(tris);
     recordTests(tris);
+    trainingTests(tris);
+    {   // the slap shot (owner, 2026-10-29): the stronger bots send a caught ball straight back; the beginners never do
+        std::printf("[bots: the slap shot]\n");
+        int slaps[2] = {0, 0}, catches[2] = {0, 0};
+        for (int k = 0; k < 2; ++k) {
+            Game g; g.setArena(tris); g.tun.botLevel = k ? kBotLevels - 1 : 0; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
+            g.resetWithBots(3u);
+            PlayerInput in[2];
+            float caughtAt[2] = {-9, -9};
+            for (int i = 0; i < 72 * 180; ++i) {
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                for (const GameEvent& e : g.events) {
+                    if (e.player < 0 || e.player > 1) continue;
+                    if (e.type == EventType::Caught) { caughtAt[e.player] = g.now; ++catches[k]; }
+                    if (e.type == EventType::Throw && g.now - caughtAt[e.player] < 0.6f) ++slaps[k];
+                }
+            }
+        }
+        std::printf("       ROOKIE: %d catches, %d slap shots; UNBEATABLE: %d catches, %d slap shots\n", catches[0], slaps[0], catches[1], slaps[1]);
+        CHECK(slaps[0] == 0 && catches[1] > 4 && slaps[1] * 3 >= catches[1], "UNBEATABLE often sends its caught ball straight back; ROOKIE never");
+    }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

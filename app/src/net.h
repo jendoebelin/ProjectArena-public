@@ -1,6 +1,7 @@
 // Multiplayer for Project Arena (own protocol; not compatible with the original PC game).
 // Every arena is a ROOM run by its host headset (host-authoritative simulation):
-//   tank      two player slots (a human, the practice bot in slot 1, or empty)
+//   tank      two player slots (a human, the practice bot in slot 1, or empty); FOUR CORNERS: four (bots in the
+//             empty ones when BOT FILLS IN)
 //   waiting   up to 4 people in the holding area outside the tank: the last two players and anyone who joined;
 //             they can JOIN QUEUE (max 2). When a match ends both players leave the tank and the queue goes in.
 //   spectators any number, invisible to the players: in the lobby (overlord view) or near this arena
@@ -21,6 +22,11 @@ struct LanGame {
     uint32_t ip = 0, session = 0;
     char name[17] = {};
     bool advanced = false, full = false;
+    // 0.3.12 (network version 9): an EXPERIMENTAL room (expRoom: 0 DIAMOND, 1 FOUR CORNERS), its players and teams, and
+    // each team's score (four in FREE-FOR-ALL)
+    bool experimental = false;
+    int expRoom = 0, players = 2, teamMode = 0;
+    int teamScores[4] = {0, 0, 0, 0};
     // MATCH OPTIONS (0.3.8 hosts; older ones: the defaults): shields off = HOTDOG, knuckle guards -1 as the rules say,
     // basic match time (0 = free play) and advanced round time (0 = none), seconds
     bool shields = true;
@@ -36,8 +42,10 @@ struct RoomInfo {
     enum : uint8_t { WAITING = 2 };
     struct Member { uint32_t id = 0; uint8_t role = 0; int8_t queuePos = -1; uint8_t spot = 0; PlayerInput in; };
     struct Watcher { uint32_t id = 0; uint8_t where = 0; Vec3 pos; };   // where: 0 lobby (lobby space), 1 this arena
-    uint32_t slot[2] = {0, 0};          // member id in the tank; 0 = empty (or the bot, see bot)
-    bool bot = false;                   // slot 1 is the practice bot
+    uint32_t slot[kMaxPlayers] = {0, 0, 0, 0};   // member id in the tank; 0 = empty (or a bot, see botMask)
+    bool bot = false;                   // slot 1 is the practice bot (two players)
+    uint8_t botMask = 0;                // the slots the bots play (bit p); two players: 2 when `bot`
+    bool isBot(int p) const { return (botMask >> p) & 1; }
     std::vector<Member> members;        // everyone in the room except the tank slots' poses (those are in STATE)
     std::vector<Watcher> watchers;
     // player names (REPORT / MUTE A PLAYER): the host, the tank, the waiting players and the spectators at this
@@ -72,7 +80,7 @@ bool sendBugReport(const char* hostPort, const std::string& text, std::string& e
 class Net {
 public:
     enum class Mode { Offline, Searching, Host, Client, Spectate };
-    static constexpr int kMaxWaiting = 4, kMaxQueue = 2;
+    static constexpr int kMaxWaiting = 4, kMaxQueue = 4;   // (the queue: as many as the tank takes, 2 or 4)
     void init();
     void shutdown();
     void toggleLan();                 // Offline <-> LAN (search, then host or join): Y button / adb trigger
@@ -114,6 +122,20 @@ public:
     void deleteMyStats();             // erase our statistics on the server
     static constexpr uint32_t kMyStats = 0xFFFFFFFFu;
     void requestStats(uint32_t hostVip);
+    // TRAINING's leaderboards (0.3.12, the relay's TRAIN / BOARDREQ / BOARD): a passed lesson's result goes out once
+    // we are online with our key (queued until then); a board is asked for and its latest answer read
+    void submitTraining(int lessonId, float seconds, int successes, int attempts);
+    struct BoardRow { char name[17]; uint32_t value; };
+    struct Board {
+        int lesson = -1, kind = 0;     // lesson id (0: overall); 0 TIME (ms), 1 ACCURACY (tenths of a percent)
+        std::vector<BoardRow> rows;
+        int myPlace = 0, players = 0;  // (0: not on it)
+        uint32_t myValue = 0;
+        double at = 0;                 // when it came
+    };
+    void requestBoard(int lessonId, int kind);
+    const Board* board(int lessonId, int kind) const;   // null: no answer yet
+    void boardForPictures(const Board& b) { boards_.push_back(b); }   // (--selftest pictures of the page)
     bool statsFor(uint32_t hostVip, CareerStats out[2]) const;   // the latest answer for that host (false: none)
     uint32_t roomHostVip() const;
     // The Crowd (0.3.7): an online host tells the relay about its match every second (LIVE); the relay answers with
@@ -143,11 +165,12 @@ public:
     // Once per frame. `in` receives the two tank players' inputs to step the Game with (host / offline: in[0] is
     // the local player when we are in slot 0). Client: applies the host's snapshot to `g` and sends `local`.
     // Returns true when the caller should run Game::step (offline, or hosting with someone in the tank).
-    bool exchange(const PlayerInput& local, PlayerInput in[2], Game& g, float dt);
+    // `in`: kMaxPlayers entries (g.np of them used)
+    bool exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt);
     // the room we are in (host or client)
     bool inRoom() const { return mode_ == Mode::Host || mode_ == Mode::Client; }
     const RoomInfo& room() const { return room_; }
-    int localSlot() const;            // 0 / 1 in the tank; -1 waiting outside (or not in a room = 0 offline)
+    int localSlot() const;            // 0 .. 3 in the tank; -1 waiting outside (or not in a room = 0 offline)
     int localIndex() const { int s = localSlot(); return s < 0 ? 0 : s; }
     bool localWaiting() const { return inRoom() && localSlot() < 0; }
     int localQueuePos() const;        // -1 not queued
@@ -182,6 +205,7 @@ public:
     Mode mode() const { return mode_; }
     const char* status() const;
     void sendState(const Game& g);    // host: the post-step snapshot to every member and spectator
+    static size_t snapshotBytes(const Game& g);   // a STATE packet's size with a full event log (tests: the relay's 1200)
     struct SentEvent { uint32_t id; double t; GameEvent e; };
 
 private:
@@ -203,6 +227,9 @@ private:
     // host room logic
     Member* member(uint32_t id);
     int humans() const;
+    bool inTank(uint32_t id) const { for (int p = 0; p < kMaxPlayers; ++p) if (id && slot_[p] == id) return true; return false; }
+    int np_ = 2;                      // host: the tank's places this match (the game's players)
+    uint8_t wantBots() const;         // host: the slots the bots should play now
     void freeSpot(Member& m);
     void fillTank(Game& g);
     void rotate(Game& g);
@@ -222,6 +249,8 @@ private:
     double lastTank_ = 0;
     uint32_t statsHost_ = 0;
     CareerStats stats_[2];
+    std::vector<std::vector<uint8_t>> trainQ_;   // TRAIN bodies waiting for the relay (and our key)
+    std::vector<Board> boards_;
     void relaySend(uint8_t type, const void* body, int n);
     LiveInfo live_;
     bool liveSet_ = false;
@@ -260,7 +289,7 @@ private:
     uint32_t kickNow_ = 0;                // host: removed on the next exchange
     bool kickByHost_ = false;             // (by the host's own decision, not by a vote)
     void countKickVote(uint32_t target, uint32_t voter);
-    uint32_t slot_[2] = {0, 0};           // host: member id in each tank slot (0 = empty / bot)
+    uint32_t slot_[kMaxPlayers] = {0, 0, 0, 0};   // host: member id in each tank slot (0 = empty / bot)
     std::vector<uint32_t> queue_;         // host: queued member ids, front first
     RoomInfo room_;                       // host: built each frame; client: from ROOM packets
     std::vector<uint8_t> lastState_;

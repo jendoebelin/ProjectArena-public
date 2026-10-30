@@ -29,3 +29,5 @@ Ambience oa_Ambience
 Crowd oa_Crowd
 Cheer oa_Cheer
 ClockTick oa_ClockTick
+LeadChange oa_LeadChange
+TargetHit oa_TargetHit
