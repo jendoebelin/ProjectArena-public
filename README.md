@@ -1,6 +1,7 @@
 # Project Arena
 
-**[Watch the Trailer](https://www.youtube.com/watch?v=GfhpzuYmMMk)** . 
+**[Watch the Trailer](https://www.youtube.com/watch?v=GfhpzuYmMMk)** 
+
 ![The Project Arena court](docs/images/arena.jpg)
 
 A free, open-source VR court sport for **Meta Quest** and **PC VR**: throw, curve and punch energy balls at your
