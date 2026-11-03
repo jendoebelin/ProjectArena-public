@@ -1387,7 +1387,11 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.13";
+static const char* kAppVersion = "0.3.14";
+// A scrolling texture's offset, kept in [0, 1) (the textures repeat, so it looks the same). The headset's fragment
+// shader works at medium precision (16-bit floats): an offset that grows with the time played lost its fractions after
+// some minutes, and the ball's and fireballs' plasma broke into big square blocks (a tester's report, 2026-11-02).
+static float wrapUV(double v) { return float(v - std::floor(v)); }
 
 // "0.3.4" newer than "0.3.3" (dotted numbers, compared part by part)
 static bool versionNewer(const char* a, const char* b) {
@@ -4110,7 +4114,7 @@ static void drawAvatarBody(App& a, const PlayerInput& in, int team, int pass, co
         if (p.flags & avatar::PART_NEON)
             for (int k = 0; k < 3; ++k) dp.emissiveAdd[k] += L.ch[avatar::CH_GLOW][k] * 0.35f;
         if (p.flags & avatar::PART_SKINNED) dp.bones = rig.skin;
-        if (p.flags & avatar::PART_PULSE) dp.uvOff[1] = -(float)std::fmod(nowSeconds() - a.startTime, 1000.0) * 1.6f;   // ~40 cm/s
+        if (p.flags & avatar::PART_PULSE) dp.uvOff[1] = wrapUV(-(nowSeconds() - a.startTime) * 1.6);   // ~40 cm/s
         Mat4 swing[avatar::BONE_COUNT], model = pre * p.m;   // (hair: its own bones, the first 7; the renderer reads them all)
         for (Mat4& b : swing) b = Mat4::identity();
         if (p.flags & avatar::PART_HAIR) {   // hair: a style that moves swings (its chains per drawn avatar); under headgear, tucked in
@@ -5907,7 +5911,7 @@ static void drawMiniMatch(App& a, const Game& g, const Vec3& at0, const Quat& q,
         if (hover) for (int k = 0; k < 3; ++k) cp.tintMul[k] = 1.6f;
         a.gfx.draw(a.courtFx, M(Mat4::identity()), cp, 1);
         DrawParams pp;
-        pp.uvOff[1] = -float(nowSeconds() - a.startTime) * 0.9f;
+        pp.uvOff[1] = wrapUV(-(nowSeconds() - a.startTime) * 0.9);
         a.gfx.draw(a.courtPulse, M(Mat4::identity()), pp, 1);
     }
     if (pass == 1 && rmini) {   // the people in that arena's room: red = waiting / queued, blue = spectators there
@@ -6153,6 +6157,37 @@ static void updateVoice(App& a) {
         a.voiceLogAt = t;
     }
     a.net.voiceInbox().clear();
+}
+
+// READY UP (rooms for four, 0.3.14): before a match, PRESS A WHEN READY in front of you until you have, then who the
+// match waits for; READY over the others who are
+static void drawReadyUp(App& a) {
+    const Game& g = a.game;
+    const int L = a.net.localSlot();
+    if (!a.net.inRoom() || g.np != 4 || g.match != MatchState::WaitingForPlayers || L < 0 || a.menuOpen) return;
+    const float cyan[4] = {0.3f, 0.85f, 1.0f, 1}, green[4] = {0.3f, 1.0f, 0.45f, 1}, white[4] = {1, 1, 1, 1};
+    const Pose h = a.viewHead;
+    Vec3 f = h.q.rotate({0, 0, -1}); f.y = 0;
+    if (length(f) < 1e-3f) return;
+    f = normalize(f);
+    const Pose card{Quat::axisAngle({0, 1, 0}, std::atan2(-f.x, -f.z)), h.p + f * 1.3f + Vec3{0, -0.15f, 0}};
+    int waiting = 0;
+    for (int p = 0; p < g.np; ++p) waiting += !g.pl[p].isBot && g.pl[p].in.headTracked && !g.pl[p].ready;
+    if (!g.pl[L].ready) {
+        a.gfx.drawText("PRESS A WHEN READY", card, 0.07f, cyan);
+        a.gfx.drawText("THE MATCH STARTS WHEN EVERYONE IS", card * Pose{Quat{}, {0, -0.10f, 0}}, 0.03f, white);
+    } else {
+        char t[48];
+        std::snprintf(t, sizeof t, waiting ? "READY - WAITING FOR %d MORE" : "READY", waiting);
+        a.gfx.drawText(t, card, 0.05f, green);
+    }
+    for (int p = 0; p < g.np; ++p) {   // the others who are ready (people only: a bot always is)
+        if (p == L || g.pl[p].isBot || !g.pl[p].ready) continue;
+        const Vec3 at = a.viewIn[p].head.p + Vec3{0, 0.35f, 0};
+        Vec3 to = h.p - at; to.y = 0;
+        if (length(to) < 1e-3f) continue;
+        a.gfx.drawText("READY", {Quat::axisAngle({0, 1, 0}, std::atan2(to.x, to.z)), at}, 0.08f, green);
+    }
 }
 
 // HUD near the left hand: the push-to-talk hint, TALKING, or mic state; small white lights over people talking
@@ -6838,7 +6873,7 @@ static void drawFireballs(App& a, int pass, const float (*teamCol)[4]) {
                 for (int c = 0; c < 3; ++c) bp.tintMul[c] = 2.0f * (0.65f * fire[c] + 0.35f * tc[c]);
                 const float s = f.scale * (g.tun.projectileRadius / 0.08f);
                 DrawParams pp = bp;
-                pp.uvOff[0] = now * 0.6f; pp.uvOff[1] = now * 0.4f;   // (its veins racing: flames)
+                pp.uvOff[0] = wrapUV(now * 0.6); pp.uvOff[1] = wrapUV(now * 0.4);   // (its veins racing: flames)
                 a.gfx.draw(a.projectile, Mat4::fromPose({Quat{}, f.pos}, {s, s, s}), pp, pass);
                 a.gfx.draw(a.shell, Mat4::fromPose({Quat::axisAngle(kUpV, now * 9.f), f.pos}, {s, s, s}), bp, pass);
                 if (pass == 0) continue;
@@ -7045,13 +7080,13 @@ static void drawWorld(App& a, int pass) {
     }
     if (pass == 1) {
         DrawParams xp;
-        xp.uvOff[0] = now * 0.035f;   // crowd lights twinkle (env_fx = crowd lights only; they sample a scrolling twinkle strip)
+        xp.uvOff[0] = wrapUV(now * 0.035);   // crowd lights twinkle (env_fx = crowd lights only; they sample a scrolling twinkle strip)
         if (!a.mrView && !minimal) a.gfx.draw(a.envFx, outside, xp, 1);
         DrawParams cp;   // static glow layers: light halos, holographic rings, end-zone energy, light beams
         if (!outline && !minimal && !exp) a.gfx.draw(a.courtFx, Mat4::identity(), cp, 1);
         if (!a.mrView && !minimal && a.stadiumFx.valid()) a.gfx.draw(a.stadiumFx, outside, cp, 1);
         DrawParams pp;   // energy pulses racing along the neon outline
-        pp.uvOff[1] = -now * 0.9f;
+        pp.uvOff[1] = wrapUV(-now * 0.9);
         if (!keyBg && !exp) a.gfx.draw(a.courtPulse, Mat4::identity(), pp, 1);
     }
     float teamCol[kMaxPlayers][4];   // (each player's colour, for its ball, spawner, ring and trail)
@@ -7065,6 +7100,24 @@ static void drawWorld(App& a, int pass) {
         DrawParams sp;
         sp.emissiveAdd[0] = teamCol[p][0] * glow; sp.emissiveAdd[1] = teamCol[p][1] * glow; sp.emissiveAdd[2] = teamCol[p][2] * glow;
         a.gfx.draw(a.spawner, Mat4::fromPose({Quat{}, g.tun.spawner[p]}), sp, pass);
+        // the SHOT CLOCK (owner, 2026-11-03: as the original showed it, but simple): a ring round the launchpad that
+        // builds while your ball sits in your end, full and red once it has run out (each throw of the other player is
+        // then their strike); nothing while the clock is full
+        const float clock = g.pl[p].shotClock, full = std::max(0.1f, g.tun.shotClockSeconds);
+        if (pass == 1 && g.np == 2 && g.tun.useShotClock && g.match == MatchState::InProgress && clock < full - 0.05f) {
+            const int kSeg = 48, lit = clock <= 0.f ? kSeg : (int)std::ceil(kSeg * (1.f - clock / full));
+            const float R = 0.42f, pulse = clock <= 0.f ? 0.75f + 0.25f * std::sin((float)now * 8.f) : 1.f;
+            const float red[4] = {1.0f * pulse, 0.18f * pulse, 0.12f * pulse, 1};
+            const float col[4] = {teamCol[p][0] * 0.9f, teamCol[p][1] * 0.9f, teamCol[p][2] * 0.9f, 1};
+            const Vec3 c = g.tun.spawner[p] + Vec3{0, 0.03f, 0};
+            const float start = std::atan2(g.facing(p).z, g.facing(p).x);   // (it starts toward the court and goes round)
+            for (int k = 0; k < lit; ++k) {
+                const float ang = start + 2.f * kPi * (k + 0.5f) / kSeg;
+                const Vec3 at = c + Vec3{R * std::cos(ang), 0, R * std::sin(ang)};
+                const Quat q = Quat::axisAngle({0, 1, 0}, -ang);   // (each piece along the circle)
+                a.gfx.drawBox(Mat4::fromPose({q, at}, {0.011f, 0.003f, kPi * R / kSeg * 0.92f}), clock <= 0.f ? red : col, true);
+            }
+        }
     }
     bool anyoneWatched = a.watchRoom.botMask != 0 || !a.watchRoom.members.empty();
     for (int p = 0; p < kMaxPlayers; ++p) anyoneWatched |= a.watchRoom.slot[p] != 0;
@@ -7163,8 +7216,8 @@ static void drawWorld(App& a, int pass) {
             {
                 DrawParams pp = bp;   // energy veins drift across the plasma sphere
                 float tt = float(nowSeconds() - a.startTime);
-                pp.uvOff[0] = tt * 0.21f + a.trail[p].spinAngle * 0.05f;
-                pp.uvOff[1] = tt * 0.13f;
+                pp.uvOff[0] = wrapUV(tt * 0.21 + a.trail[p].spinAngle * 0.05);
+                pp.uvOff[1] = wrapUV(tt * 0.13);
                 a.gfx.draw(a.projectile, m, pp, pass);
             }
             {   // the shell fragments spin with the ball (VFX_Projectile_Shell)
@@ -7238,6 +7291,7 @@ static void drawWorld(App& a, int pass) {
     if (!minimal) drawLobby(a, pass);
     if (!minimal) drawTraining(a, pass);
     if (pass == 1 && !a.rttPass) drawVoiceHud(a);
+    if (pass == 1 && !a.rttPass) drawReadyUp(a);
     if (pass == 1 && !a.rttPass && a.headSelfie && a.spectating && !isDesktop(a) && a.hsTex) {   // SELFIE: in the lower right
         const Pose& h = a.viewHead;
         const Vec3 c = h.transform({0.19f, -0.15f, -0.55f});
@@ -8937,6 +8991,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         if (has("kg0")) t.knuckleMode = 0;
         if (has("kg1")) t.knuckleMode = 1;
         if (has("sudden")) a.game.overtime = true;
+        if (has("clock")) { a.game.pl[0].shotClock = 4.f; a.game.pl[1].shotClock = 0.f; }   // the SHOT CLOCK rings: building, run out
     }
     if (v.crowdFans >= 0) {   // --crowd: fans on phones (the jumbotron's count and hype; END's lights flaring)
         a.testCrowdOn = true;

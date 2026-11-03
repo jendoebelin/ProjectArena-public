@@ -2335,6 +2335,35 @@ int main(int argc, char** argv) {
         CHECK(g.match == MatchState::InProgress && g.pl[0].score == 5 && g.roundClock <= clock && g.roundClock > clock - 1.f,
               "then it plays on: nothing reset");
     }
+    std::printf("[READY UP: a room for four starts when every person in it pressed A (0.3.14)]\n");
+    for (int room = 1; room <= 2; ++room) {   // FOUR CORNERS and FIREBALL BLITZ: two people, two bots
+        Game g;
+        g.tun.experimental = true; g.tun.expRoom = room; g.tun.players = 4;
+        if (room == ROOM_BLITZ) g.useArena(ARENA_OCTAGON, {});
+        g.tun.readyUp = true;
+        g.resetWithBots(0xCu);
+        PlayerInput in[kMaxPlayers];
+        auto run = [&](float secs, bool a0, bool a1) {
+            for (int i = 0; i < (int)(secs * 90); ++i) {
+                for (int p = 0; p < 2; ++p) {
+                    in[p] = PlayerInput(); in[p].headTracked = true;
+                    in[p].head = {Quat{}, g.tun.start[p] + Vec3{0, 1.6f, 0}};
+                    in[p].buttonA = p == 0 ? a0 : a1;
+                }
+                g.step(1.f / 90.f, in);
+            }
+        };
+        run(3.f, false, false);
+        const bool waited = g.match == MatchState::WaitingForPlayers;
+        run(0.2f, true, false);
+        run(3.f, false, false);
+        const bool waitedForOne = g.match == MatchState::WaitingForPlayers && g.pl[0].ready && !g.pl[1].ready;
+        run(0.2f, false, true);
+        run(0.3f, false, false);
+        char msg[112];
+        std::snprintf(msg, sizeof msg, "%s: nothing starts until everyone is READY, then the countdown", room == 1 ? "FOUR CORNERS" : "FIREBALL BLITZ");
+        CHECK(waited && waitedForOne && g.match == MatchState::Countdown, msg);
+    }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

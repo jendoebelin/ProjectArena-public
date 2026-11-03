@@ -2207,6 +2207,8 @@ void Game::stepMatch(float dt) {
     case MatchState::WaitingForPlayers: {
         bool all = true;
         for (int p = 0; p < np; ++p) all &= pl[p].in.headTracked;
+        bool ready = true;   // READY UP: every person in the tank said so (a bot always has)
+        if (tun.readyUp) for (int p = 0; p < np; ++p) ready &= pl[p].isBot || !pl[p].in.headTracked || pl[p].ready;
         if (octagon()) {   // (FIREBALL BLITZ: everyone asked for, or two or more for a moment: an empty place sits out)
             int here = 0;
             bool asked = true;
@@ -2215,9 +2217,9 @@ void Game::stepMatch(float dt) {
                 if (p < octCap) asked &= pl[p].in.headTracked;
             }
             stateTimer = here >= 2 ? stateTimer + dt : 0.f;
-            all = here >= 2 && (asked || stateTimer > 1.5f);
+            all = here >= 2 && (asked || stateTimer > 1.5f || tun.readyUp);
         }
-        if (all) {
+        if (all && ready) {
             // two people meet in the centre first; a person and the bot too when asked (practice); two bots never;
             // four players never (the centre is far from every corner)
             if (np == 2 && (pl[0].isBot != pl[1].isBot ? tun.botMeet : !pl[0].isBot) && tun.meetTime > 0) {
@@ -2382,6 +2384,8 @@ void Game::step(float dt, PlayerInput* in) {
         if (pl[p].isBot) stepBot(p, dt);
         else pl[p].in = in[p];
         in[p] = pl[p].in;
+        if (match == MatchState::WaitingForPlayers && (pl[p].isBot || (tun.readyUp && pl[p].in.buttonA && pl[p].in.headTracked)))
+            pl[p].ready = true;
     }
     stepMatch(dt);
     for (int p = 0; p < np; ++p) stepPlayer(p, dt);

@@ -580,6 +580,17 @@ int main() {
             Q.game.tun.expRoom = ROOM_BLITZ;
             Q.game.useArena(ARENA_OCTAGON, {});
             for (int i = 1; i <= 3; ++i) { pump(fs, 0.3); fs[i]->game.useArena(fs[i]->game.tun.expRoom == ROOM_BLITZ ? ARENA_OCTAGON : ARENA_CLASSIC, {}); }
+            pump(fs, 2.5);   // READY UP (0.3.14): nothing starts until every person in the tank pressed A
+            const bool held = Q.game.match == MatchState::WaitingForPlayers && Q.game.tun.readyUp;
+            fs[0]->local.buttonA = true;
+            pump(fs, 0.4);
+            fs[0]->local.buttonA = false;
+            pump(fs, 0.5);
+            const bool seen = fs[1]->game.pl[Q.net.localSlot()].ready && Q.game.match == MatchState::WaitingForPlayers;
+            CHECK(held && seen, "a room for four waits for everyone's READY (A), and the others see who is");
+            for (int i = 1; i <= 3; ++i) fs[i]->local.buttonA = true;
+            pump(fs, 0.4);
+            for (int i = 1; i <= 3; ++i) fs[i]->local.buttonA = false;
             for (int i = 0; i < 40 && Q.game.match != MatchState::InProgress; ++i) pump(fs, 0.25);
             Q.game.pl[2].health = 3;
             Q.game.serve(0, Q.game.tun.start[0] + Vec3{0.5f, 1.3f, 0}, normalize(Vec3{1, 0.3f, 0.2f}), 8.f, {}, false);
@@ -591,6 +602,13 @@ int main() {
                 same &= length(c.fire[0][0].pos - Q.game.fire[0][0].pos) < 1.0f && length(c.tun.start[1] - Q.game.tun.start[1]) < 1e-3f;
             }
             CHECK(Q.game.match == MatchState::InProgress && same, "FIREBALL BLITZ online: every visitor sees the health, the ring and the fireballs");
+            // a match in a room for four ends: everyone back to the waiting area (owner, 2026-11-03), JOIN QUEUE again
+            Q.game.matchWinner = 0;
+            Q.game.match = MatchState::MatchSummary;
+            pump(fs, 7.5);
+            bool out = !Q.net.room().slot[0] && !Q.net.room().slot[1] && !Q.net.room().slot[2] && !Q.net.room().slot[3];
+            for (int i = 0; i <= 3; ++i) out &= fs[i]->net.localWaiting();
+            CHECK(out, "a room for four: after the match everyone goes back to the waiting area");
         }
         for (auto& n : fs) { if (n->net.online()) n->net.goOffline(); n->net.shutdown(); }
     }
@@ -628,6 +646,11 @@ int main() {
         const float clock = H.game.roundClock;
         CHECK(H.game.match == MatchState::InProgress && H.net.room().slot[0] == A.net.session() && H.net.room().slot[1] == B.net.session(),
               "two players in a match, the host waiting outside");
+        pump(hs, 2.0);   // (the shot clock has been running a while)
+        CHECK(H.game.pl[0].shotClock < H.game.tun.shotClockSeconds - 1.5f && std::fabs(B.game.pl[0].shotClock - H.game.pl[0].shotClock) < 0.5f,
+              "the shot clock runs, and every player sees it as the host does (the ring round the launchpad, 0.3.14)");
+        std::printf("       (shot clocks: host %.1f / %.1f, player %.1f / %.1f, ball states %d %d)\n", H.game.pl[0].shotClock, H.game.pl[1].shotClock,
+                    B.game.pl[0].shotClock, B.game.pl[1].shotClock, (int)H.game.pl[0].ball.state, (int)H.game.pl[1].ball.state);
         // the host's headset goes to sleep: no frames from it at all
         std::vector<std::unique_ptr<Node>> two;
         two.push_back(std::move(hs[1])); two.push_back(std::move(hs[2]));

@@ -616,7 +616,8 @@ static void writeState(Writer& w, const Game& g) {
         const PlayerState& s = g.pl[p];
         writeTankInput(w, s.in);
         w.put<uint8_t>((s.hands[0].shieldUp ? 1 : 0) | (s.hands[1].shieldUp ? 2 : 0) | (s.hands[0].knuckleUp ? 4 : 0) |
-                       (s.hands[1].knuckleUp ? 8 : 0) | (s.ball.charged ? 16 : 0) | (s.ball.scored ? 32 : 0) | (s.isBot ? 64 : 0));
+                       (s.hands[1].knuckleUp ? 8 : 0) | (s.ball.charged ? 16 : 0) | (s.ball.scored ? 32 : 0) | (s.isBot ? 64 : 0) |
+                       (s.ready ? 128 : 0));   // (READY UP, 0.3.14)
         w.put<int16_t>((int16_t)s.score); w.put<uint8_t>((uint8_t)s.roundWins); w.put<uint8_t>((uint8_t)s.strikesAgainst);
         w.put<uint8_t>((uint8_t)s.strikesFor);
         w.put<uint8_t>((uint8_t)s.ball.state); w.put(s.ball.pos); w.put(s.ball.vel); w.put<int8_t>((int8_t)s.ball.heldHand);
@@ -643,6 +644,10 @@ static void writeState(Writer& w, const Game& g) {
             }
         }
     }
+    // (0.3.14) the two players' shot clocks, tenths of a second, for the ring round each launchpad; builds before it
+    // stop reading before them
+    if (g.np == 2)
+        for (int p = 0; p < 2; ++p) w.put<uint8_t>((uint8_t)std::max(0L, std::min(255L, std::lround(g.pl[p].shotClock * 10.f))));
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -679,7 +684,7 @@ static bool readState(Reader& r, Game& g, int localIndex) {
         if (p != localIndex) s.in = in;   // keep our own latest local poses for latency-free hands
         const uint8_t f = r.get<uint8_t>();
         s.hands[0].shieldUp = f & 1; s.hands[1].shieldUp = (f & 2) != 0; s.hands[0].knuckleUp = (f & 4) != 0; s.hands[1].knuckleUp = (f & 8) != 0;
-        s.ball.charged = (f & 16) != 0; s.ball.scored = (f & 32) != 0; s.isBot = (f & 64) != 0;
+        s.ball.charged = (f & 16) != 0; s.ball.scored = (f & 32) != 0; s.isBot = (f & 64) != 0; s.ready = (f & 128) != 0;
         s.score = r.get<int16_t>(); s.roundWins = r.get<uint8_t>(); s.strikesAgainst = r.get<uint8_t>(); s.strikesFor = r.get<uint8_t>();
         s.ball.state = (BallState)std::min<uint8_t>(r.get<uint8_t>(), (uint8_t)BallState::Returning);
         s.ball.pos = r.get<Vec3>(); s.ball.vel = r.get<Vec3>(); s.ball.heldHand = r.get<int8_t>();
@@ -710,6 +715,8 @@ static bool readState(Reader& r, Game& g, int localIndex) {
             }
         }
     }
+    if (np == 2 && r.ok && r.e - r.p >= 2)   // the shot clocks (hosts from 0.3.14)
+        for (int p = 0; p < 2; ++p) g.pl[p].shotClock = r.get<uint8_t>() / 10.f;
     return r.ok;
 }
 
@@ -1653,6 +1660,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         return false;   // the local game is not simulated while spectating
     }
     case Mode::Offline:   // practice: the bot in slot 1 (FOUR CORNERS: bots in the other three corners)
+        g.tun.readyUp = false;   // (practice starts when you are there)
         if (g.tun.players == 4 ? g.np != 4 || !(g.pl[1].isBot && g.pl[2].isBot && g.pl[3].isBot) : g.np != 2 || !g.pl[1].isBot)
             g.resetWithBots(g.tun.players == 4 ? 0xEu : 2u);
         in[0] = local;
@@ -1741,9 +1749,10 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         }
         if ((g.tun.players == 4 ? 4 : 2) != g.np || np_ != g.np) compactTank(g, true);   // the rules changed the places
         fillTank(g);
-        // rotation: a finished match of two humans (four: a full tank) or with someone queued empties the tank after a
-        // short pause
-        const bool rotateRule = humans() == np_ || (humans() >= 1 && !queue_.empty());
+        // rotation: a finished match of two humans or with someone queued empties the tank after a short pause; a room
+        // for four, after every match (owner, 2026-11-03: everyone back to the waiting area, JOIN QUEUE to play again)
+        const bool rotateRule = humans() == np_ || (humans() >= 1 && (!queue_.empty() || np_ == 4));
+        g.tun.readyUp = np_ == 4;   // READY UP: a room for four starts when every person in the tank pressed A
         if (rotateRule && g.match == MatchState::MatchSummary) {
             if (rotateAt_ == 0) { rotateAt_ = now_ + kRotateDelay; notice("NEXT PLAYERS UP SOON"); }
             else if (now_ > rotateAt_) rotate(g);
@@ -1775,7 +1784,8 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             if (!slot_[p] || p >= np_) continue;
             if (Member* m = member(slot_[p])) in[p] = m->local ? local : m->in;
         }
-        if (rotateRule) for (int p = 0; p < kMaxPlayers; ++p) in[p].buttonA = false;   // no skipping the rotation with A
+        if (rotateRule && g.match == MatchState::MatchSummary)   // no skipping the rotation with A (A is READY before a match)
+            for (int p = 0; p < kMaxPlayers; ++p) in[p].buttonA = false;
         if (!humans()) return false;   // empty tank: the arena idles until someone queues
         if (resumeWait_ > 0) {   // a match taken over: paused until its players have found us (or the wait is up)
             bool all = true;

@@ -218,6 +218,9 @@ struct Tunables {
     // shot clock runs while your ball is in your end, resets when you throw past your foul line;
     // once expired the opponent gets an automatic strike each time they throw successfully. Duration.
     bool useShotClock = true;                 // UProjectileLaunchParams.bUseShotClock default true
+    // READY UP (0.3.14, owner 2026-11-03: the bots are always ready, so a room for four started on its own around
+    // people still finding their place): every person in the tank presses A first. The host sets it in rooms for four.
+    bool readyUp = false;
     float shotClockSeconds = 10.0f;
     // shield placement on the hand (cycled live for on-device tuning; 0 = BrawlLancerBP ShieldTransform mapping)
     int shieldPlacement = 1;   // user report on Quest 3: placement 0 (above) is on the wrong side of the gauntlet
@@ -409,6 +412,7 @@ struct PlayerState {
     HandState hands[2];
     Ball ball;
     int score = 0;          // points (this round in Advanced)
+    bool ready = false;     // READY pressed (A) before the match (Tunables::readyUp; a bot always is)
     int roundWins = 0;
     int strikesAgainst = 0; // strikes the opponent holds against this player
     int strikesFor = 0;     // four players: the strikes this player holds (its ball grows with them); lost when hit
