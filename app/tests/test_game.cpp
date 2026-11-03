@@ -538,8 +538,10 @@ static void botTests(const std::vector<CollisionTri>& tris) {
             std::printf("       %s: %d throws, %d hits (and %d of its own blocks back into it), it scored %d; %d strikes, %d shield blocks, %d punches; slowest step %.2f ms\n",
                         m.name, throws, points, rebounds, scored, strikes, blocks, punches, slowest * 1000);
             char msg[112];
-            std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: 1200 hard throws, never hit", m.name);
-            CHECK(throws == 1200 && points == 0, msg);
+            // (never hit, until it attacked with every shape, 2026-10-30: its curves and banks come back slower, so in
+            // Basic it is without its ball, its shield, for longer; three strikes on it make a big fast ball)
+            std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: 1200 hard throws, hit 4 times at most", m.name);
+            CHECK(throws == 1200 && points <= 4, msg);
             std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: none of its own blocks comes back into it", m.name);
             CHECK(rebounds == 0, msg);
         }
@@ -824,6 +826,276 @@ static void trainingTests(const std::vector<CollisionTri>& tris) {
     }
 }
 
+// ---- FIREBALL BLITZ (owner, 2026-10-30): an octagon for up to four, fireballs hopping along the floor, health, the ring
+// closing in, the last one standing
+static Game octGame(const std::vector<CollisionTri>& tris, uint32_t bots, int health = 5, int balls = 1) {
+    Game g; g.setArena(tris);
+    g.tun.experimental = true; g.tun.expRoom = ROOM_BLITZ; g.tun.players = 4; g.tun.meetTime = 0;
+    g.tun.health = health; g.tun.fireBalls = balls; g.tun.basicMatchTime = 0;
+    g.useArena(ARENA_OCTAGON, tris);
+    g.resetWithBots(bots);
+    return g;
+}
+static void octagonTests(const std::vector<CollisionTri>& tris) {
+    std::printf("[FIREBALL BLITZ]\n");
+    {
+        Game g = octGame(tris, 0);
+        bool ring = true;
+        for (int p = 0; p < 4; ++p) {
+            ring &= std::fabs(length(g.tun.start[p]) - 6.f) < 1e-3f && dot(g.facing(p), normalize(Vec3{0, 0, 0} - g.tun.start[p])) > 0.999f;
+            ring &= length(g.tun.start[p] - Vec3{-7.f, 0, 0}) > 0.5f || p != 0;
+        }
+        CHECK(ring && std::fabs(g.tun.start[0].x + 6.f) < 1e-3f && std::fabs(g.tun.start[2].z + 6.f) < 1e-3f && std::fabs(g.ringApothem - 7.5f) < 1e-3f,
+              "four places evenly round a 6 m ring, each facing the centre, the walls 1.5 m behind");
+        g.layoutRing(0x3);
+        CHECK(std::fabs(g.tun.start[0].x + 3.5f) < 1e-3f && std::fabs(g.tun.start[1].x - 3.5f) < 1e-3f && std::fabs(g.ringApothem - 5.f) < 1e-3f,
+              "two left: face to face 3.5 m from the centre, the walls closed in");
+        g.layoutRing(0xB);
+        bool three = true;
+        for (int p : {0, 1, 3}) three &= std::fabs(length(g.tun.start[p]) - 4.8f) < 1e-3f;
+        CHECK(three && std::fabs(dot(normalize(g.tun.start[0]), normalize(g.tun.start[1])) + 0.5f) < 1e-3f, "three: 4.8 m, a third of the way round each");
+        Game c = octGame(tris, 0);
+        c.useArena(ARENA_CLASSIC, tris);
+        CHECK(length(c.tun.start[0] - Vec3{-7.f, 0, 0}) < 1e-4f && length(c.tun.spawner[1] - Vec3{6.48f, 0.02f, 0}) < 1e-4f,
+              "leaving the octagon puts every place back where it always was");
+    }
+    {   // a fireball: down to the floor, back up to knee height each hop, its speed along the floor kept, gone at its 4th bounce
+        Game g = octGame(tris, 0);
+        PlayerInput in[4] = {standing(g, 0), {}, {}, {}};
+        g.serve(0, g.tun.start[0] + Vec3{0.6f, 1.3f, 0.3f}, normalize(Vec3{1, 0, 0.35f}), 9.f, {}, false);
+        CHECK(g.pl[0].ball.state != BallState::Flying && g.fireCount(0) == 1, "a throw becomes a fireball (the tee keeps no flying ball)");
+        float apex = 0, lastY = 9, minFlat = 99, maxFlat = 0;
+        int bounces = 0, fizzles = 0;
+        bool rising = false;
+        for (int i = 0; i < 72 * 4 && g.fireCount(0); ++i) {
+            const Ball& f = g.fire[0][0];
+            g.step(1.f / 72, in);
+            for (const GameEvent& e : g.events) { bounces += e.type == EventType::Bounce; fizzles += e.type == EventType::Fizzle; }
+            if (f.state != BallState::Flying) break;
+            const float flat = length(Vec3{f.vel.x, 0, f.vel.z});
+            minFlat = std::min(minFlat, flat); maxFlat = std::max(maxFlat, flat);
+            if (bounces >= 1) { if (f.pos.y > lastY) rising = true; else if (rising) { apex = std::max(apex, lastY); rising = false; } }
+            lastY = f.pos.y;
+        }
+        char msg[128];
+        std::snprintf(msg, sizeof msg, "it hops to the waist (%.2f m) at the same speed along the floor (%.2f to %.2f m/s)", apex, minFlat, maxFlat);
+        CHECK(apex > 0.9f && apex < 1.06f && maxFlat - minFlat < 0.05f, msg);
+        CHECK(bounces == 3 && fizzles == 1 && g.fireCount(0) == 0, "three hops, and it fizzles out at the fourth bounce");
+    }
+    {   // a body: the legs count; your own fireball never hurts you
+        Game g = octGame(tris, 0);
+        const Vec3 head = g.pl[1].in.head.p;
+        Ball b; b.scale = 1.f;
+        b.pos = head + Vec3{-3.f, -1.25f, 0}; b.vel = {8.f, 0, 0}; b.speedLimit = 8.f;
+        CHECK(g.fireHitTime(b, head, 0.3f) < 0.f, "a fireball at knee height doesn't count (waist up only)");
+        b.pos = head + Vec3{-3.f, -0.6f, 0}; b.vel = {8.f, 2.f, 0};
+        CHECK(g.fireHitTime(b, head, 1.f) >= 0.f, "one at the body does");
+        Ball seat; seat.scale = 1.f;   // (across behind, at seat height: the butt counts)
+        seat.pos = head + Vec3{0.2f, -1.03f, -2.f}; seat.vel = {0, 1.5f, 8.f}; seat.speedLimit = 8.f;   // (level as it passes behind)
+        CHECK(g.fireHitTime(seat, head, 0.4f) >= 0.f, "one across your seat counts (the hips and butt are in)");
+        PlayerInput in[4] = {standing(g, 0), standing(g, 1), standing(g, 2), standing(g, 3)};
+        for (int i = 0; i < 72 * 5 && g.match != MatchState::InProgress; ++i) g.step(1.f / 72, in);
+        in[0] = standing(g, 0);
+        g.serve(0, g.pl[0].in.head.p + Vec3{0, 3.f, 0}, Vec3{0, -1, 0}, 6.f, {}, false);   // (straight down onto its own head)
+        std::vector<GameEvent> log;
+        run(g, in, 1.f, &log);
+        CHECK(g.match == MatchState::InProgress && g.pl[0].health == 5 && !hasEvent(log, EventType::HitPlayer), "your own fireball never hurts you");
+    }
+    {   // the ways out (owner, 2026-11-02: "couldn't get away from fireballs"): a fist held low punches it away; a jump
+        // lets it pass under; standing still, it hits
+        auto shot = [&](int how) {   // 0 stand, 1 a fist low in its way, 2 a step to the side as it comes
+            Game g = octGame(tris, 0);
+            PlayerInput in[4] = {standing(g, 0), standing(g, 1), {}, {}};
+            for (int i = 0; i < 72 * 5 && g.match != MatchState::InProgress; ++i) { in[0] = standing(g, 0); in[1] = standing(g, 1); g.step(1.f / 72, in); }
+            in[1] = standing(g, 1);
+            for (int i = 0; i < 72 * 3; ++i) { PlayerInput tmp[4] = {in[0], in[1], {}, {}}; g.step(1.f / 72, tmp); }   // (its usual height)
+            const Vec3 head = g.pl[1].in.head.p;
+            if (how == 1) {   // the right fist at the waist, a little in front, toward the thrower
+                in[1].hand[1].grip.p = head + Vec3{-0.45f, -0.75f, 0};
+                in[1].hand[1].grip.q = Quat::axisAngle({0, 1, 0}, deg2rad(90)) * Quat::axisAngle({1, 0, 0}, deg2rad(-60));
+            }
+            const Vec3 from = head + Vec3{-5.f, -0.5f, 0};
+            Vec3 dir{1, 0, 0};
+            for (float deg = -30; deg <= 20; deg += 2) {   // (the throw that meets the body)
+                Ball b; b.scale = 1.f; b.pos = from;
+                const Vec3 d{std::cos(deg2rad(deg)), std::sin(deg2rad(deg)), 0};
+                b.vel = d * 8.f; b.speedLimit = 8.f * std::cos(deg2rad(deg));
+                if (g.fireHitTime(b, head, 2.f) >= 0) { dir = d; break; }
+            }
+            g.serve(0, from, dir, 8.f, {}, false);
+            std::vector<GameEvent> log;
+            for (int i = 0; i < 72 * 2; ++i) {
+                PlayerInput tmp[4] = {in[0], in[1], {}, {}};
+                if (how == 2 && i / 72.f > 0.3f) {   // a step half a metre to the side as it comes
+                    tmp[1].head.p.z += 0.5f;
+                    for (HandInput& h : tmp[1].hand) h.grip.p.z += 0.5f;
+                }
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+            }
+            return std::make_pair(hasEvent(log, EventType::HitPlayer, 1), hasEvent(log, EventType::KnuckleBlock, 1));
+        };
+        const auto stand = shot(0), punch = shot(1), step = shot(2);
+        CHECK(stand.first, "standing still in its way: hit");
+        CHECK(!punch.first && punch.second, "a knuckle guard held in its way punches it away");
+        CHECK(!step.first, "a step to the side as it comes: it goes past");
+    }
+    {   // how many in the room: one ball, the tee waits; RAPID FIRE, up to three, the tee refilling at once
+        for (int balls : {1, 4}) {
+            Game g = octGame(tris, 0, 5, balls);
+            PlayerInput in[4] = {standing(g, 0), {}, {}, {}};
+            int most = 0, served = 0;
+            float firstAt = -1, refill = -1;   // (the first throw, and how long until the tee had another)
+            for (int i = 0; i < 72 * 6; ++i) {
+                const Ball& t = g.pl[0].ball;
+                if (t.state == BallState::Idle) {
+                    if (served == 1 && refill < 0) refill = g.now - firstAt;
+                    if (served == 0) firstAt = g.now;
+                    g.serve(0, g.idlePoint(0), normalize(Vec3{1, 0.4f, (served % 3 - 1) * 0.3f}), 7.f, {}, false);
+                    ++served;
+                }
+                g.step(1.f / 72, in);
+                most = std::max(most, g.fireCount(0));
+            }
+            char msg[128];
+            if (balls == 1) {
+                std::snprintf(msg, sizeof msg, "ONE BALL: one in the room at a time; the tee waits until it fizzles (%.1f s)", refill);
+                CHECK(most == 1 && refill > 1.f, msg);
+            } else {
+                std::snprintf(msg, sizeof msg, "RAPID FIRE: up to three in the room, the tee refilled in %.2f s (%d thrown in 6 s)", refill, served);
+                CHECK(most == 3 && refill >= 0 && refill < 0.4f && served >= 5, msg);
+            }
+        }
+    }
+    {   // a match: you (standing still) and three bots; knockouts, the ring closing in, the last one standing
+        Game g = octGame(tris, 0xE, 3);
+        g.tun.botLevel = 3;
+        PlayerInput in[4];
+        int knockouts = 0, closes = 0, hits = 0;
+        bool shrank = false, ended = false;
+        for (int i = 0; i < 72 * 400 && !ended; ++i) {
+            in[0] = standing(g, 0);
+            g.step(1.f / 72, in);
+            for (const GameEvent& e : g.events) {
+                knockouts += e.type == EventType::Knockout; closes += e.type == EventType::RingClose; hits += e.type == EventType::HitPlayer;
+                ended |= e.type == EventType::MatchEnd;
+            }
+            int alive = 0;
+            for (int p = 0; p < 4; ++p) alive += g.alive(p);
+            if (alive == 2 && g.ringCloseAt < 0 && g.match == MatchState::InProgress) {
+                bool two = true;
+                for (int p = 0; p < 4; ++p) if (g.alive(p)) two &= std::fabs(length(g.tun.start[p]) - 3.5f) < 1e-3f;
+                shrank |= two && std::fabs(g.ringApothem - 5.f) < 1e-3f;
+            }
+        }
+        char msg[128];
+        std::snprintf(msg, sizeof msg, "a match plays out: %d hits, %d knocked out, the ring closed %d times, the last one standing wins (%s)",
+                      hits, knockouts, closes, g.matchWinner >= 0 ? "player" : "none");
+        CHECK(ended && knockouts == 3 && closes == 2 && g.matchWinner >= 0 && g.alive(g.matchWinner) && hits >= 9, msg);
+        CHECK(shrank, "with two left, they stand 3.5 m out, the walls closed in");
+        CHECK(g.pl[0].health == 0 && g.pl[0].ball.state == BallState::Dead, "you, standing still, are knocked out (and your tee stays empty)");
+    }
+    {   // the best bots' fireballs: straight, curved and off the walls (owner, 2026-11-02: "only straight balls")
+        Game g = octGame(tris, 0xE, 100);
+        g.tun.botLevel = kBotLevels - 1;
+        PlayerInput in[4];
+        int thrown = 0, curved = 0, banked = 0;
+        for (int i = 0; i < 72 * 60; ++i) {
+            in[0] = standing(g, 0);
+            g.step(1.f / 72, in);
+            for (const GameEvent& e : g.events) {
+                if (e.type != EventType::Throw || e.player == 0) continue;
+                for (const Ball& f : g.fire[e.player]) {
+                    if (f.state != BallState::Flying || f.timer > 0.03f) continue;   // (the one just thrown)
+                    ++thrown;
+                    if (length(f.spin) > 3.f) ++curved;
+                    else {   // aimed well off the line to everyone: off a wall
+                        float bestDot = -2.f;
+                        for (int q = 0; q < 4; ++q) {
+                            if (q == e.player || !g.alive(q)) continue;
+                            const Vec3 to = g.pl[q].in.head.p - f.pos;
+                            bestDot = std::max(bestDot, dot(normalize(Vec3{to.x, 0, to.z}), normalize(Vec3{f.vel.x, 0, f.vel.z})));
+                        }
+                        banked += bestDot < 0.93f;
+                    }
+                }
+            }
+        }
+        char msg[128];
+        std::snprintf(msg, sizeof msg, "UNBEATABLE's fireballs: %d thrown, %d curved, %d off a wall, the rest straight", thrown, curved, banked);
+        CHECK(thrown > 20 && curved * 10 >= thrown && banked * 8 >= thrown && (thrown - curved - banked) * 3 >= thrown, msg);
+    }
+    {   // a knockout: a ceasefire until the room has closed in (owner, 2026-11-02: no cheap shots while everyone moves)
+        Game g = octGame(tris, 0, 1);
+        PlayerInput in[4] = {standing(g, 0), standing(g, 1), standing(g, 2), standing(g, 3)};
+        for (int i = 0; i < 72 * 5 && g.match != MatchState::InProgress; ++i) g.step(1.f / 72, in);
+        auto at = [&](int from, int to) {   // a fireball from one at another, the throw that meets them
+            const Vec3 head = g.pl[to].in.head.p, src = g.pl[from].in.head.p + Vec3{0, -0.5f, 0};
+            Vec3 flat = normalize(Vec3{head.x - src.x, 0, head.z - src.z}), dir = flat;
+            for (float deg = -30; deg <= 20; deg += 2) {
+                Ball b; b.scale = 1.f; b.pos = src;
+                const Vec3 d = flat * std::cos(deg2rad(deg)) + Vec3{0, std::sin(deg2rad(deg)), 0};
+                b.vel = d * 9.f; b.speedLimit = 9.f * std::cos(deg2rad(deg));
+                if (g.fireHitTime(b, head, 2.f) >= 0) { dir = d; break; }
+            }
+            g.parkBall(from);
+            g.serve(from, src, dir, 9.f, {}, false);
+        };
+        at(1, 0);   // (player 0 knocked out)
+        std::vector<GameEvent> log;
+        for (int i = 0; i < 72 * 2 && g.alive(0); ++i) { g.step(1.f / 72, in); log.insert(log.end(), g.events.begin(), g.events.end()); }
+        const bool closing = !g.alive(0) && g.ringCloseAt >= 0;
+        at(2, 3);   // a shot during the warning
+        log.clear();
+        for (int i = 0; i < 72 * 1; ++i) { g.step(1.f / 72, in); log.insert(log.end(), g.events.begin(), g.events.end()); }
+        CHECK(closing && g.alive(3) && !hasEvent(log, EventType::HitPlayer), "a knockout: nobody can be hit until the room has closed in");
+    }
+    {   // at time: the most health wins; a tie at the top goes to sudden death, one hit each
+        Game g = octGame(tris, 0, 5);
+        g.tun.basicMatchTime = 5.f;
+        PlayerInput in[4] = {standing(g, 0), standing(g, 1), standing(g, 2), standing(g, 3)};
+        for (int i = 0; i < 72 * 5 && g.match != MatchState::InProgress; ++i) g.step(1.f / 72, in);
+        g.pl[2].health = 2; g.pl[3].health = 4;
+        std::vector<GameEvent> log;
+        run(g, in, 6.f, &log);
+        CHECK(g.overtime && g.alive(0) && g.alive(1) && !g.alive(2) && !g.alive(3) && g.pl[0].health == 1 && g.pl[1].health == 1 &&
+              hasEvent(log, EventType::Overtime), "at time the most health stays in; tied at the top: sudden death, one hit each");
+    }
+    {   // the bots dodge, by their level: fireballs at a bot that is standing its ground
+        int hit[2] = {0, 0};
+        for (int k = 0; k < 2; ++k) {
+            Game g = octGame(tris, 0x2, 100);
+            g.tun.botLevel = k ? kBotLevels - 1 : 0;
+            g.layoutRing(0x3);
+            PlayerInput in[4] = {standing(g, 0), {}, {}, {}};
+            for (int i = 0; i < 72 * 5 && g.match != MatchState::InProgress; ++i) { in[0] = standing(g, 0); g.step(1.f / 72, in); }
+            for (int shot = 0; shot < 20; ++shot) {
+                in[0] = standing(g, 0);
+                // aimed at the bot as it stands: the pitch that reaches it
+                const Vec3 from = g.tun.start[0] + Vec3{0.5f, 1.3f, 0};
+                Vec3 flat = normalize(Vec3{g.pl[1].in.head.p.x - from.x, 0, g.pl[1].in.head.p.z - from.z});
+                Vec3 best = flat;
+                for (float deg = -30; deg <= 10; deg += 2) {
+                    Ball b; b.scale = 1.f; b.pos = from;
+                    const Vec3 d = flat * std::cos(deg2rad(deg)) + Vec3{0, std::sin(deg2rad(deg)), 0};
+                    b.vel = d * 11.f; b.speedLimit = std::max(5.f, 11.f * std::cos(deg2rad(deg)));
+                    if (g.fireHitTime(b, g.pl[1].in.head.p, 2.f) >= 0) { best = d; break; }
+                }
+                if (g.pl[0].ball.state != BallState::Dead) g.parkBall(0);
+                g.serve(0, from, best, 11.f, {}, false);
+                for (int i = 0; i < 72 * 2; ++i) {
+                    in[0] = standing(g, 0);
+                    g.step(1.f / 72, in);
+                    for (const GameEvent& e : g.events) hit[k] += e.type == EventType::HitPlayer && e.player == 1;
+                }
+            }
+        }
+        char msg[96];
+        std::snprintf(msg, sizeof msg, "the bots dodge by their level: 20 fireballs, ROOKIE hit %d times, UNBEATABLE %d", hit[0], hit[1]);
+        CHECK(hit[1] <= 4 && hit[0] >= hit[1] + 6, msg);
+    }
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);   // (unbuffered: a crash shows where it stopped)
     const char* col = argc > 1 ? argv[1] : "app/assets/arena.col";
@@ -970,7 +1242,7 @@ int main(int argc, char** argv) {
         };
         {
             PlayerInput in[2]; Game g = expGame(in);
-            CHECK(g.arenaKind == 1 && g.tun.foulLineX > 5.f && g.tun.outLow < -3.f, "the EXPERIMENTAL arena: its collision, foul line and bounds");
+            CHECK(g.arenaKind == 1 && g.tun.foulLineX > 5.f && g.tun.outLow < exparena::kFloor, "the EXPERIMENTAL arena: its collision, foul line and bounds");
             std::vector<GameEvent> log;
             const Vec3 from = g.pl[0].ball.pos;
             fire(g, in, from, normalize(g.chestPoint(1) - from) * 14.f, 3.f, log);
@@ -1764,8 +2036,26 @@ int main(int argc, char** argv) {
                 strikeThem |= e.type == EventType::Strike && e.player == 1;
                 hitMe |= e.type == EventType::HitPlayer && e.player == 0;
             }
-            CHECK(strikeThem && hasEvent(log, EventType::Returned, 0), "their block into their own foul zone: their strike, and it comes back");
+            CHECK(strikeThem && hasEvent(log, EventType::Returned, 0), "their block into their own foul zone's floor: their strike, and it comes back");
             CHECK(hitMe, "... live: standing still, its owner is hit by it");
+            CHECK(!hasEvent(log, EventType::Foul), "... and no FOUL shown for it (it was never their throw)");
+        }
+        {   // ... but off their own end's side wall it is a wall: it bounces on (owner, 2026-10-30)
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            Ball& b = g.pl[0].ball;
+            b.state = BallState::Flying; b.instigator = 1; b.rechargePending = false; b.scored = false; b.spin = {};   // (their touch)
+            b.pos = {6.5f, 1.5f, 1.6f}; b.speedLimit = 8.f; b.vel = normalize(Vec3{0.3f, 0.f, 1.f}) * 8.f;
+            b.progX = b.pos.x; b.progT = 0; b.timer = 0;
+            std::vector<GameEvent> log;
+            for (int i = 0; i < 36; ++i) {
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+            }
+            bool strikeThem = false, bounced = false;
+            for (const GameEvent& e : log) { strikeThem |= e.type == EventType::Strike && e.player == 1; bounced |= e.type == EventType::Bounce; }
+            CHECK(bounced && !strikeThem && !hasEvent(log, EventType::Foul) && b.instigator == 1,
+                  "their block off their own end's side wall: a plain bounce (no strike, no foul)");
         }
         {   // past the foul line, then back down into its own foul zone: bounce, wall, home; harmless
             PlayerInput in[2]; Game g = makeGame(tris, in);
@@ -1943,9 +2233,10 @@ int main(int argc, char** argv) {
     stanceTests(tris);
     recordTests(tris);
     trainingTests(tris);
+    octagonTests(tris);
     {   // the slap shot (owner, 2026-10-29): the stronger bots send a caught ball straight back; the beginners never do
         std::printf("[bots: the slap shot]\n");
-        int slaps[2] = {0, 0}, catches[2] = {0, 0};
+        int slaps[2] = {0, 0}, catches[2] = {0, 0}, shaped = 0;   // (shaped: UNBEATABLE's slaps curved or off a wall)
         for (int k = 0; k < 2; ++k) {
             Game g; g.setArena(tris); g.tun.botLevel = k ? kBotLevels - 1 : 0; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
             g.resetWithBots(3u);
@@ -1957,12 +2248,92 @@ int main(int argc, char** argv) {
                 for (const GameEvent& e : g.events) {
                     if (e.player < 0 || e.player > 1) continue;
                     if (e.type == EventType::Caught) { caughtAt[e.player] = g.now; ++catches[k]; }
-                    if (e.type == EventType::Throw && g.now - caughtAt[e.player] < 0.6f) ++slaps[k];
+                    if (e.type == EventType::Throw && g.now - caughtAt[e.player] < 0.6f) {
+                        ++slaps[k];
+                        const Ball& b = g.pl[e.player].ball;
+                        const Vec3 to = normalize(g.chestPoint(1 - e.player) - b.pos), v = normalize(b.vel);
+                        if (k && (length(b.spin) > 3.f || dot(normalize(Vec3{to.x, 0, to.z}), normalize(Vec3{v.x, 0, v.z})) < 0.96f)) ++shaped;
+                    }
                 }
             }
         }
-        std::printf("       ROOKIE: %d catches, %d slap shots; UNBEATABLE: %d catches, %d slap shots\n", catches[0], slaps[0], catches[1], slaps[1]);
+        std::printf("       ROOKIE: %d catches, %d slap shots; UNBEATABLE: %d catches, %d slap shots (%d curved or off a wall)\n", catches[0],
+                    slaps[0], catches[1], slaps[1], shaped);
+        CHECK(shaped * 5 >= slaps[1] && shaped > 0, "UNBEATABLE's slaps curve and bank too (planned while its ball comes back)");
         CHECK(slaps[0] == 0 && catches[1] > 4 && slaps[1] * 3 >= catches[1], "UNBEATABLE often sends its caught ball straight back; ROOKIE never");
+    }
+    {   // the attack plan (testers, 2026-10-30): CHAMPION and UNBEATABLE go for strikes, left and right of the ring in turn,
+        // one throw in seven at the player; holding 3 strikes (a big, fast ball), nearly every throw at the player
+        std::printf("[bots: the attack plan]\n");
+        // (and every shape of throw, testers 2026-10-30: curved, off the walls, curved off the walls, off the floor)
+        int shapes[5] = {0, 0, 0, 0, 0}, landedCurved = 0, landedBounced = 0, landedBoth = 0;
+        for (int adv = 0; adv < 2; ++adv) {
+            Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
+            g.tun.botLevel = kBotLevels - 1; g.reset(true);
+            PlayerInput in[2] = {standing(g, 0), {}};
+            bool thrownCurved = false;
+            int throwsCold = 0, atCold = 0, throwsHot = 0, atHot = 0, strikes = 0, onSide = 0, sides[2] = {0, 0}, hits = 0;
+            for (int i = 0; i < 72 * 240; ++i) {
+                in[0].buttonA = g.match == MatchState::MatchSummary || g.match == MatchState::RoundSummary;
+                const int held = g.strikesHeld(1);
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                for (const GameEvent& e : g.events) {
+                    if (e.type == EventType::Throw && e.player == 1) {
+                        ++shapes[std::max(0, std::min(4, g.pl[1].botStyle))];
+                        thrownCurved = length(g.pl[1].ball.spin) > 3.f;   // (as it leaves the hand: spin fades in flight)
+                        if (held >= 3) { ++throwsHot; atHot += g.pl[1].botIntent == 1; }
+                        else { ++throwsCold; atCold += g.pl[1].botIntent == 1; }
+                    }
+                    if (e.type == EventType::Strike && e.player == 0 && e.ball == 1) {   // (not the shot clock's)
+                        const float side = e.pos.z - g.strikeZoneCenter(0).z;
+                        onSide += side * g.pl[1].botStrikeSide < 0;   // (the side it meant: flipped for the next one as it threw)
+                        sides[side > 0] += 1;
+                        ++strikes;
+                    }
+                    hits += e.type == EventType::HitPlayer && e.player == 0;
+                    if ((e.type == EventType::HitPlayer && e.player == 0) || (e.type == EventType::Strike && e.player == 0 && e.ball == 1)) {
+                        const Ball& b = g.pl[1].ball;
+                        const bool curved = thrownCurved, bounced = b.bounces > 0;
+                        landedCurved += curved; landedBounced += bounced; landedBoth += curved && bounced;
+                    }
+                }
+            }
+            const char* mode = adv ? "Advanced" : "Basic";
+            std::printf("       %s: %d throws under 3 strikes (%d at the player), %d at 3 (%d at the player); %d strikes (%d / %d each side, %d where it meant), %d hits\n",
+                        mode, throwsCold, atCold, throwsHot, atHot, strikes, sides[0], sides[1], onSide, hits);
+            char msg[112];
+            std::snprintf(msg, sizeof msg, "%s: under 3 strikes it goes for strikes, about one throw in seven at the player", mode);
+            CHECK(throwsCold > 20 && atCold * 20 >= throwsCold && atCold * 4 <= throwsCold && strikes * 2 >= throwsCold - atCold, msg);
+            std::snprintf(msg, sizeof msg, "%s: its strikes go left and right of the ring in turn", mode);
+            CHECK(strikes > 10 && onSide * 10 >= strikes * 9 && sides[0] * 3 >= strikes && sides[1] * 3 >= strikes, msg);
+            std::snprintf(msg, sizeof msg, "%s: holding 3 strikes, nearly every throw is at the player, and hits", mode);
+            CHECK(throwsHot > 5 && atHot * 10 >= throwsHot * 7 && hits > 5, msg);
+        }
+        std::printf("       shapes thrown: %d straight, %d curved, %d off a wall, %d curved off a wall, %d off the floor; "
+                    "points and strikes: %d curved, %d off a wall or the floor, %d both\n",
+                    shapes[0], shapes[1], shapes[2], shapes[3], shapes[4], landedCurved, landedBounced, landedBoth);
+        CHECK(shapes[0] > 0 && shapes[1] > 0 && shapes[2] > 0 && shapes[3] > 0 && shapes[4] > 0, "it throws every shape");
+        CHECK(landedCurved > 5 && landedBounced > 5 && landedBoth > 0, "and they land: curves, banks, curves off the walls");
+    }
+    std::printf("[HOST HANDOFF: a match taken over goes on from where it was (0.3.13)]\n");
+    {
+        Game g;
+        g.tun.advanced = false;
+        g.resetWithBots(3u);
+        PlayerInput in[kMaxPlayers];
+        for (int i = 0; i < 90 * 20 && g.match != MatchState::InProgress; ++i) g.step(1.f / 90.f, in);
+        g.pl[0].score = 5; g.pl[1].score = 4;
+        g.serve(0, g.tun.start[0] + Vec3{0, 1.3f, 0}, Vec3{0, 0, 1}, 8.f, {}, false);
+        const float clock = g.roundClock;
+        const bool flying = g.pl[0].ball.state == BallState::Flying;
+        g.resumeAfterHandoff();
+        CHECK(flying && g.pl[0].ball.state == BallState::Spawning, "a ball in the air goes back to its thrower");
+        CHECK(g.match == MatchState::Countdown && g.pl[0].score == 5 && g.pl[1].score == 4 && g.roundClock == clock,
+              "a match being played counts down again, the score and the clock as they were");
+        for (int i = 0; i < 90 * 6 && g.match == MatchState::Countdown; ++i) g.step(1.f / 90.f, in);
+        CHECK(g.match == MatchState::InProgress && g.pl[0].score == 5 && g.roundClock <= clock && g.roundClock > clock - 1.f,
+              "then it plays on: nothing reset");
     }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

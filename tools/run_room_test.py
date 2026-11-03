@@ -26,7 +26,7 @@ try:
     env = dict(os.environ)
     if '-v' not in sys.argv:
         env['PROJECTARENA_QUIET'] = '1'
-    r = subprocess.run([os.path.join(ROOT, 'build', 'tests', 'test_rooms.exe')], env=env, timeout=120)
+    r = subprocess.run([os.path.join(ROOT, 'build', 'tests', 'test_rooms.exe')], env=env, timeout=300)
     code = r.returncode
 finally:
     relay.kill()

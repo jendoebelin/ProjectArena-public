@@ -33,13 +33,19 @@ static const uint32_t kMagic = 0x43525053;   // 'SPRC'
 // 3: event log in STATE; 4: named beacons, LEAVE; 5: SpawnRise; 6: spectators; 7: avatars; 8: rooms (waiting players,
 // queue, rotation, spectator presence); 9 (0.3.12): FOUR CORNERS (four places), compact snapshots, the EXPERIMENTAL
 // rooms' rules in beacons and snapshots
-static const uint8_t kVersion = 9;
+static const uint8_t kVersion = 10;   // 10: 0.3.13 (FIREBALL BLITZ: health, the ring and the fireballs in STATE)
 // PING / PONG: the round trip between a host and each player (logged with the net stats). Builds without them ignore
 // both, so the protocol version stays.
 enum : uint8_t { MSG_BEACON = 1, MSG_JOIN = 2, MSG_INPUT = 3, MSG_STATE = 4, MSG_LEAVE = 5, MSG_SPECTATE = 6,
                  MSG_REJECT = 7, MSG_QUEUE = 8, MSG_ROOM = 9, MSG_VOICE = 10, MSG_CAMERAS = 11, MSG_PING = 12, MSG_PONG = 13,
-                 MSG_KICKVOTE = 14, MSG_CROWD = 15 };   // (14: VOTE TO REMOVE, body: the target's id; older hosts ignore it)
+                 MSG_KICKVOTE = 14, MSG_CROWD = 15, MSG_HEIRS = 16, MSG_HANDOFF = 17, MSG_CLOSING = 18 };
+// (14: VOTE TO REMOVE, body: the target's id; older hosts ignore it)
 // (15: The Crowd, host -> room and spectators: the relay's CROWD body, 12 bytes; older builds ignore it)
+// (16-18, 0.3.13, HOST HANDOFF and IDLE ROOMS, host -> room. HEIRS: flags, the room's name, then who hosts next in
+//  order (id, address, name); HANDOFF: the new host's id and whether the old one stays; CLOSING: seconds left, 0 closed)
+static const double kHostQuiet = 5.0;             // a host silent this long: the next one takes over
+static const double kHeirWait = 8.0;              // ... and this long for each heir to answer before the one after
+static const double kResumeWait = 9.0;            // a room taken over waits this long for its players to come back
 // community relay (server/projectarena_relay.py)
 static const uint32_t kRelayMagic = 0x4C52414F;   // 'OARL'
 static const uint16_t kRelayPort = 47780;
@@ -51,6 +57,18 @@ static const double kRotateDelay = 6.0;          // match summary -> both player
 static const double kMemberTimeout = 4.0;
 
 static const char* ipStr(uint32_t ip) { in_addr ia{}; ia.s_addr = ip; return inet_ntoa(ia); }
+
+// IDLE ROOMS: has this person moved (head 5 cm, a hand 10 cm) or changed a button since `ref`? (A headset left on a
+// desk still tracks: it just doesn't move.) Moving resets `ref`.
+static bool stirred(Vec3 ref[3], uint8_t& refButtons, const PlayerInput& in) {
+    uint8_t b = in.buttonA ? 1 : 0;
+    for (int h = 0; h < 2; ++h) b |= (uint8_t)((in.hand[h].trigger > 0.5f ? 2 : 0) << h) | (uint8_t)((in.hand[h].squeeze > 0.5f ? 8 : 0) << h);
+    const Vec3 now[3] = {in.head.p, in.hand[0].grip.p, in.hand[1].grip.p};
+    bool any = b != refButtons;
+    for (int k = 0; k < 3; ++k) any |= length(now[k] - ref[k]) > (k ? 0.10f : 0.05f);
+    if (any) { for (int k = 0; k < 3; ++k) ref[k] = now[k]; refButtons = b; }
+    return any;
+}
 
 // ------------------------------------------------------------------ serialization
 struct Writer {
@@ -165,9 +183,9 @@ static bool readRoom(Reader& r, RoomInfo& ri, uint32_t& lastSeq) {
     uint8_t nm = r.get<uint8_t>();
     for (uint8_t i = 0; i < nm && i < 8 && r.ok; ++i) {
         RoomInfo::Member m;
-        m.id = r.get<uint32_t>(); m.role = r.get<uint8_t>(); m.queuePos = r.get<int8_t>(); m.spot = r.get<uint8_t>() & 3;
+        m.id = r.get<uint32_t>(); m.role = r.get<uint8_t>(); m.queuePos = r.get<int8_t>(); m.spot = r.get<uint8_t>() & 7;
         readPose(r, m.in);
-        if (m.queuePos > 1) m.queuePos = 1;
+        if (m.queuePos > 3) m.queuePos = 3;   // (four queue for a room for four; 0.3.12 said 1 for all after the first)
         n.members.push_back(m);
     }
     uint8_t nw = r.get<uint8_t>();
@@ -306,7 +324,8 @@ uint32_t Net::roomHostVip() const {
 }
 
 void Net::reportMatch(int winner, const MatchStats st[2], const uint8_t score[4], int mode) {
-    if (mode_ != Mode::Host || !online_ || !vip_ || np_ != 2 || winner < 0 || winner > 1 || !slot_[0] || !slot_[1]) return;
+    // (a match taken over from another host: our tally only has its end, so careers don't count it)
+    if (mode_ != Mode::Host || resumed_ || !online_ || !vip_ || np_ != 2 || winner < 0 || winner > 1 || !slot_[0] || !slot_[1]) return;
     uint8_t b[38];
     b[33] = (uint8_t)std::max(0, std::min(2, mode));   // (relays before 0.3.8 read the first 33 bytes)
     std::memcpy(b + 34, &st[0].returnHits, 2);         // (0.3.9: the points from returns; older relays: 34 bytes)
@@ -429,6 +448,7 @@ void Net::goOffline() {
 void Net::setName(const char* n) {
     std::snprintf(name_, sizeof name_, "%s", n && *n ? n : "QUEST");
     for (char* c = name_; *c; ++c) if (*c >= 'a' && *c <= 'z') *c -= 32;   // HUD font is upper-case only
+    if (!inherited_) std::memcpy(roomName_, name_, sizeof roomName_);        // (our room has our name)
     if (online_ && serverIp_) relayHello();   // the relay knows us by name (its log, player reports)
 }
 
@@ -450,9 +470,12 @@ void Net::host() {
     mode_ = Mode::Host; peerIp_ = 0; peerSeen_ = 0; lastBeacon_ = 0;
     members_.clear();
     Member me;
-    me.id = session_; me.local = true; me.seen = now_;
+    me.id = session_; me.local = true; me.seen = now_; me.active = now_;
     members_.push_back(me);
+    std::memcpy(roomName_, name_, sizeof roomName_);
+    prevHost_ = 0; resumeWait_ = 0; resumed_ = false;
     for (uint32_t& s : slot_) s = 0;   // the host starts in the room's waiting area too: JOIN QUEUE to play (owner request)
+    oneFixed_ = false;
     queue_.clear();
     rotateAt_ = 0;
     hostRoomInfo();
@@ -467,9 +490,8 @@ void Net::join(uint32_t ip, bool play) {
     for (const LanGame& lg : games_) if (lg.ip == ip) peerSession_ = lg.session;
     lastEventId_ = 0; pendingEvents_.clear(); resetStats();
     room_ = RoomInfo();
-    lastJoin_ = now_; joinPlay_ = play;
-    Writer w; header(w, MSG_JOIN, session_, ++seq_); w.put<uint8_t>(play ? 1 : 0); writeName(w, name_);
-    sendTo(w.b.data(), (int)w.b.size(), peerIp_, kPort);
+    joinPlay_ = play;
+    sendJoin(play);
     LOGI("net: joining host %s (%s)", ipStr(ip), play ? "play" : "room");
 }
 
@@ -478,18 +500,21 @@ void Net::leave() {
         Writer w; header(w, MSG_LEAVE, session_, 0);
         sendTo(w.b.data(), (int)w.b.size(), peerIp_, kPort);
     }
-    if (mode_ == Mode::Host) {                // tell everyone in the room the arena is closing
-        Writer w; header(w, MSG_LEAVE, session_, 0);
-        for (const Member& m : members_) if (!m.local) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
+    if (mode_ == Mode::Host) {                // people still here: the room goes on with the next host (HOST HANDOFF)
+        uint32_t next = 0;   // (someone who is here: not one still finding a room we took over)
+        for (const Member& m : members_) if (!m.local && m.back && !next) next = m.id;
+        if (next) handOver(next, false);
+        else closeRoom();
     }
     if (mode_ == Mode::Host || mode_ == Mode::Client || mode_ == Mode::Spectate) LOGI("net: offline");
-    mode_ = Mode::Offline; peerIp_ = 0; peerSeen_ = 0; peerSession_ = 0;
+    stepDown();
+    dropRoom(nullptr);
     matches_.clear();
-    spectators_.clear();
-    members_.clear();
-    queue_.clear();
-    for (uint32_t& s : slot_) s = 0;
-    room_ = RoomInfo();
+}
+
+void Net::closeRoom() {   // host: tell everyone in the room the arena is closing
+    Writer w; header(w, MSG_LEAVE, session_, 0);
+    for (const Member& m : members_) if (!m.local) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
 }
 
 void Net::spectate() {
@@ -557,18 +582,20 @@ const char* Net::status() const {
     case Mode::Spectate: return "SPECTATING";
     case Mode::Host:
     case Mode::Client: {
-        if (mode_ == Mode::Client && !peerConnected()) { snprintf(status_, sizeof status_, "%s - LOST HOST", where); return status_; }
+        if (mode_ == Mode::Client && migrating_) { snprintf(status_, sizeof status_, "%s - CHANGING HOST", where); return status_; }
+        if (mode_ == Mode::Client && !peerConnected()) { snprintf(status_, sizeof status_, "%s - HOST NOT RESPONDING", where); return status_; }
         int s = localSlot(), q = localQueuePos();
         int waiting = 0;
         for (const RoomInfo::Member& m : room_.members) waiting += m.role == RoomInfo::WAITING;
         int others = 0;
         for (int p = 0; p < kMaxPlayers; ++p) others += p != s && room_.slot[p];
-        if (s >= 0 && np_ == 4) snprintf(status_, sizeof status_, "%s %s - FOUR CORNERS%s", where, mode_ == Mode::Host ? "HOST" : "ARENA",
+        if (s >= 0 && np_ == 4) snprintf(status_, sizeof status_, "%s %s - %s%s", where, mode_ == Mode::Host ? "HOST" : "ARENA",
+                                         expRoom_ == ROOM_BLITZ ? "FIREBALL BLITZ" : "FOUR CORNERS",
                                          waiting ? " - PLAYERS WAITING" : "");
         else if (s >= 0) snprintf(status_, sizeof status_, "%s %s - %s%s", where, mode_ == Mode::Host ? "HOST" : "ARENA",
                              others ? "VS PLAYER" : room_.bot ? "VS BOT" : "WAITING FOR AN OPPONENT",
                              waiting ? " - PLAYERS WAITING" : "");
-        else if (q >= 0) snprintf(status_, sizeof status_, "%s - QUEUED %s", where, q == 0 ? "NEXT" : "SECOND");
+        else if (q >= 0) snprintf(status_, sizeof status_, "%s - QUEUED %s", where, q == 0 ? "NEXT" : q == 1 ? "SECOND" : q == 2 ? "THIRD" : "FOURTH");
         else snprintf(status_, sizeof status_, "%s - WAITING OUTSIDE THE TANK", where);
         return status_;
     }
@@ -595,6 +622,27 @@ static void writeState(Writer& w, const Game& g) {
         w.put<uint8_t>((uint8_t)s.ball.state); w.put(s.ball.pos); w.put(s.ball.vel); w.put<int8_t>((int8_t)s.ball.heldHand);
         w.put<int8_t>((int8_t)s.ball.instigator); w.put(s.ball.scale);
     }
+    if (g.tun.experimental && g.tun.expRoom == ROOM_BLITZ) {
+        // FIREBALL BLITZ: everyone's health, who started and who stands in the ring, when it closes, its options, and the
+        // fireballs in the room (centimetres and centimetres a second: a full room of them fits the relay's 1200 bytes)
+        for (int p = 0; p < g.np; ++p) w.put<uint8_t>((uint8_t)std::max(0, std::min(255, g.pl[p].health)));
+        w.put<uint8_t>(g.startMask); w.put<uint8_t>(g.ringMask);
+        w.put<int16_t>((int16_t)(g.ringCloseAt < 0 ? -1 : std::lround(std::max(0.f, g.ringCloseAt - g.now) * 100.f)));
+        w.put<uint8_t>((uint8_t)g.tun.health); w.put<uint8_t>((uint8_t)g.tun.fireBalls);
+        auto cm = [](float v) { return (int16_t)std::max(-32000L, std::min(32000L, std::lround(v * 100.f))); };
+        for (int p = 0; p < g.np; ++p) {
+            uint8_t m = 0;
+            for (int k = 0; k < Game::kMaxFire; ++k) m |= g.fire[p][k].state == BallState::Flying ? (uint8_t)(1u << k) : 0;
+            w.put<uint8_t>(m);
+            for (int k = 0; k < Game::kMaxFire; ++k) {
+                const Ball& f = g.fire[p][k];
+                if (f.state != BallState::Flying) continue;
+                w.put<int16_t>(cm(f.pos.x)); w.put<int16_t>(cm(f.pos.y)); w.put<int16_t>(cm(f.pos.z));
+                w.put<int16_t>(cm(f.vel.x)); w.put<int16_t>(cm(f.vel.y)); w.put<int16_t>(cm(f.vel.z));
+                w.put<int8_t>((int8_t)f.instigator);
+            }
+        }
+    }
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -618,7 +666,7 @@ static bool readState(Reader& r, Game& g, int localIndex) {
     if (std::isfinite(mt) && mt >= 0 && mt <= 3600) g.tun.basicMatchTime = mt;
     if (std::isfinite(rt) && rt >= 0 && rt <= 3600) g.tun.advancedRoundTime = rt;
     g.tun.experimental = r.get<uint8_t>() != 0;
-    g.tun.expRoom = r.get<uint8_t>() == 1 ? 1 : 0;
+    g.tun.expRoom = std::min<int>(r.get<uint8_t>(), kRooms - 1);
     const int np = r.get<uint8_t>() == 4 ? 4 : 2;
     g.tun.teamMode = std::min(2, (int)r.get<uint8_t>());
     g.tun.theOne = r.get<uint8_t>() & 3;
@@ -638,6 +686,29 @@ static bool readState(Reader& r, Game& g, int localIndex) {
         if (s.ball.heldHand < -1 || s.ball.heldHand > 1) s.ball.heldHand = -1;
         s.ball.instigator = r.get<int8_t>(); s.ball.scale = r.get<float>();
         if (!std::isfinite(s.ball.scale) || s.ball.scale < 0.1f || s.ball.scale > 10.f) s.ball.scale = 1.f;
+    }
+    if (g.tun.experimental && g.tun.expRoom == ROOM_BLITZ) {
+        for (int p = 0; p < np; ++p) g.pl[p].health = r.get<uint8_t>();
+        g.startMask = r.get<uint8_t>() & 15;
+        const uint8_t ring = r.get<uint8_t>() & 15;
+        const int16_t closeIn = r.get<int16_t>();
+        g.ringCloseAt = closeIn < 0 ? -1.f : g.now + closeIn / 100.f;
+        g.tun.health = std::max(1, std::min(10, (int)r.get<uint8_t>()));
+        g.tun.fireBalls = std::max(1, std::min(4, (int)r.get<uint8_t>()));
+        if (r.ok && ring != g.ringMask) { g.ringMask = ring; g.layoutRing(ring); }   // (the room's layout as the host has it)
+        for (int p = 0; p < np && r.ok; ++p) {
+            const uint8_t m = r.get<uint8_t>();
+            for (int k = 0; k < Game::kMaxFire; ++k) {
+                Ball& f = g.fire[p][k];
+                if (!((m >> k) & 1)) { f.state = BallState::Dead; continue; }
+                Vec3 pos, vel;
+                pos.x = r.get<int16_t>() / 100.f; pos.y = r.get<int16_t>() / 100.f; pos.z = r.get<int16_t>() / 100.f;
+                vel.x = r.get<int16_t>() / 100.f; vel.y = r.get<int16_t>() / 100.f; vel.z = r.get<int16_t>() / 100.f;
+                f.instigator = r.get<int8_t>();
+                f.state = BallState::Flying; f.pos = pos; f.vel = vel; f.scale = 1.f;
+                f.speedLimit = std::max(5.f, std::sqrt(vel.x * vel.x + vel.z * vel.z));   // (read ahead for its warning)
+            }
+        }
     }
     return r.ok;
 }
@@ -660,32 +731,43 @@ Net::Member* Net::member(uint32_t id) {
 int Net::humans() const { int n = 0; for (int p = 0; p < kMaxPlayers; ++p) n += p < np_ && slot_[p] ? 1 : 0; return n; }
 uint8_t Net::wantBots() const {   // the empty places a bot plays (two players: slot 1 only, as it always was)
     if (np_ == 2) return slot_[1] == 0 && botFill_ ? 2 : 0;
-    uint8_t m = 0;
-    if (botFill_ && slot_[0]) for (int p = 1; p < np_; ++p) if (!slot_[p]) m |= (uint8_t)(1u << p);
+    uint8_t m = 0;   // (four players: any empty corner, once someone plays; the host can move people between corners)
+    if (botFill_ && humans()) for (int p = 0; p < np_; ++p) if (!slot_[p]) m |= (uint8_t)(1u << p);
     return m;
 }
 
 void Net::freeSpot(Member& m) {   // the lowest holding-area spot no other waiting member stands on
-    bool used[4] = {false, false, false, false};
+    // (a room for four: eight spots, four on each side, so a full room with nobody playing has room for all; owner,
+    // 2026-11-02)
+    const int n = np_ == 4 ? 8 : 4;
+    bool used[8] = {false, false, false, false, false, false, false, false};
     for (const Member& o : members_)
-        if (&o != &m && !inTank(o.id)) used[o.spot & 3] = true;
-    if (!used[m.spot & 3]) return;
-    for (int s = 0; s < 4; ++s) if (!used[s]) { m.spot = (uint8_t)s; return; }
+        if (&o != &m && !inTank(o.id)) used[o.spot % n] = true;
+    if (m.spot < n && !used[m.spot]) return;
+    for (int s = 0; s < n; ++s) if (!used[s]) { m.spot = (uint8_t)s; return; }
 }
 
-// humans fill slot 0 first; one human plays the bot; any change of who is in the tank restarts the match
-void Net::compactTank(Game& g, bool reset) {
+// humans fill slot 0 first; one human plays the bot; any change of who is in the tank restarts the match.
+// Four players keep their corners (empty ones are bots): the host moves people between them (MOVE PLAYERS)
+void Net::compactTank(Game& g, bool reset, bool nextOne) {
     np_ = g.tun.players == 4 ? 4 : 2;
+    expRoom_ = g.tun.expRoom;
     for (int p = np_; p < kMaxPlayers; ++p)   // (fewer places: those beyond them go back to waiting)
         if (slot_[p]) { if (Member* m = member(slot_[p])) freeSpot(*m); slot_[p] = 0; }
     int k = 0;   // the people in the first places, in order
-    for (int p = 0; p < np_; ++p) if (slot_[p]) { const uint32_t id = slot_[p]; slot_[p] = 0; slot_[k++] = id; }
+    if (np_ == 2)
+        for (int p = 0; p < np_; ++p) if (slot_[p]) { const uint32_t id = slot_[p]; slot_[p] = 0; slot_[k++] = id; }
     for (Member& m : members_) if (!inTank(m.id)) freeSpot(m);
     if (reset) {
-        if (np_ == 4 && g.tun.teamMode == TEAMS_3V1) g.tun.theOne = (g.tun.theOne + 1) % 4;   // (online: THE ONE goes round)
+        if (np_ == 4 && g.tun.teamMode == TEAMS_3V1 && nextOne) {   // (online: the host is THE ONE, or the corner the host
+            const int me = localSlot();                                //  picked, or it goes round; a host not playing:
+            if (g.tun.oneTurns) oneFixed_ = false;                     //  it goes round)
+            if (!oneFixed_) g.tun.theOne = g.tun.oneTurns || me < 0 ? (g.tun.theOne + 1) % 4 : me;
+        }
         g.resetWithBots(wantBots());
         rotateAt_ = 0;
         eventLog_.clear();
+        resumed_ = false; resumeWait_ = 0;
     }
     hostRoomInfo();
 }
@@ -694,6 +776,7 @@ void Net::compactTank(Game& g, bool reset) {
 void Net::fillTank(Game& g) {
     bool changed = false;
     np_ = g.tun.players == 4 ? 4 : 2;
+    expRoom_ = g.tun.expRoom;
     while (!queue_.empty() && humans() < np_) {
         uint32_t id = queue_.front();
         queue_.erase(queue_.begin());
@@ -730,7 +813,7 @@ void Net::removeMember(uint32_t id, Game& g) {
 
 void Net::hostRoomInfo() {
     for (int p = 0; p < kMaxPlayers; ++p) room_.slot[p] = slot_[p];
-    room_.botMask = slot_[0] ? wantBots() : 0;
+    room_.botMask = (np_ == 4 ? humans() > 0 : slot_[0] != 0) ? wantBots() : 0;
     room_.bot = room_.isBot(1);
     room_.members.clear();
     for (const Member& m : members_) {
@@ -755,7 +838,7 @@ void Net::hostRoomInfo() {
 }
 
 std::string Net::hereName() const {
-    if (mode_ == Mode::Host) return name_;
+    if (mode_ == Mode::Host) return roomName_;
     const uint32_t ip = mode_ == Mode::Client ? peerIp_ : (mode_ == Mode::Spectate && presWhere_ == 1) ? presWatch_ : 0;
     for (const LanGame& lg : games_) if (ip && lg.ip == ip) return lg.name;
     return "";
@@ -775,7 +858,7 @@ std::vector<Net::Person> Net::peopleHere() const {
         else std::snprintf(p.name, sizeof p.name, "PLAYER %04X", id & 0xffff);   // a build without names
         v.push_back(p);
     };
-    for (int s = 0; s < 2; ++s) add(ri->slot[s], VOICE_PLAYER);
+    for (int s = 0; s < kMaxPlayers; ++s) add(ri->slot[s], VOICE_PLAYER);   // (all four corners: 0.3.12 listed two)
     for (const RoomInfo::Member& m : ri->members) add(m.id, VOICE_WAITING);
     for (const RoomInfo::Watcher& w : ri->watchers) if (w.where == 1) add(w.id, VOICE_SPECTATOR);
     return v;
@@ -813,6 +896,211 @@ void Net::countKickVote(uint32_t target, uint32_t voter) {
         std::snprintf(msg, sizeof msg, "VOTE TO REMOVE %s  %d OF %d", t->name[0] ? t->name : "A PLAYER", n, need ? need : 2);
         notice(msg);
     }
+}
+
+bool Net::hostSwap(int a, int b, Game& g) {
+    if (mode_ != Mode::Host || np_ != 4 || a < 0 || b < 0 || a >= np_ || b >= np_ || a == b) return false;
+    std::swap(slot_[a], slot_[b]);
+    if (g.tun.theOne == a) g.tun.theOne = b;   // (THE ONE goes with the player)
+    else if (g.tun.theOne == b) g.tun.theOne = a;
+    compactTank(g, true, false);
+    notice("PLAYERS MOVED");
+    LOGI("net: the host swapped corners %d and %d", a, b);
+    return true;
+}
+
+bool Net::hostMakeOne(int corner, Game& g) {
+    if (mode_ != Mode::Host || np_ != 4 || g.tun.teamMode != TEAMS_3V1 || corner < 0 || corner >= np_) return false;
+    g.tun.theOne = corner;
+    oneFixed_ = true;
+    compactTank(g, true, false);
+    notice("A NEW ONE");
+    LOGI("net: the host made corner %d THE ONE", corner);
+    return true;
+}
+
+// ------------------------------------------------------------------ host handoff
+// host: who hosts next, to everyone in the room (`first` first, then the longest there), with the room's settings and
+// the people it has removed (they stay out under the next host)
+void Net::sendHeirs(uint32_t first) {
+    lastHeirs_ = now_;
+    Writer w; header(w, MSG_HEIRS, session_, 0);
+    w.put<uint8_t>((botFill_ ? 1 : 0) | (privateTalk_ ? 2 : 0) | (oneTurns_ ? 4 : 0) | (oneFixed_ ? 8 : 0));
+    writeName(w, roomName_);
+    std::vector<const Member*> order;
+    if (const Member* f = member(first)) if (!f->local) order.push_back(f);
+    for (const Member& m : members_) if (!m.local && m.id != first) order.push_back(&m);
+    const uint8_t n = (uint8_t)std::min<size_t>(order.size(), 12);
+    w.put(n);
+    for (uint8_t i = 0; i < n; ++i) { w.put(order[i]->id); w.put(order[i]->ip); writeName(w, order[i]->name); }
+    const uint8_t k = (uint8_t)std::min<size_t>(removed_.size(), 16);   // (the latest 16)
+    w.put(k);
+    for (size_t i = removed_.size() - k; i < removed_.size(); ++i) { w.put(removed_[i].id); w.put(removed_[i].ip); writeName(w, removed_[i].name); }
+    for (const Member& m : members_) if (!m.local) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
+}
+
+// host: the room goes to `target` (someone in it). HEIRS with them first, then HANDOFF, three times over (should
+// every copy be lost, the room still finds them once we go quiet: they head the list)
+void Net::handOver(uint32_t target, bool stay) {
+    sendHeirs(target);
+    Writer w; header(w, MSG_HANDOFF, session_, 0); w.put(target); w.put<uint8_t>(stay ? 1 : 0);
+    for (int k = 0; k < 3; ++k)
+        for (const Member& m : members_) if (!m.local) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
+    const Member* t = member(target);
+    LOGI("net: the room goes to %s%s", t && t->name[0] ? t->name : "the next player", stay ? " (we stay in it)" : "");
+}
+
+// host: no longer hosting (handed over, left, or woken to find the room moved on): the room's state goes, and our own
+// ROOM TALK and BOT FILLS IN come back if the room was one we took over
+void Net::stepDown() {
+    if (inherited_) { privateTalk_ = ownTalk_; botFill_ = ownBotFill_; inherited_ = false; }
+    members_.clear(); queue_.clear(); spectators_.clear(); eventLog_.clear(); kickVotes_.clear();
+    for (uint32_t& s : slot_) s = 0;
+    resumeWait_ = 0; prevHost_ = 0; promotedAt_ = 0;
+}
+
+void Net::sendJoin(bool play) {
+    lastJoin_ = now_;
+    Writer j; header(j, MSG_JOIN, session_, ++seq_); j.put<uint8_t>(play ? 1 : 0); writeName(j, name_);
+    sendTo(j.b.data(), (int)j.b.size(), peerIp_, kPort);
+}
+
+// client: out of the room (the host closed it, turned us away, or nobody took it over)
+void Net::dropRoom(const char* why) {
+    if (why) notice(why);
+    mode_ = Mode::Offline; peerIp_ = 0; peerSeen_ = 0; peerSession_ = 0; room_ = RoomInfo();
+    migrating_ = false; scoutUntil_ = 0; heirs_.clear(); heirRemoved_.clear();
+}
+
+bool Net::heirBeacon(uint32_t id, uint32_t ip, double since) const {   // (a room handed over: not one of their own)
+    for (const LanGame& lg : games_) if (lg.session == id && lg.ip == ip && lg.seen > since && lg.continues) return true;
+    return false;
+}
+
+bool Net::hostHandOff(uint32_t target, const Game& g) {
+    const Member* t = member(target);
+    if (mode_ != Mode::Host || !t || t->local) return false;
+    {   // the latest snapshot to everyone first (the people waiting get 30 a second): the new host goes on from here
+        Writer w; header(w, MSG_STATE, session_, ++seq_); writeEvents(w, eventLog_); writeState(w, g);
+        for (const Member& m : members_) if (!m.local) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
+    }
+    oneTurns_ = g.tun.oneTurns;
+    handOver(target, true);
+    std::vector<Heir> next;   // our own list, should the new host not answer
+    for (const Member& m : members_) {
+        if (m.local) continue;
+        Heir h; h.id = m.id; h.ip = m.ip; std::memcpy(h.name, m.name, sizeof h.name);
+        if (m.id == target) next.insert(next.begin(), h); else next.push_back(h);
+    }
+    heirFlags_ = (uint8_t)((botFill_ ? 1 : 0) | (privateTalk_ ? 2 : 0) | (oneTurns_ ? 4 : 0) | (oneFixed_ ? 8 : 0));
+    std::memcpy(heirRoom_, roomName_, sizeof heirRoom_);
+    heirRemoved_.clear();
+    for (const Removed& x : removed_) { Heir h; h.id = x.id; h.ip = x.ip; std::memcpy(h.name, x.name, sizeof h.name); heirRemoved_.push_back(h); }
+    stepDown();
+    mode_ = Mode::Client;   // (room_ stays as we had it until the new host's comes)
+    prevHostId_ = session_;
+    heirs_ = next; heirAt_ = 1;
+    follow(next.front());
+    char msg[48];
+    std::snprintf(msg, sizeof msg, "%s IS NOW THE HOST", next.front().name[0] ? next.front().name : "A PLAYER");
+    notice(msg);
+    return true;
+}
+
+// client: the room's host is now h: everything goes to them (JOIN until they list us; the room as we had it till then)
+void Net::follow(const Heir& h) {
+    peerIp_ = h.ip; peerSession_ = h.id; peerSeen_ = now_;
+    lastRecvSeq_ = 0; lastRoomSeq_ = 0; lastEventId_ = 0; pendingEvents_.clear();
+    if (!migrating_) migrateFrom_ = now_;
+    migrating_ = true; migrateUntil_ = now_ + kHeirWait; scoutUntil_ = 0;
+    sendJoin(false);
+    LOGI("net: following the room to %s", h.name[0] ? h.name : ipStr(h.ip));
+}
+
+void Net::arrived() {   // client: the new host answers: the room is theirs
+    migrating_ = false;
+    const char* who = nullptr;
+    for (const Heir& h : heirs_) if (h.id == peerSession_ && h.name[0]) who = h.name;
+    char msg[48];
+    std::snprintf(msg, sizeof msg, "%s IS NOW THE HOST", who ? who : "A PLAYER");
+    notice(msg);
+    LOGI("net: %s hosts the room now", who ? who : ipStr(peerIp_));
+}
+
+// client: the next in line takes the room (ourselves: we host it); nobody left: the room is gone
+void Net::nextHeir(Game& g) {
+    while (heirAt_ < heirs_.size()) {
+        const Heir h = heirs_[heirAt_++];
+        if (h.id == prevHostId_) continue;
+        if (h.id == session_) { promote(g, false, prevHost_, prevHostId_); return; }
+        follow(h);
+        return;
+    }
+    LOGW("net: host lost, and nobody took the room over");
+    dropRoom("CONNECTION TO HOST LOST");
+}
+
+// client -> host of the room we are in: its people (the old host too if it stays), their places in the tank, the
+// queue and the holding area as the last ROOM had them, its settings from HEIRS, and the game from the last snapshot
+void Net::promote(Game& g, bool oldStays, uint32_t oldIp, uint32_t oldId) {
+    const RoomInfo was = room_;
+    const std::vector<Heir> heirs = heirs_;
+    mode_ = Mode::Host;
+    if (!inherited_) { ownTalk_ = privateTalk_; ownBotFill_ = botFill_; }
+    inherited_ = true;
+    botFill_ = (heirFlags_ & 1) != 0; privateTalk_ = (heirFlags_ & 2) != 0; oneFixed_ = (heirFlags_ & 8) != 0;
+    g.tun.oneTurns = oneTurns_ = (heirFlags_ & 4) != 0;
+    std::memcpy(roomName_, heirRoom_[0] ? heirRoom_ : name_, sizeof roomName_);
+    prevHost_ = oldIp; prevHostId_ = oldId; promotedAt_ = now_;
+    members_.clear(); queue_.clear(); spectators_.clear(); kickVotes_.clear(); eventLog_.clear();
+    for (const Heir& h : heirRemoved_) {   // (whom the room's hosts removed stay out)
+        bool known = false;
+        for (const Removed& x : removed_) known |= x.id == h.id;
+        if (known) continue;
+        Removed x; x.id = h.id; x.ip = h.ip; std::memcpy(x.name, h.name, sizeof x.name);
+        removed_.push_back(x);
+    }
+    const RoomInfo::Member* none = nullptr;
+    auto was_ = [&](uint32_t id) { for (const RoomInfo::Member& rm : was.members) if (rm.id == id) return &rm; return none; };
+    Member me; me.id = session_; me.local = true; me.seen = now_; me.active = now_;
+    if (const RoomInfo::Member* rm = was_(session_)) me.spot = rm->spot;
+    members_.push_back(me);
+    auto add = [&](uint32_t id, uint32_t ip, const char* nm) {
+        if (!id || !ip || id == session_ || member(id)) return;
+        Member m; m.id = id; m.ip = ip; m.active = now_; m.back = false;
+        if (const RoomInfo::Member* rm = was_(id)) { m.spot = rm->spot; m.in = rm->in; }   // (where they stood, till they're back)
+        for (int p = 0; p < kMaxPlayers; ++p) if (was.slot[p] == id && p < g.np) m.in = g.pl[p].in;
+        m.seen = now_ + kResumeWait - kMemberTimeout;   // (time to find us: they go when that runs out)
+        if (nm) std::memcpy(m.name, nm, 16);
+        members_.push_back(m);
+    };
+    for (const Heir& h : heirs) if (h.id != oldId) add(h.id, h.ip, h.name);
+    if (oldStays) add(oldId, oldIp, was.nameOf(oldId));
+    bool lost = false;
+    for (int p = 0; p < kMaxPlayers; ++p) {
+        slot_[p] = was.slot[p] && member(was.slot[p]) ? was.slot[p] : 0;
+        lost |= was.slot[p] && !slot_[p];
+    }
+    std::vector<RoomInfo::Member> q;
+    for (const RoomInfo::Member& rm : was.members) if (rm.queuePos >= 0 && member(rm.id) && !inTank(rm.id)) q.push_back(rm);
+    std::stable_sort(q.begin(), q.end(), [](const RoomInfo::Member& a, const RoomInfo::Member& b) { return a.queuePos < b.queuePos; });
+    for (const RoomInfo::Member& rm : q) queue_.push_back(rm.id);
+    np_ = g.np == 4 ? 4 : 2; expRoom_ = g.tun.expRoom;
+    heirs_.clear(); heirRemoved_.clear(); migrating_ = false; scoutUntil_ = 0;
+    peerIp_ = 0; peerSession_ = 0; peerSeen_ = now_;
+    lastBeacon_ = 0; lastRoomSent_ = 0; lastHeirs_ = 0; rotateAt_ = 0; lastClosingWarn_ = 0;
+    if (lost) {   // a player in the match is gone: it starts again, as when anyone leaves
+        compactTank(g, true);
+        resumeWait_ = 0;
+        notice("YOU ARE NOW THE HOST - A NEW MATCH");
+    } else {
+        g.resumeAfterHandoff();
+        resumed_ = true;
+        resumeWait_ = humans() ? now_ + kResumeWait : 0;
+        hostRoomInfo();
+        notice("YOU ARE NOW THE HOST");
+    }
+    LOGI("net: we host the room now (%d people, %s)", (int)members_.size(), lost ? "a new match" : "the match goes on");
 }
 
 bool Net::hostKick(uint32_t target) {
@@ -863,8 +1151,8 @@ void Net::forwardVoice(uint32_t speaker, uint8_t role, const uint8_t* ulaw, uint
     w.b.insert(w.b.end(), ulaw, ulaw + kVoiceSamples);
     for (const Member& m : members_)
         if (!m.local && !(m.ip == exceptIp && m.id == exceptId)) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
-    for (const Spectator& sp : spectators_)   // only spectators standing at this arena hear it
-        if (sp.where == 1 && !(sp.ip == exceptIp && sp.id == exceptId)) sendTo(w.b.data(), (int)w.b.size(), sp.ip, kPort);
+    for (const Spectator& sp : spectators_)   // only spectators standing at this arena hear it (and not when the room's talk is private)
+        if (!privateTalk_ && sp.where == 1 && !(sp.ip == exceptIp && sp.id == exceptId)) sendTo(w.b.data(), (int)w.b.size(), sp.ip, kPort);
     if (speaker != session_ && voiceIn_.size() < 64) {   // the host hears it too
         VoiceFrame f; f.speaker = speaker; f.role = role; std::memcpy(f.data, ulaw, kVoiceSamples);
         voiceIn_.push_back(f);
@@ -910,6 +1198,36 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         kickByHost_ = false;
     }
     now_ = monoNow();
+    const double gap = lastExchange_ > 0 ? now_ - lastExchange_ : 0;   // (a headset asleep: no frames)
+    lastExchange_ = now_;
+    if (online_ && vip_ && gap > 8.0) {   // asleep that long: the relay has let our session go (10 s). A new one
+        LOGW("net: no frames for %.0f s: a new session on the relay", gap);
+        vip_ = 0;
+        relayHello();
+    }
+    if (gap > kHostQuiet && mode_ == Mode::Host) {   // we slept: our room has another host by now. Rejoin it as a player
+        std::vector<Heir> next;
+        for (const Member& m : members_) {
+            if (m.local) continue;
+            Heir h; h.id = m.id; h.ip = m.ip; std::memcpy(h.name, m.name, sizeof h.name);
+            next.push_back(h);
+        }
+        if (!next.empty()) {
+            // (which of them hosts it now, the beacons say: listen a few seconds rather than knock on every door; nobody
+            // hosting one: it has closed)
+            LOGW("net: no frames for %.0f s while hosting: the room went on without us; looking for it", gap);
+            stepDown();
+            mode_ = Mode::Client; peerIp_ = 0; peerSession_ = 0; prevHostId_ = session_;
+            room_ = RoomInfo();   // (we come back to the waiting area)
+            heirs_ = next; heirAt_ = 0;
+            migrating_ = true; migrateFrom_ = now_; scoutUntil_ = now_ + 4.0;
+            notice("YOU WERE AWAY - REJOINING THE ROOM");
+        }
+    } else if (gap > 3.0 && mode_ == Mode::Client && !migrating_) {   // we slept: the host may have let us go. Ask again
+        LOGW("net: no frames for %.0f s: asking the host to let us back in", gap);
+        peerSeen_ = now_; lastJoin_ = 0;
+        room_ = RoomInfo();
+    }
     bool gotState = false;
     uint8_t buf[2048];
     for (;;) {
@@ -919,6 +1237,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         if (n < 0 && WSAGetLastError() != WSAEWOULDBLOCK) continue;   // a stray ICMP error: keep reading
 #endif
         if (n <= 0) break;
+        if (now_ < deafUntil_) continue;   // (deafen: tests)
         const uint8_t* pkt = buf;
         if (online_) {   // only the relay talks to us; unwrap DELIVER and treat the sender's virtual address as its IP
             if (from.sin_addr.s_addr != serverIp_ || ntohs(from.sin_port) != serverPort_) continue;
@@ -1017,6 +1336,16 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         }
         if (!r.ok || magic != kMagic || ver != kVersion || session == session_) continue;   // ignore our own broadcasts
         const uint32_t fromIp = from.sin_addr.s_addr;
+        if (mode_ == Mode::Client && (type == MSG_ROOM || type == MSG_STATE) && session != peerSession_ && now_ - peerSeen_ > 3.0) {
+            // our host has gone quiet and the next in line already hosts the room: follow them now
+            for (size_t i = 0; i < heirs_.size(); ++i) {
+                if (heirs_[i].id != session || heirs_[i].ip != fromIp) continue;
+                if (!migrating_) { prevHost_ = peerIp_; prevHostId_ = peerSession_; }
+                heirAt_ = i + 1;
+                follow(heirs_[i]);
+                break;
+            }
+        }
         // a client only listens to its host's session; a host only to its members (by address + session)
         const bool fromHost = mode_ == Mode::Client && fromIp == peerIp_ && (peerSession_ == 0 || session == peerSession_);
         Member* fromMember = nullptr;
@@ -1037,11 +1366,12 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             }
             if (r.ok && r.e - r.p >= 12) {   // 0.3.12: the EXPERIMENTAL room, its players and teams, the teams' scores
                 lg.experimental = r.get<uint8_t>() != 0;
-                lg.expRoom = r.get<uint8_t>() == 1 ? 1 : 0;
+                lg.expRoom = std::min<int>(r.get<uint8_t>(), kRooms - 1);
                 lg.players = r.get<uint8_t>() == 4 ? 4 : 2;
                 lg.teamMode = std::min(2, (int)r.get<uint8_t>());
                 for (int& t : lg.teamScores) t = r.get<int16_t>();
             }
+            if (r.ok && r.e - r.p >= 4) lg.continues = r.get<uint32_t>();   // 0.3.13: handed over from that host
             for (char& c : lg.name) if (c && (c < 32 || c > 'Z')) c = ' ';
             if (r.ok) {
                 bool found = false;
@@ -1085,21 +1415,20 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         } else if (type == MSG_LEAVE) {
             if (mode_ == Mode::Host && fromMember) removeMember(session, g);
             else if (fromHost) {
-                LOGI("net: host closed the arena"); notice("HOST CLOSED THE ARENA");
-                mode_ = Mode::Offline; peerIp_ = 0; peerSeen_ = 0; room_ = RoomInfo();
+                LOGI("net: host closed the arena");
+                dropRoom("HOST CLOSED THE ARENA");
             }
         } else if (type == MSG_REJECT && fromHost) {
             char why[33] = {};
             for (int i = 0; i < 32; ++i) why[i] = (char)r.get<uint8_t>();
             for (char& c : why) if (c && (c < 32 || c > 'Z')) c = ' ';
-            notice(why[0] ? why : "ARENA FULL");
             LOGI("net: host refused: %s", why);
-            mode_ = Mode::Offline; peerIp_ = 0; peerSeen_ = 0; room_ = RoomInfo();
+            dropRoom(why[0] ? why : "ARENA FULL");
         } else if (type == MSG_JOIN && mode_ == Mode::Host) {
-            if (Member* m = member(session)) { if (m->ip == fromIp) m->seen = now_; continue; }
+            if (Member* m = member(session)) { if (m->ip == fromIp) { m->seen = now_; m->back = true; } continue; }
             if ((int)members_.size() >= np_ + kMaxWaiting) { reject(fromIp, "ARENA FULL"); continue; }
             Member m;
-            m.ip = fromIp; m.id = session; m.seen = now_;
+            m.ip = fromIp; m.id = session; m.seen = now_; m.active = now_;
             r.get<uint8_t>();   // "play now" from older builds: everyone now starts in the room's waiting area
             if (r.e - r.p >= 16) readName(r, m.name);   // 0.3.1+
             bool out = false;   // voted out of this arena for this session: by session, address or name
@@ -1128,6 +1457,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             }
         } else if (type == MSG_INPUT && fromMember) {
             fromMember->seen = now_;
+            fromMember->back = true;
             peerSeen_ = now_;
             if (seq > fromMember->lastSeq) {
                 fromMember->lastSeq = seq;
@@ -1185,13 +1515,51 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             if (fromHost) readCrowd(r.p, r.e, crowd_, now_);
             else if (mode_ == Mode::Spectate)
                 for (SpecMatch& m : matches_) if (m.ip == fromIp) readCrowd(r.p, r.e, m.crowd, now_);
+        } else if (type == MSG_HEIRS && fromHost && !migrating_) {   // who hosts next, should our host go
+            const uint8_t f = r.get<uint8_t>();
+            char room[17] = {};
+            readName(r, room);
+            const uint8_t n = r.get<uint8_t>();
+            std::vector<Heir> v;
+            for (uint8_t i = 0; i < n && i < 12 && r.ok; ++i) {
+                Heir h; h.id = r.get<uint32_t>(); h.ip = r.get<uint32_t>(); readName(r, h.name);
+                if (r.ok && h.id && h.ip) v.push_back(h);
+            }
+            std::vector<Heir> out;   // (the people the host removed: in HEIRS since 0.3.13's review)
+            const uint8_t k = r.p < r.e ? r.get<uint8_t>() : 0;
+            for (uint8_t i = 0; i < k && i < 16 && r.ok; ++i) {
+                Heir h; h.id = r.get<uint32_t>(); h.ip = r.get<uint32_t>(); readName(r, h.name);
+                if (r.ok) out.push_back(h);
+            }
+            if (r.ok) { heirs_ = v; heirRemoved_ = out; heirFlags_ = f; std::memcpy(heirRoom_, room, sizeof heirRoom_); }
+        } else if (type == MSG_HANDOFF && fromHost) {   // the host hands the room to someone (maybe us)
+            const uint32_t target = r.get<uint32_t>();
+            const bool stays = r.get<uint8_t>() != 0;
+            if (!r.ok || target == peerSession_) continue;
+            prevHost_ = peerIp_; prevHostId_ = peerSession_;
+            if (target == session_) { promote(g, stays, peerIp_, peerSession_); continue; }
+            for (size_t i = 0; i < heirs_.size(); ++i)
+                if (heirs_[i].id == target) { heirAt_ = i + 1; follow(heirs_[i]); break; }
+        } else if (type == MSG_CLOSING && fromHost) {   // IDLE ROOMS: the room is about to close (0: it has)
+            const uint16_t secs = r.get<uint16_t>();
+            if (!r.ok) continue;
+            if (secs == 0) {
+                LOGI("net: the room closed (nobody moved)");
+                dropRoom("ROOM CLOSED - NOBODY WAS PLAYING");
+            } else {
+                char msg[48];
+                std::snprintf(msg, sizeof msg, "ROOM CLOSING IN %d SECONDS - MOVE TO STAY", (int)secs);
+                notice(msg);
+            }
         } else if (type == MSG_ROOM && fromHost) {
             peerSession_ = session;
             peerSeen_ = now_;
+            if (migrating_) arrived();
             readRoom(r, room_, lastRoomSeq_);
         } else if (type == MSG_STATE && fromHost) {
             peerSession_ = session;   // the host's session, learned from its beacon or first snapshot
             peerSeen_ = now_;
+            if (migrating_) arrived();
             readEvents(r, lastEventId_, pendingEvents_);   // every packet, even one overtaken by a newer snapshot
             if (seq > lastRecvSeq_) { countSeq(seq); lastState_.assign(r.p, r.e); gotState = true; } else ++statLate_;
         }
@@ -1299,6 +1667,68 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         for (const Member& m : members_) if (!m.local && now_ - m.seen > kMemberTimeout) gone.push_back(m.id);
         for (uint32_t id : gone) removeMember(id, g);
         if (Member* me = member(session_)) { me->in = local; me->seen = now_; }
+        oneTurns_ = g.tun.oneTurns;
+        if (promotedAt_ > 0) {   // a room we took over: did the room come with us?
+            bool anyBack = false;
+            for (const Member& m : members_) anyBack |= !m.local && m.back;
+            if (anyBack) promotedAt_ = 0;   // (yes: it's ours now)
+            else
+                for (const LanGame& lg : games_) {
+                    // nobody followed, and the old host still announces its room: it never went quiet, only our own
+                    // connection did. Back to it (a copy of the room under the same name helps nobody)
+                    if (lg.ip != prevHost_ || lg.session != prevHostId_ || lg.seen < promotedAt_ + 0.5) continue;
+                    LOGW("net: the old host is still there: we go back to its room");
+                    Heir h; h.id = prevHostId_; h.ip = prevHost_; std::memcpy(h.name, lg.name, sizeof h.name);
+                    stepDown();
+                    mode_ = Mode::Client; room_ = RoomInfo(); heirs_.clear();
+                    follow(h);
+                    notice("BACK TO THE ROOM - ITS HOST WAS STILL THERE");
+                    return false;
+                }
+        }
+        // IDLE ROOMS: who has moved lately; a player gone still leaves the tank; a room gone still closes
+        for (Member& m : members_) if (stirred(m.ref, m.refButtons, m.local ? local : m.in)) m.active = now_;
+        for (int p = 0; p < np_; ++p) {
+            Member* m = member(slot_[p]);
+            if (!m || now_ - m->active < awayAfter_) continue;
+            char msg[48];
+            if (m->local) std::snprintf(msg, sizeof msg, "YOU WERE AWAY - MOVED TO THE WAITING AREA");
+            else std::snprintf(msg, sizeof msg, "%s WAS AWAY - MOVED OUT", m->name[0] ? m->name : "A PLAYER");
+            LOGI("net: %s stood still for %.0f s: out of the tank", m->local ? "the host" : m->name, now_ - m->active);
+            for (uint32_t& s : slot_) if (s == m->id) s = 0;
+            compactTank(g, true);
+            notice(msg);
+            break;
+        }
+        queue_.erase(std::remove_if(queue_.begin(), queue_.end(), [&](uint32_t id) { const Member* m = member(id); return !m || now_ - m->active >= awayAfter_; }),
+                     queue_.end());
+        {
+            double last = 0;
+            for (const Member& m : members_) last = std::max(last, m.active);
+            const double idle = now_ - last;
+            if (idle >= idleClose_) {
+                Writer w; header(w, MSG_CLOSING, session_, 0); w.put<uint16_t>(0);
+                for (const Member& m : members_) if (!m.local) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
+                LOGI("net: nobody moved for %.0f s: the room closes", idle);
+                closeRoom();
+                members_.clear();   // (so leave() closes it rather than handing it over)
+                leave();
+                notice("ROOM CLOSED - NOBODY WAS PLAYING");
+                return false;
+            }
+            if (idle >= idleClose_ - 60.0 && now_ - lastClosingWarn_ >= 10.0) {
+                lastClosingWarn_ = now_;
+                const int secs = std::max(1, (int)std::ceil(idleClose_ - idle));
+                Writer w; header(w, MSG_CLOSING, session_, 0); w.put<uint16_t>((uint16_t)secs);
+                for (const Member& m : members_) if (!m.local) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
+                char msg[48];
+                std::snprintf(msg, sizeof msg, "ROOM CLOSING IN %d SECONDS - MOVE TO STAY", secs);
+                notice(msg);
+            } else if (idle < idleClose_ - 60.0) {
+                lastClosingWarn_ = 0;
+            }
+        }
+        if (now_ - lastHeirs_ > 1.0) sendHeirs();
         if (forfeit_) {   // a player gave up: out to the waiting area, the bot or the queue takes the place
             const uint32_t id = forfeit_;
             forfeit_ = 0;
@@ -1325,7 +1755,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             lastBeacon_ = now_;
             int waiting = (int)room_.members.size();
             Writer w; header(w, MSG_BEACON, session_, 0);   // beacons stay out of the sequence (loss stats)
-            for (int i = 0; i < 16; ++i) w.put<uint8_t>((uint8_t)name_[i]);
+            for (int i = 0; i < 16; ++i) w.put<uint8_t>((uint8_t)roomName_[i]);
             w.put<uint8_t>(g.tun.advanced); w.put<uint8_t>((int)members_.size() >= np_ + kMaxWaiting);
             w.put<int16_t>((int16_t)g.teamScore(0)); w.put<int16_t>((int16_t)g.teamScore(1)); w.put<float>(g.roundClock);
             w.put<uint8_t>((uint8_t)std::min<size_t>(255, spectators_.size()));
@@ -1335,6 +1765,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             w.put<uint8_t>(g.tun.experimental); w.put<uint8_t>((uint8_t)g.tun.expRoom);   // 0.3.12
             w.put<uint8_t>((uint8_t)g.np); w.put<uint8_t>((uint8_t)g.tun.teamMode);
             for (int t = 0; t < 4; ++t) w.put<int16_t>((int16_t)(t < g.teamCount() ? g.teamScore(t) : 0));
+            w.put<uint32_t>(prevHost_);   // 0.3.13: a room handed over says from whom (its spectators follow it)
             sendTo(w.b.data(), (int)w.b.size(), INADDR_BROADCAST, kPort);
         }
         if (now_ - lastRoomSent_ > 1.0 / 15.0) { lastRoomSent_ = now_; sendRoom(); }
@@ -1346,6 +1777,14 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         }
         if (rotateRule) for (int p = 0; p < kMaxPlayers; ++p) in[p].buttonA = false;   // no skipping the rotation with A
         if (!humans()) return false;   // empty tank: the arena idles until someone queues
+        if (resumeWait_ > 0) {   // a match taken over: paused until its players have found us (or the wait is up)
+            bool all = true;
+            for (int p = 0; p < np_; ++p) if (const Member* m = member(slot_[p])) all &= m->back;
+            if (!all && now_ < resumeWait_) return false;
+            resumeWait_ = 0;
+            notice("THE MATCH GOES ON");
+            LOGI("net: the match goes on (%s)", all ? "everyone is back" : "waited long enough");
+        }
         const uint8_t bots = wantBots();
         uint8_t now = 0;
         for (int p = 0; p < g.np; ++p) now |= g.pl[p].isBot ? (uint8_t)(1u << p) : 0;
@@ -1358,15 +1797,13 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         for (int p = 0; p < kMaxPlayers; ++p) g.pl[p].isBot = room_.isBot(p);
         if (localSlot() < 0)
             for (const LanGame& lg : games_) if (lg.ip == peerIp_ && now_ - lg.seen < 3.0) g.tun.advanced = lg.advanced;
-        Writer w; header(w, MSG_INPUT, session_, ++seq_); writeInput(w, local);
-        sendTo(w.b.data(), (int)w.b.size(), peerIp_, kPort);
+        if (peerIp_) {   // (none while we look for where our room went)
+            Writer w; header(w, MSG_INPUT, session_, ++seq_); writeInput(w, local);
+            sendTo(w.b.data(), (int)w.b.size(), peerIp_, kPort);
+        }
         const bool known = localSlot() >= 0 ||
                            std::any_of(room_.members.begin(), room_.members.end(), [&](const RoomInfo::Member& m) { return m.id == session_; });
-        if (!known && now_ - lastJoin_ > 1.0) {   // the JOIN may have been lost: ask again until the room lists us
-            lastJoin_ = now_;
-            Writer j; header(j, MSG_JOIN, session_, ++seq_); j.put<uint8_t>(joinPlay_ ? 1 : 0); writeName(j, name_);
-            sendTo(j.b.data(), (int)j.b.size(), peerIp_, kPort);
-        }
+        if (!known && !migrating_ && peerIp_ && now_ - lastJoin_ > 1.0) sendJoin(joinPlay_);   // the JOIN may have been lost: ask again until the room lists us
         const int s = localSlot();
         if (gotState) {
             Reader rs{lastState_.data(), lastState_.data() + lastState_.size()};
@@ -1376,9 +1813,28 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         pendingEvents_.clear();
         if (s >= 0) g.pl[s].in = local;
         (void)dt; (void)in;
-        if (!peerConnected() && now_ - peerSeen_ > 5.0) {
-            mode_ = Mode::Offline; peerIp_ = 0; room_ = RoomInfo();
-            LOGW("net: host lost"); notice("CONNECTION TO HOST LOST");
+        if (migrating_) {   // HOST HANDOFF: knocking on the new host's door until it answers (or the next one's)
+            // one of the people in line already hosts the room (its beacon says so): straight there
+            for (size_t i = 0; i < heirs_.size(); ++i)
+                if (heirs_[i].id != peerSession_ && heirBeacon(heirs_[i].id, heirs_[i].ip, migrateFrom_)) { heirAt_ = i + 1; follow(heirs_[i]); break; }
+            if (scoutUntil_ > 0) {   // (woken up: nobody hosts it any more)
+                if (now_ > scoutUntil_) { LOGI("net: our room is gone"); dropRoom("THE ROOM HAS CLOSED"); }
+            } else {
+                if (now_ - lastJoin_ > 0.5) sendJoin(false);
+                if (now_ > migrateUntil_) nextHeir(g);
+            }
+        } else if (!peerConnected() && now_ - peerSeen_ > kHostQuiet) {
+            if (!heirs_.empty()) {   // the host is gone: the room goes on with the next in line
+                LOGW("net: host lost: handing the room over");
+                notice("THE HOST LEFT - HANDING THE ROOM OVER");
+                prevHost_ = peerIp_; prevHostId_ = peerSession_; heirAt_ = 0;
+                nextHeir(g);
+            } else {
+                LOGW("net: host lost");
+                dropRoom("CONNECTION TO HOST LOST");
+            }
+        } else if (now_ - peerSeen_ > 1.5 && !heirs_.empty() && !noticeText()) {
+            notice("HOST NOT RESPONDING - HOLD ON");
         }
         return false;
     }

@@ -98,6 +98,19 @@ async def run():
         while a.recv() is not None:
             got += 1
         check(got < sent * 0.6, 'rate limit holds a flood (%d of %d delivered)' % (got, sent))
+        # an arena host (it sends LIVE): its own, higher rate, for a full room of eight with voice (0.3.13)
+        b.s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
+        a.raw(R.LIVE)
+        time.sleep(1.2)   # (its bucket fills to the host's rate)
+        while b.recv() is not None:   # (anything left from the flood above)
+            pass
+        sent = R.HOST_RATE + 400
+        for _ in range(sent):
+            a.send(b.vip, game_packet(b'h'))
+        got = 0
+        while b.recv() is not None:
+            got += 1
+        check(R.RATE * 1.8 < got <= sent, 'a host has its own, higher rate (%d of %d delivered)' % (got, sent))
 
     await loop.run_in_executor(None, blocking)
     tr.close()

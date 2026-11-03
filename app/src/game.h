@@ -41,22 +41,31 @@ std::vector<CollisionTri> parseCollision(const uint8_t* data, size_t size);
 // feet. The players on round floating platforms at their usual start, which the ball goes through (it comes up at you
 // from below; tun.solidPlatforms makes them solid); the ends are the back walls. No foul zone (owner, 2026-10-29): the
 // foul line still recharges your ball and resets your shot clock, and a short throw still comes home.
-// CORNERS: a square room turned 45 degrees, 7 m tall, its corners 9.5 m out from
+// CORNERS: a square room turned 45 degrees, 5 m tall, its corners 9.5 m out from
 // the centre (x = -/+9.5 behind the players, z = -/+9.5 to the sides); the players on round floating platforms
-// (2.4 m across, their tops at y = 0) at their usual start, the room's floor 3 m below them and its ceiling 4 m above.
+// (2.4 m across, their tops at y = 0) at their usual start, the room's floor 1 m below them (3 m until 0.3.13: players
+// felt they threw down from a height) and its ceiling 4 m above.
 // The ball bounces off everything, the floor below included (it can come up at you); your platform is your foul
 // zone; the corner walls behind each player (x beyond -/+7.1) are its back wall (TAG_RETURN).
 namespace exparena {
-constexpr float kCorner = 9.5f, kFloor = -3.f, kCeiling = 4.f, kPlatformR = 1.2f, kPlatformThick = 0.15f, kBackX = 7.1f;
+constexpr float kCorner = 9.5f, kFloor = -1.f, kCeiling = 4.f, kPlatformR = 1.2f, kPlatformThick = 0.15f, kBackX = 7.1f;
 constexpr float kFoulLineX = 5.8f;   // the platform's front edge: past it a throw recharges the ball
 // CORNERS; four: FOUR CORNERS (a platform in each corner, the ball through them, no foul zone, every corner a back wall)
 std::vector<CollisionTri> collision(bool four = false);
 constexpr float kRollLen = 9.5f, kRollW = 4.96f, kRollH = 4.96f, kRollCY = 1.2f;   // DIAMOND: ends at x = -/+9.5; the end (square); its centre height
 constexpr float kRollReach = (0.5f * kRollW + 0.5f * kRollH) * 0.70710678f;   // the end's corners: this far up, down and to the sides
+// FIREBALL BLITZ (0.3.13; a tester's idea, the owner's design): a regular octagon, its floor level with yours (y = 0),
+// kOctH tall, its walls kOctMargin behind the players. The players stand evenly round a ring, its radius by how many are
+// still in (four 6 m, three 4.8 m, two 3.5 m: the room closes in as players are knocked out)
+constexpr float kOctH = 3.5f, kOctMargin = 1.5f;
+inline float octRing(int n) { return n >= 4 ? 6.f : n == 3 ? 4.8f : 3.5f; }
 void diamondEnd(Vec3 v[4]);   // the end's corners (x = 0), round in order: the classic end rolled 45 degrees
 std::vector<CollisionTri> diamondCollision(bool solidPlatforms = false);
 }
-enum : int { ARENA_CLASSIC, ARENA_CORNERS, ARENA_DIAMOND, ARENA_FOURCORNERS };
+enum : int { ARENA_CLASSIC, ARENA_CORNERS, ARENA_DIAMOND, ARENA_FOURCORNERS, ARENA_OCTAGON };
+// the EXPERIMENTAL rooms (Tunables::expRoom): DIAMOND for two; FOUR CORNERS and FIREBALL BLITZ for up to four
+enum : int { ROOM_DIAMOND, ROOM_CORNERS, ROOM_BLITZ, kRooms };
+inline bool fourPlayerRoom(int expRoom) { return expRoom == ROOM_CORNERS || expRoom == ROOM_BLITZ; }
 
 struct Tunables {
     // ---- rule set. Basic = BeginnerBrawlActivityBP (the activity spawned by l_courtside_00); Advanced = BrawlActivityBP.
@@ -66,7 +75,7 @@ struct Tunables {
     //             recharge by throwing, aim assist low
     bool advanced = false;
     bool experimental = false;   // the rules ask for an EXPERIMENTAL arena (Basic's rules there); Game::useArena loads it
-    int expRoom = 0;             // which: 0 DIAMOND, 1 CORNERS
+    int expRoom = 0;             // which: ROOM_* (0 DIAMOND, 1 CORNERS, 2 FIREBALL BLITZ)
     bool solidPlatforms = false; // DIAMOND: the ball bounces off the platforms (default: through them, owner 2026-10-29)
     float basicMatchTime = 180.0f;
     int advancedPointsToWin = 4, advancedRoundsToWin = 2;
@@ -99,7 +108,21 @@ struct Tunables {
     int players = 2;
     int teamMode = TEAMS_FFA;
     int theOne = 0;
+    bool oneTurns = false;   // 3 v 1 online: THE ONE takes turns each match (true) or is the host (owner 2026-10-30); practice: you
     int onePoints = 2;
+    // FIREBALL BLITZ (owner, 2026-10-30): every throw a fireball, hopping along the floor (fireGravity down; each floor bounce
+    // back up to fireHop, its speed along the floor kept, at least fireMinSpeed); it fizzles out at its fireBounces-th
+    // bounce (floor, walls, ceiling) or after fireLife s. A hit takes 1 of your `health` (1, 3, 5 or 10); at 0 you are out,
+    // and ringWarn s later the room closes in on those left; the last one standing wins (at time: the most health,
+    // then sudden death at 1 each). fireBalls: how many of your fireballs can be in the room at once (1, 2, 3; 4 =
+    // RAPID FIRE: 3, and the tee refills at once). octPlayers: practice, how many play (2 to 4: you and bots)
+    int health = 5, fireBalls = 3, octPlayers = 4;   // (BALLS: THREE by default: owner, 2026-11-02)
+    float fireGravity = 12.f, fireHop = 1.0f, fireMinSpeed = 5.f, fireLife = 5.f, ringWarn = 2.f;   // (hop: to the waist)
+    int fireBounces = 4, rapidLimit = 3;
+    // (only hits from the hips up count: owner, 2026-11-02, "I don't want feet getting hit to count", "include the butt":
+    // FIREBALL BLITZ's body goes on below the torso, round the hips and seat, as far as hipBottom below the head)
+    float hipBottom = 1.0f, hipRadius = 0.17f;
+    float fireGuardPad = 0.05f;  // ... and a knuckle guard or shield meets a fireball this much sooner (they come in low)
     float foulLineX = 4.73f;                                  // FoulLine_Player0/1 at x = -/+473 cm
     // a ball outside this box has left the arena (respawns): below outLow, above outHigh, |x| > outX, |z| > outZ
     float outLow = -1.f, outHigh = 6.f, outX = 11.f, outZ = 4.f;
@@ -260,6 +283,10 @@ struct BotSkill {
     bool planShots;             // tries out throws (direct, curved, banked) on a copy of the game and picks the best
     bool guardsStrikes;         // also blocks balls heading for its strike zone
     float slap;                 // chance it sends its returning ball straight back as it catches it (the slap shot)
+    bool hunts;                 // its attack plan (testers 2026-10-30): strikes first, through the ring beside you, left and
+                                // right in turn (curved round you when your body is in the way); one throw in seven at where
+                                // you usually stand; with 3 strikes or more (a big, fast ball), nearly every throw at you,
+                                // mostly straight, some off a side wall. Its throws go exactly where it aims (no aim assist)
 };
 constexpr int kBotLevels = 6;
 // how the bot holds its hands when it has nothing to do (owner, 2026-10-27: more than the one "kitten hands"): one
@@ -300,7 +327,10 @@ enum class MatchState : uint8_t { WaitingForPlayers, Countdown, InProgress, Roun
 enum class EventType : uint8_t { Spawn, Grab, Throw, ThrowFail, Bounce, ShieldBlock, ShieldBreak, HitPlayer,
                                  Returned, Caught, Foul, RoundStart, RoundEnd, MatchEnd, Countdown,
                                  KnuckleBlock, Recharge, Strike, Overtime, SpawnRise, FistBump,
-                                 LeadChange };   // (FOUR CORNERS: a new team leads; value = that team)
+                                 LeadChange,     // (FOUR CORNERS: a new team leads; value = that team)
+                                 Knockout,       // FIREBALL BLITZ: player out (hand: who did it; value: how many are left)
+                                 Fizzle,         // ... a fireball spent (player: whose)
+                                 RingClose };    // ... the room is about to close in (value: seconds)
 
 // the event's name (logs, sound mapping). One table for everything: two private copies once fell behind the enum
 // and a new event (FistBump) read past their end and crashed both headsets. Unknown values give "?".
@@ -382,6 +412,10 @@ struct PlayerState {
     int roundWins = 0;
     int strikesAgainst = 0; // strikes the opponent holds against this player
     int strikesFor = 0;     // four players: the strikes this player holds (its ball grows with them); lost when hit
+    int health = 0;         // FIREBALL BLITZ: hits left (0: out)
+    uint16_t fireSeen = 0, fireAct = 0;   // FIREBALL BLITZ's bots: the fireballs (bit owner * 3 + k) noticed, and dodged
+    Vec3 botDodge;                       // ... where it stepped to, and until when it stays there
+    float botDodgeUntil = -1;
     float shotClock = 0;    // seconds remaining on this player's shot clock
     bool isBot = false;
     // bot (Game::stepBot)
@@ -418,6 +452,12 @@ struct PlayerState {
     } botRead[2];
     int botThrow = 0;                      // 0 holding, 1 winding up, 2 swinging
     bool botSlap = false;                  // the swing is a slap shot (it goes on whatever comes at it)
+    int botIntent = 0;                     // BotSkill::hunts: this throw is for a strike (0) or at the player (1)
+    int botStrikeSide = 1;                 // ... the side of the ring the next strike goes (it alternates)
+    int botStyle = 0;                      // ... this throw's shape (straight, curved, off a wall, curved off a wall, off the floor)
+    bool botPre = false;                   // ... its slap's shape being planned while its ball comes back to it
+    Vec3 botOppSpot;                       // ... where its opponent usually stands (a slow average of their head)
+    bool botOppSpotSet = false;
     float botThrowT = 0;
     Vec3 botShotDir, botShotSpin;          // the throw it will make, and how good it looked (planned shots)
     float botShotScore = -1e9f;
@@ -445,6 +485,24 @@ public:
     bool overtime = false;
     int round = 0;
     int lastRoundWinner = -1, matchWinner = -1;
+    // FIREBALL BLITZ: each player's fireballs in the room (BallState::Dead: none), who started the match (bit p), who
+    // stands in the ring now (the room's layout: players knocked out keep their place, outside it), when it closes in
+    // next (-1: not), and its walls (their distance from the centre)
+    static constexpr int kMaxFire = 3;
+    Ball fire[kMaxPlayers][kMaxFire];
+    uint8_t startMask = 0, ringMask = 0;
+    float ringCloseAt = -1, ringApothem = 7.5f;
+    int lastKnockBy = -1;
+    int octCap = 4;   // FIREBALL BLITZ: how many places play (the app: practice's PLAYERS; 4 in a room, whatever practice said)
+    bool octagon() const { return arenaKind == ARENA_OCTAGON; }
+    bool alive(int p) const { return !octagon() || (((startMask >> p) & 1) && pl[p].health > 0); }
+    int fireLimit() const { return tun.fireBalls >= 4 ? tun.rapidLimit : std::max(1, std::min(kMaxFire, tun.fireBalls)); }
+    int fireCount(int p) const;
+    int aliveCount() const;
+    void layoutRing(uint8_t mask);   // the players in `mask` evenly round the ring for that many (their starts, tees)
+    // a fireball's flight to a body whose head is at `head`, nothing in its way: when it touches it (-1: it doesn't
+    // within `horizon` s, or fizzles first)
+    float fireHitTime(const Ball& b, const Vec3& head, float horizon) const;
     std::shared_ptr<const ArenaData> arena;
     std::vector<GameEvent> events;
 
@@ -456,10 +514,10 @@ public:
     void step(float dt, PlayerInput* in);
     // teams: two players are each their own; FOUR CORNERS by tun.teamMode. Rivals: different teams
     int team(int p) const;
-    int teamCount() const { return np == 2 ? 2 : tun.teamMode == TEAMS_FFA ? 4 : 2; }
+    int teamCount() const { return np == 2 ? 2 : tun.teamMode == TEAMS_FFA || octagon() ? 4 : 2; }
     int teamScore(int t) const;
     int leader() const;          // the team ahead on its own (-1: level at the top)
-    bool rivals(int a, int b) const { return a >= 0 && b >= 0 && a != b && team(a) != team(b); }
+    bool rivals(int a, int b) const { return a >= 0 && b >= 0 && a != b && team(a) != team(b) && alive(a) && alive(b); }
     Vec3 facing(int p) const;    // flat, from the player's start toward the centre
     int strikesHeld(int p) const { return np == 2 ? pl[1 - p].strikesAgainst : pl[p].strikesFor; }
     // the rival a ball leaving `from` along `dir` is aimed at most nearly (two players: the other one)
@@ -471,6 +529,10 @@ public:
     void serve(int p, const Vec3& from, const Vec3& dir, float speed, const Vec3& spin, bool assist = true);
     void respawnBall(int p) { spawnBall(p); }
     void parkBall(int p);   // out of play, hidden under its spawner, until served or respawned
+    // HOST HANDOFF (0.3.13): a match taken over from the old host's snapshot goes on from here. Snapshots don't carry a
+    // ball's spin or bounces, so balls in the air go back to their throwers (fireballs fizzle), and a match being played
+    // counts down again before it picks up; scores, the clock, the round, health and the ring stay as they were.
+    void resumeAfterHandoff();
     // where p's ball goes if served so now, nobody in its way (every body and hand out of it), for up to `horizon`
     // seconds in steps of dt; ends where it stops flying (a returning ball: its first point)
     void trialFlight(int p, const Vec3& from, const Vec3& dir, float speed, const Vec3& spin, bool assist, float horizon,
@@ -530,6 +592,13 @@ private:
     void stepPlayer(int p, float dt);
     void stepBall(int p, float dt);
     void stepBot(int p, float dt);
+    void toFire(int p);                         // FIREBALL BLITZ: p's thrown ball becomes a fireball; its tee refills (or waits)
+    void stepFire(int p, int k, float dt);
+    int fireSub(Ball& b, float h, Vec3& at) const;   // ... one step of its flight (the room's walls); bounces in it
+    void fizzle(int p, int k, bool show = true);
+    void knockOut(int q, int by, const Vec3& at);
+    Vec3 botFireAim(int p, int h, const BotSkill& sk, Vec3& spin);
+    bool botFireDodge(int p, const BotSkill& sk, const Vec3& right, Vec3& bodyWant);
     void botWatch(int p, int k, const BotSkill& sk);           // keeps botRead[k] up to date and plans the answer
     void botPlan(int p, int k, const BotSkill& sk);
     bool botReachable(int p, int h, const Pose& grip, float by) const;   // in reach, and the hand gets there by game time `by`
@@ -546,7 +615,9 @@ private:
     static constexpr int kBotTriesPerStep = 6;
     mutable int botTriesLeft = 0;
     mutable bool botTriesOut = false;
-    void botPlanShot(int p, const BotSkill& sk);               // tries one more throw (planned shots)
+    void botPlanShot(int p, const BotSkill& sk, int hand = -1);   // tries one more throw (planned shots; hand: from that one)
+    void botChooseIntent(int p, const BotSkill& sk);           // BotSkill::hunts: what its next throw is for
+    Vec3 botHuntAim(int p, int style, int j, Vec3& spin);      // ... and where it aims a throw of that shape (j: which way)
     BotSkill botSkillOf(int p) const;
     Pose botBlockGrip(int p, int h, int plan, const BallPathPt& at) const;   // the grip that puts the shield / guard / catcher on the ball
     void launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist = true);

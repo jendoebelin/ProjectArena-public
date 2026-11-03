@@ -141,7 +141,7 @@ Vec3 Game::peakAngVel(int p, int h, float t) const {
 }
 Vec3 Game::chestPoint(int p) const { return pl[p].in.head.p - Vec3{0, 0.35f, 0}; }
 int Game::team(int p) const {
-    if (np == 2) return p;
+    if (np == 2 || octagon()) return p;   // (FIREBALL BLITZ: everyone for themselves)
     if (tun.teamMode == TEAMS_2V2) return p < 2 ? 0 : 1;   // partners in opposite corners
     if (tun.teamMode == TEAMS_3V1) return p == tun.theOne ? 1 : 0;
     return p;
@@ -222,6 +222,8 @@ const char* eventName(EventType t) {
     case EventType::Recharge: return "Recharge";         case EventType::Strike: return "Strike";
     case EventType::Overtime: return "Overtime";         case EventType::SpawnRise: return "SpawnRise";
     case EventType::FistBump: return "FistBump";       case EventType::LeadChange: return "LeadChange";
+    case EventType::Knockout: return "Knockout";       case EventType::Fizzle: return "Fizzle";
+    case EventType::RingClose: return "RingClose";
     }
     return "?";
 }
@@ -282,6 +284,12 @@ void Game::reset(bool player1IsBot) { resetWithBots(player1IsBot ? 2u : 0u); }
 void Game::resetWithBots(uint32_t botMask) {
     np = tun.players == 4 ? 4 : 2;
     if (np == 4) tun.advanced = false;   // FOUR CORNERS: Basic's rules (and no shot clock: stepPlayer)
+    // FIREBALL BLITZ: everyone in the ring until the countdown (who is there plays), no fireballs
+    startMask = ringMask = (uint8_t)((1u << np) - 1u);
+    ringCloseAt = -1;
+    lastKnockBy = -1;
+    for (auto& row : fire) for (Ball& f : row) { f = Ball{}; f.state = BallState::Dead; }
+    if (octagon()) layoutRing(ringMask);
     for (int p = 0; p < kMaxPlayers; ++p) {
         PlayerState& s = pl[p];
         s = PlayerState{};
@@ -292,6 +300,7 @@ void Game::resetWithBots(uint32_t botMask) {
         spawnBall(p);
         s.ball.pos = idlePoint(p);
         s.botTimer = 1.0f;
+        s.health = tun.health;
     }
     match = MatchState::WaitingForPlayers;
     stateTimer = 0;
@@ -321,9 +330,22 @@ bool Game::meetLit(int p, int h) const {
 void Game::useArena(int kind, const std::vector<CollisionTri>& classic) {
     using namespace exparena;
     if (arenaKind != kind) {   // (the collision only when it changes: callers may ask every frame)
+        const bool wasOct = arenaKind == ARENA_OCTAGON;
         setArena(kind == ARENA_CORNERS ? collision() : kind == ARENA_FOURCORNERS ? collision(true)
-                 : kind == ARENA_DIAMOND ? diamondCollision(tun.solidPlatforms) : classic);
+                 : kind == ARENA_DIAMOND ? diamondCollision(tun.solidPlatforms) : kind == ARENA_OCTAGON ? std::vector<CollisionTri>{} : classic);
         arenaKind = kind;
+        if (wasOct || kind == ARENA_OCTAGON) {   // (FIREBALL BLITZ moves the players; everywhere else they stand where they always did)
+            const Tunables def;
+            for (int p = 0; p < kMaxPlayers; ++p) { tun.start[p] = def.start[p]; tun.spawner[p] = def.spawner[p]; }
+            uint32_t bots = 0;
+            for (int p = 0; p < np; ++p) bots |= pl[p].isBot ? 1u << p : 0u;
+            resetWithBots(bots);
+        }
+    }
+    if (kind == ARENA_OCTAGON) {
+        tun.foulLineX = 0.f;   // (no foul line: every throw is out in the room)
+        tun.outLow = -1.f; tun.outHigh = kOctH + 1.f; tun.outX = tun.outZ = 12.f;
+        return;
     }
     if (kind == ARENA_CORNERS || kind == ARENA_FOURCORNERS) {
         tun.foulLineX = kFoulLineX;
@@ -360,7 +382,7 @@ float Game::strikeScale(int n) const {
 
 void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist) {
     Ball& b = pl[p].ball;
-    if (assist) {
+    if (assist && !octagon()) {   // (FIREBALL BLITZ: none; a fireball's drop is part of the aim)
         const Vec3 to = assistDir(p, b.pos, dir);
         const float deg = tun.advanced ? tun.aimCorrectAdvancedDeg : tun.aimCorrectBasicDeg;
         const float ang = std::acos(clampf(dot(dir, to), -1.f, 1.f));
@@ -381,6 +403,7 @@ void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist) {
     b.fouled = b.homing = false;
     b.progX = b.pos.x; b.progZ = b.pos.z; b.progT = 0;
     emit(EventType::Throw, p, h, b.pos, b.speedLimit);
+    if (octagon()) toFire(p);
 }
 
 void Game::serve(int p, const Vec3& from, const Vec3& dir, float speed, const Vec3& spin, bool assist) {
@@ -504,7 +527,12 @@ bool Game::bodyTouches(const Vec3& head, const Vec3& pos, float r) const {
     if (b.y < 0.3f) b.y = 0.3f;
     Vec3 ab = b - a;
     float t = clampf(dot(pos - a, ab) / std::max(1e-6f, dot(ab, ab)), 0.f, 1.f);
-    return length(pos - (a + ab * t)) < tun.torsoRadius + r;
+    if (length(pos - (a + ab * t)) < tun.torsoRadius + r) return true;
+    if (!octagon()) return false;
+    const Vec3 hip0 = b, hip1 = head - Vec3{0, tun.hipBottom, 0};   // (FIREBALL BLITZ: the hips and seat too)
+    if (hip1.y < 0.3f) return false;
+    const float u = clampf((pos.y - hip1.y) / std::max(1e-4f, hip0.y - hip1.y), 0.f, 1.f);
+    return length(pos - lerp(hip1, hip0, u)) < tun.hipRadius + r;
 }
 
 bool Game::bodyTouchesPath(const Vec3& head, const Vec3& from, const Vec3& to, float r) const {
@@ -772,12 +800,16 @@ void Game::stepBall(int p, float dt) {
                 int zoneTeam = (tags & TAG_TEAM0) ? 0 : (tags & TAG_TEAM1) ? 1 : (tags & TAG_TEAM2) ? 2 : (tags & TAG_TEAM3) ? 3 : -1;
                 bool own = (zoneTeam >= 0 && zoneTeam == b.instigator);   // team gating
                 bool returning = b.state == BallState::Returning;
-                if ((tags & TAG_FOUL) && own && !returning) {
+                // (the other player's ball you blocked or punched: only your end's floor counts, owner 2026-10-30; its walls
+                // and ceiling are walls)
+                const bool deflectedIn = b.instigator != p;
+                if ((tags & TAG_FOUL) && own && !returning && (!deflectedIn || hn.y > 0.7f)) {
                     // a foul. Deflecting the opponent's ball into your own foul zone gives them a strike.
                     // The original dissolved the ball; here (owner, 2026-10-21) it stays in the arena: a ball that never
                     // crossed its owner's foul line springs straight back to its float position; one that did bounces on,
                     // off the wall it is heading for, and flies home, harmless (it can't hit or score; its owner can catch it)
-                    emit(EventType::Foul, b.instigator, -1, hp, float(zoneTeam));
+                    // (their ball off your floor: their strike, but no FOUL shown: it was never your throw, owner 2026-10-30)
+                    if (!deflectedIn) emit(EventType::Foul, b.instigator, -1, hp, float(zoneTeam));
                     if (b.instigator != p) {
                         // blocked or punched into the blocker's own zone: their strike, and the ball comes back to its
                         // owner as from their back wall, live: catch it, move, or be hit (owner, 2026-10-29)
@@ -875,6 +907,291 @@ void Game::stepBall(int p, float dt) {
     if (b.timer > 10.f) spawnBall(p);
 }
 
+// ------------------------------------------------------------------ FIREBALL BLITZ
+static float moveTime(float d, float vmax, float amax);
+int Game::fireCount(int p) const {
+    int n = 0;
+    for (const Ball& f : fire[p]) n += f.state == BallState::Flying;
+    return n;
+}
+int Game::aliveCount() const {
+    int n = 0;
+    for (int p = 0; p < np; ++p) n += alive(p);
+    return n;
+}
+void Game::layoutRing(uint8_t mask) {
+    // round the ring in the order the four always stand (0 at -X, then 2, 1, 3), spread evenly for how many there are;
+    // four are exactly FOUR CORNERS' places
+    static const int kOrder[4] = {0, 2, 1, 3};
+    int n = 0;
+    for (int p : kOrder) n += p < np && ((mask >> p) & 1);
+    const float R = exparena::octRing(n);
+    ringApothem = R + exparena::kOctMargin;
+    int j = 0;
+    for (int p : kOrder) {
+        if (p >= np || !((mask >> p) & 1)) continue;
+        const float a = kPi + 2.f * kPi * (float)j++ / (float)std::max(1, n);
+        tun.start[p] = {R * std::cos(a), 0, R * std::sin(a)};
+        tun.spawner[p] = tun.start[p] + facing(p) * 0.52f;
+    }
+}
+void Game::toFire(int p) {
+    Ball& b = pl[p].ball;
+    int k = 0;
+    for (int i = 0; i < kMaxFire; ++i) if (fire[p][i].state != BallState::Flying) { k = i; break; }
+    Ball& f = fire[p][k];
+    f = b;
+    f.state = BallState::Flying;
+    f.speedLimit = std::max(tun.fireMinSpeed, length(Vec3{b.vel.x, 0, b.vel.z}));   // (its speed along the floor)
+    f.bounces = 0;
+    f.timer = 0;
+    f.instigator = p;
+    f.heldHand = -1;
+    if (fireCount(p) < fireLimit() && alive(p)) {   // another on the tee (RAPID FIRE: at once)
+        spawnBall(p);
+        b.timer = tun.fireBalls >= 4 ? 0.2f : 0.7f;   // (FIREBALL BLITZ: back on the tee quickly)
+    } else {
+        parkBall(p);   // (the tee waits for one of them to fizzle)
+    }
+}
+void Game::fizzle(int p, int k, bool show) {
+    Ball& f = fire[p][k];
+    if (f.state != BallState::Flying) return;
+    if (show) emit(EventType::Fizzle, p, -1, f.pos, 0);
+    f.state = BallState::Dead;
+    f.vel = f.spin = {};
+}
+int Game::fireSub(Ball& b, float h, Vec3& at) const {
+    const float r = tun.projectileRadius * b.scale;
+    int hits = 0;
+    if (length2(b.spin) > 1e-4f) {   // a curve: along the floor only (the hop stays the hop)
+        Vec3 a = cross(b.spin, b.vel) * tun.magnusFactor;
+        a.y = 0;
+        b.vel += a * h;
+        b.spin *= std::exp(-tun.spinDecayPerSecond * h);
+    }
+    Vec3 flat{b.vel.x, 0, b.vel.z};
+    const float fl = length(flat);
+    if (fl > 1e-4f) { flat *= b.speedLimit / fl; b.vel.x = flat.x; b.vel.z = flat.z; }
+    b.vel.y -= tun.fireGravity * h;
+    Vec3 to = b.pos + b.vel * h;
+    if (to.y < r && b.vel.y < 0) {   // the floor: back up to its hop's height
+        to.y = r + (r - to.y);
+        b.vel.y = std::sqrt(2.f * tun.fireGravity * std::max(0.05f, tun.fireHop - r));
+        at = {to.x, 0, to.z};
+        ++hits;
+    }
+    if (to.y > exparena::kOctH - r && b.vel.y > 0) {   // the ceiling
+        to.y = 2.f * (exparena::kOctH - r) - to.y;
+        b.vel.y = -b.vel.y;
+        at = to;
+        ++hits;
+    }
+    for (int i = 0; i < 8; ++i) {   // the walls (one behind each of the four places, and four between)
+        const float a = (float)i * 0.25f * kPi;
+        const Vec3 n{std::cos(a), 0, std::sin(a)};
+        const float d = dot(to, n) - (ringApothem - r);
+        if (d > 0 && dot(b.vel, n) > 0) {
+            b.vel -= n * (2.f * dot(b.vel, n));
+            to -= n * (2.f * d);
+            at = to;
+            ++hits;
+        }
+    }
+    b.pos = to;
+    return hits;
+}
+void Game::stepFire(int p, int k, float dt) {
+    Ball& b = fire[p][k];
+    if (b.state != BallState::Flying) return;
+    // (the room about to close in: a ceasefire, no cheap shots while everyone moves; owner, 2026-11-02)
+    if (ringCloseAt >= 0) { fizzle(p, k); return; }
+    b.timer += dt;
+    if (b.timer > tun.fireLife) { fizzle(p, k); return; }
+    const float r = tun.projectileRadius * b.scale;
+    const int sub = std::max(1, int(std::ceil(length(b.vel) * dt / 0.02f)));
+    const float h = dt / sub;
+    for (int i = 0; i < sub; ++i) {
+        const Vec3 from = b.pos;
+        Vec3 at;
+        const int bounced = fireSub(b, h, at);
+        Vec3 to = b.pos;
+        // shields, then knuckle guards, of everyone but whoever last touched it
+        bool handled = false;
+        for (int pass = 0; pass < 2 && !handled; ++pass)
+            for (int q = 0; q < np && !handled; ++q) {
+                if (q == b.instigator || !alive(q)) continue;
+                for (int hh = 0; hh < 2 && !handled; ++hh) {
+                    Vec3 n;
+                    const float rg = r + tun.fireGuardPad;
+                    if (pass == 0 && hitsShield(q, hh, from, to, rg, n)) {
+                        deflectMoving(b, n, recentHandVel(q, hh, shieldLocal(hh).p, now), q, tun.shieldAimAssistBasicDeg, from);
+                        pl[q].ball.charged = false;
+                        pl[q].hands[hh].shieldUp = false;
+                        emit(EventType::ShieldBlock, q, hh, from, 0, p);
+                        emit(EventType::ShieldBreak, q, hh, from);
+                        handled = true;
+                    } else if (pass == 1 && pl[q].hands[hh].knuckleUp && hitsBox(knucklePose(q, hh), tun.knuckleHalf, from, to, rg, n)) {
+                        Vec3 lo = tun.knuckleOffset;
+                        if (hh == 0) lo.x = -lo.x;
+                        Vec3 face = knucklePose(q, hh).q.rotate({0, 0, -1});
+                        const Vec3 vs = recentHandVel(q, hh, lo, now);
+                        if (dot(face, b.vel - vs) > 0) face = -face;
+                        deflectMoving(b, normalize(face * 0.75f + n * 0.25f), vs, q, tun.knuckleAimAssistDeg, from, true);
+                        emit(EventType::KnuckleBlock, q, hh, from, length(b.vel), p);
+                        handled = true;
+                    }
+                }
+            }
+        if (handled) {   // (sent on as a fireball: its new speed along the floor)
+            b.speedLimit = std::max(tun.fireMinSpeed, length(Vec3{b.vel.x, 0, b.vel.z}));
+            b.pos = to = from + b.vel * h;
+            b.state = BallState::Flying;
+        }
+        if (match == MatchState::InProgress)
+            for (int q = 0; q < np; ++q) {   // a hit: anyone in the room but whoever last touched it
+                if (q == b.instigator || !alive(q) || !hitsBody(q, to, r)) continue;
+                const int by = b.instigator;
+                pl[q].health = std::max(0, pl[q].health - 1);
+                if (by >= 0 && by < np) pl[by].score++;
+                emit(EventType::HitPlayer, q, -1, to, float(by), p);
+                b.state = BallState::Dead;
+                b.vel = b.spin = {};
+                if (pl[q].health <= 0) knockOut(q, by, to);
+                return;
+            }
+        if (bounced) {
+            b.bounces += bounced;
+            if (b.bounces >= tun.fireBounces) { b.pos = at; fizzle(p, k); return; }
+            emit(EventType::Bounce, p, -1, at, b.speedLimit);
+        }
+    }
+}
+void Game::knockOut(int q, int by, const Vec3& at) {
+    const bool wasIn = (startMask >> q) & 1;
+    pl[q].health = 0;
+    if (!wasIn) return;
+    for (int k = 0; k < kMaxFire; ++k) fizzle(q, k);
+    parkBall(q);
+    lastKnockBy = by;
+    const int left = aliveCount();
+    emit(EventType::Knockout, q, by, at, float(left));
+    if (left >= 2) {   // the room closes in on those left, after a warning (a ceasefire till then: every fireball out)
+        ringCloseAt = now + tun.ringWarn;
+        for (int o = 0; o < np; ++o) for (int k = 0; k < kMaxFire; ++k) fizzle(o, k);
+        emit(EventType::RingClose, -1, -1, {}, tun.ringWarn);
+    }
+}
+float Game::fireHitTime(const Ball& b0, const Vec3& head, float horizon) const {
+    Ball b = b0;
+    const float r = tun.projectileRadius * b.scale, h = 1.f / 120;
+    int bounces = b.bounces;
+    for (float t = 0; t < horizon; t += h) {
+        Vec3 at;
+        bounces += fireSub(b, h, at);
+        if (bounces >= tun.fireBounces) return -1.f;
+        if (bodyTouches(head, b.pos, r)) return t;
+    }
+    return -1.f;
+}
+Vec3 Game::botFireAim(int p, int h, const BotSkill& sk, Vec3& spinOut) {
+    // at its target's body as the fireball would hop: tried out, straight, curved either way, and off the walls (owner,
+    // 2026-11-02: no wall bounces). The best levels (BotSkill::hunts) pick a shape (half the time straight, a quarter
+    // curved, a quarter off a wall); the others the one that gets there soonest; then its aim's error
+    spinOut = {};
+    int q = botAim(p);
+    if (!rivals(p, q)) q = aimTarget(p, pl[p].in.head.p, facing(p));
+    const Vec3 from = launcherPoint(p, h);
+    const Vec3 tgt = pl[q].in.head.p;
+    Vec3 flat{tgt.x - from.x, 0, tgt.z - from.z};
+    flat = length(flat) > 1e-3f ? normalize(flat) : facing(p);
+    const float speed = throwSpeedFromHandSpeed(sk.throwHand, p);
+    const Vec3 side = normalize(cross(flat, kUp));
+    // the ways along the floor to try: straight at it; curved (aimed out to one side, spun to bend back in); and off each
+    // of the eight walls, aimed at the target's mirror image across it (a wall turns the ball along the floor exactly
+    // as a mirror would; the hop goes on as it was: owner, 2026-11-02, banks were rare when aimed by guesswork)
+    struct Way { Vec3 dir; float spin; int shape; };
+    std::vector<Way> ways = {{flat, 0.f, 0}};
+    if (sk.hunts) {
+        for (float yawOff : {-0.25f, 0.25f}) {
+            const float spin = (yawOff > 0 ? -16.f : 16.f) * (dot(cross(kUp, flat), side) >= 0 ? 1.f : -1.f);
+            ways.push_back({normalize(flat + side * std::tan(yawOff)), spin, 1});
+        }
+        const Vec3 T{tgt.x, 0, tgt.z}, F{from.x, 0, from.z};
+        const float wall = ringApothem - tun.projectileRadius;
+        for (int i = 0; i < 8; ++i) {
+            const float a = (float)i * 0.25f * kPi;
+            const Vec3 n{std::cos(a), 0, std::sin(a)};
+            const Vec3 mirror = T - n * (2.f * (dot(T, n) - wall));
+            const Vec3 d = mirror - F;
+            // (toward that wall, and well off the straight line: the wall behind the target is only a straight throw)
+            if (length(d) > 1e-3f && dot(normalize(d), n) > 0.15f && dot(normalize(d), flat) < 0.9f) ways.push_back({normalize(d), 0.f, 2});
+        }
+    }
+    struct Try { float t, pitch; Vec3 dir; float spin; };
+    Try best[3] = {{1e9f, -0.15f, flat, 0}, {1e9f, 0, flat, 0}, {1e9f, 0, flat, 0}};   // straight, curved, off a wall: the soonest of each
+    for (const Way& w : ways)
+        for (float deg : {-30.f, -22.f, -15.f, -9.f, -4.f, 0.f, 5.f, 10.f, 15.f}) {
+            const float a = deg2rad(deg);
+            Ball b;
+            b.pos = from;
+            b.vel = (w.dir * std::cos(a) + kUp * std::sin(a)) * speed;
+            b.speedLimit = std::max(tun.fireMinSpeed, speed * std::cos(a));
+            b.spin = kUp * w.spin;
+            b.scale = 1.f;
+            const float t = fireHitTime(b, tgt, 3.f);
+            if (t >= 0 && t < best[w.shape].t) best[w.shape] = {t, a, w.dir, w.spin};
+        }
+    int pick = 0;
+    if (sk.hunts) {   // (a shape: half straight, a quarter curved, a quarter off a wall; one that found nothing: straight)
+        const float r = rnd();
+        pick = r < 0.5f ? 0 : r < 0.75f ? 1 : 2;
+        if (best[pick].t > 1e8f) pick = 0;
+    }
+    const Try& c = best[pick];
+    spinOut = kUp * c.spin;
+    const float yaw = (rnd() - 0.5f) * sk.aimError * 0.25f, pitch = c.pitch + (rnd() - 0.5f) * sk.aimError * 0.15f;
+    const Vec3 f2 = Quat::axisAngle(kUp, yaw).rotate(c.dir);
+    return normalize(f2 * std::cos(pitch) + kUp * std::sin(pitch));
+}
+bool Game::botFireDodge(int p, const BotSkill& sk, const Vec3& right, Vec3& bodyWant) {
+    // the fireballs coming at it: once it has seen one (its reaction time), it does something about it (its level's
+    // chance): a step to the side that clears every one it acts on, in time
+    PlayerState& s = pl[p];
+    const Vec3 stand = tun.start[p] + Vec3{0, 1.62f, 0};
+    float soonest = 1e9f;
+    std::vector<const Ball*> acting;
+    for (int o = 0; o < np; ++o)
+        for (int k = 0; k < kMaxFire; ++k) {
+            const uint16_t bit = (uint16_t)(1u << (o * kMaxFire + k));
+            const Ball& b = fire[o][k];
+            if (b.state != BallState::Flying || b.instigator == p || !alive(p)) { s.fireSeen &= (uint16_t)~bit; s.fireAct &= (uint16_t)~bit; continue; }
+            if (!(s.fireSeen & bit) && b.timer >= sk.reaction) {
+                s.fireSeen |= bit;
+                if (rnd() < sk.defend) s.fireAct |= bit;
+            }
+            if (!(s.fireAct & bit)) continue;
+            const float t = fireHitTime(b, stand + s.botBody, 1.5f);
+            if (t < 0) continue;
+            acting.push_back(&b);
+            soonest = std::min(soonest, t);
+        }
+    if (!acting.empty()) {
+        float bestMove = 1e9f;
+        for (float x : {0.35f, -0.35f, 0.6f, -0.6f, 0.9f, -0.9f, 0.f}) {
+            const Vec3 o = right * x;
+            const float move = length(o - s.botBody);
+            if (moveTime(move, sk.bodySpeed, sk.bodyAccel) > soonest) continue;
+            bool clear = true;
+            for (const Ball* b : acting) clear &= fireHitTime(*b, stand + o, 1.5f) < 0;
+            if (clear && move < bestMove) { bestMove = move; s.botDodge = o; }
+        }
+        if (bestMove < 1e8f) s.botDodgeUntil = now + 0.6f;
+    }
+    if (now < s.botDodgeUntil) { bodyWant = s.botDodge; return true; }
+    return false;
+}
+
 void Game::stepPlayer(int p, float dt) {
     PlayerState& s = pl[p];
     Ball& b = s.ball;
@@ -940,13 +1257,13 @@ void Game::stepPlayer(int p, float dt) {
 // raised 2026-10-27 from the owner's recorded matches (their median throw 14.5 m/s, at the game's top speed): ROOKIE
 // about 9 m/s, PRO 12, UNBEATABLE 14 (the most a throw gives)
 static const BotSkill kBotSkills[kBotLevels] = {
-    //  name         react  defend reads  misread hand body  accel throw  aim    hold         catch plan   strikes slap
-    {"ROOKIE",      0.45f, 0.30f, false, 0.30f, 2.5f, 1.0f, 4.f,  4.2f, 0.60f, 2.0f, 4.0f, 0.2f, false, false, 0.00f},
-    {"AMATEUR",     0.35f, 0.50f, false, 0.18f, 3.0f, 1.4f, 6.f,  4.8f, 0.45f, 1.6f, 3.4f, 0.5f, false, false, 0.00f},
-    {"PRO",         0.25f, 0.65f, true,  0.10f, 3.8f, 1.8f, 7.f,  5.6f, 0.35f, 1.2f, 3.0f, 0.7f, false, false, 0.30f},
-    {"ALL-STAR",    0.20f, 0.80f, true,  0.05f, 4.5f, 2.2f, 9.f,  6.0f, 0.20f, 0.9f, 2.2f, 0.9f, true,  false, 0.50f},
-    {"CHAMPION",    0.17f, 0.92f, true,  0.02f, 5.2f, 2.6f, 11.f, 6.3f, 0.10f, 0.7f, 1.6f, 1.0f, true,  true,  0.65f},
-    {"UNBEATABLE",  0.15f, 1.00f, true,  0.00f, 6.0f, 3.0f, 12.f, 6.5f, 0.00f, 0.6f, 1.2f, 1.0f, true,  true,  0.75f},
+    //  name         react  defend reads  misread hand body  accel throw  aim    hold         catch plan   strikes slap  hunts
+    {"ROOKIE",      0.45f, 0.30f, false, 0.30f, 2.5f, 1.0f, 4.f,  4.2f, 0.60f, 2.0f, 4.0f, 0.2f, false, false, 0.00f, false},
+    {"AMATEUR",     0.35f, 0.50f, false, 0.18f, 3.0f, 1.4f, 6.f,  4.8f, 0.45f, 1.6f, 3.4f, 0.5f, false, false, 0.00f, false},
+    {"PRO",         0.25f, 0.65f, true,  0.10f, 3.8f, 1.8f, 7.f,  5.6f, 0.35f, 1.2f, 3.0f, 0.7f, false, false, 0.30f, false},
+    {"ALL-STAR",    0.20f, 0.80f, true,  0.05f, 4.5f, 2.2f, 9.f,  6.0f, 0.20f, 0.9f, 2.2f, 0.9f, true,  false, 0.50f, false},
+    {"CHAMPION",    0.17f, 0.92f, true,  0.02f, 5.2f, 2.6f, 11.f, 6.3f, 0.10f, 0.45f, 1.0f, 1.0f, true, true,  0.80f, true},
+    {"UNBEATABLE",  0.15f, 1.00f, true,  0.00f, 6.0f, 3.0f, 12.f, 6.5f, 0.00f, 0.30f, 0.70f, 1.0f, true, true,  0.90f, true},
 };
 const BotSkill& botSkill(int level) { return kBotSkills[level < 0 ? 0 : level >= kBotLevels ? kBotLevels - 1 : level]; }
 BotSkill botSkillAt(float level) {
@@ -1166,9 +1483,14 @@ void Game::botWatch(int p, int k, const BotSkill& sk) {
     // that, so a new one)
     const int hands = (s.hands[0].shieldUp ? 1 : 0) | (s.hands[1].shieldUp ? 2 : 0);
     if (!fresh && r.hands >= 0 && hands != r.hands && !r.path.empty()) {
+        const PlayerState::BotRead was = r;
         r.hands = hands;
         r.tried.clear();
         botPlan(p, k, sk);
+        if (sk.hunts && r.plan == BOT_NONE && was.plan != BOT_NONE) {   // (nothing new in time: the plan it had goes on; it
+            r.plan = was.plan; r.hand = was.hand; r.grip = was.grip;     //  caught its ball as a throw came, 2026-10-30)
+            r.gripQ = was.gripQ; r.body = was.body; r.tuck = was.tuck;
+        }
         return;
     }
     r.hands = hands;
@@ -1402,7 +1724,100 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
     }
 }
 
-void Game::botPlanShot(int p, const BotSkill& sk) {
+// the shapes of its throws (testers 2026-10-30: accurate curves, off the walls, every kind of geometry)
+enum : int { HUNT_STRAIGHT, HUNT_CURVE, HUNT_BANK, HUNT_CURVED_BANK, HUNT_FLOOR, HUNT_SHAPES };
+static const float kSideWall = 2.5f;   // the classic arena's side walls (training.h's kSideZ)
+
+void Game::botChooseIntent(int p, const BotSkill& sk) {
+    PlayerState& s = pl[p];
+    s.botIntent = 0;
+    s.botStyle = HUNT_STRAIGHT;
+    if (!sk.hunts) return;
+    const bool hot = strikesHeld(p) >= 3;   // (a big, fast ball: go for the player)
+    s.botIntent = hot ? (rnd() < 0.9f ? 1 : 0) : (rnd() < 0.15f ? 1 : 0);
+    // and its shape: strikes every way; at the player more straight than off the walls
+    static const float kStrike[HUNT_SHAPES] = {0.30f, 0.25f, 0.20f, 0.15f, 0.10f}, kAt[HUNT_SHAPES] = {0.55f, 0.12f, 0.20f, 0.08f, 0.05f};
+    const float* w = s.botIntent ? kAt : kStrike;
+    float r = rnd();
+    int k = 0;
+    while (k < HUNT_SHAPES - 1 && r >= w[k]) r -= w[k++];
+    s.botStyle = k;
+}
+
+// where it aims a throw of that shape, and its spin; j (0..7) is which of the shape's ways it tries: bit 0 which way
+// it bends (or how high), bit 1 which wall (near or far) or which side of the player, bit 2 how much it bends
+Vec3 Game::botHuntAim(int p, int style, int j, Vec3& spin) {
+    PlayerState& s = pl[p];
+    const int opp = botAim(p);
+    const Vec3 across = np == 2 ? Vec3{0, 0, 1} : normalize(cross(kUp, facing(opp)));
+    spin = {};
+    Vec3 at;
+    float side;   // the side it goes for: the ring's side for a strike; for the player, either
+    if (s.botIntent == 0) {   // a strike: through the ring beside the body, this throw's side
+        side = (float)s.botStrikeSide;
+        at = strikeZoneCenter(opp) + across * (side * 0.42f) + Vec3{0, (j & 1) ? 0.15f : -0.05f, 0};
+    } else {   // at the player: where they usually stand (one throw in seven), or where they are, at 3 strikes
+        side = (j & 2) ? 1.f : -1.f;
+        at = strikesHeld(p) >= 3 || !s.botOppSpotSet ? chestPoint(opp) : Vec3{s.botOppSpot.x, chestPoint(opp).y, s.botOppSpot.z};
+        if (style == HUNT_STRAIGHT) at.y += (j % 3 == 1) ? 0.25f : (j % 3 == 2) ? -0.3f : 0.f;   // (the head, the hips)
+    }
+    if (style == HUNT_BANK || style == HUNT_CURVED_BANK) {   // off a side wall: the near one, or across off the far one
+        const float wall = (s.botIntent == 0 && (j & 2)) ? -side : side;
+        if (np == 2 && !tun.experimental) at.z = 2.f * wall * (kSideWall - 0.1f) - at.z;   // (its mirror: the ball's centre
+        else at += across * (wall * 3.f);                                                  //  turns a radius off the wall)
+    }
+    if (style == HUNT_FLOOR) at.y = 2.f * tun.projectileRadius - at.y;   // off the floor on the way
+    if (style == HUNT_CURVE || style == HUNT_CURVED_BANK || (style == HUNT_FLOOR && (j & 4))) {
+        // it bends toward `bend`: a strike round the body into the ring, from an aim out the other side
+        const float bend = style == HUNT_CURVE && s.botIntent == 0 ? side : (j & 1) ? 1.f : -1.f;
+        const float amount = (j & 4) ? 24.f : 15.f, off = style == HUNT_CURVE ? ((j & 4) ? 1.3f : 0.8f) : 0.4f;
+        const Vec3 v = normalize(at - s.in.head.p);
+        spin = kUp * (bend * amount * (dot(cross(kUp, v), across) >= 0 ? 1.f : -1.f));   // (the curve: spin x velocity)
+        at -= across * (bend * off);
+    }
+    return at;
+}
+
+void Game::botPlanShot(int p, const BotSkill& sk, int hand) {
+    if (sk.hunts) {   // the attack plan: this throw's aim, tried as it would fly (strike first, or at the player)
+        PlayerState& s = pl[p];
+        const int opp = botAim(p), k = s.botShotsTried++, h = hand >= 0 ? hand : s.ball.heldHand;
+        const Vec3 fwd = s.in.head.q.rotate({0, 0, -1});
+        const Vec3 rel = botShoulder(p, h) + fwd * 0.45f;
+        Vec3 spin;
+        const int style = k < 8 ? s.botStyle : HUNT_STRAIGHT;   // (its shape, eight ways; then straight, if none works)
+        const Vec3 aim = botHuntAim(p, style, k & 7, spin);
+        const Vec3 dir = normalize(aim - rel);
+        Game g = *this;
+        Ball& gb = g.pl[p].ball;
+        gb.pos = rel;
+        g.launch(p, h, dir, throwSpeedFromHandSpeed(sk.throwHand, p), spin, false);
+        float score = -100;
+        const float dt = 1.f / 120;
+        for (float t = 0; t < 2.5f && (gb.state == BallState::Flying); t += dt) {
+            g.events.clear();
+            g.now += dt;
+            g.stepBall(p, dt);
+            bool done = false;
+            for (const GameEvent& e : g.events) {
+                if (e.type == EventType::Strike && e.player == opp) {   // (a strike: best through this throw's side of the ring)
+                    const Vec3 across = np == 2 ? Vec3{0, 0, 1} : normalize(cross(kUp, facing(opp)));
+                    const bool side = dot(e.pos - strikeZoneCenter(opp), across) * (float)s.botStrikeSide > 0;
+                    score = std::max(score, (s.botIntent == 0 ? (side ? 900.f : 250.f) : 300.f) - 100.f * t - (k < 8 ? 0.f : 150.f));
+                }
+                if (e.type == EventType::HitPlayer && e.player == opp) {
+                    score = std::max(score, (s.botIntent == 1 ? 1000.f : 600.f) - 120.f * t - (k < 8 ? 0.f : 150.f));
+                    done = true;
+                } else if ((e.type == EventType::ShieldBlock || e.type == EventType::KnuckleBlock) && e.player == opp) {
+                    score = std::min(score, -500.f);
+                    done = true;
+                }
+            }
+            if (done) break;
+        }
+        if (score > s.botShotScore) { s.botShotScore = score; s.botShotDir = dir; s.botShotSpin = spin; }
+        return;
+    }
     PlayerState& s = pl[p];
     const int opp = botAim(p), k = s.botShotsTried++, h = s.ball.heldHand;
     const Vec3 fwd = s.in.head.q.rotate({0, 0, -1});
@@ -1456,8 +1871,13 @@ void Game::stepBot(int p, float dt) {
     const BotSkill& sk = botSkillOf(p);
     if (np == 4 && (s.botTarget < 0 || !rivals(p, s.botTarget))) s.botTarget = botPickTarget(p);
     const int opp = botAim(p);
+    if (sk.hunts && match == MatchState::InProgress && pl[opp].in.headTracked) {   // (where they usually stand)
+        const Vec3 hp = pl[opp].in.head.p;
+        if (!s.botOppSpotSet) { s.botOppSpot = hp; s.botOppSpotSet = true; }
+        s.botOppSpot += (hp - s.botOppSpot) * std::min(1.f, dt * 0.3f);
+    }
     // (facing the centre: two players exactly as they always were)
-    const Quat q = Quat::axisAngle(kUp, p < 2 ? deg2rad(p == 0 ? -90.f : 90.f) : std::atan2(-facing(p).x, -facing(p).z));
+    const Quat q = Quat::axisAngle(kUp, p < 2 && !octagon() ? deg2rad(p == 0 ? -90.f : 90.f) : std::atan2(-facing(p).x, -facing(p).z));
     const Vec3 right = q.rotate({1, 0, 0}), fwd = q.rotate({0, 0, -1});
     // where it stands: its end, or its side of the centre for a fist bump
     const bool meet = match == MatchState::Meet;
@@ -1525,6 +1945,7 @@ void Game::stepBot(int p, float dt) {
         if (r->plan == BOT_SHIELD || r->plan == BOT_KNUCKLE || r->plan == BOT_CATCH) want[r->hand] = {r->gripQ, r->grip};
         if (r->mode && r->plan != BOT_CATCH && (r == reads[0] || !reads[0]->mode)) bodyWant = r->body;   // (still while it watches; or its dodge)
     }
+    if (octagon()) threatened |= botFireDodge(p, sk, right, bodyWant);   // (FIREBALL BLITZ: out of the fireballs' way)
     // while it watches a ball, the hands it isn't using keep their place (from its head, so a dodge carries them):
     // what its tryouts assumed (a hand still moving could swing a shield into the ball)
     bool watching = false;
@@ -1556,14 +1977,17 @@ void Game::stepBot(int p, float dt) {
             if (length(launcherPoint(p, h) - b.pos) < 0.25f) {
                 b.state = BallState::Held; b.heldHand = h; b.vel = {};
                 emit(EventType::Grab, p, h, b.pos);
-                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f);   // (four players: quicker, more to aim at)
+                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f) * (octagon() && tun.fireBalls >= 4 ? 0.35f : 1.f);   // (four players: quicker, more to aim at)
                 s.botThrow = 0; s.botShotsTried = 0; s.botShotScore = -1e9f;
+                if (sk.hunts) botChooseIntent(p, sk);
             }
         }
     }
     // a throw: wind up behind the shoulder, swing through at a throw's hand speed, let go
     const bool holding = b.state == BallState::Held;
     if (!holding || match != MatchState::InProgress) s.botSlap = false;
+    for (const PlayerState::BotRead* r : reads)   // (but not with a ball on its way into it: its shield goes with the ball)
+        if (r->mode == 1 && (r->hitT >= 0 || r->plan != BOT_NONE)) s.botSlap = false;
     if (!holding || (threatened && !s.botSlap) || match != MatchState::InProgress) s.botThrow = 0;   // (a slap shot goes on)
     if (holding && !b.charged && !s.coach.on) s.botTimer = std::min(s.botTimer, 0.35f);   // recharge by throwing
     if (holding && (!threatened || s.botSlap) && match == MatchState::InProgress) {
@@ -1578,14 +2002,20 @@ void Game::stepBot(int p, float dt) {
             }
         } else if (s.botThrow == 0) {
             // one try a step while it waits (not in a step its reads already spent tryouts in)
-            if (sk.planShots && s.botShotsTried < 12 && botTriesLeft == kBotTriesPerStep) botPlanShot(p, sk);
+            if (sk.planShots && !octagon() && s.botShotsTried < 12 && botTriesLeft == kBotTriesPerStep) botPlanShot(p, sk);
             // the best keep their ball (their shield) while the opponent can throw, unless their shot clock runs low
             const Ball& ob = pl[opp].ball;
             const bool patient = sk.guardsStrikes && tun.shields && !tun.knuckleGuards() && b.charged &&
                                  (ob.state == BallState::Held || ob.state == BallState::Idle) && s.shotClock > 3.f &&
                                  s.botTimer > -4.f;
             if (s.botTimer <= 0 && !patient) {
-                if (!(sk.planShots && s.botShotScore > 0)) {   // at the chest, off the side wall, or curved
+                if (octagon()) {   // a fireball: tried out against its target as it would hop
+                    s.botShotDir = botFireAim(p, h, sk, s.botShotSpin);
+                } else if (sk.hunts && s.botShotScore <= 0) {   // (the plan's own aim, straight)
+                    Vec3 spin;
+                    s.botShotDir = normalize(botHuntAim(p, HUNT_STRAIGHT, 0, spin) - (botShoulder(p, h) + fwd * 0.45f));
+                    s.botShotSpin = spin;
+                } else if (!(sk.planShots && s.botShotScore > 0)) {   // at the chest, off the side wall, or curved
                     const Vec3 rel = botShoulder(p, h) + fwd * 0.45f;
                     Vec3 target = chestPoint(opp) + Vec3{rnd() - 0.5f, rnd() - 0.5f, rnd() - 0.5f} * sk.aimError;
                     s.botShotSpin = {};
@@ -1608,6 +2038,8 @@ void Game::stepBot(int p, float dt) {
                 s.botThrow = 2; s.botThrowT = now;
             }
         } else if (s.botThrow == 2) {   // the swing, forward along the throw
+            if (s.botSlap && sk.hunts && s.botStyle != HUNT_STRAIGHT && !threatened && s.botShotsTried < 8 && botTriesLeft == kBotTriesPerStep)
+                botPlanShot(p, sk);   // (a slap shot's shape, one try a step)
             Vec3 flat = s.botShotDir;
             flat.y *= 0.3f;
             want[h].p = botShoulder(p, h) + normalize(flat) * 0.50f;
@@ -1618,10 +2050,11 @@ void Game::stepBot(int p, float dt) {
                     b.pos = s.coach.from;
                     launch(p, h, normalize(s.coach.dir), s.coach.speed, s.coach.spin, false);
                 }
-                else launch(p, h, s.botShotDir, throwSpeedFromHandSpeed(sk.throwHand, p), s.botShotSpin);
+                else launch(p, h, s.botShotDir, throwSpeedFromHandSpeed(sk.throwHand, p), s.botShotSpin, !sk.hunts);
+                if (sk.hunts && s.botIntent == 0) s.botStrikeSide = -s.botStrikeSide;   // (the next strike: the other side)
                 s.botThrow = 0;
                 s.botSlap = false;
-                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f);   // (four players: quicker, more to aim at)
+                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f) * (octagon() && tun.fireBalls >= 4 ? 0.35f : 1.f);   // (four players: quicker, more to aim at)
                 s.botShotsTried = 0;
                 s.botShotScore = -1e9f;
                 if (np == 4) s.botTarget = botPickTarget(p);   // (four players: someone, maybe someone else, next)
@@ -1680,6 +2113,15 @@ void Game::stepBot(int p, float dt) {
         hi.grip = {s.botHandQ[h], s.botHand[h]};
         hi.trigger = (b.state == BallState::Held && b.heldHand == h) || (h == bump && bumpClosed) ? 1.f : 0.f;   // (a fist for the bump)
     }
+    // the slap shot's shape, planned while its ball comes back to it (owner, 2026-11-02: CHAMPION threw only straight
+    // balls: a slap gave it a frame or two to try a curve or a bank, and it nearly never found one in time)
+    if (sk.hunts && !octagon() && !s.coach.on && match == MatchState::InProgress && !holding && b.instigator == p &&
+        (b.state == BallState::Flying || b.state == BallState::Returning) && s.botRead[1].plan == BOT_CATCH && s.botRead[1].hand >= 0 &&
+        !threatened && botTriesLeft == kBotTriesPerStep) {   // (not while a ball comes at it: its defence comes first)
+        if (!s.botPre) { botChooseIntent(p, sk); s.botPre = true; s.botShotsTried = 0; s.botShotScore = 0.f; }
+        if (s.botStyle != HUNT_STRAIGHT && s.botShotsTried < 8) botPlanShot(p, sk, s.botRead[1].hand);
+    }
+    if (holding) s.botPre = false;
     // a catch: its own ball, in its catcher
     const PlayerState::BotRead& c = s.botRead[1];
     if (c.plan == BOT_CATCH && (b.state == BallState::Flying || b.state == BallState::Returning) && b.instigator == p) {
@@ -1687,10 +2129,27 @@ void Game::stepBot(int p, float dt) {
         if (length(catcherPoint(p, c.hand) - b.pos) < tun.catchHalfHeight + ballRadius(p)) {
             b.state = BallState::Held; b.heldHand = c.hand; b.vel = {}; b.spin = {};
             emit(EventType::Caught, p, c.hand, b.pos);
-            s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f);   // (four players: quicker, more to aim at)
+            s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f) * (octagon() && tun.fireBalls >= 4 ? 0.35f : 1.f);   // (four players: quicker, more to aim at)
+            const bool pre = s.botPre && s.botShotScore > 0;   // (a shape found while it came back)
+            const Vec3 preDir = s.botShotDir, preSpin = s.botShotSpin;
             s.botThrow = 0; s.botShotsTried = 0; s.botShotScore = -1e9f;
             // the slap shot (owner, 2026-10-29): caught on the swing and sent straight back, no hold, no wind-up
-            if (!s.coach.on && match == MatchState::InProgress && sk.slap > 0.f && rnd() < sk.slap) {   // (its shot chosen as its throws are)
+            if (sk.hunts && !s.botPre) botChooseIntent(p, sk);
+            s.botPre = false;
+            if (!s.coach.on && match == MatchState::InProgress && sk.slap > 0.f && rnd() < sk.slap && sk.hunts) {   // (by the plan)
+                const Vec3 from = launcherPoint(p, c.hand);
+                Vec3 spin;
+                // (straight to start with; its shape, curved or off a wall, tried out during the swing: a shot that lands
+                // replaces it, testers 2026-10-30: its slaps were always straight)
+                s.botShotDir = normalize(botHuntAim(p, HUNT_STRAIGHT, 0, spin) - from);
+                s.botShotSpin = spin;
+                s.botShotsTried = 0;
+                s.botShotScore = 0.f;
+                if (pre) { s.botShotDir = preDir; s.botShotSpin = preSpin; s.botShotsTried = 8; s.botShotScore = 1.f; }   // (planned)
+                s.botThrow = 2;
+                s.botThrowT = now;
+                s.botSlap = true;
+            } else if (!s.coach.on && match == MatchState::InProgress && sk.slap > 0.f && rnd() < sk.slap) {   // (its shot chosen as its throws are)
                 const Vec3 from = launcherPoint(p, c.hand);
                 Vec3 to = chestPoint(opp) + Vec3{rnd() - 0.5f, rnd() - 0.5f, rnd() - 0.5f} * sk.aimError;
                 s.botShotSpin = {};
@@ -1709,7 +2168,32 @@ void Game::stepBot(int p, float dt) {
     }
 }
 
+void Game::resumeAfterHandoff() {
+    for (int p = 0; p < np; ++p) {
+        for (int k = 0; k < kMaxFire; ++k) fizzle(p, k, false);
+        if (pl[p].ball.state == BallState::Held) continue;
+        if (octagon() && !alive(p)) { parkBall(p); continue; }
+        spawnBall(p);
+        if (octagon()) pl[p].ball.pos = idlePoint(p);
+    }
+    if (match == MatchState::InProgress) {   // (the countdown leaves the score, the clock and the round alone)
+        match = MatchState::Countdown;
+        stateTimer = tun.countdown;
+    }
+}
+
 void Game::startCountdown() {
+    if (octagon()) {   // FIREBALL BLITZ: the players who are here (practice: as many as asked) start, spread round the ring
+        uint8_t m = 0;
+        for (int p = 0; p < np; ++p) if (pl[p].in.headTracked && p < std::max(2, std::min(np, octCap))) m |= (uint8_t)(1u << p);
+        startMask = ringMask = m;
+        for (int p = 0; p < np; ++p) {
+            pl[p].health = ((m >> p) & 1) ? std::max(1, tun.health) : 0;
+            if (!((m >> p) & 1)) parkBall(p);
+        }
+        layoutRing(ringMask);
+        for (int p = 0; p < np; ++p) if ((m >> p) & 1) { spawnBall(p); pl[p].ball.pos = idlePoint(p); }
+    }
     match = MatchState::Countdown;
     stateTimer = tun.countdown;
     round = 1;
@@ -1723,6 +2207,16 @@ void Game::stepMatch(float dt) {
     case MatchState::WaitingForPlayers: {
         bool all = true;
         for (int p = 0; p < np; ++p) all &= pl[p].in.headTracked;
+        if (octagon()) {   // (FIREBALL BLITZ: everyone asked for, or two or more for a moment: an empty place sits out)
+            int here = 0;
+            bool asked = true;
+            for (int p = 0; p < np; ++p) {
+                here += pl[p].in.headTracked;
+                if (p < octCap) asked &= pl[p].in.headTracked;
+            }
+            stateTimer = here >= 2 ? stateTimer + dt : 0.f;
+            all = here >= 2 && (asked || stateTimer > 1.5f);
+        }
         if (all) {
             // two people meet in the centre first; a person and the bot too when asked (practice); two bots never;
             // four players never (the centre is far from every corner)
@@ -1789,6 +2283,44 @@ void Game::stepMatch(float dt) {
         break;
     }
     case MatchState::InProgress:
+        if (octagon()) {   // FIREBALL BLITZ: the ring closes in; the last one standing wins; at time, the most health
+            if (ringCloseAt >= 0 && now >= ringCloseAt) {
+                ringCloseAt = -1;
+                uint8_t m = 0;
+                for (int p = 0; p < np; ++p) if (alive(p)) m |= (uint8_t)(1u << p);
+                for (int p = 0; p < np; ++p) for (int k = 0; k < kMaxFire; ++k) fizzle(p, k, false);
+                ringMask = m;
+                layoutRing(m);
+                for (int p = 0; p < np; ++p) if (alive(p) && pl[p].ball.state != BallState::Held) { spawnBall(p); pl[p].ball.pos = idlePoint(p); }
+            }
+            const int left = aliveCount();
+            if (left <= 1) {
+                int w = lastKnockBy;
+                for (int p = 0; p < np; ++p) if (alive(p)) w = p;
+                if (w < 0)   // (nobody left, nobody to credit: whoever landed the most hits; review 2026-11-02)
+                    for (int p = 0; p < np; ++p)
+                        if (((startMask >> p) & 1) && (w < 0 || pl[p].score > pl[w].score)) w = p;
+                matchWinner = w;
+                match = MatchState::MatchSummary;
+                emit(EventType::MatchEnd, matchWinner, -1, {}, 0);
+                break;
+            }
+            if (tun.timed() && !overtime) {
+                roundClock -= dt;
+                if (roundClock <= 0) {
+                    roundClock = 0;
+                    int top = 0;
+                    for (int p = 0; p < np; ++p) if (alive(p)) top = std::max(top, pl[p].health);
+                    for (int p = 0; p < np; ++p) if (alive(p) && pl[p].health < top) knockOut(p, -1, pl[p].in.head.p);
+                    if (aliveCount() > 1) {   // a tie at the top: sudden death, one hit each
+                        overtime = true;
+                        for (int p = 0; p < np; ++p) if (alive(p)) pl[p].health = 1;
+                        emit(EventType::Overtime, -1, -1, {}, 0);
+                    }
+                }
+            }
+            break;
+        }
         // the clock: Basic's match time (none in FREE PLAY), Advanced's round time when the host set one
         if (tun.timed() && !overtime) {
             roundClock -= dt;
@@ -1854,6 +2386,16 @@ void Game::step(float dt, PlayerInput* in) {
     stepMatch(dt);
     for (int p = 0; p < np; ++p) stepPlayer(p, dt);
     for (int p = 0; p < np; ++p) stepBall(p, dt);
+    if (octagon()) {   // FIREBALL BLITZ: the fireballs; a tee waiting for room refills (RAPID FIRE: at once)
+        for (int p = 0; p < np; ++p)
+            for (int k = 0; k < kMaxFire; ++k) stepFire(p, k, dt);
+        for (int p = 0; p < np; ++p) {
+            Ball& b = pl[p].ball;
+            if (!alive(p) || b.state != BallState::Dead || b.timer < 1e8f || fireCount(p) >= fireLimit()) continue;
+            spawnBall(p);
+            b.timer = tun.fireBalls >= 4 ? 0.2f : 0.7f;   // (FIREBALL BLITZ: back on the tee quickly)
+        }
+    }
 }
 
 namespace exparena {

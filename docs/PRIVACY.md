@@ -146,6 +146,26 @@ joins and leaves, with the game's version number (from 0.3.11), to keep the serv
 update and to deal with abuse. It does not store voice or game content.
 Community servers run by other people follow their own rules.
 
+## Discord status (PC, from version 0.3.13)
+
+On a PC with the Discord app running, the game tells Discord what you are doing so it can show "Playing Project
+Arena" (or "Project Arena - Spectator") in your profile: playing, watching or in the lobby, the rules, how long, and
+the room's size. It goes straight to the Discord app on your PC, never through our servers, and Discord shows it as
+its own settings say (User Settings > Activity Privacy). To turn it off in the game: SETTINGS > GRAPHICS AND VIEW >
+DISCORD STATUS (or the Spectator Controls window). The Quest version does not do this.
+
+## Your webcam (PC spectator view, only when you turn on SELFIE)
+
+The PC spectator view can show your webcam in a corner of its picture, for streaming. The game reads the camera on your
+PC and draws it into the picture on your screen; it never saves it, and never sends it anywhere (what you stream is
+up to you and your streaming software). It is off until you press C or the Selfie button, and the camera is released
+when you turn it off.
+
+## Updates (from version 0.3.13)
+
+UPDATE NOW on PC downloads the new version straight from the game's GitHub release page (github.com), as your browser
+would; on Quest it opens the store page or the GitHub page in the headset's browser. Nothing about you is sent with it.
+
 ## What we do not do
 
 - No accounts (statistics are tied to a random key, not to you).

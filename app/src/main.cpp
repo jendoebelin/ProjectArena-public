@@ -33,6 +33,7 @@
 #include <windows.h>
 #include <shlobj.h>
 #include <xinput.h>   // (the structs only: XInputGetState is loaded at run time)
+#include <commctrl.h>   // (the Spectator Controls window's tabs)
 #include <setupapi.h>
 #include <hidsdi.h>
 #include <atomic>
@@ -56,6 +57,11 @@ bool xrLoaderInit();   // pc/xr_loader.cpp
 #include "record.h"
 #include "training.h"
 #include "xcompat.h"
+#ifdef _WIN32
+#include "pc/discord_rpc.h"   // Discord status (PC only)
+#include "pc/webcam.h"        // the selfie overlay's webcam (PC only)
+#include "pc/updater.h"       // UPDATE NOW (PC only)
+#endif
 #if __has_include("servers_default.h")
 #include "servers_default.h"   // generated at build time (tools/write_servers_header.py)
 #endif
@@ -102,7 +108,16 @@ struct App {
     int winW = 1280, winH = 720;
     // DESKTOP SPECTATOR (PC without a headset, or --spectate): a window, mouse and keyboard cameras, for streamers
     bool desktop = false;
-    int dcView = 1;                 // 1 side, 2 high, 3 blue end, 4 orange end, 5 top, 0 free camera
+    int dcView = 1;                 // 1 side, 2 high, 3 blue end, 4 orange end, 5 top, 6 / 7 blue's / orange's eyes, 0 free, 8 MY CAMERA
+    Pose dcEye;                     // the eyes camera, smoothed (a headset's every twitch is not for an audience)
+    bool dcEyeSet = false;
+    // MY CAMERAS (owner, 2026-11-02): the views you save (the headset's director list, warps.cfg), which one is showing,
+    // AUTO's turn through them, a move between two of them (a fade glides, 0.8 s), a follow camera's place along the court
+    int dcMy = -1;
+    Pose dcLast, dcFrom;
+    bool dcLastOk = false;
+    float dcGlide = 0, dcFollowX = 0;
+    uint8_t dcNewHold = 1, dcNewTrans = 1;   // what a newly saved camera gets (the panel's buttons change it)
     bool dcAuto = true, dcHelp = false, dcHubPinned = false, dcFull = false;   // dcHelp: the help bar in the picture
     int dcCmd = 0;                  // a button pressed in the Spectator Controls window (handled next frame)
     double dcHintUntil = 0;         // "F1: CONTROLS" in the picture for a few seconds after start
@@ -430,6 +445,12 @@ struct App {
     // REPORT / MUTE A PLAYER page (top-left of the menu in a room or spectating): someone here, a reason, a note.
     // The report goes the same way as a bug report; a mute silences that person's voice for this session.
     bool reportOpen = false;
+    bool movePlayersOpen = false;  // MOVE PLAYERS (hosting four players): swap two corners, make one THE ONE
+    bool moveHost = false;         // ... its HAND OFF HOST form instead (any room): who hosts it from now on
+    double watchGone = 0;
+    int watchPeople = 0;
+    double voiceZoneAt = 0;        // when we came where voice works (the push-to-talk reminder shows for a while)           // ... and how many people its room had (one alone: no one to hand it to)          // spectating: when the watched match went quiet (it may come back under a new host)
+    int moveSel = -1;              // ... the corner picked first (-1: none)
     // CHOOSE THE RULES page: HOST A ROOM and PLAY PRACTICE open it (ADVANCED first; the last choice is remembered)
     bool rulesOpen = false, rulesForHost = false;
     // MATCH OPTIONS (0.3.8): step 1 of the rules page. rulesEdit: opened from SETTINGS to change this arena's rules
@@ -444,6 +465,38 @@ struct App {
     bool optAdvanced = false, optShields = true, optExperimental = false;
     int optExpRoom = 0;            // EXPERIMENTAL's room: 0 DIAMOND, 1 FOUR CORNERS (four players)
     int optTeams = TEAMS_FFA;      // FOUR CORNERS: FREE-FOR-ALL, 2 V 2, 3 V 1
+    bool optOneTurns = false;      // 3 V 1 hosted: THE ONE takes turns (Tunables::oneTurns), or you are THE ONE
+    // DISCORD STATUS (PC, 0.3.13; kept on Quest too: the same settings file): "Playing Project Arena" in your Discord profile; what it last said and since when
+    bool discordOn = true;
+    std::string discordKey;
+    int64_t discordSince = 0;
+    // SELFIE (0.3.13, streamers): the PC spectator's webcam as a picture-in-picture over the broadcast; its corner
+    // (0 top left, 1 top right, 2 bottom left, 3 bottom right), size (small, medium, large), round or square, which
+    // camera; its texture and the picture last put in it (selfieTest: a test card instead, for pictures)
+    bool updateOpen = false;   // UPDATE NOW's page (0.3.13)
+    int dcEyesOf = -1;   // the PC spectator's eyes camera: whose eyes (their own body not drawn; shared: drawWorld asks)
+    // SELFIE in the headset (0.3.13, spectators who stream): a camera in front of your avatar, its picture in the lower
+    // right of your view (and so in a cast or recording); its render target, and when it last drew
+    bool headSelfie = false;
+    unsigned hsFbo = 0, hsTex = 0, hsDepth = 0;
+    double hsAt = 0;
+    bool selfieOn = false, selfieRound = true, selfieTest = false;
+    int selfieCorner = 3, selfieSize = 1, selfieCam = 0, selfieW = 0, selfieH = 0;
+    unsigned selfieTex = 0;
+    uint32_t selfieSeen = 0;
+    int optHealth = 5, optBalls = 1, optOctPlayers = 4;   // FIREBALL BLITZ: HEALTH, BALLS (4 = RAPID FIRE), PLAYERS (practice)
+    // FIREBALL BLITZ on screen: the last knockout or "THE ROOM CLOSES IN" (and how long it shows), the fireballs' puffs as they
+    // fizzle out, and the ring as last seen (it closing in: a blink to your new place)
+    std::string octMsg;
+    float octMsgT = 0;
+    int octMsgP = -1;
+    struct Puff { Vec3 pos; float t; int p; };
+    std::vector<Puff> puffs;
+    uint16_t fireDanger = 0;   // the fireballs (bit owner * 3 + k) that would hit you where you stand
+    bool wasOut = false;       // knocked out (in the dugout) as last seen: a change blinks you there or back
+    uint8_t ringSeen = 0;
+    Vec3 ringStartSeen[kMaxPlayers];
+    float octWallR = 7.5f;   // its walls as drawn (sliding to where the game has them)
     int optKnuckle = -1;
     float optMatchTime = 180.f, optRoundTime = 0.f;
     int optBotLevel = 2;           // the practice bot's level (botSkill, game.h)
@@ -502,6 +555,7 @@ struct App {
         uint8_t hold = 1;          // 0..3 -> 2 / 4 / 8 / 15 s
         uint8_t trans = 1;         // 0 cut, 1 cross-fade
         uint8_t trig = 0;          // 0 timer (in turn), 1 action (cut here for hits / strikes nearby), 2 follow (glide with the ball)
+        float pitch = 0, fov = 0;  // the PC spectator's cameras (0.3.13): looking up or down, its zoom (0: as the view is)
     };
     std::vector<WarpCam> warps;
     int warpIdx = -1;
@@ -574,6 +628,46 @@ static bool androidPermission(const char* name, bool request, int code) {
     }
     env->PopLocalFrame(nullptr);
     return r == 0;
+}
+// UPDATE NOW on Quest (0.3.13): who installed the game (the Meta store, or someone with adb / SideQuest: no installer),
+// and a link opened in the headset (the store page, or the GitHub page)
+static std::string androidInstaller() {
+    if (!g_vm || !g_activity) return "?";
+    JNIEnv* env = nullptr;
+    g_vm->AttachCurrentThread(&env, nullptr);
+    if (env->PushLocalFrame(16) != 0) { env->ExceptionClear(); return "?"; }
+    std::string out = "?";
+    jclass act = env->GetObjectClass(g_activity);
+    jobject pm = env->CallObjectMethod(g_activity, env->GetMethodID(act, "getPackageManager", "()Landroid/content/pm/PackageManager;"));
+    jobject pkg = env->CallObjectMethod(g_activity, env->GetMethodID(act, "getPackageName", "()Ljava/lang/String;"));
+    if (!env->ExceptionCheck() && pm && pkg) {
+        jmethodID get = env->GetMethodID(env->GetObjectClass(pm), "getInstallerPackageName", "(Ljava/lang/String;)Ljava/lang/String;");
+        jstring inst = get ? (jstring)env->CallObjectMethod(pm, get, pkg) : nullptr;
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        else if (!inst) out = "";
+        else { const char* c = env->GetStringUTFChars(inst, nullptr); out = c ? c : "?"; env->ReleaseStringUTFChars(inst, c); }
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->PopLocalFrame(nullptr);
+    return out;
+}
+static bool androidOpenUrl(const char* url) {
+    if (!g_vm || !g_activity) return false;
+    JNIEnv* env = nullptr;
+    g_vm->AttachCurrentThread(&env, nullptr);
+    if (env->PushLocalFrame(16) != 0) { env->ExceptionClear(); return false; }
+    jclass uriCls = env->FindClass("android/net/Uri");
+    jobject uri = env->CallStaticObjectMethod(uriCls, env->GetStaticMethodID(uriCls, "parse", "(Ljava/lang/String;)Landroid/net/Uri;"), env->NewStringUTF(url));
+    jclass intentCls = env->FindClass("android/content/Intent");
+    jobject intent = env->NewObject(intentCls, env->GetMethodID(intentCls, "<init>", "(Ljava/lang/String;Landroid/net/Uri;)V"),
+                                    env->NewStringUTF("android.intent.action.VIEW"), uri);
+    env->CallObjectMethod(intent, env->GetMethodID(intentCls, "addFlags", "(I)Landroid/content/Intent;"), 0x10000000);   // NEW_TASK
+    env->CallVoidMethod(g_activity, env->GetMethodID(env->GetObjectClass(g_activity), "startActivity", "(Landroid/content/Intent;)V"), intent);
+    const bool ok = !env->ExceptionCheck();
+    if (!ok) env->ExceptionClear();
+    env->PopLocalFrame(nullptr);
+    LOGI("update: opened %s (%s)", url, ok ? "ok" : "failed");
+    return ok;
 }
 static bool micPermission(bool request) { return androidPermission("android.permission.RECORD_AUDIO", request, 1); }
 static bool scenePermission(bool request) { return androidPermission("com.oculus.permission.USE_SCENE", request, 2); }
@@ -1293,7 +1387,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.12";
+static const char* kAppVersion = "0.3.13";
 
 // "0.3.4" newer than "0.3.3" (dotted numbers, compared part by part)
 static bool versionNewer(const char* a, const char* b) {
@@ -1315,6 +1409,30 @@ static const char* updateAvailable(App& a) {
     static std::string shown;
     if (shown != v) { shown = v; LOGI("update: %s is out (this is %s)", v, kAppVersion); }
     return v;
+}
+#ifdef __ANDROID__
+static bool isDesktop(const App&) { return false; }
+#else
+static bool isDesktop(const App& a) { return a.desktop; }   // (the PC spectator window, no headset)
+#endif
+static const char* kStorePage = "https://www.meta.com/s/4NDP5YlGM";
+static const char* kReleasePage = "https://github.com/jendoebelin/ProjectArena-public/releases/latest";
+// how this copy updates. Quest: 0 the Meta store, 1 sideloaded (adb, SideQuest), 2 can't tell (both offered). PC: 0 here
+// (download and restart), 1 Steam, 2 the download page only. `why`: what to say about it
+static int updateHow(std::string& why) {
+#ifdef __ANDROID__
+    static std::string inst = "?";
+    if (inst == "?") { inst = androidInstaller(); LOGI("update: installed by '%s'", inst.c_str()); }
+    if (inst.find("oculus") != std::string::npos || inst.find("meta") != std::string::npos) { why = "THE STORE INSTALLS IT"; return 0; }
+    if (inst.empty() || inst == "com.android.shell" || inst.find("packageinstaller") != std::string::npos || inst.find("sidequest") != std::string::npos) {
+        why = "DOWNLOAD THE NEW APK AND INSTALL IT AS YOU DID BEFORE (SIDEQUEST)";
+        return 1;
+    }
+    why = "FROM THE STORE, OR THE GITHUB PAGE IF YOU INSTALLED IT YOURSELF";
+    return 2;
+#else
+    return updater::how(why);
+#endif
 }
 static const size_t kNoteMax = 120;   // bug / player report notes (was 60: testers ran out)
 static const char* kReportWhy[4] = {"HARASSMENT OR HATE", "OFFENSIVE NAME OR LOOK", "CHEATING", "OTHER"};
@@ -1570,7 +1688,7 @@ static float trainColX(int track) { return -0.325f + 0.325f * track; }   // the 
 static float trainRowY(int place) { return 0.165f - 0.0705f * place; }
 static bool otherPage(const App& a) {   // a page other than TRAINING's is open
     return a.titleOpen || a.settingsOpen || a.statsOpen || a.helpOpen || a.bugOpen || a.reportOpen || a.rulesOpen || a.xpOpen ||
-           a.statsNoticeOpen;
+           a.statsNoticeOpen || a.movePlayersOpen || a.updateOpen;
 }
 static bool trainSide(const App& a) {
     using training::Phase;
@@ -1582,18 +1700,28 @@ static bool trainSide(const App& a) {
 static Vec3 holdingSpot(int spot) { return {-4.5f + 3.0f * (spot & 3), 0, -4.2f}; }
 static Quat yawToward(const Vec3& f) { return Quat::axisAngle({0, 1, 0}, std::atan2(-f.x, -f.z)); }   // -Z along f
 static bool cornersRoom(const App& a) { return a.game.arenaKind == ARENA_FOURCORNERS || a.game.arenaKind == ARENA_CORNERS; }
+// FIREBALL BLITZ: its waiting spots in a row outside the glass behind the wall between places 0 and 2 (its floor is level
+// with the stadium's walkway); the gallery seat outside the wall opposite
+static Pose octWaiting(int spot) {
+    const Vec3 out = normalize(Vec3{-1, 0, -1}), along = normalize(Vec3{1, 0, -1});
+    const float sd = (spot & 4) ? -1.f : 1.f;   // (4-7: the deck on the other side)
+    return {yawToward(-out * sd), out * (9.2f * sd) + along * (sd * 1.5f * ((spot & 3) - 1.5f))};
+}
 // a waiting spot (its floor point) and the way it faces: FOUR CORNERS' room fills the classic holding area, so its four
 // spots stand outside the room's glass, along the wall between corners 0 and 2, facing in
 static Pose holdingPose(const App& a, int spot) {
+    if (a.game.octagon()) return octWaiting(spot);
     if (cornersRoom(a)) {
         const Vec3 c0{-exparena::kCorner, 0, 0}, c1{0, 0, -exparena::kCorner}, in = normalize(Vec3{1, 0, 1});
-        return {yawToward(in), lerp(c0, c1, 0.2f + 0.2f * (spot & 3)) - in * 0.9f};
+        const float sd = (spot & 4) ? -1.f : 1.f;   // (4-7: the deck on the other side)
+        return {yawToward(in * sd), (lerp(c0, c1, 0.2f + 0.2f * (spot & 3)) - in * 0.9f) * sd};
     }
     return {Quat{}, holdingSpot(spot)};   // (facing +Z: -Z forward turned round below)
 }
-static Vec3 holdingFwd(const App& a, int spot) { return cornersRoom(a) ? holdingPose(a, spot).q.rotate({0, 0, -1}) : Vec3{0, 0, 1}; }
+static Vec3 holdingFwd(const App& a, int spot) { return cornersRoom(a) || a.game.octagon() ? holdingPose(a, spot).q.rotate({0, 0, -1}) : Vec3{0, 0, 1}; }
 // the spectator's floating gallery seat at the arena it watches (FOUR CORNERS: outside the room, by a side wall)
 static Pose spectatorSeat(const App& a) {
+    if (a.game.octagon()) { const Vec3 in = normalize(Vec3{-1, 0, 1}); return {yawToward(in), Vec3{6.9f, 1.0f, -6.9f}}; }
     if (cornersRoom(a)) { const Vec3 in = normalize(Vec3{1, 0, -1}); return {yawToward(in), Vec3{-5.6f, 1.0f, 5.6f}}; }
     return {Quat{}, {0, 1.0f, 5.4f}};
 }
@@ -1603,16 +1731,17 @@ static const float kFourRGB[4][3] = {{0.1f, 0.7f, 1.0f}, {1.0f, 0.4f, 0.1f}, {0.
 static const float* playerRGB(const App& a, int p) {
     const Game& g = a.game;
     if (g.np == 2) return a.sideRGB[p & 1];
-    return g.tun.teamMode == TEAMS_FFA ? kFourRGB[p & 3] : a.sideRGB[g.team(p) & 1];
+    return (g.tun.teamMode == TEAMS_FFA || g.octagon()) ? kFourRGB[p & 3] : a.sideRGB[g.team(p) & 1];
 }
 static const float* teamRGB(const App& a, int t) {   // (a team's colour: the same as its players')
-    return a.game.np == 4 && a.game.tun.teamMode == TEAMS_FFA ? kFourRGB[t & 3] : a.sideRGB[t & 1];
+    return a.game.np == 4 && (a.game.tun.teamMode == TEAMS_FFA || a.game.octagon()) ? kFourRGB[t & 3] : a.sideRGB[t & 1];
 }
 // the arena the rules in play ask for (practice, our room, the room we joined, the match we watch); the lobby is classic
 static int arenaFor(const App& a) {
     const Tunables& t = a.game.tun;
     if (!t.experimental || inLobby(a) || (a.spectating && !a.watchIp)) return ARENA_CLASSIC;
-    if (t.expRoom == 1) return t.players == 4 ? ARENA_FOURCORNERS : ARENA_CORNERS;
+    if (t.expRoom == ROOM_BLITZ) return ARENA_OCTAGON;
+    if (t.expRoom == ROOM_CORNERS) return t.players == 4 ? ARENA_FOURCORNERS : ARENA_CORNERS;
     return ARENA_DIAMOND;
 }
 
@@ -1634,9 +1763,14 @@ static void viewTarget(const App& a, int local, Vec3& pos, Vec3& fwd) {
     } else if (meetHere(a)) {   // face to face in the centre (fist bump start)
         pos = {local == 0 ? -a.game.tun.meetSpot : a.game.tun.meetSpot, 0, 0};
         fwd = local == 0 ? Vec3{1, 0, 0} : Vec3{-1, 0, 0};
+    } else if (a.game.octagon() && !a.game.alive(local) && ((a.game.startMask >> local) & 1) &&
+               a.game.match != MatchState::WaitingForPlayers) {   // FIREBALL BLITZ, knocked out: the dugout (owner, 2026-11-02)
+        const Pose d = holdingPose(a, 4 + (local & 3));
+        pos = d.p;
+        fwd = d.q.rotate({0, 0, -1});
     } else {
         pos = a.game.tun.start[local];
-        fwd = local < 2 ? (local == 0 ? Vec3{1, 0, 0} : Vec3{-1, 0, 0}) : a.game.facing(local);   // (each faces the centre)
+        fwd = local < 2 && !a.game.octagon() ? (local == 0 ? Vec3{1, 0, 0} : Vec3{-1, 0, 0}) : a.game.facing(local);   // (each faces the centre)
     }
 }
 
@@ -1824,6 +1958,9 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
     {   // moving between playing / the hub / watching a match re-places the viewer
         uint32_t key = a.spectating ? (a.watchIp ? a.watchIp : 1u) : a.net.localWaiting() ? 10u + (uint32_t)a.net.localSpot()
                      : meetHere(a) ? 2u : inLobby(a) ? 3u : 0u;   // the centre meeting, then your end
+        // (and when the room's shape changes: a player who joins waits by their own rules' room until the host's first
+        // picture says FOUR CORNERS, whose waiting spots are elsewhere; testers 2026-10-30 saw them inside the room)
+        key = key * 8u + (uint32_t)(a.game.arenaKind + 1);
         if (key != a.viewKey) { a.viewKey = key; a.recentered = false; }
     }
     if (headOk && !a.spectating) {   // floor guard (see App::floorFix)
@@ -1966,7 +2103,9 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 // ------------------------------------------------------------------ lobby menu
 enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute, ReportKick, StatsNoticeOk,
                      ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, ReportHostKick, OptBot, Record, OptMeet, GfxPage, FovDown, FovUp, OptRoom, OptTeams,
-                     Train, TrainPick, TrainStart, TrainRetry, TrainNext, TrainList, TrainLeave, TrainBoard, TrainKind, TrainBoardBack, TrainShow, TrainVideo };
+                     Train, TrainPick, TrainStart, TrainRetry, TrainNext, TrainList, TrainLeave, TrainBoard, TrainKind, TrainBoardBack, TrainShow, TrainVideo,
+                     MovePlayers, MoveCorner, MoveOne, MoveBack, OptHealth, OptBalls, OptPlayers, Discord,
+                     UpdateOpen, UpdateGo, UpdateRestart, UpdatePage, UpdateStore, UpdateBack, HeadSelfie, PrivateTalk, HandOff, HandOffTo };
 struct MenuItem {
     std::string label;
     float x, y, w, h;
@@ -1979,18 +2118,23 @@ static void haptic(App& a, int hand, float amp, float seconds);
 
 // ---- MATCH OPTIONS: the page's choices <-> the rules, their labels, and whether a match is on
 static void optionsFrom(App& a, const Tunables& t) {
-    a.optAdvanced = t.advanced; a.optShields = t.shields; a.optKnuckle = t.knuckleMode; a.optExperimental = t.experimental; a.optExpRoom = t.expRoom; a.optTeams = t.teamMode;
+    a.optAdvanced = t.advanced; a.optShields = t.shields; a.optKnuckle = t.knuckleMode; a.optExperimental = t.experimental; a.optExpRoom = t.expRoom; a.optTeams = t.teamMode; a.optOneTurns = t.oneTurns;
+    a.optHealth = t.health; a.optBalls = t.fireBalls; a.optOctPlayers = t.octPlayers;
     a.optMatchTime = t.basicMatchTime; a.optRoundTime = t.advancedRoundTime;
     a.optBotLevel = t.botLevel; a.optBotAdapt = t.botAdapt; a.optBotMeet = t.botMeet;
 }
 // EXPERIMENTAL's rooms (0.3.12): DIAMOND (two players) and FOUR CORNERS (four: the CORNERS room as the owner asked,
-// 2026-10-29; the two-player CORNERS is no longer offered)
+// 2026-10-29; the two-player CORNERS is no longer offered); 0.3.13: FIREBALL BLITZ (up to four, fireballs, last one standing)
+static const char* kBallsName[5] = {"", "ONE", "TWO", "THREE", "RAPID FIRE"};
 
 static void optionsInto(const App& a, Tunables& t) {
-    t.advanced = a.optAdvanced; t.shields = a.optShields; t.knuckleMode = a.optKnuckle; t.experimental = a.optExperimental && !a.optAdvanced; t.expRoom = a.optExpRoom == 1 ? 1 : 0;
-    t.players = t.experimental && t.expRoom == 1 ? 4 : 2;
+    t.advanced = a.optAdvanced; t.shields = a.optShields; t.knuckleMode = a.optKnuckle; t.experimental = a.optExperimental && !a.optAdvanced; t.expRoom = std::max(0, std::min(kRooms - 1, a.optExpRoom));
+    t.players = t.experimental && fourPlayerRoom(t.expRoom) ? 4 : 2;
+    t.health = a.optHealth; t.fireBalls = a.optBalls;
+    if (!a.rulesForHost) t.octPlayers = a.optOctPlayers;   // (practice only: a hosted room plays every corner, Game::octCap)
     t.teamMode = std::max(0, std::min(2, a.optTeams));
-    if (!a.rulesForHost && !a.net.inRoom()) t.theOne = 0;   // (practice 3 v 1: you are THE ONE; online it goes round)
+    t.oneTurns = a.optOneTurns && a.rulesForHost;
+    if (!a.rulesForHost && !a.net.inRoom()) t.theOne = 0;   // (practice 3 v 1: you are THE ONE; hosting, the room decides)
     t.basicMatchTime = a.optMatchTime; t.advancedRoundTime = a.optRoundTime;
     t.botLevel = a.optBotLevel; t.botAdapt = a.optBotAdapt; t.botMeet = a.optBotMeet;
 }
@@ -2003,8 +2147,10 @@ static std::string timeLabel(float secs, bool rounds) {
 // "ADVANCED", "BASIC - HOTDOG - 5 MIN", "ADVANCED - 2 MIN ROUNDS - KNUCKLE GUARDS": the rules and what differs
 static std::string rulesLine(const Tunables& t) {
     static const char* kTeams[3] = {"FREE-FOR-ALL", "2 V 2", "3 V 1"};
-    std::string s = t.advanced ? "ADVANCED" : t.experimental ? (t.expRoom == 1 ? std::string("FOUR CORNERS - ") + kTeams[std::max(0, std::min(2, t.teamMode))]
-                                                                              : std::string("EXPERIMENTAL DIAMOND")) : "BASIC";
+    std::string s = t.advanced ? "ADVANCED" : t.experimental ? (t.expRoom == ROOM_BLITZ ? std::string("FIREBALL BLITZ - HEALTH ") + std::to_string(t.health) +
+                                                                                                   (t.fireBalls >= 4 ? " - RAPID FIRE" : t.fireBalls > 1 ? std::string(" - ") + kBallsName[t.fireBalls] + " BALLS" : "")
+                                                                : t.expRoom == ROOM_CORNERS ? std::string("FOUR CORNERS - ") + kTeams[std::max(0, std::min(2, t.teamMode))]
+                                                                : std::string("EXPERIMENTAL DIAMOND")) : "BASIC";
     if (!t.shields) s += " - HOTDOG";
     if (t.advanced && t.advancedRoundTime > 0) s += " - " + std::to_string((int)t.advancedRoundTime / 60) + " MIN ROUNDS";
     if (!t.advanced && t.basicMatchTime <= 0) s += " - FREE PLAY";
@@ -2037,7 +2183,7 @@ static void applyRules(App& a) {
         return;
     }
     optionsInto(a, a.game.tun);
-    if (a.guestRules) optionsInto(a, a.ownRules);   // (a guest choosing practice rules: ours, kept for after the room)
+    if (a.guestRules && !a.net.inherited()) optionsInto(a, a.ownRules);   // (a guest choosing practice rules: ours, kept for after the room)
     a.game.reset(a.game.pl[1].isBot);
     saveSettings(a);
 }
@@ -2053,6 +2199,8 @@ static int navCurrent(const App& a) {
     if (a.titleOpen || a.xpOpen || a.trainOpen || a.trainBoard >= -1 || (a.trainer.active() && !otherPage(a))) return NAV_HOME;
     if (inLobby(a) && !a.menuOpen) return NAV_LOBBY;
     if (a.rulesOpen) return a.rulesForHost ? NAV_MULTI : NAV_PRACTICE;
+    if (a.movePlayersOpen) return NAV_MULTI;
+    if (a.updateOpen) return NAV_HOME;
     if (a.settingsOpen) return NAV_SETTINGS;
     if (a.statsOpen) return NAV_STATS;
     if (a.reportOpen) return NAV_REPORT;
@@ -2152,30 +2300,88 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"CANCEL", -0.19f, -0.25f, 0.36f, 0.08f, MenuAct::BugCancel, 0, true});
         return v;
     }
+    if (a.updateOpen && !a.nameEdit) {   // UPDATE NOW: what this copy can do
+        std::string why;
+        const int how = updateHow(why);
+#ifdef __ANDROID__
+        if (how != 1) v.push_back({"OPEN THE STORE PAGE", 0, how == 2 ? 0.06f : 0.0f, 0.56f, 0.08f, MenuAct::UpdateStore, 0, true});
+        if (how != 0) v.push_back({"OPEN THE GITHUB PAGE", 0, how == 2 ? -0.04f : 0.0f, 0.56f, 0.08f, MenuAct::UpdatePage, 0, true});
+#else
+        const updater::State st = updater::state();
+        if (how == 0 && st == updater::READY) v.push_back({"RESTART NOW", 0, 0.04f, 0.56f, 0.08f, MenuAct::UpdateRestart, 0, true});
+        else if (how == 0) v.push_back({"DOWNLOAD AND RESTART", 0, 0.04f, 0.56f, 0.08f, MenuAct::UpdateGo, 0,
+                                        st == updater::IDLE || st == updater::FAILED});
+        if (how != 1) v.push_back({"OPEN THE DOWNLOAD PAGE", 0, -0.06f, 0.56f, 0.06f, MenuAct::UpdatePage, 0, true});
+#endif
+        v.push_back({"BACK", 0, -0.30f, 0.36f, 0.07f, MenuAct::UpdateBack, 0, true});
+        return v;
+    }
+    if (a.movePlayersOpen && a.moveHost && !a.nameEdit) {   // HAND OFF HOST: everyone in the room, a button each
+        int i = 0;
+        for (const Net::Person& p : a.net.peopleHere()) {
+            if (p.role == Net::VOICE_SPECTATOR || i >= 8) continue;
+            v.push_back({std::string("MAKE ") + p.name + " HOST", (i % 2) ? 0.21f : -0.21f, 0.15f - 0.085f * (float)(i / 2), 0.40f, 0.07f,
+                         MenuAct::HandOffTo, p.id, a.net.mode() == Net::Mode::Host});
+            ++i;
+        }
+        v.push_back({"BACK", 0, -0.30f, 0.36f, 0.08f, MenuAct::MoveBack, 0, true});
+        return v;
+    }
+    if (a.movePlayersOpen && !a.nameEdit) {   // MOVE PLAYERS: a row a corner (pick two to swap them), and THE ONE
+        const Game& g = a.game;
+        const RoomInfo& r = a.net.room();
+        const bool one = g.tun.teamMode == TEAMS_3V1, host = a.net.mode() == Net::Mode::Host && g.np == 4;
+        static const char* kColour[4] = {"BLUE", "ORANGE", "GREEN", "VIOLET"};
+        for (int c = 0; c < 4; ++c) {
+            const char* who = r.slot[c] ? r.nameOf(r.slot[c]) : nullptr;
+            std::string label = std::to_string(c + 1) + "  " + (r.slot[c] ? (who && who[0] ? who : "A PLAYER") : r.isBot(c) || g.pl[c].isBot ? "BOT" : "EMPTY");
+            if (g.tun.teamMode == TEAMS_2V2) label += c < 2 ? "  - BLUE TEAM" : "  - ORANGE TEAM";
+            else if (one) label += c == g.tun.theOne ? "  - THE ONE" : "  - THE THREE";
+            else label += std::string("  - ") + kColour[c];
+            v.push_back({label, one ? -0.10f : 0, 0.15f - 0.085f * c, one ? 0.54f : 0.74f, 0.07f, MenuAct::MoveCorner, (uint32_t)c, host});
+            if (one) v.push_back({"MAKE THE ONE", 0.28f, 0.15f - 0.085f * c, 0.18f, 0.07f, MenuAct::MoveOne, (uint32_t)c, host && c != g.tun.theOne});
+        }
+        v.push_back({"BACK", 0, -0.30f, 0.36f, 0.08f, MenuAct::MoveBack, 0, true});
+        return v;
+    }
     if (a.rulesOpen && a.rulesStep == 1 && !a.nameEdit) {   // MATCH OPTIONS
         Tunables t;
         optionsInto(a, t);
         // practice, and a room where the bot fills in (owner, 2026-10-29: FOUR CORNERS' bots): the bot's level too
         // (a row more: the rows closer together)
-        const bool bot = !a.rulesForHost || a.botFill;
+        const bool bot = !a.rulesForHost || a.net.botFill();   // (the room's: a room taken over keeps its own)
         const float y[4] = {bot ? 0.15f : 0.13f, bot ? 0.065f : 0.04f, bot ? -0.02f : -0.05f, -0.105f};
         if (t.experimental) {   // EXPERIMENTAL: which room, beside SHIELDS; FOUR CORNERS: the teams, beside KNUCKLE GUARDS
             v.push_back({t.shields ? "SHIELDS: ON" : "SHIELDS: OFF (HOTDOG)", -0.19f, y[0], 0.36f, 0.075f, MenuAct::OptShields, 0, true});
-            v.push_back({t.expRoom == 1 ? "ROOM: FOUR CORNERS" : "ROOM: DIAMOND", 0.19f, y[0], 0.36f, 0.075f, MenuAct::OptRoom, 0, true});
+            static const char* kRoomName[kRooms] = {"ROOM: DIAMOND", "ROOM: FOUR CORNERS", "ROOM: FIREBALL BLITZ"};
+            v.push_back({kRoomName[std::max(0, std::min(kRooms - 1, t.expRoom))], 0.19f, y[0], 0.36f, 0.075f, MenuAct::OptRoom, 0, true});
         } else {
             v.push_back({t.shields ? "SHIELDS: ON" : "SHIELDS: OFF  (HOTDOG MODE)", 0, y[0], 0.74f, 0.075f, MenuAct::OptShields, 0, true});
         }
-        if (t.players == 4) {
-            static const char* kTeams[3] = {"TEAMS: FREE-FOR-ALL", "TEAMS: 2 V 2", "TEAMS: 3 V 1"};
+        const bool oct = t.experimental && t.expRoom == ROOM_BLITZ;
+        if (oct) {   // FIREBALL BLITZ: HEALTH beside KNUCKLES (no teams: everyone for themselves)
             v.push_back({t.knuckleGuards() ? "KNUCKLES: ON" : "KNUCKLES: OFF", -0.19f, y[1], 0.36f, 0.075f, MenuAct::OptKnuckle, 0, true});
-            v.push_back({kTeams[std::max(0, std::min(2, t.teamMode))], 0.19f, y[1], 0.36f, 0.075f, MenuAct::OptTeams, 0, true});
+            v.push_back({std::string("HEALTH: ") + std::to_string(t.health), 0.19f, y[1], 0.36f, 0.075f, MenuAct::OptHealth, 0, true});
+        } else if (t.players == 4) {
+            // (3 v 1: you are THE ONE; hosting, it can take turns instead, owner 2026-10-30)
+            static const char* kTeams[3] = {"TEAMS: FREE-FOR-ALL", "TEAMS: 2 V 2", "3 V 1: YOU ARE THE ONE"};
+            const char* tl = t.teamMode == TEAMS_3V1 && t.oneTurns ? "3 V 1: ONE TAKES TURNS" : kTeams[std::max(0, std::min(2, t.teamMode))];
+            v.push_back({t.knuckleGuards() ? "KNUCKLES: ON" : "KNUCKLES: OFF", -0.19f, y[1], 0.36f, 0.075f, MenuAct::OptKnuckle, 0, true});
+            v.push_back({tl, 0.19f, y[1], 0.36f, 0.075f, MenuAct::OptTeams, 0, true});
         } else {
             v.push_back({t.knuckleGuards() ? "KNUCKLE GUARDS: ON" : "KNUCKLE GUARDS: OFF", 0, y[1], 0.74f, 0.075f, MenuAct::OptKnuckle, 0, true});
         }
         const std::string tl = std::string(t.advanced ? "ROUND TIME: " : "MATCH TIME: ") + timeLabel(t.advanced ? t.advancedRoundTime : t.basicMatchTime, t.advanced);
+        if (oct) {   // (FIREBALL BLITZ: the time in half the row, BALLS beside it)
+            v.push_back({"-", -0.345f, y[2], 0.05f, 0.075f, MenuAct::OptTime, 0, true});
+            v.push_back({std::string("TIME: ") + timeLabel(t.basicMatchTime, false), -0.19f, y[2], 0.24f, 0.075f, MenuAct::None, 0, true});
+            v.push_back({"+", -0.035f, y[2], 0.05f, 0.075f, MenuAct::OptTime, 1, true});
+            v.push_back({std::string("BALLS: ") + kBallsName[std::max(1, std::min(4, t.fireBalls))], 0.19f, y[2], 0.36f, 0.075f, MenuAct::OptBalls, 0, true});
+        } else {
         v.push_back({"-", -0.335f, y[2], 0.07f, 0.075f, MenuAct::OptTime, 0, true});
         v.push_back({tl, 0, y[2], 0.56f, 0.075f, MenuAct::None, 0, true});
         v.push_back({"+", 0.335f, y[2], 0.07f, 0.075f, MenuAct::OptTime, 1, true});
+        }
         if (bot) {   // - / +, the slider (one step a level, lit up to the one chosen), and MATCH MY LEVEL
             const std::string bl = t.botAdapt ? std::string("BOT: MATCH MY LEVEL (NOW ") + botSkillAt(a.game.tun.botMatch).name + ")"
                                               : std::string("BOT: ") + botSkill(t.botLevel).name;
@@ -2185,8 +2391,12 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
             for (int l = 0; l < kBotLevels; ++l)
                 v.push_back({"", -0.33f + 0.07f * l, -0.165f, 0.062f, 0.04f, MenuAct::OptBot, (uint32_t)(10 + l), true});
             v.push_back({"MATCH MY LEVEL", 0.225f, -0.165f, 0.29f, 0.04f, MenuAct::OptBot, 2, true});
-            if (!a.rulesForHost) v.push_back({t.botMeet ? "FIST BUMP FIRST: ON" : "FIST BUMP FIRST: OFF", 0, -0.395f, 0.46f, 0.05f, MenuAct::OptMeet, 0, true});
+            if (!a.rulesForHost && oct)   // (FIREBALL BLITZ practice: how many play, you and bots)
+                v.push_back({std::string("PLAYERS: ") + std::to_string(std::max(2, std::min(4, a.optOctPlayers))), 0, -0.395f, 0.46f, 0.05f, MenuAct::OptPlayers, 0, true});
+            else if (!a.rulesForHost) v.push_back({t.botMeet ? "FIST BUMP FIRST: ON" : "FIST BUMP FIRST: OFF", 0, -0.395f, 0.46f, 0.05f, MenuAct::OptMeet, 0, true});
         }
+        if (a.rulesEdit && a.rulesForHost && a.net.mode() == Net::Mode::Host && a.game.np == 4)   // (who plays in which corner)
+            v.push_back({"MOVE PLAYERS", 0, -0.395f, 0.46f, 0.05f, MenuAct::MovePlayers, 0, true});
         const char* go = a.rulesEdit ? (rulesLive(a) ? "APPLY FROM THE NEXT MATCH" : "APPLY") : a.rulesForHost ? "OPEN MY ARENA" : "START PRACTICE";
         v.push_back({go, 0.19f, bot ? -0.32f : -0.24f, 0.36f, 0.08f, MenuAct::OptGo, 0, true});
         v.push_back({"BACK", -0.19f, bot ? -0.32f : -0.24f, 0.36f, 0.08f, MenuAct::OptBack, 0, true});
@@ -2273,12 +2483,17 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
     }
     if (a.settingsOpen && a.gfxPage) {   // GRAPHICS: field of view (room size feel) and hit effects; the arena around it
         char b[48];
-        snprintf(b, sizeof b, a.roomFeel == 0 ? "NORMAL" : "%+d%%", a.roomFeel * 5);
+        snprintf(b, sizeof b, a.roomFeel == 0 ? "NORMAL" : "%+d%%", a.roomFeel * 10);   // (10% a step, +-50%: owner 2026-10-30)
         v.push_back({b, 0, -0.04f, 0.20f, 0.075f, MenuAct::None, 0, true});
-        v.push_back({"-", -0.17f, -0.04f, 0.09f, 0.075f, MenuAct::FovDown, 0, a.roomFeel > -4});
-        v.push_back({"+", 0.17f, -0.04f, 0.09f, 0.075f, MenuAct::FovUp, 0, a.roomFeel < 4});
+        v.push_back({"-", -0.17f, -0.04f, 0.09f, 0.075f, MenuAct::FovDown, 0, a.roomFeel > -5});
+        v.push_back({"+", 0.17f, -0.04f, 0.09f, 0.075f, MenuAct::FovUp, 0, a.roomFeel < 5});
         static const char* fx[3] = {"HIT EFFECTS: FULL", "HIT EFFECTS: SOFT", "HIT EFFECTS: LOW"};
+#ifdef _WIN32
+        v.push_back({fx[a.fxLevel % 3], -0.19f, -0.22f, 0.36f, 0.07f, MenuAct::Fx, 0, true});
+        v.push_back({a.discordOn ? "DISCORD STATUS: ON" : "DISCORD STATUS: OFF", 0.19f, -0.22f, 0.36f, 0.07f, MenuAct::Discord, 0, true});
+#else
         v.push_back({fx[a.fxLevel % 3], 0, -0.22f, 0.40f, 0.07f, MenuAct::Fx, 0, true});
+#endif
         v.push_back({"BACK", 0, -0.33f, 0.36f, 0.06f, MenuAct::Back, 0, true});
         return v;
     }
@@ -2288,7 +2503,10 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({a.muteSpectators ? "SPECTATORS: MUTED" : "SPECTATORS: ON", 0, 0.02f, 0.80f, 0.08f, MenuAct::MuteSpec, 0, true});
         v.push_back({a.mutePlayers ? "OTHER PLAYERS: MUTED" : "OTHER PLAYERS: ON", 0, -0.08f, 0.80f, 0.08f, MenuAct::MutePlayers, 0, true});
         v.push_back({a.muteAll ? "MUTE ALL: ON" : "MUTE ALL: OFF", 0, -0.18f, 0.80f, 0.08f, MenuAct::MuteAll, 0, true});
-        v.push_back({"BACK", 0, -0.31f, 0.36f, 0.07f, MenuAct::Back, 0, true});
+        // (hosting: whether spectators hear the room; owner, 2026-11-02: practise your strategy where rivals can watch)
+        v.push_back({a.net.privateTalk() ? "ROOM TALK: PRIVATE (SPECTATORS DON'T HEAR IT)" : "ROOM TALK: OPEN (SPECTATORS HEAR IT)",
+                     0, -0.28f, 0.80f, 0.07f, MenuAct::PrivateTalk, 0, true});
+        v.push_back({"BACK", 0, -0.385f, 0.36f, 0.055f, MenuAct::Back, 0, true});
         return v;
     }
     if (a.settingsOpen) {
@@ -2300,7 +2518,7 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({!a.hasPassthrough || a.ptFailed ? "PASSTHROUGH: N/A" : std::string("PASSTHROUGH: ") + kPtModeName[a.ptMode % PT_COUNT],
                      0.19f, 0.13f, 0.36f, 0.075f, MenuAct::Passthrough, 0, a.hasPassthrough && !a.ptFailed});
         v.push_back({a.pointerHand == 1 ? "POINTER: RIGHT" : "POINTER: LEFT", -0.19f, 0.04f, 0.36f, 0.075f, MenuAct::Hand, 0, true});
-        v.push_back({a.botFill ? "BOT FILLS IN: ON" : "BOT FILLS IN: OFF", 0.19f, 0.04f, 0.36f, 0.075f, MenuAct::BotFill, 0, true});
+        v.push_back({a.net.botFill() ? "BOT FILLS IN: ON" : "BOT FILLS IN: OFF", 0.19f, 0.04f, 0.36f, 0.075f, MenuAct::BotFill, 0, true});
         v.push_back({"GRAPHICS AND VIEW", -0.19f, -0.05f, 0.36f, 0.075f, MenuAct::GfxPage, 0, true});
         v.push_back({a.hideOutside ? "OUTSIDE: HIDDEN" : "OUTSIDE: SHOWN", 0.19f, -0.05f, 0.36f, 0.075f, MenuAct::HideOutside, 0, true});
         v.push_back({"RULES: " + rulesLine(a.game.tun), -0.19f, -0.14f, 0.36f, 0.075f, MenuAct::Rules, 0,
@@ -2339,6 +2557,7 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"CHANGE NAME", 0, -0.31f, 0.56f, 0.07f, MenuAct::Name, 0, true});
         v.push_back({"EXPERIMENTAL", -0.145f, -0.385f, 0.27f, 0.045f, MenuAct::Experimental, 0, true});
         v.push_back({"REPORT A BUG", 0.145f, -0.385f, 0.27f, 0.045f, MenuAct::Bug, 0, true});
+        if (updateAvailable(a)) v.push_back({"UPDATE NOW", 0.215f, 0.145f, 0.16f, 0.04f, MenuAct::UpdateOpen, 0, true});
         return v;
     }
     const Net::Mode m = a.net.mode();
@@ -2348,6 +2567,7 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
     if (spec) {
         // spectators: their own column (no hosting, avatar or spectate entries)
         v.push_back({"STOP SPECTATING", lx, 0.12f, bw, 0.08f, MenuAct::Leave, 0, true});
+        v.push_back({a.headSelfie ? "SELFIE: ON" : "SELFIE: OFF", rx, 0.175f, bw, 0.06f, MenuAct::HeadSelfie, 0, true});
         v.push_back({"BACK TO HUB", lx, 0.02f, bw, 0.08f, MenuAct::Hub, 0, a.watchIp != 0});
         v.push_back({"DIRECTOR TOOLS", lx, -0.08f, bw, 0.08f, MenuAct::Director, 0, a.watchIp != 0});
         v.push_back({"SETTINGS", lx, -0.17f, bw, 0.08f, MenuAct::Settings, 0, true});
@@ -2366,6 +2586,11 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         else
             v.push_back({m == Net::Mode::Host ? "HOSTING" : "HOST A ROOM", lx, 0.12f, bw, 0.08f, MenuAct::Host, 0, m != Net::Mode::Host});
         v.push_back({inGame ? "LEAVE GAME" : "PRACTICE VS BOT", lx, 0.02f, bw, 0.08f, MenuAct::Leave, 0, inGame});
+        if (m == Net::Mode::Host) {   // HOST HANDOFF (0.3.13): someone else hosts the room from now on
+            bool anyone = false;
+            for (const Net::Person& p : a.net.peopleHere()) anyone |= p.role != Net::VOICE_SPECTATOR;
+            v.push_back({"HAND OFF HOST", rx, 0.175f, bw, 0.06f, MenuAct::HandOff, 0, anyone});
+        }
         v.push_back({"SETTINGS", lx, -0.08f, bw, 0.08f, MenuAct::Settings, 0, true});
         v.push_back({"SPECTATE GAMES", lx, -0.17f, bw, 0.08f, MenuAct::Spectate, 0, !inGame});
         v.push_back({"CUSTOMIZE AVATAR", lx, -0.26f, bw, 0.08f, MenuAct::Avatar, 0,
@@ -2479,7 +2704,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         if (a.session != XR_NULL_HANDLE) xrRequestExitSession(a.session); else a.quit = true;
         break;
     case MenuAct::Nav: {
-        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen = a.helpOpen = false;
+        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen = a.helpOpen = a.movePlayersOpen = a.updateOpen = false;
         a.statsOpen = false;
         a.trainOpen = false;
         a.trainBoard = -2;
@@ -2577,8 +2802,42 @@ static void menuActivate(App& a, const MenuItem& it) {
         a.rulesStep = 1;
         break;
     case MenuAct::OptShields: a.optShields = !a.optShields; break;
-    case MenuAct::OptRoom: a.optExpRoom = a.optExpRoom == 1 ? 0 : 1; break;
-    case MenuAct::OptTeams: a.optTeams = (a.optTeams + 1) % 3; break;
+    case MenuAct::OptRoom:   // DIAMOND, FOUR CORNERS, FIREBALL BLITZ (its own defaults: knuckle guards on, no shields)
+        a.optExpRoom = (a.optExpRoom + 1) % kRooms;
+        if (a.optExpRoom == ROOM_BLITZ) { a.optShields = false; a.optKnuckle = 1; }
+        break;
+    case MenuAct::OptHealth: { static const int kHealth[4] = {1, 3, 5, 10}; int i = 0; while (i < 4 && kHealth[i] <= a.optHealth) ++i; a.optHealth = kHealth[i % 4]; break; }
+    case MenuAct::Discord: a.discordOn = !a.discordOn; saveSettings(a); break;
+    case MenuAct::UpdateOpen: a.titleOpen = false; a.updateOpen = true; break;
+    case MenuAct::HeadSelfie: a.headSelfie = !a.headSelfie; saveSettings(a); break;
+    case MenuAct::PrivateTalk: a.net.setPrivateTalk(!a.net.privateTalk()); saveSettings(a); break;
+    case MenuAct::UpdateBack: a.updateOpen = false; a.titleOpen = true; break;
+#ifdef __ANDROID__
+    case MenuAct::UpdateStore: androidOpenUrl(kStorePage); break;
+    case MenuAct::UpdatePage: androidOpenUrl(kReleasePage); break;
+#else
+    case MenuAct::UpdateGo: if (const char* v = updateAvailable(a)) updater::start(v); break;
+    case MenuAct::UpdateRestart: if (updater::restart()) { saveSettings(a); a.quit = true; } break;
+    case MenuAct::UpdatePage: updater::openPage(); break;
+#endif
+    case MenuAct::OptBalls: a.optBalls = a.optBalls % 4 + 1; break;
+    case MenuAct::OptPlayers: a.optOctPlayers = a.optOctPlayers >= 4 ? 2 : a.optOctPlayers + 1; break;
+    case MenuAct::MovePlayers: a.rulesOpen = false; a.movePlayersOpen = true; a.moveHost = false; a.moveSel = -1; break;
+    case MenuAct::HandOff: a.movePlayersOpen = true; a.moveHost = true; break;
+    case MenuAct::HandOffTo:   // (the match pauses while the room changes hands, then goes on)
+        if (a.net.hostHandOff(it.ip, a.game)) { a.movePlayersOpen = false; a.moveHost = false; a.menuOpen = false; }
+        break;
+    case MenuAct::MoveCorner:   // the first corner picked, then the one it swaps with (the same again: unpicked)
+        if (a.moveSel < 0) a.moveSel = (int)it.ip;
+        else if (a.moveSel == (int)it.ip) a.moveSel = -1;
+        else { a.net.hostSwap(a.moveSel, (int)it.ip, a.game); a.moveSel = -1; }
+        break;
+    case MenuAct::MoveOne: a.net.hostMakeOne((int)it.ip, a.game); a.moveSel = -1; break;
+    case MenuAct::MoveBack: a.movePlayersOpen = false; a.moveSel = -1; a.rulesOpen = !a.moveHost; a.moveHost = false; break;
+    case MenuAct::OptTeams:   // FREE-FOR-ALL, 2 V 2, 3 V 1 with you THE ONE, (hosting) 3 V 1 taking turns
+        if (a.optTeams == TEAMS_3V1 && !a.optOneTurns && a.rulesForHost) a.optOneTurns = true;
+        else { a.optTeams = (a.optTeams + 1) % 3; a.optOneTurns = false; }
+        break;
     case MenuAct::OptKnuckle: {   // stored as "as the rules say" when it matches them
         Tunables t;
         optionsInto(a, t);
@@ -2629,14 +2888,17 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::Leave: a.net.leave(); break;
     case MenuAct::Join: a.net.join(it.ip, false); a.menuOpen = false; break;         // the room's waiting area, then JOIN QUEUE
     case MenuAct::JoinRoom: a.net.join(it.ip, false); a.menuOpen = false; break;
-    case MenuAct::BotFill: a.botFill = !a.botFill; a.net.setBotFill(a.botFill); saveSettings(a); break;
+    case MenuAct::BotFill:   // (a room taken over keeps its own setting: ours stays as we saved it)
+        a.net.setBotFill(!a.net.botFill());
+        if (!a.net.inherited()) { a.botFill = a.net.botFill(); saveSettings(a); }
+        break;
     case MenuAct::Rules:   // the rules and MATCH OPTIONS of this arena (or of practice)
         a.settingsOpen = false;
         a.rulesOpen = true; a.rulesStep = 0; a.rulesEdit = true;
         a.rulesForHost = a.net.mode() == Net::Mode::Host;
         optionsFrom(a, a.game.tun);
         break;
-    case MenuAct::Close: a.menuOpen = false; a.nameEdit = false; a.helpOpen = false; a.settingsOpen = false; a.titleOpen = false; a.xpOpen = false; a.rulesOpen = false; break;
+    case MenuAct::Close: a.menuOpen = false; a.nameEdit = false; a.helpOpen = false; a.settingsOpen = false; a.titleOpen = false; a.xpOpen = false; a.rulesOpen = false; a.movePlayersOpen = false; a.updateOpen = false; break;
     case MenuAct::Spectate: a.net.spectate(); a.watchIp = 0; a.menuOpen = false; break;
     case MenuAct::Watch: a.watchIp = it.ip; a.menuOpen = false; break;
     case MenuAct::Hub: a.watchIp = 0; a.autoCam = false; a.dirOpen = false; break;
@@ -2654,8 +2916,8 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::Settings: a.settingsOpen = true; break;
     case MenuAct::Back: if (a.voicePage) a.voicePage = false; else if (a.ptPage) a.ptPage = false; else if (a.gfxPage) a.gfxPage = false; else a.settingsOpen = false; saveSettings(a); break;
     case MenuAct::GfxPage: a.gfxPage = true; break;
-    case MenuAct::FovDown: a.roomFeel = std::max(-4, a.roomFeel - 1); saveSettings(a); break;
-    case MenuAct::FovUp: a.roomFeel = std::min(4, a.roomFeel + 1); saveSettings(a); break;
+    case MenuAct::FovDown: a.roomFeel = std::max(-5, a.roomFeel - 1); saveSettings(a); break;
+    case MenuAct::FovUp: a.roomFeel = std::min(5, a.roomFeel + 1); saveSettings(a); break;
     case MenuAct::VoicePage: a.voicePage = true; break;
     case MenuAct::Passthrough: a.ptPage = true; break;
     case MenuAct::PtMode:
@@ -3008,13 +3270,16 @@ static void drawMenu(App& a) {
         text(std::string(t.advanced ? "ADVANCED RULES" : t.experimental ? "EXPERIMENTAL (BASIC RULES)" : "BASIC RULES") +
              (a.rulesForHost || a.net.mode() == Net::Mode::Host ? " - ONLY THE HOST CAN CHANGE THESE" : " - FOR PRACTICE AGAINST THE BOT"),
              0, 0.215f, 0.022f, white);
-        const char* hint = t.freePlay() ? "FREE PLAY: NO CLOCK AND NO WINNER - PRACTICE OR PLAY ON"
+        const bool blitz = t.experimental && t.expRoom == ROOM_BLITZ;
+        const char* hint = blitz ? (t.timed() ? "LAST ONE STANDING WINS - AT TIME THE MOST HEALTH, A TIE: SUDDEN DEATH" : "NO CLOCK: THE LAST ONE STANDING WINS")
+                         : t.freePlay() ? "FREE PLAY: NO CLOCK AND NO WINNER - PRACTICE OR PLAY ON"
                          : t.advanced && t.advancedRoundTime > 0 ? "AT TIME, MORE POINTS WINS THE ROUND - A TIE GOES TO SUDDEN DEATH"
                          : t.advanced ? "NO TIME LIMIT: FIRST TO 4 POINTS WINS THE ROUND"
                          : "AT TIME, MORE POINTS WINS - A TIE GOES TO SUDDEN DEATH";
-        const bool bot = !a.rulesForHost || a.botFill;
+        const bool bot = !a.rulesForHost || a.net.botFill();   // (the room's: a room taken over keeps its own)
         text(hint, 0, bot ? -0.235f : -0.125f, 0.018f, grey);
-        if (!t.shields) text("HOTDOG MODE: NO SHIELDS - DODGE, CATCH AND PUNCH", 0, bot ? -0.26f : -0.155f, 0.018f, grey);
+        if (blitz) text("EVERY THROW A FIREBALL, HOPPING ALONG THE FLOOR - DODGE, JUMP AND PUNCH", 0, bot ? -0.26f : -0.155f, 0.018f, grey);
+        else if (!t.shields) text("HOTDOG MODE: NO SHIELDS - DODGE, CATCH AND PUNCH", 0, bot ? -0.26f : -0.155f, 0.018f, grey);
         if (bot) {   // what the level means (every level moves as a person can: reach, speed, reaction)
             static const char* kBotLine[kBotLevels] = {
                 "SLOW TO REACT, OFTEN MISREADS THE BALL - A GENTLE START",
@@ -3032,7 +3297,39 @@ static void drawMenu(App& a) {
         text(a.rulesForHost ? "FOR YOUR ROOM - EVERYONE WHO JOINS PLAYS THESE RULES" : "FOR PRACTICE AGAINST THE BOT", 0, 0.215f, 0.022f, white);
         text("BEST OF 3 ROUNDS, FIRST TO 4 POINTS - LOW AIM ASSIST", 0, 0.045f, 0.019f, grey);
         text("3 MINUTE MATCH - KNUCKLE GUARDS - MORE AIM ASSIST", 0, -0.115f, 0.019f, grey);
-        text("DIAMOND FOR TWO, OR FOUR CORNERS FOR FOUR: NEW ROOMS ON FLOATING PLATFORMS", 0, -0.265f, 0.019f, grey);
+        text("DIAMOND FOR TWO, FOUR CORNERS FOR FOUR, FIREBALL BLITZ: LAST ONE STANDING", 0, -0.265f, 0.019f, grey);
+    } else if (a.updateOpen && !a.nameEdit) {
+        const char* v = a.net.latestVersion();
+        snprintf(buf, sizeof buf, "UPDATE TO %s", v[0] ? v : "THE NEWEST VERSION");
+        text(buf, 0, 0.29f, 0.055f, cyan);
+        snprintf(buf, sizeof buf, "THIS IS %s", kAppVersion);
+        text(buf, 0, 0.215f, 0.022f, white);
+        std::string why;
+        const int how = updateHow(why);
+        if (!why.empty()) text(why, 0, 0.16f, 0.020f, grey);
+#ifndef __ANDROID__
+        if (how == 0) {
+            const updater::State st = updater::state();
+            const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
+            if (st == updater::IDLE) text("IT DOWNLOADS, CHECKS AND UNPACKS IT; THEN THE GAME CLOSES, UPDATES AND STARTS AGAIN", 0, 0.12f, 0.018f, grey);
+            else if (st == updater::DOWNLOADING) { snprintf(buf, sizeof buf, "DOWNLOADING   %d%%", (int)(updater::progress() * 100)); text(buf, 0, 0.12f, 0.026f, white); }
+            else if (st == updater::CHECKING) text("CHECKING THE DOWNLOAD", 0, 0.12f, 0.026f, white);
+            else if (st == updater::UNPACKING) text("UNPACKING", 0, 0.12f, 0.026f, white);
+            else if (st == updater::READY) text("READY: YOUR SETTINGS STAY. RESTART NOW TO FINISH", 0, 0.12f, 0.024f, amber);
+            else text("COULD NOT UPDATE: " + updater::error(), 0, 0.12f, 0.022f, amber);
+        }
+#else
+        (void)how;
+#endif
+    } else if (a.movePlayersOpen && a.moveHost && !a.nameEdit) {
+        text("HAND OFF HOST", 0, 0.29f, 0.055f, cyan);
+        text("WHO HOSTS THIS ROOM FROM NOW ON? YOU STAY IN IT", 0, 0.215f, 0.022f, white);
+        text("A MATCH PAUSES WHILE THE ROOM CHANGES HANDS, THEN GOES ON", 0, -0.22f, 0.019f, grey);
+    } else if (a.movePlayersOpen && !a.nameEdit) {
+        text("MOVE PLAYERS", 0, 0.29f, 0.055f, cyan);
+        text("POINT AT ONE CORNER, THEN ANOTHER: THEY SWAP", 0, 0.215f, 0.022f, white);
+        text(a.game.np == 4 && a.net.mode() == Net::Mode::Host ? "TEAMS GO WITH THE CORNER - THE MATCH STARTS AGAIN"
+                                                                : "ONLY WHILE YOU HOST A ROOM FOR FOUR", 0, -0.22f, 0.019f, grey);
     } else if (a.reportOpen && !a.nameEdit) {
         text("REPORT OR MUTE A PLAYER", 0, 0.29f, 0.050f, cyan);
         if (reportPeople(a).empty()) {
@@ -3097,8 +3394,8 @@ static void drawMenu(App& a) {
         text(buf, 0, 0.185f, 0.03f, white);
         if (const char* v = updateAvailable(a)) {
             const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
-            snprintf(buf, sizeof buf, "UPDATE AVAILABLE: %s  -  FROM THE STORE LIBRARY, OR GITHUB IF YOU SIDELOADED", v);
-            text(buf, 0, 0.145f, 0.020f, amber);
+            snprintf(buf, sizeof buf, "UPDATE AVAILABLE: %s", v);
+            text(buf, -0.10f, 0.145f, 0.022f, amber);
         }
     } else if (a.settingsOpen && !a.nameEdit) {
         text(a.voicePage ? "VOICE CHAT" : a.ptPage ? "PASSTHROUGH" : a.gfxPage ? "GRAPHICS AND VIEW" : "SETTINGS", 0, 0.29f, 0.055f, cyan);
@@ -3107,9 +3404,9 @@ static void drawMenu(App& a) {
             quad(0, -0.01f, 0.88f, 0.25f, -0.001f, strip);   // a strip behind the slider only: the arena shows around it
             text("FIELD OF VIEW", 0, 0.08f, 0.04f, white);
             text("HOW BIG THE ARENA FEELS: + WIDER, - CLOSER. LOOK AROUND WHILE YOU SET IT", 0, 0.03f, 0.019f, grey);
-            for (int k = -4; k <= 4; ++k) {   // the slider: a notch for each step, the chosen one lit
+            for (int k = -5; k <= 5; ++k) {   // the slider: a notch for each step, the chosen one lit
                 const float on[4] = {0.3f, 0.85f, 1.0f, 1}, off[4] = {0.10f, 0.16f, 0.22f, 1};
-                quad(0.035f * k, -0.10f, k == a.roomFeel ? 0.022f : 0.012f, k == a.roomFeel ? 0.04f : 0.022f, 0.004f, k == a.roomFeel ? on : off);
+                quad(0.032f * k, -0.10f, k == a.roomFeel ? 0.022f : 0.012f, k == a.roomFeel ? 0.04f : 0.022f, 0.004f, k == a.roomFeel ? on : off);
             }
         }
         if (a.voicePage) text("ONLY PEOPLE AT YOUR ARENA CAN HEAR YOU", 0, 0.205f, 0.024f, grey);
@@ -3171,7 +3468,7 @@ static void drawMenu(App& a) {
         const bool picked = (it.act == MenuAct::Nav && (int)it.ip == navCurrent(a)) ||
                             (it.act == MenuAct::BugCat && (int)it.ip == a.bugCat) ||
                             (it.act == MenuAct::RulesPick && (int)it.ip == (a.game.tun.advanced ? 1 : a.game.tun.experimental ? 2 : 0)) || (it.act == MenuAct::ReportWho && it.ip == a.reportWho) ||
-                            (it.act == MenuAct::ReportWhy && (int)it.ip == a.reportWhy) || (it.act == MenuAct::PtMode && (int)it.ip == a.ptMode) ||
+                            (it.act == MenuAct::ReportWhy && (int)it.ip == a.reportWhy) || (it.act == MenuAct::MoveCorner && (int)it.ip == a.moveSel) || (it.act == MenuAct::PtMode && (int)it.ip == a.ptMode) ||
                             (it.act == MenuAct::OptBot && it.ip >= 10 &&
                              (int)it.ip - 10 <= (a.optBotAdapt ? (int)std::lround(a.game.tun.botMatch) : a.optBotLevel)) ||
                             (it.act == MenuAct::OptBot && it.ip == 2 && a.optBotAdapt);
@@ -3181,7 +3478,7 @@ static void drawMenu(App& a) {
         if (tw > it.w * 0.90f) th *= it.w * 0.90f / tw;                 // long labels shrink instead of spilling over
         text(it.label, it.x, it.y, th, it.enabled || row ? white : grey);
     }
-    if (games == 0 && !a.nameEdit && !a.helpOpen && !a.titleOpen && !a.settingsOpen && !a.xpOpen && !a.bugOpen && !a.reportOpen && !a.rulesOpen &&
+    if (games == 0 && !a.nameEdit && !a.helpOpen && !a.titleOpen && !a.settingsOpen && !a.xpOpen && !a.bugOpen && !a.reportOpen && !a.rulesOpen && !a.movePlayersOpen && !a.updateOpen &&
         !a.statsOpen && !a.statsNoticeOpen && !a.trainOpen && a.trainBoard < -1 && !(a.trainer.active() && !otherPage(a))) {
         if (int ov = a.net.otherVersion()) {
             const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
@@ -3196,6 +3493,10 @@ static void drawMenu(App& a) {
             text(a.net.online() ? "WITH ONLINE: ON" : "WITH ONLINE: OFF (LAN)", 0.25f, -0.10f, 0.022f, grey);
     }
     if (!a.statsOpen && !a.trainOpen && a.trainBoard < -1 && !(a.trainer.active() && !otherPage(a))) text("POINT AND PULL THE TRIGGER TO SELECT", 0, -0.455f, 0.022f, grey);
+    if ((a.titleOpen || a.settingsOpen || a.updateOpen) && !a.nameEdit) {   // the version, bottom right (owner, 2026-10-30)
+        snprintf(buf, sizeof buf, "VERSION %s", kAppVersion);
+        text(buf, 0.37f, -0.487f, 0.016f, grey);
+    }
     if (a.spectating && a.watchIp && !a.titleOpen && !a.settingsOpen && !a.nameEdit && !a.helpOpen) {
         snprintf(buf, sizeof buf, "STICKS FLY - A SAVE CAMERA - X NEXT - Y AUTO CAMERA   (%d CAMERAS)", (int)a.warps.size());
         text(buf, 0, -0.495f, 0.02f, grey);
@@ -3396,6 +3697,16 @@ static void handleEvents(App& a) {
         case EventType::ThrowFail: if (mine && e.hand >= 0) haptic(a, e.hand, 0.4f, 0.06f); break;
         case EventType::Foul: a.foulFlash = 1.2f; a.foulAt = e.pos; break;
         case EventType::LeadChange: a.leadFlash = 2.5f; break;
+        case EventType::Knockout: {   // FIREBALL BLITZ: who is out (you: in big letters, a long buzz)
+            static const char* kOut[4] = {"BLUE IS OUT", "ORANGE IS OUT", "GREEN IS OUT", "VIOLET IS OUT"};
+            const bool me = e.player == L && !a.viewing && !a.spectating;
+            a.octMsg = me ? "YOU'RE OUT" : kOut[e.player & 3];
+            a.octMsgP = e.player; a.octMsgT = 2.0f;
+            if (me) { haptic(a, 0, 1, 0.6f); haptic(a, 1, 1, 0.6f); }
+            break;
+        }
+        case EventType::RingClose: a.octMsg = "THE ROOM CLOSES IN"; a.octMsgP = -1; a.octMsgT = std::max(1.f, e.value); break;
+        case EventType::Fizzle: if (a.puffs.size() < 32) a.puffs.push_back({e.pos, 0.f, e.player}); break;
         case EventType::FistBump:
             a.bumpFlash = 1.0f;
             if (!a.net.localWaiting() && !a.spectating) { haptic(a, 0, 1, 0.35f); haptic(a, 1, 1, 0.35f); }
@@ -3460,7 +3771,7 @@ static void updateStats(App& a) {
         // the one-time notice about statistics: the first time you are in an online arena room
         a.statsNoticeOpen = true;
         a.menuOpen = true;
-        a.titleOpen = a.settingsOpen = a.statsOpen = a.reportOpen = a.bugOpen = a.helpOpen = a.rulesOpen = false;
+        a.titleOpen = a.settingsOpen = a.statsOpen = a.reportOpen = a.bugOpen = a.helpOpen = a.rulesOpen = a.movePlayersOpen = false;
         a.menuPose = {a.viewHead.q, a.viewHead.transform({0, -0.05f, -0.95f})};
     }
     const uint32_t hv = a.watchIp ? a.watchIp : a.net.roomHostVip();   // (watchIp: spectating a match)
@@ -5108,6 +5419,74 @@ static void filmRender(App& a) {
     std::swap(a.game, g);
 }
 
+// SELFIE in the headset: 30 times a second, a camera 0.85 m in front of your face looking back at you draws the arena
+// behind you and your own avatar (no one else sees it: it's for your cast) into its own picture
+static const int kHsSize = 384;
+static void drawOwnAvatar(App& a, int pass) {   // the spectator's avatar as the selfie sees it (the game draws none)
+    PlayerInput in = a.localIn;
+    in.avatar = a.myAvatar;
+    if (!a.avModels.empty()) drawAvatarBody(a, in, 2, pass, Mat4::identity(), false, false, 0);
+    const AvatarLook lk = lookOf(a, in.avatar, 2);
+    for (int h = 0; h < 2; ++h) {
+        if (!in.hand[h].tracked) continue;
+        Mat4 mirror = Mat4::identity();
+        if (h == 0) mirror.m[0] = -1;
+        DrawParams hp;
+        hp.mirrored = (h == 0);
+        if (!a.avModels.empty()) applyLook(hp, lk);
+        drawGauntlet(a, in.avatar, Mat4::fromPose(in.hand[h].grip) * mirror, hp, pass);
+    }
+}
+static void headSelfieRender(App& a) {
+    if (!a.headSelfie || !a.spectating || isDesktop(a) || !a.localIn.headTracked) return;
+    if (nowSeconds() - a.hsAt < 1.0 / 30) return;
+    a.hsAt = nowSeconds();
+    if (!a.hsFbo) {
+        glGenRenderbuffers(1, &a.hsDepth);
+        glBindRenderbuffer(GL_RENDERBUFFER, a.hsDepth);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kHsSize, kHsSize);
+        glGenTextures(1, &a.hsTex);
+        glBindTexture(GL_TEXTURE_2D, a.hsTex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_SRGB8_ALPHA8, kHsSize, kHsSize);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenFramebuffers(1, &a.hsFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, a.hsFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, a.hsTex, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, a.hsDepth);
+    }
+    GLint keepFbo = 0, keepVp[4];
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &keepFbo);
+    glGetIntegerv(GL_VIEWPORT, keepVp);
+    // the camera: in front of the face (level, the way you face), a little above, looking back at your head
+    const Pose head = a.localIn.head;
+    Vec3 f = head.q.rotate({0, 0, -1});
+    f.y = 0;
+    f = length(f) > 1e-3f ? normalize(f) : Vec3{0, 0, -1};
+    const Vec3 cam = head.p + f * 0.85f + Vec3{0, 0.08f, 0}, look = head.p - Vec3{0, 0.12f, 0};
+    const Vec3 d = normalize(look - cam);
+    const Pose eye{Quat::axisAngle({0, 1, 0}, std::atan2(-d.x, -d.z)) * Quat::axisAngle({1, 0, 0}, std::asin(clampf(d.y, -1.f, 1.f))), cam};
+    const Pose keepHead = a.viewHead;
+    a.viewHead = eye;
+    glBindFramebuffer(GL_FRAMEBUFFER, a.hsFbo);
+    glViewport(0, 0, kHsSize, kHsSize);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glClearColor(0.01f, 0.012f, 0.02f, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    const float t = std::tan(deg2rad(56.f) * 0.5f);
+    a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(t), std::atan(t), std::atan(t), -std::atan(t), 0.05f, 2000.f), eye.p);
+    a.rttPass = true;
+    drawWorld(a, 0);
+    drawOwnAvatar(a, 0);
+    drawWorld(a, 1);
+    drawOwnAvatar(a, 1);
+    a.rttPass = false;
+    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)keepFbo);
+    glViewport(keepVp[0], keepVp[1], keepVp[2], keepVp[3]);
+    a.viewHead = keepHead;
+}
+
 // called before the eye views each frame while the info panel is open
 static void renderInfoPreview(App& a) {
     if (!a.dirOpen || a.infoKind < 0) return;
@@ -5303,7 +5682,7 @@ static void lobbyAction(App& a, int which, const PlayerInput& in) {
     LOGI("lobby: %s", which == kPosterCount ? "the court" : kPosters[which].title);
     auto menuPage = [&]() {
         openMenu(a, in);
-        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.bugOpen = a.reportOpen = false;
+        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.bugOpen = a.reportOpen = a.movePlayersOpen = false;
     };
     switch (which) {
     case 0: case kPosterCount: menuPage(); a.rulesOpen = true; a.rulesForHost = false; break;   // PLAY THE BOT / the court
@@ -5413,7 +5792,8 @@ static void drawRoomPeople(App& a, int pass) {
                     drawLancerAt(a, Mat4::fromPose(m.in.hand[h].grip), h, look, pass, Mat4::identity(), false, m.in.avatar);
             if (pass == 1 && m.queuePos >= 0) {
                 Vec3 f = normalize(Vec3{a.viewHead.p.x - m.in.head.p.x, 0, a.viewHead.p.z - m.in.head.p.z});
-                a.gfx.drawText(m.queuePos == 0 ? "NEXT" : "2ND", {Quat::axisAngle({0, 1, 0}, std::atan2(f.x, f.z)), m.in.head.p + Vec3{0, 0.32f, 0}},
+                static const char* kPlace[4] = {"NEXT", "2ND", "3RD", "4TH"};
+                a.gfx.drawText(kPlace[std::max(0, std::min(3, (int)m.queuePos))], {Quat::axisAngle({0, 1, 0}, std::atan2(f.x, f.z)), m.in.head.p + Vec3{0, 0.32f, 0}},
                                0.07f, kRed);
             }
         }
@@ -5467,10 +5847,14 @@ static void drawRoomPeople(App& a, int pass) {
 }
 
 // ------------------------------------------------------------------ spectator hub: live miniature arenas
-static void drawMiniMatch(App& a, const Game& g, const Vec3& at, const Quat& q, float s, int pass, bool hover, const RoomInfo* rmini = nullptr) {
+static void drawMiniMatch(App& a, const Game& g, const Vec3& at0, const Quat& q, float s, int pass, bool hover, const RoomInfo* rmini = nullptr) {
     // (the EXPERIMENTAL rooms as their own shapes, 0.3.12: FOUR CORNERS is four times as wide, so smaller)
-    const int room = !g.tun.experimental ? -1 : g.tun.expRoom == 1 ? 1 : 0;
-    if (room == 1) s *= 0.55f;
+    const int room = !g.tun.experimental ? -1 : std::max(0, std::min(kRooms - 1, g.tun.expRoom));
+    if (room >= 1) s *= 0.55f;
+    // (and lifted so the room's lowest point sits on the table: FOUR CORNERS' floor and DIAMOND's V reach below the
+    // platforms, and the table's pillar went up through the middle of the play, testers 2026-10-30)
+    Vec3 at = at0;
+    if (room >= 0) at.y += s * (room == 2 ? 0.f : room == 1 ? -exparena::kFloor : exparena::kRollReach - exparena::kRollCY);
     auto M = [&](const Mat4& local) { return Mat4::fromPose({q, at}, {s, s, s}) * local; };
     auto W = [&](const Vec3& p) { return at + q.rotate(p * s); };
     const float teamCol[2][4] = {{0.1f, 0.7f, 1.0f, 1}, {1.0f, 0.4f, 0.1f, 1}};
@@ -5481,7 +5865,16 @@ static void drawMiniMatch(App& a, const Game& g, const Vec3& at, const Quat& q, 
     } else if (pass == 1) {   // its edges in light, and each player's platform
         const float edge[4] = {hover ? 0.45f : 0.25f, hover ? 1.0f : 0.8f, 1.0f, 1}, plat[4] = {0.10f, 0.35f, 0.55f, 1};
         auto line = [&](const Vec3& p0, const Vec3& p1) { const Vec3 l[2] = {W(p0), W(p1)}; a.gfx.drawRibbon(l, 2, 0.006f, edge, false); };
-        if (room == 1) {
+        if (room == 2) {   // FIREBALL BLITZ: the octagon as it is now (it closes in)
+            const float R = g.ringApothem / std::cos(kPi / 8.f);
+            for (int i = 0; i < 8; ++i) {
+                const float a0 = kPi / 8.f + i * kPi / 4.f, a1 = a0 + kPi / 4.f;
+                const Vec3 v0{R * std::cos(a0), 0, R * std::sin(a0)}, v1{R * std::cos(a1), 0, R * std::sin(a1)};
+                line(v0, v1);
+                line(v0 + Vec3{0, exparena::kOctH, 0}, v1 + Vec3{0, exparena::kOctH, 0});
+                line(v0, v0 + Vec3{0, exparena::kOctH, 0});
+            }
+        } else if (room == 1) {
             using namespace exparena;
             const Vec3 c[4] = {{-kCorner, 0, 0}, {0, 0, kCorner}, {kCorner, 0, 0}, {0, 0, -kCorner}};
             for (int i = 0; i < 4; ++i) {
@@ -5500,7 +5893,14 @@ static void drawMiniMatch(App& a, const Game& g, const Vec3& at, const Quat& q, 
                 line(e[i] + Vec3{-X, 0, 0}, e[i] + Vec3{X, 0, 0});
             }
         }
-        for (int p = 0; p < g.np; ++p) a.gfx.drawSpriteFlat(W(g.tun.start[p]), 2.4f * s, plat, {0, 1, 0}, 1);
+        for (int p = 0; p < g.np; ++p) if (room != 2 || g.alive(p)) a.gfx.drawSpriteFlat(W(g.tun.start[p]), 2.4f * s, plat, {0, 1, 0}, 1);
+        if (room == 2)   // (its fireballs)
+            for (int p = 0; p < g.np; ++p)
+                for (const Ball& f : g.fire[p])
+                    if (f.state == BallState::Flying) {
+                        const float fc[4] = {1.0f, 0.55f, 0.15f, 1};
+                        a.gfx.drawSprite(W(f.pos), 0.5f * s, fc, a.viewHead.p, 0);
+                    }
     }
     if (pass == 1 && room < 0) {
         DrawParams cp;
@@ -5521,7 +5921,7 @@ static void drawMiniMatch(App& a, const Game& g, const Vec3& at, const Quat& q, 
         if (rmini && !rmini->slot[p] && !rmini->isBot(p)) continue;   // empty tank slot
         const PlayerState& ps = g.pl[p];
         DrawParams bp;
-        const float* pc = g.np == 2 ? teamCol[p] : g.tun.teamMode == TEAMS_FFA ? kFourRGB[p & 3] : teamCol[g.team(p) & 1];
+        const float* pc = g.np == 2 ? teamCol[p] : (g.tun.teamMode == TEAMS_FFA || g.octagon()) ? kFourRGB[p & 3] : teamCol[g.team(p) & 1];
         for (int k = 0; k < 3; ++k) bp.tintMul[k] = 0.7f + 0.3f * pc[k];
         Pose hp = ps.in.head;
         if (hp.p.y > 0.3f && !a.avModels.empty()) {
@@ -5577,8 +5977,11 @@ static void drawHub(App& a, int pass) {
         bool hover = a.miniHover == i;
         if (pass == 0) {
             float ped[4] = {0.05f, 0.055f, 0.065f, 1};
-            a.gfx.drawBox(Mat4::fromPose({q, at - Vec3{0, 0.025f, 0}}, {1.25f, 0.04f, 0.38f}), ped, false);
-            a.gfx.drawBox(Mat4::fromPose({q, Vec3{at.x, at.y * 0.5f - 0.03f, at.z}}, {0.14f, at.y - 0.06f, 0.14f}), ped, false);
+            // (a box's size is half its extent: the pillar once reached up through the table and the play, testers
+            // 2026-10-30; the table's top is the miniature's floor)
+            const float top = 0.04f, leg = 0.5f * (at.y - top);
+            a.gfx.drawBox(Mat4::fromPose({q, at - Vec3{0, 0.5f * top, 0}}, {0.625f, 0.5f * top, 0.19f}), ped, false);
+            a.gfx.drawBox(Mat4::fromPose({q, Vec3{at.x, leg, at.z}}, {0.07f, leg, 0.07f}), ped, false);
         }
         drawMiniMatch(a, ms[i].game, at, q, s, pass, hover, &ms[i].room);
         if (pass == 1) {
@@ -5589,9 +5992,12 @@ static void drawHub(App& a, int pass) {
             char buf[64];
             const Game& g = ms[i].game;
             a.gfx.drawText(ms[i].name[0] ? ms[i].name : "LIVE GAME", {lq, at + Vec3{0, 0.46f, 0}}, 0.05f, hover ? cyan : white);
-            if (g.tun.advanced) snprintf(buf, sizeof buf, "%s   %d  -  %d   ROUND %d", g.tun.shields ? "ADVANCED" : "ADVANCED HOTDOG",
-                                         g.pl[0].score, g.pl[1].score, std::max(1, g.round));
-            else if (g.np == 4 && g.tun.teamMode == TEAMS_FFA)   // (FOUR CORNERS: the four scores, or the teams')
+            if (g.tun.advanced) snprintf(buf, sizeof buf, "%s%s   %d  -  %d   ROUND %d", g.tun.experimental ? "DIAMOND " : "",
+                                         g.tun.shields ? "ADVANCED" : "ADVANCED HOTDOG", g.pl[0].score, g.pl[1].score, std::max(1, g.round));
+            else if (g.octagon())   // (FIREBALL BLITZ: everyone's health)
+                snprintf(buf, sizeof buf, "FIREBALL BLITZ   %d - %d - %d - %d   %s", g.pl[0].health, g.pl[1].health, g.pl[2].health, g.pl[3].health,
+                         clockLine(g).c_str());
+            else if (g.np == 4 && (g.tun.teamMode == TEAMS_FFA || g.octagon()))   // (FOUR CORNERS: the four scores, or the teams')
                 snprintf(buf, sizeof buf, "FOUR CORNERS   %d - %d - %d - %d   %s", g.pl[0].score, g.pl[1].score, g.pl[2].score, g.pl[3].score,
                          clockLine(g).c_str());
             else if (g.np == 4)
@@ -5751,20 +6157,28 @@ static void updateVoice(App& a) {
 
 // HUD near the left hand: the push-to-talk hint, TALKING, or mic state; small white lights over people talking
 static void drawVoiceHud(App& a) {
-    if (!a.net.voiceZone()) return;
+    const double now = nowSeconds();
+    if (!a.net.voiceZone()) { a.voiceZoneAt = 0; return; }
+    if (a.voiceZoneAt == 0) a.voiceZoneAt = now;
     const float grey[4] = {0.6f, 0.65f, 0.72f, 1}, red[4] = {1.0f, 0.3f, 0.25f, 1}, white[4] = {1, 1, 1, 1};
     const PlayerInput& in = a.localIn;
-    if (in.hand[0].tracked && !a.menuOpen) {
-        const char* t = a.voiceMode == 2 ? "VOICE OFF" : a.micDenied ? "MIC NEEDS PERMISSION" : a.micFailed ? "MIC NOT AVAILABLE" : a.muteAll ? "ALL MUTED"
-                        : a.voiceMode == 1 ? (a.talking ? "OPEN MIC - TALKING" : "OPEN MIC")
-                        : a.talking ? "TALKING" : "HOLD LEFT GRIP TO TALK";
+    // (owner, 2026-11-02: the hint stayed by your hand all the time, spectating too, and got in the way. TALKING and a
+    // microphone problem always show; the reminder and the mic's steady state only for the first 10 s in a room, and
+    // spectators only see TALKING)
+    const bool spectator = a.net.mode() == Net::Mode::Spectate;
+    const bool intro = !spectator && now - a.voiceZoneAt < 10.0;
+    const char* t = a.talking ? (a.voiceMode == 1 ? "OPEN MIC - TALKING" : "TALKING")
+                  : spectator ? nullptr
+                  : a.micDenied && a.voiceMode != 2 ? "MIC NEEDS PERMISSION" : a.micFailed && a.voiceMode != 2 ? "MIC NOT AVAILABLE"
+                  : !intro ? nullptr
+                  : a.voiceMode == 2 ? "VOICE OFF" : a.muteAll ? "ALL MUTED" : a.voiceMode == 1 ? "OPEN MIC" : "HOLD LEFT GRIP TO TALK";
+    if (t && in.hand[0].tracked && !a.menuOpen) {
         Vec3 at = in.hand[0].grip.p + Vec3{0, 0.12f, 0};
         Vec3 to = a.viewHead.p - at;
         to.y = 0;
         to = normalize(to);
         a.gfx.drawText(t, {Quat::axisAngle({0, 1, 0}, std::atan2(to.x, to.z)), at}, 0.022f, a.talking ? red : grey);
     }
-    const double now = nowSeconds();
     for (const auto& kv : a.spokeAt) {
         if (now - kv.second > 0.3) continue;
         Vec3 p;
@@ -6109,6 +6523,26 @@ static void drawExpArena(App& a, int pass, float now) {
             const Vec3 ln[2] = {a0 + Vec3{0, kFloor + 0.01f, 0}, a1 + Vec3{0, kFloor + 0.01f, 0}};
             a.gfx.drawRibbon(ln, 2, 0.012f, grid, false);
         }
+    if (g.np == 4) {   // the waiting deck outside the glass (between corners 0 and 2): a floor for the waiting spots,
+        // which are at the platforms' height while the stadium round the room is lowered (testers 2026-10-30: you
+        // waited in mid-air, beside the stands, nothing under you)
+        // (and its twin across the room, for spots 4-7: a room for four holds four playing and four waiting, or eight
+        // waiting with nobody playing; during a match, FIREBALL BLITZ's dugout)
+        const float deck[4] = {0.02f, 0.035f, 0.06f, 0.96f}, rim[4] = {0.15f, 0.6f, 0.9f, 1}, spot[4] = {0.12f, 0.45f, 0.65f, 1};
+        for (float sd : {1.f, -1.f}) {
+            const Vec3 d = normalize(c[3] - c[0]) * sd, out = normalize(Vec3{-1, 0, -1}) * sd, mid = ((c[0] + c[3]) * 0.5f) * sd + out * 1.0f;
+            const float len = 0.8f * length(c[3] - c[0]), wide = 1.8f;
+            const Quat dq = Quat::axisAngle({0, 1, 0}, kPi * 0.25f) * Quat::axisAngle({1, 0, 0}, -kPi * 0.5f);
+            a.gfx.drawPanel(Mat4::fromPose({dq, mid + Vec3{0, -0.01f, 0}}, {len, wide, 1}), deck);
+            for (float o : {0.1f, 1.9f}) {
+                const Vec3 e0 = mid - d * (0.5f * len) + out * (o - 1.0f), e1 = mid + d * (0.5f * len) + out * (o - 1.0f);
+                const Vec3 ln[2] = {e0 + Vec3{0, 0.005f, 0}, e1 + Vec3{0, 0.005f, 0}};
+                a.gfx.drawRibbon(ln, 2, 0.02f, rim, false);
+                if (o > 1.f) { const Vec3 rail[2] = {e0 + Vec3{0, 1.0f, 0}, e1 + Vec3{0, 1.0f, 0}}; a.gfx.drawRibbon(rail, 2, 0.015f, rim, false); }
+            }
+        }
+        for (int k = 0; k < 8; ++k) a.gfx.drawSpriteFlat(holdingPose(a, k).p + Vec3{0, 0.008f, 0}, 0.9f, spot, {0, 1, 0}, 1);
+    }
     drawPlatforms(a, 1, now, kFloor);
 }
 
@@ -6267,6 +6701,209 @@ static void drawTrainVideo(App& a, int pass) {
     text(fresh ? a.film.caption : std::string(L.tip1), 0, -0.29f, 0.024f, fresh ? white : grey);
 }
 
+// ------------------------------------------------------------------ FIREBALL BLITZ
+// The octagon (it closes in as players are knocked out: its walls follow the game's), its floor level with yours, the
+// glass behind each player in their colour, a neon grid; the fireballs with their flames and the puffs as they fizzle;
+// everyone's health over their head (yours in front of you, at your waist)
+static void drawOctArena(App& a, int pass, float now) {
+    using namespace exparena;
+    const Game& g = a.game;
+    if (pass == 0) return;
+    a.octWallR += (g.ringApothem - a.octWallR) * 0.08f;   // (the walls slide in, as everyone blinks to their new place)
+    const float A = a.octWallR, R = A / std::cos(kPi / 8.f), side = 2.f * A * std::tan(kPi / 8.f);
+    const float gm = a.mrView ? a.ptGlass : 1.f, fm = a.mrView ? std::min(1.f, a.ptFloor) : 1.f;
+    const float glass[4] = {0.02f, 0.06f, 0.11f, 0.18f * gm}, floorC[4] = {0.006f, 0.014f, 0.03f, 0.94f * fm},
+                ceil[4] = {0.012f, 0.03f, 0.06f, 0.30f * gm};
+    const float pulse = 0.5f + 0.5f * std::sin(now * 3.0f);
+    auto vert = [&](int i) { const float t = kPi / 8.f + i * kPi / 4.f; return Vec3{R * std::cos(t), 0, R * std::sin(t)}; };
+    // the floor and the ceiling (a square as wide as the room: its corners under the stands, outside the glass)
+    const Quat flat = Quat::axisAngle({1, 0, 0}, -kPi * 0.5f);
+    a.gfx.drawPanel(Mat4::fromPose({flat, {0, 0.002f, 0}}, {2.f * A, 2.f * A, 1}), floorC);
+    a.gfx.drawPanel(Mat4::fromPose({flat, {0, kOctH, 0}}, {2.f * A, 2.f * A, 1}), ceil);
+    // the eight glass walls; the one behind a player still in, in their colour (pulsing as the room is about to close)
+    const bool closing = g.ringCloseAt >= 0;
+    for (int i = 0; i < 8; ++i) {
+        const float t = i * kPi / 4.f;
+        const Vec3 n{std::cos(t), 0, std::sin(t)};
+        const Quat q = Quat::axisAngle({0, 1, 0}, std::atan2(n.x, n.z));
+        int owner = -1;
+        for (int p = 0; p < g.np; ++p)
+            if (g.alive(p) && dot(normalize(Vec3{g.tun.start[p].x, 0, g.tun.start[p].z}), n) > 0.97f) owner = p;
+        float c[4] = {glass[0], glass[1], glass[2], glass[3]};
+        if (owner >= 0) {
+            const float* pc = playerRGB(a, owner);
+            for (int k = 0; k < 3; ++k) c[k] = pc[k] * 0.35f;
+            c[3] = 0.24f + (closing ? 0.12f * pulse : 0.f);
+        }
+        a.gfx.drawPanel(Mat4::fromPose({q, n * (A - 0.01f) + Vec3{0, 0.5f * kOctH, 0}}, {side, kOctH, 1}), c);
+    }
+    // the neon: the corners up the walls, rings round the room every metre, lines across the floor
+    float grid[4] = {0.06f, 0.32f, 0.55f, 1}, bright[4] = {0.25f, 0.8f, 1.0f, 1};
+    if (closing) for (int k = 0; k < 3; ++k) { const float warn[3] = {1.0f, 0.45f, 0.1f}; bright[k] += (warn[k] - bright[k]) * pulse; }
+    for (int i = 0; i < 8; ++i) {
+        const Vec3 v = vert(i);
+        const Vec3 up[2] = {v, v + Vec3{0, kOctH, 0}};
+        a.gfx.drawRibbon(up, 2, 0.025f, bright, false);
+    }
+    for (float y = 0.01f; y <= kOctH + 0.01f; y += 1.f) {
+        const bool rim = y < 0.02f;
+        Vec3 ring[9];
+        for (int i = 0; i <= 8; ++i) ring[i] = vert(i % 8) + Vec3{0, std::min(y, kOctH), 0};
+        a.gfx.drawRibbon(ring, 9, rim ? 0.03f : 0.010f, rim ? bright : grid, false);
+    }
+    for (int i = -6; i <= 6; ++i) {   // the floor grid, a line a metre, inside the walls
+        for (int k = 0; k < 2; ++k) {
+            const float u = (float)i;
+            // (as far as the octagon reaches along this line)
+            float reach = A;
+            for (int w = 0; w < 8; ++w) {
+                const float t = w * kPi / 4.f;
+                const Vec3 n{std::cos(t), 0, std::sin(t)};
+                const float across = k ? n.x : n.z, along = k ? n.z : n.x;
+                if (std::fabs(along) > 1e-3f) reach = std::min(reach, (A - u * across) / std::fabs(along));
+            }
+            if (reach <= 0.1f) continue;
+            const Vec3 ln[2] = {k ? Vec3{u, 0.006f, -reach} : Vec3{-reach, 0.006f, u}, k ? Vec3{u, 0.006f, reach} : Vec3{reach, 0.006f, u}};
+            a.gfx.drawRibbon(ln, 2, 0.008f, grid, false);
+        }
+    }
+    {   // the waiting spots outside its glass, four each side (the one across is the dugout during a match)
+        const float sp[4] = {0.10f, 0.35f, 0.5f, 1};
+        for (int k = 0; k < 8; ++k) a.gfx.drawSpriteFlat(holdingPose(a, k).p + Vec3{0, 0.008f, 0}, 0.9f, sp, {0, 1, 0}, 1);
+    }
+    // each player's spot on the floor, in their colour
+    for (int p = 0; p < g.np; ++p) {
+        if (!g.alive(p)) continue;
+        const float* pc = playerRGB(a, p);
+        const float c[4] = {pc[0] * 0.5f, pc[1] * 0.5f, pc[2] * 0.5f, 1};
+        a.gfx.drawSpriteFlat(g.tun.start[p] + Vec3{0, 0.008f, 0}, 1.6f, c, {0, 1, 0}, 1);
+    }
+}
+
+// FIREBALL BLITZ's card, in front of you while you wait and count down (owner, 2026-11-02: "where on the body can you
+// get hit, and how to avoid it?"): a glowing figure of where a fireball hits, and the ways out
+static void drawBlitzHelp(App& a, int pass) {
+    const Game& g = a.game;
+    const int L = a.net.localIndex();
+    // (owner, 2026-11-02: only where you'd want it: in the room's waiting area, in front of your spot)
+    if (pass != 1 || a.spectating || a.viewing || !a.net.localWaiting()) return;
+    const Pose spotPose = holdingPose(a, a.net.localSpot());
+    const Vec3 f = spotPose.q.rotate({0, 0, -1}), right{-f.z, 0, f.x};
+    const Quat q = yawToward(f);   // (facing you)
+    const Vec3 c = spotPose.p + f * 1.3f + Vec3{0, 1.25f, 0};
+    const float bg[4] = {0.004f, 0.008f, 0.018f, 0.85f}, edge[4] = {0.3f, 0.85f, 1.0f, 0.9f};
+    a.gfx.drawPanel(Mat4::fromPose({q, c + q.rotate({0, 0, -0.01f})}, {1.30f, 0.80f, 1}), bg);
+    a.gfx.drawPanel(Mat4::fromPose({q, c + q.rotate({0, 0.40f, -0.005f})}, {1.30f, 0.008f, 1}), edge);
+    auto txt = [&](const char* t, float x, float y, float h, const float* col) { a.gfx.drawText(t, {q, c + q.rotate({x, y, 0.004f})}, h, col); };
+    const float cyan[4] = {0.3f, 0.85f, 1.0f, 1}, white[4] = {1, 1, 1, 1}, grey[4] = {0.65f, 0.7f, 0.78f, 1}, red[4] = {1.0f, 0.35f, 0.25f, 1};
+    txt("HOW NOT TO GET HIT", 0, 0.31f, 0.06f, cyan);
+    // the figure: head, body and legs, in red (a hit anywhere counts), and a fireball hopping toward it
+    const Vec3 fig = c + q.rotate({-0.42f, 0.02f, 0.02f});
+    const float zone[4] = {0.45f, 0.06f, 0.04f, 1};
+    a.gfx.drawSphere(fig + Vec3{0, 0.20f, 0}, 0.038f, zone, true);   // (head, body, legs: thin, so it reads as a figure)
+    for (int i = 0; i <= 6; ++i) a.gfx.drawSphere(fig + Vec3{0, 0.13f - 0.036f * i, 0}, i == 6 ? 0.04f : 0.034f, zone, true);   // (to the hips)
+    const float legs[4] = {0.10f, 0.12f, 0.16f, 1};   // (the legs, dim: a hit there doesn't count)
+    for (int i = 0; i <= 7; ++i)
+        for (int sd = -1; sd <= 1; sd += 2) a.gfx.drawSphere(fig + Vec3{0, -0.08f - 0.026f * i, 0} + right * (0.022f * sd), 0.014f, legs, true);
+    const float t = std::fmod(float(nowSeconds()), 1.6f) / 1.6f;   // (a fireball hops in from the side, up to the waist)
+    const Vec3 ball = fig + right * (-0.22f + 0.17f * t) + Vec3{0, -0.27f + 0.20f * std::fabs(std::sin(t * 6.28f)), 0};
+    const float fb[4] = {1.0f, 0.5f, 0.1f, 1};
+    a.gfx.drawSphere(ball, 0.016f, fb, true);
+    txt("HIPS AND UP", -0.42f, -0.33f, 0.026f, red);
+    // the ways out
+    const float x0 = 0.17f;
+    txt("HITS COUNT FROM YOUR HIPS UP", x0, 0.19f, 0.032f, white);
+    txt("STEP ASIDE, OR DUCK AS IT RISES", x0, 0.09f, 0.032f, white);
+    txt("PUNCH IT AWAY: YOUR KNUCKLE GUARDS", x0, 0.0f, 0.032f, white);
+    if (g.tun.shields) txt("OR BLOCK IT WITH YOUR SHIELD", x0, -0.08f, 0.032f, white);
+    txt("A FIREBALL TURNS RED, AND A RED RING", x0, g.tun.shields ? -0.18f : -0.12f, 0.026f, red);
+    txt("SHOWS AT YOUR FEET, WHEN IT WILL HIT YOU", x0, g.tun.shields ? -0.23f : -0.17f, 0.026f, red);
+    txt("IT FIZZLES OUT AT ITS 4TH BOUNCE", x0, -0.31f, 0.024f, grey);
+}
+
+static const Vec3 kUpV{0, 1, 0};
+static void drawFireballs(App& a, int pass, const float (*teamCol)[4]) {
+    const Game& g = a.game;
+    const int L = a.net.localIndex();
+    const float now = float(nowSeconds() - a.startTime);
+    for (int p = 0; p < g.np; ++p)
+        for (int k = 0; k < Game::kMaxFire; ++k) {
+            const Ball& f = g.fire[p][k];
+            if (f.state != BallState::Flying) continue;
+            const float* tc = teamCol[p & 3];
+            const float r = g.tun.projectileRadius * f.scale;
+            {   // the ball you threw, as it was on the tee, on fire: its plasma sphere and shell in fire colours, both passes
+                DrawParams bp;
+                const float fire[3] = {1.0f, 0.42f, 0.08f};
+                for (int c = 0; c < 3; ++c) bp.tintMul[c] = 2.0f * (0.65f * fire[c] + 0.35f * tc[c]);
+                const float s = f.scale * (g.tun.projectileRadius / 0.08f);
+                DrawParams pp = bp;
+                pp.uvOff[0] = now * 0.6f; pp.uvOff[1] = now * 0.4f;   // (its veins racing: flames)
+                a.gfx.draw(a.projectile, Mat4::fromPose({Quat{}, f.pos}, {s, s, s}), pp, pass);
+                a.gfx.draw(a.shell, Mat4::fromPose({Quat::axisAngle(kUpV, now * 9.f), f.pos}, {s, s, s}), bp, pass);
+                if (pass == 0) continue;
+            }
+            // its flames: a white-hot core, an orange glow in its colour, a flickering tail behind it (coming at you: red)
+            const bool danger = (a.fireDanger >> (p * Game::kMaxFire + k)) & 1;
+            const float core[4] = {1.0f, danger ? 0.5f : 0.9f, danger ? 0.4f : 0.6f, 1};
+            a.gfx.drawSphere(f.pos, r * 0.6f, core, true);
+            const float pulse = 0.6f + 0.4f * std::sin(now * 18.f);
+            const float glow[4] = {danger ? 1.0f * pulse : 0.5f + 0.5f * tc[0], danger ? 0.08f : 0.25f + 0.25f * tc[1], danger ? 0.05f : 0.05f + 0.2f * tc[2], 1};
+            a.gfx.drawSprite(f.pos, r * 6.f, glow, a.viewHead.p, 0);
+            const float sp = length(f.vel);
+            const Vec3 back = sp > 1e-3f ? -f.vel / sp : Vec3{0, 0, 0};
+            for (int i = 1; i <= 6; ++i) {
+                const float flick = 0.8f + 0.2f * std::sin(now * 31.f + i * 1.7f + p * 3.1f + k);
+                const float fade = (1.f - i / 7.f) * flick;
+                const float fc[4] = {1.0f * fade, (0.45f + 0.2f * tc[1]) * fade, 0.08f * fade, 1};
+                a.gfx.drawSprite(f.pos + back * (0.07f * i), r * (4.5f - 0.5f * i), fc, a.viewHead.p, 0);
+            }
+            const float pool[4] = {0.35f, 0.14f, 0.03f, 1};   // (its light on the floor below)
+            a.gfx.drawSpriteFlat({f.pos.x, 0.005f, f.pos.z}, 0.6f + 0.4f * f.pos.y, pool, {0, 1, 0}, 0);
+        }
+    if (pass != 1) return;
+    if (a.fireDanger) {   // one is coming at you: a red ring round your feet
+        const Vec3 hd = g.pl[L].in.head.p;
+        const float pulse = 0.6f + 0.4f * std::sin(now * 18.f);
+        const float ring[4] = {0.9f * pulse, 0.08f, 0.05f, 1};
+        a.gfx.drawSpriteFlat({hd.x, 0.012f, hd.z}, 1.1f, ring, {0, 1, 0}, 1);
+    }
+    for (const App::Puff& u : a.puffs) {   // a fireball fizzling out: a puff of sparks and smoke, rising
+        const float k = 1.f - u.t / 0.6f;
+        if (k <= 0) continue;
+        const float c[4] = {1.0f * k, 0.5f * k, 0.12f * k, 1};
+        for (int i = 0; i < 6; ++i) {
+            const float t = i * 1.047f;
+            const Vec3 d{std::cos(t) * 0.25f * u.t / 0.6f, 0.3f * u.t, std::sin(t) * 0.25f * u.t / 0.6f};
+            a.gfx.drawSprite(u.pos + d, 0.12f * k + 0.05f, c, a.viewHead.p, 0);
+        }
+    }
+    // health: a pip a hit, over everyone's head (turned to you); yours in front of you at your waist
+    const int maxH = std::max(1, g.tun.health);
+    for (int p = 0; p < g.np; ++p) {
+        if (!g.alive(p) || (g.match == MatchState::WaitingForPlayers && !g.pl[p].in.headTracked)) continue;
+        const bool mine = p == L && !a.viewing && !a.spectating;
+        const Vec3 head = mine ? g.pl[p].in.head.p : a.viewIn[p].head.p;
+        Vec3 at = head + Vec3{0, 0.40f, 0};
+        Vec3 to = a.viewHead.p - at;
+        if (mine) {
+            const Vec3 f = g.facing(p);
+            at = Vec3{head.x, std::max(0.6f, head.y - 0.75f), head.z} + f * 0.55f;
+            to = head - at;
+        }
+        const Quat q = Quat::axisAngle({0, 1, 0}, std::atan2(to.x, to.z)) * Quat::axisAngle({1, 0, 0}, mine ? -0.6f : 0.f);
+        const float pip = maxH > 5 ? 0.045f : 0.07f, gap = pip * 1.35f;
+        const float* tc = teamCol[p & 3];
+        const float back[4] = {0.01f, 0.02f, 0.04f, 0.7f};
+        a.gfx.drawPanel(Mat4::fromPose({q, at - q.rotate({0, 0, 0.004f})}, {gap * maxH + 0.04f, pip + 0.04f, 1}), back);
+        for (int i = 0; i < maxH; ++i) {
+            const bool full = i < g.pl[p].health;
+            const float c[4] = {full ? tc[0] * 0.7f + 0.3f : 0.12f, full ? tc[1] * 0.7f + 0.3f : 0.12f, full ? tc[2] * 0.7f + 0.3f : 0.14f, full ? 0.95f : 0.6f};
+            a.gfx.drawPanel(Mat4::fromPose({q, at + q.rotate({(i - 0.5f * (maxH - 1)) * gap, 0, 0})}, {pip, pip, 1}), c);
+        }
+    }
+}
+
 static void drawWorld(App& a, int pass) {
     if (a.spectating && !a.watchIp) { drawHub(a, pass); return; }
     Game& g = a.game;
@@ -6277,11 +6914,12 @@ static void drawWorld(App& a, int pass) {
     const int only = a.onlyPlayer;   // the win screen's close-ups: one player alone
     const bool keyBg = a.viewLayer >= 3 || only >= 0, minimal = a.viewLayer >= 2 || only >= 0, noWalls = a.viewLayer >= 1;
     const bool outline = ((ptm == PT_OUTLINE) || noWalls) && a.courtOutline.valid();
-    const bool corners = g.arenaKind == ARENA_CORNERS || g.arenaKind == ARENA_FOURCORNERS;
-    const bool exp = corners || g.arenaKind == ARENA_DIAMOND;   // an EXPERIMENTAL room
+    const bool corners = g.arenaKind == ARENA_CORNERS || g.arenaKind == ARENA_FOURCORNERS, oct = g.octagon();
+    const bool exp = corners || oct || g.arenaKind == ARENA_DIAMOND;   // an EXPERIMENTAL room
     // (CORNERS reaches 9.5 m to the sides: the stadium widened to stand round it)
     // (and lowered below the room's floor: the stadium's own floor round the classic court ran through the room as a ledge)
-    const Mat4 outside = corners ? Mat4::fromPose({Quat{}, {0, exparena::kFloor - 0.4f, 0}}, {1.35f, 1.f, 1.35f}) : Mat4::identity();
+    const Mat4 outside = corners ? Mat4::fromPose({Quat{}, {0, exparena::kFloor - 0.4f, 0}}, {1.35f, 1.f, 1.35f})
+                       : oct ? Mat4::fromPose({Quat{}, {0, -0.4f, 0}}, {1.35f, 1.f, 1.35f}) : Mat4::identity();   // (FIREBALL BLITZ: as wide)
     updateSides(a);
     updateStats(a);
     float pcol[kMaxPlayers][3];   // each player's colour (playerRGB)
@@ -6359,7 +6997,7 @@ static void drawWorld(App& a, int pass) {
     if (keyBg) {
         // (nothing of the court)
     } else if (exp) {
-        if (g.arenaKind == ARENA_DIAMOND) drawDiamondArena(a, pass, now); else drawExpArena(a, pass, now);
+        if (g.arenaKind == ARENA_DIAMOND) drawDiamondArena(a, pass, now); else if (oct) drawOctArena(a, pass, now); else drawExpArena(a, pass, now);
     } else if (outline) {
         a.gfx.draw(a.courtOutline, Mat4::identity(), dp, pass);
     } else {
@@ -6419,8 +7057,9 @@ static void drawWorld(App& a, int pass) {
     float teamCol[kMaxPlayers][4];   // (each player's colour, for its ball, spawner, ring and trail)
     for (int p = 0; p < kMaxPlayers; ++p) { for (int k = 0; k < 3; ++k) teamCol[p][k] = pcol[p][k]; teamCol[p][3] = 1; }
     if (pass == 1 && !minimal && !a.mrView && !exp) drawFanFlags(a, now);   // The Crowd: flags waving in the stands (not yet in the widened stadium)
-    if (pass == 1 && !minimal && !a.mrView && !corners) drawJumbotron(a);   // the screen over centre court: names, score, stats
+    if (pass == 1 && !minimal && !a.mrView && !corners && !oct) drawJumbotron(a);   // the screen over centre court: names, score, stats
     for (int p = 0; p < g.np && !minimal; ++p) {
+        if (oct && !g.alive(p)) continue;   // (FIREBALL BLITZ: out, no tee)
         const BallState st = g.pl[p].ball.state;
         float glow = (st == BallState::Spawning || st == BallState::Dead) ? 0.55f : 0.16f;
         DrawParams sp;
@@ -6435,6 +7074,19 @@ static void drawWorld(App& a, int pass) {
         // (TRAINING: nobody at the far end, or the coach's own game shows it there)
         if (p == 1 && a.trainer.active() && !a.trainer.coachThere()) continue;
         if (a.spectating && a.watchIp && !a.watchRoom.slot[p] && !a.watchRoom.isBot(p) && anyoneWatched) continue;
+        if (oct && g.match != MatchState::WaitingForPlayers && !((g.startMask >> p) & 1)) continue;   // (FIREBALL BLITZ: not in this match)
+        if (oct && !g.alive(p) && g.match != MatchState::WaitingForPlayers) {   // (knocked out: a faint ghost where they watch from)
+            const PlayerState& ps0 = g.pl[p];
+            if (pass == 1 && (p != L || a.viewing) && !ps0.isBot) {
+                const float gc[4] = {teamCol[p][0] * 0.25f, teamCol[p][1] * 0.25f, teamCol[p][2] * 0.25f, 1};
+                const Vec3 hd = a.viewIn[p].head.p;
+                for (int k = 0; k < 4; ++k) a.gfx.drawSprite(hd - Vec3{0, 0.4f * k, 0}, 0.45f - 0.05f * k, gc, a.viewHead.p, 0);
+                const float oc[4] = {teamCol[p][0] * 0.5f + 0.3f, teamCol[p][1] * 0.5f + 0.3f, teamCol[p][2] * 0.5f + 0.3f, 0.8f};
+                const Vec3 to = a.viewHead.p - hd;
+                a.gfx.drawText("OUT", {Quat::axisAngle({0, 1, 0}, std::atan2(-to.x, -to.z) + kPi), hd + Vec3{0, 0.35f, 0}}, 0.10f, oc);
+            }
+            continue;
+        }
         PlayerState& ps = g.pl[p];
         const PlayerInput& vin = a.viewIn[p];   // remote players smoothed between network updates
         // hands: lancer tool, knuckle guard, shield (gauntlets wear the player's avatar colours)
@@ -6469,7 +7121,9 @@ static void drawWorld(App& a, int pass) {
             }
         }
         // opponent body (local player has no body, like the original first-person view); spectators see both
-        if ((p != L || a.viewing) && !a.avModels.empty() && vin.head.p.y > 0.3f) {
+        // (the PC spectator's eyes camera: that player's own body left out, as in their headset)
+        if (p == a.dcEyesOf && !a.rttPass) {
+        } else if ((p != L || a.viewing) && !a.avModels.empty() && vin.head.p.y > 0.3f) {
             drawAvatarBody(a, vin, p, pass, Mat4::identity(), false, false, a.hitFlash[p]);
         } else if (p != L || a.viewing) {
             Pose hpose = vin.head;
@@ -6496,6 +7150,10 @@ static void drawWorld(App& a, int pass) {
             const bool harmless = b.state == BallState::Returning && b.scored;
             float glow = harmless ? 0.35f : b.charged ? 2.0f : 0.6f;   // uncharged ball: "your Ball has lost its charge"
             bp.tintMul[0] = teamCol[p][0] * glow; bp.tintMul[1] = teamCol[p][1] * glow; bp.tintMul[2] = teamCol[p][2] * glow;
+            if (oct) {   // (FIREBALL BLITZ: on fire on the tee as in flight)
+                const float fire[3] = {1.0f, 0.42f, 0.08f};
+                for (int c = 0; c < 3; ++c) bp.tintMul[c] = 2.0f * (0.65f * fire[c] + 0.35f * teamCol[p][c]);
+            }
             float s = b.scale * (g.tun.projectileRadius / 0.08f);   // visual sphere is 8 cm; collision radius 10 cm
             if (b.state == BallState::Spawning) {
                 float r = clampf((b.pos.y - g.tun.spawnLauncherHeight) / std::max(0.05f, g.idlePoint(p).y - g.tun.spawnLauncherHeight), 0.f, 1.f);
@@ -6558,6 +7216,8 @@ static void drawWorld(App& a, int pass) {
             }
         }
     }
+    if (oct && only < 0) drawFireballs(a, pass, teamCol);
+    if (oct && only < 0 && !a.rttPass) drawBlitzHelp(a, pass);
     if (pass == 1 && only < 0)
         for (int p = 0; p < g.np; ++p)
             if (a.trail[p].burst > 0) {   // ball dissolving at the back wall
@@ -6565,7 +7225,7 @@ static void drawWorld(App& a, int pass) {
                 float c[4] = {teamCol[p][0] * k * 2, teamCol[p][1] * k * 2, teamCol[p][2] * k * 2, 1};
                 a.gfx.drawSphere(a.trail[p].burstPos, 0.1f + (1 - k) * 0.6f, c, true);
             }
-    for (int p = 0; p < g.np && !minimal; ++p) {   // strike-zone rings
+    for (int p = 0; p < g.np && !minimal && !oct; ++p) {   // strike-zone rings (FIREBALL BLITZ: no strikes)
         DrawParams zp;
         float f = 0.35f + 1.5f * a.trail[p].strikeFlash;
         zp.forceShader = SH_ADDITIVE;
@@ -6578,6 +7238,18 @@ static void drawWorld(App& a, int pass) {
     if (!minimal) drawLobby(a, pass);
     if (!minimal) drawTraining(a, pass);
     if (pass == 1 && !a.rttPass) drawVoiceHud(a);
+    if (pass == 1 && !a.rttPass && a.headSelfie && a.spectating && !isDesktop(a) && a.hsTex) {   // SELFIE: in the lower right
+        const Pose& h = a.viewHead;
+        const Vec3 c = h.transform({0.19f, -0.15f, -0.55f});
+        const float sz = 0.15f, white[4] = {1, 1, 1, 1}, edge[4] = {0.3f, 0.85f, 1.0f, 0.9f}, t = 0.004f;
+        a.gfx.drawTexturedPanel(Mat4::fromPose({h.q, c}, {sz, sz, 1}), a.hsTex, white, true);
+        for (int k = 0; k < 4; ++k) {
+            const Vec3 o = k < 2 ? Vec3{0, (k ? 0.5f : -0.5f) * sz, -0.0005f} : Vec3{(k == 3 ? 0.5f : -0.5f) * sz, 0, -0.0005f};
+            a.gfx.drawPanel(Mat4::fromPose({h.q, c + h.q.rotate(o)}, k < 2 ? Vec3{sz + t, t, 1} : Vec3{t, sz + t, 1}), edge);
+        }
+        const float red[4] = {1.0f, 0.25f, 0.2f, 1};
+        a.gfx.drawSprite(c + h.q.rotate({-0.5f * sz + 0.012f, 0.5f * sz - 0.012f, 0.001f}), 0.012f, red, h.p, 0);   // (a "live" light)
+    }
     if (pass == 1 && only < 0) drawFx(a);
     if (pass == 1 && !minimal && !a.trainer.active()) {
         // Holographic scoreboard over centre court, facing the local player (mirrored for the far-end player)
@@ -6615,12 +7287,14 @@ static void drawWorld(App& a, int pass) {
             txt(buf, 0.80f, 0.04f, 0.36f, opC);
             drawFlag(a, a.sideNation[L], {faceP0, at(-0.50f, 0.04f, 0.003f)}, 0.21f);   // NATIONS: each side's flag
             drawFlag(a, a.sideNation[1 - L], {faceP0, at(0.50f, 0.04f, 0.003f)}, 0.21f);
-        } else if (g.tun.teamMode == TEAMS_FFA) {   // FOUR CORNERS, everyone for themselves: four scores, yours marked
+        } else if ((g.tun.teamMode == TEAMS_FFA || g.octagon())) {   // FOUR CORNERS, everyone for themselves: four scores, yours marked
             for (int p = 0; p < 4; ++p) {
                 const float x = (p < 2 ? -1.f : 1.f) * (p % 2 ? 0.62f : 0.95f);
                 const float c[4] = {teamCol[p][0] * 0.6f + 0.4f, teamCol[p][1] * 0.6f + 0.4f, teamCol[p][2] * 0.6f + 0.4f, 1};
-                snprintf(buf, sizeof buf, "%d", g.pl[p].score);
-                txt(buf, x, 0.08f, 0.20f, c);
+                if (oct && !((g.startMask >> p) & 1) && g.match != MatchState::WaitingForPlayers) continue;
+                if (oct && !g.alive(p)) snprintf(buf, sizeof buf, "OUT");
+                else snprintf(buf, sizeof buf, "%d", oct ? g.pl[p].health : g.pl[p].score);   // (FIREBALL BLITZ: health left)
+                txt(buf, x, 0.08f, oct && !g.alive(p) ? 0.10f : 0.20f, c);
                 if (p == L && !a.viewing) txt("YOU", x, -0.08f, 0.045f, c);
             }
         } else {   // teams: yours and theirs (3 v 1: THE ONE named)
@@ -6660,6 +7334,9 @@ static void drawWorld(App& a, int pass) {
             txt(buf, -0.80f, -0.22f, 0.05f, grey);
             snprintf(buf, sizeof buf, "STRIKES %d", g.pl[L].strikesAgainst);
             txt(buf, 0.80f, -0.22f, 0.05f, grey);
+        } else if (oct) {   // (FIREBALL BLITZ: how many are still in)
+            snprintf(buf, sizeof buf, "HEALTH  -  %d STILL IN", g.aliveCount());
+            txt(buf, -0.80f, -0.24f, 0.045f, grey);
         } else {   // (four players: the strikes you hold make your ball bigger)
             snprintf(buf, sizeof buf, "YOUR STRIKES %d", g.pl[L].strikesFor);
             txt(buf, -0.80f, -0.24f, 0.045f, grey);
@@ -6676,7 +7353,8 @@ static void drawWorld(App& a, int pass) {
         case MatchState::MatchSummary:
             if (g.np == 4 && (inLobby(a) || a.spectating || a.net.localWaiting())) {   // FOUR CORNERS: the colour, or the team
                 static const char* kFour[4] = {"BLUE WINS", "ORANGE WINS", "GREEN WINS", "VIOLET WINS"};
-                banner = g.tun.teamMode == TEAMS_FFA ? kFour[g.matchWinner & 3]
+                banner = g.matchWinner < 0 ? "A DRAW"
+                       : (g.tun.teamMode == TEAMS_FFA || g.octagon()) ? kFour[g.matchWinner & 3]
                        : g.tun.teamMode == TEAMS_3V1 ? (g.matchWinner == 1 ? "THE ONE WINS" : "THE THREE WIN")
                        : (g.matchWinner == 0 ? "BLUE TEAM WINS" : "ORANGE TEAM WINS");
             } else if (inLobby(a) || a.spectating || a.net.localWaiting()) {   // BLUE WINS, or the country: UNITED STATES WINS
@@ -6691,13 +7369,20 @@ static void drawWorld(App& a, int pass) {
             static const char* kLeads[4] = {"BLUE LEADS", "ORANGE LEADS", "GREEN LEADS", "VIOLET LEADS"};
             const int lt = g.leader();
             const bool ours = !a.viewing && !a.spectating && !a.net.localWaiting() && lt == g.team(L);
-            const char* t = ours ? (g.tun.teamMode == TEAMS_FFA ? "YOU LEAD" : "YOUR TEAM LEADS")
-                          : g.tun.teamMode == TEAMS_FFA ? kLeads[lt & 3]
+            const char* t = ours ? ((g.tun.teamMode == TEAMS_FFA || g.octagon()) ? "YOU LEAD" : "YOUR TEAM LEADS")
+                          : (g.tun.teamMode == TEAMS_FFA || g.octagon()) ? kLeads[lt & 3]
                           : g.tun.teamMode == TEAMS_3V1 ? (lt == 1 ? "THE ONE LEADS" : "THE THREE LEAD")
                           : (lt == 0 ? "BLUE TEAM LEADS" : "ORANGE TEAM LEADS");
             const float* lc = teamRGB(a, lt);
             const float col[4] = {lc[0] * 0.6f + 0.4f, lc[1] * 0.6f + 0.4f, lc[2] * 0.6f + 0.4f, std::min(1.f, a.leadFlash)};
             a.gfx.drawText(t, {faceP0, Vec3{0, 2.2f, 0} - g.facing(L) * 1.5f}, 0.12f, col);
+        }
+        if (!banner && oct && a.octMsgT > 0) {   // FIREBALL BLITZ: who is out, or the room closing in (with its countdown)
+            const float* mc = a.octMsgP >= 0 ? teamCol[a.octMsgP & 3] : nullptr;
+            const float col[4] = {mc ? mc[0] * 0.6f + 0.4f : 1.f, mc ? mc[1] * 0.6f + 0.4f : 0.62f, mc ? mc[2] * 0.6f + 0.4f : 0.2f, std::min(1.f, a.octMsgT)};
+            std::string m = a.octMsg;
+            if (a.octMsgP < 0 && g.ringCloseAt >= 0) m += "   " + std::to_string((int)std::ceil(std::max(0.f, g.ringCloseAt - g.now)));
+            a.gfx.drawText(m, {faceP0, Vec3{0, 2.2f, 0} - g.facing(L) * 1.5f}, 0.13f, col);
         }
         if (a.bumpFlash > 0 && !a.spectating && !a.net.localWaiting()) {
             const float gold[4] = {1.0f, 0.85f, 0.3f, std::min(1.f, a.bumpFlash * 2.f)};
@@ -6864,6 +7549,44 @@ static void trainingFeedback(App& a, float dt, training::Phase before) {
     }
 }
 
+#ifdef _WIN32
+// DISCORD STATUS: "Project Arena" (playing) or "Project Arena - Spectator" (watching), a line saying what, a second
+// with the rules, how long, and the room's size
+static void discordUpdate(App& a) {
+    if (!a.discordOn) { discord::clear(); return; }
+    discord::Activity d;
+    const Game& g = a.game;
+    const Net::Mode m = a.net.mode();
+    d.spectator = a.desktop || m == Net::Mode::Spectate || a.spectating;
+    if (d.spectator) {
+        const SpecMatch* w = nullptr;
+        for (const SpecMatch& sm : a.net.matches()) if (sm.ip == a.watchIp) w = &sm;
+        d.details = w ? std::string("Watching ") + (w->name[0] ? w->name : "a live match") : "In the spectator hub";
+        d.state = w ? rulesLine(w->game.tun) : "Choosing a match";
+    } else if (a.trainer.active()) {
+        d.details = "Training";
+        d.state = "Lessons and leaderboards";
+    } else if (inLobby(a)) {
+        d.details = "In the lobby";
+    } else if (m == Net::Mode::Host || m == Net::Mode::Client) {
+        d.details = m == Net::Mode::Host ? "Hosting an arena" : "In an online arena";
+        d.state = rulesLine(g.tun);
+        const RoomInfo& r = a.net.room();
+        int n = (int)r.members.size();
+        for (int p = 0; p < kMaxPlayers; ++p) n += r.slot[p] != 0;
+        d.partySize = std::max(1, n);
+        d.partyMax = (g.np == 4 ? 4 : 2) + Net::kMaxWaiting;
+    } else {
+        d.details = std::string("Practice vs ") + (g.tun.botAdapt ? "MATCH MY LEVEL" : botSkill(g.tun.botLevel).name);
+        d.state = rulesLine(g.tun);
+    }
+    const std::string key = std::string(d.spectator ? "s" : "p") + d.details;
+    if (key != a.discordKey) { a.discordKey = key; a.discordSince = (int64_t)time(nullptr); }   // (the time: since this began)
+    d.start = a.discordSince;
+    discord::set(d);
+}
+#endif
+
 static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
     a.sparc.update(t);   // EXPERIMENTAL cross-play link (does nothing unless connected)
     // the EXPERIMENTAL rooms: by the rules in play (practice, rooms, spectating; 0.3.12); the lobby stays classic, two
@@ -6873,7 +7596,7 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
         const Net::Mode nm = a.net.mode();
         if (inLobby(a)) a.game.tun.players = 2;
         else if (nm == Net::Mode::Offline || nm == Net::Mode::Searching || nm == Net::Mode::Host)
-            a.game.tun.players = a.game.tun.experimental && a.game.tun.expRoom == 1 ? 4 : 2;
+            a.game.tun.players = a.game.tun.experimental && fourPlayerRoom(a.game.tun.expRoom) ? 4 : 2;
     }
     if (a.trainer.active() && (a.net.mode() != Net::Mode::Offline || inLobby(a) || a.spectating)) stopTraining(a);
     if (a.menuOpen && a.trainBoard >= -1 && nowSeconds() - a.trainBoardAsked > 5.0) askBoard(a);   // (a board open: kept fresh)
@@ -6889,20 +7612,65 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
     a.bumpFlash = std::max(0.f, a.bumpFlash - dt);
     a.leadFlash = std::max(0.f, a.leadFlash - dt);
     a.foulFlash = std::max(0.f, a.foulFlash - dt);
+    a.octMsgT = std::max(0.f, a.octMsgT - dt);
+    a.fireDanger = 0;
+    {   // FIREBALL BLITZ: knocked out, a blink to the dugout; the next match, a blink back to your place
+        const Game& g = a.game;
+        const bool out = g.octagon() && !a.spectating && !a.viewing && !a.net.localWaiting() && !g.alive(L) &&
+                         ((g.startMask >> L) & 1) && g.match != MatchState::WaitingForPlayers;
+        if (out != a.wasOut) {
+            a.wasOut = out;
+            Vec3 pos, fwd;
+            viewTarget(a, L, pos, fwd);
+            startWarp(a, {yawToward(fwd), pos + Vec3{0, a.viewHead.p.y, 0}});
+        }
+    }
+    if (a.game.octagon() && !a.spectating && !a.viewing && a.game.alive(L) && a.game.match == MatchState::InProgress)
+        for (int o = 0; o < a.game.np; ++o)
+            for (int k = 0; k < Game::kMaxFire; ++k) {
+                const Ball& f = a.game.fire[o][k];
+                if (f.state == BallState::Flying && f.instigator != L && a.game.fireHitTime(f, a.game.pl[L].in.head.p, 1.2f) >= 0)
+                    a.fireDanger |= (uint16_t)(1u << (o * Game::kMaxFire + k));
+            }
+#ifdef _WIN32
+    discordUpdate(a);
+#endif
+    for (App::Puff& u : a.puffs) u.t += dt;
+    a.puffs.erase(std::remove_if(a.puffs.begin(), a.puffs.end(), [](const App::Puff& u) { return u.t > 0.6f; }), a.puffs.end());
+    if (a.game.octagon()) {   // FIREBALL BLITZ: the room closed in: a blink to your new place, where you stood in yours
+        const Game& g = a.game;
+        if (g.ringMask != a.ringSeen) {
+            const Vec3 o = a.ringStartSeen[L], n = g.tun.start[L];
+            if (a.ringSeen && !a.spectating && !a.viewing && !a.net.localWaiting() && ((g.ringMask >> L) & 1) && length(n - o) > 0.05f) {
+                auto yaw = [](const Vec3& v) { return std::atan2(v.x, v.z); };
+                const Quat turn = Quat::axisAngle({0, 1, 0}, yaw(Vec3{-n.x, 0, -n.z}) - yaw(Vec3{-o.x, 0, -o.z}));
+                const Pose h = a.viewHead;
+                startWarp(a, {turn * h.q, n + turn.rotate(h.p - o)});
+            }
+            a.ringSeen = g.ringMask;
+        }
+        for (int p = 0; p < kMaxPlayers; ++p) a.ringStartSeen[p] = g.tun.start[p];
+    } else {
+        a.ringSeen = 0;
+    }
     updateCrowd(a, dt);
-    {   // a guest plays by the host's rules; ours come back when we leave (and are never saved over)
-        const bool guest = a.net.mode() == Net::Mode::Client || a.net.mode() == Net::Mode::Spectate;
+    {   // a guest plays by the host's rules; ours come back when we leave (and are never saved over). Hosting a room
+        // taken over from its host (HOST HANDOFF) is still the room's rules, not ours
+        const bool guest = a.net.mode() == Net::Mode::Client || a.net.mode() == Net::Mode::Spectate || a.net.inherited();
         if (!guest && a.guestRules) {
             Tunables& t = a.game.tun;
             t.advanced = a.ownRules.advanced; t.shields = a.ownRules.shields; t.knuckleMode = a.ownRules.knuckleMode;
             t.basicMatchTime = a.ownRules.basicMatchTime; t.advancedRoundTime = a.ownRules.advancedRoundTime;
             // (and the rest a host's snapshots set: its EXPERIMENTAL room, FOUR CORNERS' teams; they stayed until 0.3.12)
             t.experimental = a.ownRules.experimental; t.expRoom = a.ownRules.expRoom; t.players = a.ownRules.players;
-            t.teamMode = a.ownRules.teamMode; t.theOne = a.ownRules.theOne;
+            t.teamMode = a.ownRules.teamMode; t.theOne = a.ownRules.theOne; t.oneTurns = a.ownRules.oneTurns;
+            t.health = a.ownRules.health; t.fireBalls = a.ownRules.fireBalls; t.octPlayers = a.ownRules.octPlayers;
             a.guestRules = false;
             if (a.game.match == MatchState::WaitingForPlayers || a.net.mode() == Net::Mode::Offline) a.game.reset(a.game.pl[1].isBot);
             LOGI("rules -> %s (our own again)", rulesLine(a.game.tun).c_str());
         } else if (!guest) {
+            // (practice 3 v 1: you are THE ONE; a value left from hosting, where it took turns, once stayed)
+            if (a.net.mode() == Net::Mode::Offline && !a.trainer.active()) a.game.tun.theOne = 0;
             a.ownRules = a.trainer.active() ? a.trainer.savedRules() : a.game.tun;   // (TRAINING's own rules are never ours)
         } else {
             a.guestRules = true;
@@ -6923,7 +7691,7 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
         if (a.stateKey != 0xFFFFFFFFu && key != a.stateKey) {
             if (a.dirOpen) { a.dirOpen = false; a.infoKind = -1; }
             if (a.menuOpen && !a.nameEdit && !a.bugOpen && !a.reportOpen) {
-                a.menuOpen = false; a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.helpOpen = a.xpOpen = a.rulesOpen = false;
+                a.menuOpen = false; a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.movePlayersOpen = false;
                 LOGI("menu: closed (moved to %s)", a.net.status());
             }
         }
@@ -6961,7 +7729,23 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
         a.net.exchange(mine, in, a.game, dt);
         SpecMatch* w = nullptr;
         for (SpecMatch& m : a.net.matches()) if (m.ip == a.watchIp) w = &m;
-        if (a.watchIp && !w) { a.watchIp = 0; LOGI("spectate: match ended, back to the hub"); }
+        if (a.watchIp && !w) {   // the match is gone: handed over to another host (follow it), or ended
+            uint32_t next = 0;
+            bool listed = false;
+            for (const LanGame& lg : a.net.games()) { if (lg.continues == a.watchIp) next = lg.ip; listed |= lg.ip == a.watchIp; }
+            // (a host gone quiet with others in its room: it may turn up under the next host within ~10 s; wait that long
+            // for it. Nobody else there: nobody to take it over)
+            if (!listed && a.watchGone == 0) a.watchGone = nowSeconds();
+            const double wait = a.watchPeople >= 2 ? 12.0 : 0.0;
+            if (next) { a.watchIp = next; a.watchGone = 0; LOGI("spectate: the room has a new host, still watching it"); }
+            else if (!listed && nowSeconds() - a.watchGone >= wait) { a.watchIp = 0; a.watchGone = 0; LOGI("spectate: match ended, back to the hub"); }
+        } else {
+            a.watchGone = 0;
+            if (w) {   // (how many people its room has: a host and at least one more can hand it over)
+                a.watchPeople = (int)w->room.members.size();
+                for (int p = 0; p < kMaxPlayers; ++p) a.watchPeople += w->room.slot[p] != 0;
+            }
+        }
         if (w) {   // watched match: its state and events drive the normal renderer, audio and effects
             const std::shared_ptr<const ArenaData> keep = a.game.arena;   // (our arena, not the copy's)
             const int keepKind = a.game.arenaKind;
@@ -7018,6 +7802,7 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
         } else if (a.net.exchange(mine, in, a.game, dt)) {
             // practice is paused while you customize your avatar (the builder only opens offline)
             const bool paused = (a.builderOpen || a.tuneOpen || (a.menuOpen && a.titleOpen)) && a.net.mode() != Net::Mode::Host && !inLobby(a);
+            a.game.octCap = a.net.mode() == Net::Mode::Offline ? a.game.tun.octPlayers : 4;   // (FIREBALL BLITZ: practice's PLAYERS)
             if (!paused) a.game.step(dt, in);
             a.net.sendState(a.game);
         }
@@ -7165,6 +7950,7 @@ static bool renderFrame(App& a) {
     }
     if (fs.shouldRender) renderInfoPreview(a);
     if (fs.shouldRender) filmRender(a);
+    if (fs.shouldRender) headSelfieRender(a);
     if (fs.shouldRender) {
         XrViewLocateInfo vl{XR_TYPE_VIEW_LOCATE_INFO};
         vl.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -7191,9 +7977,9 @@ static bool renderFrame(App& a) {
             else glClearColor(0.01f, 0.012f, 0.02f, 1);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             Pose eye = a.trackToWorld * fromXr(a.views[i].pose);
-            if (a.roomFeel != 0 && nv >= 2) {   // FIELD OF VIEW: eye separation x 1/(1 + 5% a step); the headset gets the real poses
+            if (a.roomFeel != 0 && nv >= 2) {   // FIELD OF VIEW: eye separation x 1/(1 + 10% a step); the headset gets the real poses
                 const Vec3 mid = (a.trackToWorld * fromXr(a.views[0].pose)).p * 0.5f + (a.trackToWorld * fromXr(a.views[1].pose)).p * 0.5f;
-                eye.p = mid + (eye.p - mid) * (1.f / (1.f + 0.05f * a.roomFeel));
+                eye.p = mid + (eye.p - mid) * (1.f / (1.f + 0.10f * a.roomFeel));
             }
             a.ptFadeNow = ptOn ? a.ptReveal : 0.f;   // ROOM AT EDGES / PEEK (drawWorld fades the world under the menus)
             a.curEye = (int)i;
@@ -7389,7 +8175,8 @@ static void saveWarps(App& a) {
     if (FILE* fp = fopen((std::string(ext) + "/warps.cfg").c_str(), "w")) {
         for (const App::WarpCam& w : a.warps) {
             Vec3 f = w.pose.q.rotate({0, 0, -1});
-            fprintf(fp, "%.3f %.3f %.3f %.4f %d %d %d\n", w.pose.p.x, w.pose.p.y, w.pose.p.z, std::atan2(-f.x, -f.z), w.hold, w.trans, w.trig);
+            fprintf(fp, "%.3f %.3f %.3f %.4f %d %d %d %.4f %.1f\n", w.pose.p.x, w.pose.p.y, w.pose.p.z, std::atan2(-f.x, -f.z), w.hold, w.trans,
+                    w.trig, w.pitch, w.fov);
         }
         fclose(fp);
     }
@@ -7402,11 +8189,13 @@ static void loadWarps(App& a) {
     if (!fp) return;
     char line[128];
     while (a.warps.size() < 8 && fgets(line, sizeof line, fp)) {
-        float x, y, z, yaw;
+        float x, y, z, yaw, pitch = 0, fov = 0;
         int hold = 1, trans = 1, trig = 0;
-        if (sscanf(line, "%f %f %f %f %d %d %d", &x, &y, &z, &yaw, &hold, &trans, &trig) < 4) continue;
+        if (sscanf(line, "%f %f %f %f %d %d %d %f %f", &x, &y, &z, &yaw, &hold, &trans, &trig, &pitch, &fov) < 4) continue;
         App::WarpCam w;
-        w.pose = {Quat::axisAngle({0, 1, 0}, yaw), {x, y, z}};
+        w.pose = {Quat::axisAngle({0, 1, 0}, yaw), {x, y, z}};   // (level: the headset's head; the PC adds the pitch)
+        w.pitch = std::isfinite(pitch) ? clampf(pitch, -1.5f, 1.5f) : 0.f;
+        w.fov = std::isfinite(fov) && fov >= 25.f && fov <= 100.f ? fov : 0.f;
         w.hold = (uint8_t)(hold & 3); w.trans = (uint8_t)(trans & 1); w.trig = (uint8_t)std::min(2, std::max(0, trig));
         a.warps.push_back(w);
     }
@@ -7419,7 +8208,7 @@ static void saveSettings(App& a) {
     std::string f = std::string(ext) + "/settings.cfg";
     if (FILE* fp = fopen(f.c_str(), "w")) {
         fprintf(fp, "cfgver=8\n");
-        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nsparcserver=%s\nstatsnotice=%d\ncrowd=%d\nshields=%d\nknuckles=%d\nmatchtime=%.0f\nroundtime=%.0f\nturn=%d\nbotlevel=%d\nbotadapt=%d\nbotmatch=%.2f\nrecord=%d\nbotmeet=%d\nroomfeel=%d\nexperimental=%d\nexproom=%d\nteams=%d\n",
+        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nsparcserver=%s\nstatsnotice=%d\ncrowd=%d\nshields=%d\nknuckles=%d\nmatchtime=%.0f\nroundtime=%.0f\nturn=%d\nbotlevel=%d\nbotadapt=%d\nbotmatch=%.2f\nrecord=%d\nbotmeet=%d\nroomfeel=%d\nexperimental=%d\nexproom=%d\nteams=%d\noneturns=%d\nhealth=%d\nfireballs=%d\noctplayers=%d\ndiscord=%d\nprivatetalk=%d\nheadselfie=%d\nselfie=%d\nselfiecorner=%d\nselfiesize=%d\nselfieround=%d\nselfiecam=%d\n",
                 (a.guestRules ? a.ownRules : a.game.tun).advanced ? 1 : 0, a.game.tun.shieldPlacement, a.tunePitchDeg, a.tuneFwd, a.tuneUp, a.volume,
                 a.pointerHand, a.fxLevel, a.hideOutside ? 1 : 0, a.voiceMode, a.muteSpectators ? 1 : 0, a.mutePlayers ? 1 : 0,
                 a.muteAll ? 1 : 0, a.onlinePref ? 1 : 0, a.botFill ? 1 : 0, a.ptMode, a.ptFloor, a.ptGlass, a.ptRoom, a.ptMono ? 1 : 0, a.ptEdges ? 1 : 0, a.ptEdgeReveal ? 1 : 0, a.ptPeekOn ? 1 : 0, a.team.c_str(),
@@ -7428,7 +8217,10 @@ static void saveSettings(App& a) {
                 (a.guestRules ? a.ownRules : a.game.tun).knuckleMode, (a.guestRules ? a.ownRules : a.game.tun).basicMatchTime,
                 (a.guestRules ? a.ownRules : a.game.tun).advancedRoundTime, a.turnMode, (a.guestRules ? a.ownRules : a.game.tun).botLevel,
                 (a.guestRules ? a.ownRules : a.game.tun).botAdapt ? 1 : 0, (a.guestRules ? a.ownRules : a.game.tun).botMatch, a.recordOn ? 1 : 0,
-                (a.guestRules ? a.ownRules : a.game.tun).botMeet ? 1 : 0, a.roomFeel, (a.guestRules ? a.ownRules : a.game.tun).experimental ? 1 : 0, (a.guestRules ? a.ownRules : a.game.tun).expRoom, (a.guestRules ? a.ownRules : a.game.tun).teamMode);
+                (a.guestRules ? a.ownRules : a.game.tun).botMeet ? 1 : 0, a.roomFeel, (a.guestRules ? a.ownRules : a.game.tun).experimental ? 1 : 0, (a.guestRules ? a.ownRules : a.game.tun).expRoom, (a.guestRules ? a.ownRules : a.game.tun).teamMode,
+                (a.guestRules ? a.ownRules : a.game.tun).oneTurns ? 1 : 0, (a.guestRules ? a.ownRules : a.game.tun).health,
+                (a.guestRules ? a.ownRules : a.game.tun).fireBalls, (a.guestRules ? a.ownRules : a.game.tun).octPlayers, a.discordOn ? 1 : 0,
+                a.net.privateTalk() ? 1 : 0, a.headSelfie ? 1 : 0, a.selfieOn ? 1 : 0, a.selfieCorner, a.selfieSize, a.selfieRound ? 1 : 0, a.selfieCam);
         fclose(fp);
     }
 }
@@ -7470,10 +8262,22 @@ static void loadSettings(App& a) {
         else if (k == "volume") a.volume = std::max(0, std::min(10, (int)v));
         else if (k == "hand") a.pointerHand = ((int)v) ? 1 : 0;
         else if (k == "fx") a.fxLevel = std::max(0, std::min(2, (int)v));
-        else if (k == "roomfeel") a.roomFeel = std::max(-4, std::min(4, (int)v));
+        else if (k == "roomfeel") a.roomFeel = std::max(-5, std::min(5, (int)v));
         else if (k == "experimental") a.game.tun.experimental = v != 0;
-        else if (k == "exproom") { a.game.tun.expRoom = (int)v == 1 ? 1 : 0; a.game.tun.players = a.game.tun.expRoom == 1 && a.game.tun.experimental ? 4 : 2; }
+        else if (k == "exproom") { a.game.tun.expRoom = std::max(0, std::min(kRooms - 1, (int)v)); a.game.tun.players = fourPlayerRoom(a.game.tun.expRoom) && a.game.tun.experimental ? 4 : 2; }
+        else if (k == "health") a.game.tun.health = std::max(1, std::min(10, (int)v));
+        else if (k == "fireballs") a.game.tun.fireBalls = std::max(1, std::min(4, (int)v));
+        else if (k == "octplayers") a.game.tun.octPlayers = std::max(2, std::min(4, (int)v));
+        else if (k == "discord") a.discordOn = v != 0;
+        else if (k == "selfie") a.selfieOn = v != 0;
+        else if (k == "headselfie") a.headSelfie = v != 0;
+        else if (k == "privatetalk") a.net.setPrivateTalk(v != 0);
+        else if (k == "selfiecorner") a.selfieCorner = std::max(0, std::min(3, (int)v));
+        else if (k == "selfiesize") a.selfieSize = std::max(0, std::min(2, (int)v));
+        else if (k == "selfieround") a.selfieRound = v != 0;
+        else if (k == "selfiecam") a.selfieCam = std::max(0, std::min(15, (int)v));
         else if (k == "teams") a.game.tun.teamMode = std::max(0, std::min(2, (int)v));
+        else if (k == "oneturns") a.game.tun.oneTurns = v != 0;
         else if (k == "crowd") a.crowdMode = std::max(0, std::min(2, (int)v));
         else if (k == "turn") a.turnMode = std::max(0, std::min(2, (int)v));
         else if (k == "botlevel") a.game.tun.botLevel = std::max(0, std::min(kBotLevels - 1, (int)v));
@@ -7577,6 +8381,7 @@ static void startUp(App& a) {
     loadStatsKey(a);
     a.game.tun.advanced = true;   // the default rules (owner: Advanced is the most played); settings.cfg advanced= wins
     loadSettings(a);
+    a.net.setBotFill(a.botFill);   // (a saved BOT FILLS IN: OFF never reached the room before 0.3.13)
     if (a.serverAddr.empty() && PA_DEFAULT_SERVER[0]) a.serverAddr = PA_DEFAULT_SERVER;   // the community server of this build
     // settings from before 0.3.1 can hold a local test server (a developer PC on the home network, e.g. 192.168.x.x):
     // it made two headsets look for each other on different servers. Those move to this build's server, once.
@@ -7698,6 +8503,8 @@ struct ShotView {
     int face = -1;      // --face B F: blue's body type (0 / 1) and face (0..3)
     std::string look;   // --look "visor=1,mask=3,headgear=2": avatar.cfg keys for blue (accessory checks)
     std::string dcshot;       // --dcshot meet|bump|win|play: the desktop spectator's broadcast moment (its camera and overlay)
+    int selfie = -1;          // --selfie N: the SELFIE overlay with a test card (N: corner 0-3, + 4 square, + 8 small, + 16 large)
+    bool headSelfie = false;  // --headselfie: a spectator in the headset with SELFIE on, seen through their eyes
     int layer = 0, keyCol = 3;  // --layer 0-3: its VIEW LAYERS; --keycol 0-2 (pictures only): an old colour key
     std::string nations[2];     // --nations USA FRA: the two players' countries (NATIONS; "-" = none)
     int crowdFans = -1, crowdHype[2] = {0, 0}, crowdCheer = -1;   // --crowd FANS HYPE0 HYPE1 [END]: The Crowd
@@ -7798,6 +8605,28 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         }
         (void)in;
     }
+    if (v.scene == "blitz" || v.scene == "blitz3" || v.scene == "blitzrapid" || v.scene == "blitzwait") {   // FIREBALL BLITZ: four bots mid-match (blitz3: one
+        Game& g = a.game;                                                          // out, the room closed in; rapid: RAPID FIRE)
+        g.tun.experimental = true; g.tun.expRoom = ROOM_BLITZ; g.tun.players = 4; g.tun.meetTime = 0; g.tun.botLevel = 3;
+        g.tun.health = 5; g.tun.fireBalls = v.scene == "blitzrapid" ? 4 : 1; g.tun.basicMatchTime = 0;
+        g.useArena(ARENA_OCTAGON, a.classicCol);
+        g.rngSeed(11);
+        g.resetWithBots(0xF);
+        a.viewing = true;
+        const float secs = v.scene == "blitz3" ? 60.f : v.scene == "blitzwait" ? 0.f : 7.5f;   // (blitzwait: before it starts)
+        for (int i = 0; i < 72 * secs; ++i) {
+            PlayerInput tmp[kMaxPlayers];
+            g.step(1.f / 72, tmp);
+            if (v.scene == "blitz3" && g.aliveCount() == 3 && g.ringCloseAt < 0 && g.match == MatchState::InProgress) break;
+            if (v.scene == "blitz3" && i == 72 * 5) g.pl[2].health = 1;   // (so someone goes out soon)
+        }
+        a.octWallR = g.ringApothem;
+        if (v.scene == "blitzwait") { a.viewing = false; g.pl[0].isBot = false; }   // (you, at your place: the card in front of you)
+        for (int p = 0; p < 4; ++p) {
+            g.pl[p].in.avatar = avatar::preset((3 * p + 1) % avatar::presetCount());
+            a.viewIn[p] = g.pl[p].in; a.viewInValid[p] = true;
+        }
+    }
     if (v.scene.rfind("train", 0) == 0) {   // TRAINING: trainN, lesson N's card a few seconds in (the coach showing it); trainplayN: playing
         const bool play = v.scene.rfind("trainplay", 0) == 0;
         const int n = std::atoi(v.scene.c_str() + (play ? 9 : 5));
@@ -7871,7 +8700,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             }
         }
         // every kind of event through the real handlers (logs, sounds, haptics): a missing name once crashed both headsets
-        for (int t = 0; t <= (int)EventType::LeadChange; ++t) {
+        for (int t = 0; t <= (int)EventType::RingClose; ++t) {
             GameEvent e{};
             e.type = (EventType)t; e.player = 0; e.hand = -1;
             g.events.push_back(e);
@@ -7879,7 +8708,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         handleEvents(a);
         g.events.clear();
         a.bumpFlash = a.foulFlash = a.hitFlash[0] = a.hitFlash[1] = 0;   // (the picture shows the meeting, not those events' flashes)
-        LOGI("selftest: all %d event kinds handled", (int)EventType::LeadChange + 1);
+        LOGI("selftest: all %d event kinds handled", (int)EventType::RingClose + 1);
     }
     if (v.scene == "tuning") {   // the developer tuning tool: you in front of its mirror, hands up, the panel beside
         a.devMode = true;
@@ -8156,6 +8985,12 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             a.winAt = nowSeconds() - 1.2;
         }
         if (v.dcshot == "bump") a.bumpFlash = 0.9f;
+#ifdef _WIN32
+        if (v.selfie >= 0) {   // SELFIE with its test card
+            a.selfieOn = a.selfieTest = true; a.selfieCorner = v.selfie & 3; a.selfieRound = !(v.selfie & 4);
+            a.selfieSize = (v.selfie & 8) ? 0 : (v.selfie & 16) ? 2 : 1;
+        }
+#endif
         if (v.dcshot == "hub") {   // the hub of live miniatures, this match among them
             a.net.matches().back().game = g;
             a.net.matches().back().room.botMask = 0xF;   // (its players shown: bots, here)
@@ -8188,6 +9023,20 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         if (dcWinSplit(a)) desktopRender(a, eye, W, H, 1.f / 60.f);   // (a second frame: the close-ups have settled)
     } else {
         a.viewHead = eye;   // (what turns to the viewer, FOUL and the sprites, turns to the picture's camera)
+        if (v.headSelfie) {   // SELFIE in the headset: the spectator at the picture's camera, hands up, waving
+            a.spectating = true; a.watchIp = 1; a.headSelfie = true;
+            a.localIn = PlayerInput{};
+            a.localIn.headTracked = true; a.localIn.head = eye;
+            for (int h = 0; h < 2; ++h) {
+                a.localIn.hand[h].tracked = true;
+                a.localIn.hand[h].grip = {eye.q * Quat::axisAngle({1, 0, 0}, 0.4f), eye.transform({h ? 0.22f : -0.22f, -0.12f, -0.30f})};
+            }
+            headSelfieRender(a);
+            a.viewHead = eye;
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);   // (the picture's own target again)
+            glViewport(0, 0, W, H);
+            a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(tx), std::atan(tx), std::atan(ty), -std::atan(ty), 0.05f, 2000.f), eye.p);
+        }
         drawWorld(a, 0);
         drawWorld(a, 1);
     }
@@ -8268,11 +9117,27 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             c.faced = 160; c.catches = 31; c.returnHits = 14; c.topSpeed = 24.8f;
         }
         if (v.menu == "bug") { a.bugOpen = true; a.bugCat = 1; a.bugNote = "BALL WENT THROUGH THE WALL"; }
+        if (v.menu == "update") a.updateOpen = true;   // UPDATE NOW's page (as this copy would update)
         if (v.menu == "rules") { a.rulesOpen = true; a.rulesForHost = true; a.game.tun.advanced = true; }
         if (v.menu == "rulesprac") { a.rulesOpen = true; a.rulesForHost = false; a.game.tun.advanced = false; a.game.tun.experimental = true; }
         if (v.menu == "optionsexp") {   // MATCH OPTIONS for practice, EXPERIMENTAL: the room choice
             a.rulesOpen = true; a.rulesForHost = false; a.rulesStep = 1; optionsFrom(a, a.game.tun);
             a.optAdvanced = false; a.optExperimental = true; a.optExpRoom = 0;
+        }
+        if (v.menu == "moveplayers") {   // MOVE PLAYERS, FOUR CORNERS 3 v 1 (not hosting here: the rows show, greyed)
+            a.game.tun.experimental = true; a.game.tun.expRoom = 1; a.game.tun.players = 4; a.game.tun.teamMode = TEAMS_3V1;
+            a.game.tun.theOne = 2;
+            a.game.resetWithBots(0xE);
+            a.movePlayersOpen = true; a.moveSel = 1;
+        }
+        if (v.menu == "optionsblitz") {   // MATCH OPTIONS for practice, FIREBALL BLITZ: health, balls, how many play
+            a.rulesOpen = true; a.rulesForHost = false; a.rulesStep = 1; optionsFrom(a, a.game.tun);
+            a.optAdvanced = false; a.optExperimental = true; a.optExpRoom = ROOM_BLITZ; a.optShields = false; a.optKnuckle = 1;
+            a.optHealth = 5; a.optBalls = 4; a.optOctPlayers = 3;
+        }
+        if (v.menu == "options3v1") {   // MATCH OPTIONS hosting FOUR CORNERS, 3 V 1 with THE ONE taking turns
+            a.rulesOpen = true; a.rulesForHost = true; a.rulesStep = 1; optionsFrom(a, a.game.tun);
+            a.optAdvanced = false; a.optExperimental = true; a.optExpRoom = 1; a.optTeams = TEAMS_3V1; a.optOneTurns = true;
         }
         if (v.menu == "options" || v.menu == "options2") {   // MATCH OPTIONS: Basic, hotdog, free play / Advanced, 2 min rounds
             a.rulesOpen = true; a.rulesForHost = true; a.rulesStep = 1; optionsFrom(a, a.game.tun);
@@ -8381,7 +9246,10 @@ static Pose lookFrom(const Vec3& pos, const Vec3& target) {
     return {Quat::axisAngle({0, 1, 0}, yaw) * Quat::axisAngle({1, 0, 0}, pitch), pos};
 }
 
-static const char* kDcViewName[6] = {"FREE CAMERA", "SIDE", "HIGH SIDE", "BLUE END", "ORANGE END", "TOP"};
+// 1-5 the views; 6, 7 blue's and orange's own eyes (owner, 2026-11-02: first person, from their headset, smoothed);
+// 8 MY CAMERA (dcMy); 0 the free camera
+static const char* kDcViewName[8] = {"FREE CAMERA", "SIDE", "HIGH SIDE", "BLUE END", "ORANGE END", "TOP", "BLUE'S EYES", "ORANGE'S EYES"};
+static const int kDcMine = 8;
 static const char* kDcLayerName[4] = {"FULL", "NO WALLS", "MINIMAL", "KEY"};
 // TRANSPARENT: no colour at all behind the players (OBS Game Capture with Allow Transparency; no colour can clash)
 static const char* kDcKeyName[4] = {"GREEN", "MAGENTA", "BLUE", "TRANSPARENT"};
@@ -8437,6 +9305,14 @@ static Pose eventCamera(App& a, const Pose& base, double t, float dt, bool freeC
     return blendPose(base, ev, k);
 }
 
+static std::string dcViewName(const App& a) {
+    if (a.dcView == kDcMine && a.dcMy >= 0 && a.dcMy < (int)a.warps.size()) {
+        static const char* kTrig[3] = {"", "  ACTION", "  FOLLOW"};
+        const App::WarpCam& w = a.warps[a.dcMy];
+        return "MY CAMERA " + std::to_string(a.dcMy + 1) + kTrig[std::min(2, (int)w.trig)];
+    }
+    return kDcViewName[a.dcView % 8];
+}
 static Pose desktopPreset(const App& a, int v) {
     if (a.watchIp == 0) return lookFrom({-1.3f, 1.75f, 0.f}, {1.4f, 0.85f, 0.f});   // the hub of live miniatures
     if (cornersRoom(a)) {   // FOUR CORNERS (0.3.12): outside its glass, the whole room in view
@@ -8630,17 +9506,35 @@ static void desktopFullscreen(App& a, bool on) {
 }
 
 // keyboard / mouse: which match, which camera; returns the eye pose
-enum { DC_VIEW = 100, DC_AUTO = 110, DC_FREE, DC_NEXT, DC_HUB, DC_FULL, DC_HELP, DC_PANEL, DC_LAYER, DC_LAYERBACK, DC_KEYCOL, DC_WINSTYLE, DC_MATCHUP };
+enum { DC_VIEW = 100, DC_AUTO = 110, DC_FREE, DC_NEXT, DC_HUB, DC_FULL, DC_HELP, DC_PANEL, DC_LAYER, DC_LAYERBACK, DC_KEYCOL, DC_WINSTYLE, DC_MATCHUP,
+       DC_MYSAVE, DC_MYHOLD, DC_MYTRANS, DC_MYTRIG, DC_MYCLEAR, DC_DISCORD, DC_SELFIE, DC_SELFIECORNER, DC_SELFIESIZE,
+       DC_SELFIESHAPE, DC_SELFIECAM, DC_UPDATE, DC_MYGO = 140, DC_MYSET = 150 };   // (DC_MYGO / DC_MYSET + n: camera n)
+
+// the Spectator Controls window's two tabbed pages (SETUP, HELP), each its controls, shown one at a time
+static std::vector<HWND> g_dcPage[2];
+static HWND g_dcTabs = nullptr;
+static void dcShowPage(int k) {
+    for (int i = 0; i < 2; ++i)
+        for (HWND c : g_dcPage[i]) ShowWindow(c, i == k ? SW_SHOW : SW_HIDE);
+}
 
 static LRESULT CALLBACK dcPanelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     App* a = (App*)GetWindowLongPtrW(h, GWLP_USERDATA);
     if (m == WM_COMMAND && a && HIWORD(w) == BN_CLICKED) { a->dcCmd = LOWORD(w); SetForegroundWindow(a->hwnd); return 0; }
+    if (m == WM_NOTIFY && ((NMHDR*)l)->hwndFrom == g_dcTabs && ((NMHDR*)l)->code == TCN_SELCHANGE) {
+        dcShowPage((int)SendMessageW(g_dcTabs, TCM_GETCURSEL, 0, 0));
+        return 0;
+    }
+    if (m == WM_CTLCOLORSTATIC) return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);   // (labels on the window's own colour)
     if (m == WM_CLOSE) { ShowWindow(h, SW_HIDE); return 0; }   // F1 brings it back
     return DefWindowProcW(h, m, w, l);
 }
 
-// a small window beside the spectator with a button for everything: never part of the captured picture
+// a small window beside the spectator, never part of the captured picture (owner, 2026-11-02: one long list was too busy;
+// what a streamer needs mid-stream always in view): LIVE at the top, then two tabs (SETUP, HELP), then what is on screen
 static void desktopPanel(App& a) {
+    INITCOMMONCONTROLSEX icc{sizeof icc, ICC_TAB_CLASSES};
+    InitCommonControlsEx(&icc);
     WNDCLASSW wc{};
     wc.lpfnWndProc = dcPanelProc;
     wc.hInstance = GetModuleHandleW(nullptr);
@@ -8651,44 +9545,92 @@ static void desktopPanel(App& a) {
     RegisterClassW(&wc);
     RECT r;
     GetWindowRect(a.hwnd, &r);
+    const int W = 340;   // (client width)
+    RECT want{0, 0, W, 760};
+    AdjustWindowRectEx(&want, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOOLWINDOW);
     a.dcPanel = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"Spectator Controls", WS_CAPTION | WS_SYSMENU,
-                                r.right + 8, r.top, 300, 726, a.hwnd, nullptr, wc.hInstance, nullptr);
+                                r.right + 8, r.top, want.right - want.left, want.bottom - want.top, a.hwnd, nullptr, wc.hInstance, nullptr);
     if (!a.dcPanel) return;
     SetWindowLongPtrW(a.dcPanel, GWLP_USERDATA, (LONG_PTR)&a);
-    HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-    auto add = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id) {
+    static HFONT font = CreateFontW(-13, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    static HFONT bold = CreateFontW(-13, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    int page = -1;   // (the page the next controls belong to; -1: every page)
+    auto add = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, HFONT f = nullptr) {
         HWND c = CreateWindowW(cls, text, WS_CHILD | WS_VISIBLE | style, x, y, w, h, a.dcPanel, (HMENU)(INT_PTR)id, wc.hInstance, nullptr);
-        SendMessageW(c, WM_SETFONT, (WPARAM)font, TRUE);
+        SendMessageW(c, WM_SETFONT, (WPARAM)(f ? f : font), TRUE);
+        if (page >= 0) g_dcPage[page].push_back(c);
         return c;
     };
+    const int L = 12, full = W - 2 * L, half = (full - 8) / 2, third = (full - 16) / 3, B = 28;   // (button height)
+    auto button = [&](const wchar_t* t, int col, int cols, int y, int id) {   // one of `cols` in a row
+        const int w = cols == 1 ? full : cols == 2 ? half : third;
+        add(L"BUTTON", t, BS_PUSHBUTTON, L + col * (w + 8), y, w, B, id);
+    };
+    auto heading = [&](const wchar_t* t, int y) { add(L"STATIC", t, SS_LEFT, L, y, full, 18, 0, bold); };
+    auto note = [&](const wchar_t* t, int y, int lines) { add(L"STATIC", t, SS_LEFT, L, y, full, 17 * lines, 0); };
+    // ---- LIVE: everything used while streaming, always in view (owner, 2026-11-02: no fumbling mid-stream)
+    page = -1;
     int y = 10;
-    add(L"STATIC", L"Cameras", SS_LEFT, 12, y, 260, 16, 0); y += 20;
-    const wchar_t* views[5] = {L"1  Side", L"2  High side", L"3  Blue end", L"4  Orange end", L"5  Top"};
-    for (int i = 0; i < 5; ++i) add(L"BUTTON", views[i], BS_PUSHBUTTON, 12 + (i % 2) * 134, y + (i / 2) * 30, 128, 26, DC_VIEW + 1 + i);
-    add(L"BUTTON", L"A  Auto camera", BS_PUSHBUTTON, 146, y + 60, 128, 26, DC_AUTO);
-    y += 96;
-    add(L"BUTTON", L"F  Free camera", BS_PUSHBUTTON, 12, y, 262, 26, DC_FREE); y += 30;
-    add(L"STATIC", L"Free camera: hold the right mouse button to look,\nW A S D move, Q / E down / up, Shift faster.\nMouse wheel zooms in any camera.",
-        SS_LEFT, 12, y, 270, 48, 0); y += 56;
-    add(L"STATIC", L"Matches", SS_LEFT, 12, y, 260, 16, 0); y += 20;
-    add(L"BUTTON", L"Tab  Next live match", BS_PUSHBUTTON, 12, y, 128, 26, DC_NEXT);
-    add(L"BUTTON", L"H  Spectator hub", BS_PUSHBUTTON, 146, y, 128, 26, DC_HUB); y += 36;
-    add(L"STATIC", L"Window", SS_LEFT, 12, y, 260, 16, 0); y += 20;
-    add(L"BUTTON", L"F11  Full screen", BS_PUSHBUTTON, 12, y, 128, 26, DC_FULL);
-    add(L"BUTTON", L"F2  Help in picture", BS_PUSHBUTTON, 146, y, 128, 26, DC_HELP); y += 36;
-    add(L"STATIC", L"View layers (streaming)", SS_LEFT, 12, y, 260, 16, 0); y += 20;
-    add(L"BUTTON", L"V  Next layer", BS_PUSHBUTTON, 12, y, 128, 26, DC_LAYER); y += 30;
-    add(L"STATIC", L"Full, no walls (the outline stays), minimal, or key: the\nplayers and balls alone, transparent behind them (OBS\nGame Capture with Allow Transparency).", SS_LEFT, 12, y, 276, 46, 0); y += 50;
-    add(L"BUTTON", L"R  Win screen", BS_PUSHBUTTON, 12, y, 128, 26, DC_WINSTYLE);
-    add(L"BUTTON", L"M  VS screen", BS_PUSHBUTTON, 146, y + 30, 128, 26, DC_MATCHUP);
-    add(L"STATIC", L"split, the winner up\nclose, or your camera", SS_LEFT, 146, y - 2, 140, 30, 0); y += 30;
-    add(L"STATIC", L"VS: portraits + stats", SS_LEFT, 12, y + 4, 130, 20, 0); y += 34;
-    add(L"STATIC", L"Game controller (Xbox or PlayStation 4)", SS_LEFT, 12, y, 270, 16, 0); y += 18;
-    add(L"STATIC", L"A / cross next match, B / circle hub, X / square auto,\nY / triangle free camera, LB / RB or D-pad left / right\ncameras, D-pad up / down view layers, triggers zoom,\nView help, Menu full screen, right stick click: win screen.\nFree camera: sticks, LB / RB down / up.",
-        SS_LEFT, 12, y, 276, 76, 0); y += 82;
-    a.dcStatus = add(L"STATIC", L"", SS_LEFT, 12, y, 270, 48, 0); y += 54;
-    add(L"STATIC", L"F1 shows / hides this window. Streaming: capture only\nthe \"Project Arena - Spectator\" window; this one\nstays off the stream.",
-        SS_LEFT, 12, y, 270, 48, 0);
+    auto cell = [&](const wchar_t* t, int col, int cols, int y, int id) {   // a row of `cols` equal buttons
+        const int w = (full - 4 * (cols - 1)) / cols;
+        add(L"BUTTON", t, BS_PUSHBUTTON, L + col * (w + 4), y, w, B, id);
+    };
+    heading(L"Cameras", y); y += 22;
+    cell(L"1 Side", 0, 5, y, DC_VIEW + 1); cell(L"2 High", 1, 5, y, DC_VIEW + 2); cell(L"3 Blue", 2, 5, y, DC_VIEW + 3);
+    cell(L"4 Orange", 3, 5, y, DC_VIEW + 4); cell(L"5 Top", 4, 5, y, DC_VIEW + 5); y += B + 6;
+    button(L"6  Blue's eyes", 0, 2, y, DC_VIEW + 6); button(L"7  Orange's eyes", 1, 2, y, DC_VIEW + 7); y += B + 6;
+    button(L"F  Free camera", 0, 2, y, DC_FREE); button(L"A  Auto on / off", 1, 2, y, DC_AUTO); y += B + 10;
+    heading(L"My cameras (Ctrl + number saves)", y); y += 22;
+    for (int i = 0; i < 8; ++i) { wchar_t t[4] = {wchar_t(L'1' + i), 0}; cell(t, i, 8, y, DC_MYGO + i); }
+    y += B + 6;
+    button(L"Save this view", 0, 2, y, DC_MYSAVE); button(L"V  Next view layer", 1, 2, y, DC_LAYER); y += B + 10;
+    heading(L"Show", y); y += 22;
+    button(L"Tab  Next live match", 0, 2, y, DC_NEXT); button(L"H  Spectator hub", 1, 2, y, DC_HUB); y += B + 6;
+    button(L"C  Selfie on / off", 0, 2, y, DC_SELFIE); button(L"F11  Full screen", 1, 2, y, DC_FULL); y += B + 12;
+    // ---- the tabs: set up before going live, and the keys
+    g_dcTabs = CreateWindowW(WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 6, y, W - 12, 26, a.dcPanel, nullptr, wc.hInstance, nullptr);
+    SendMessageW(g_dcTabs, WM_SETFONT, (WPARAM)bold, TRUE);
+    const wchar_t* tabs[2] = {L"Setup", L"Help"};
+    for (int i = 0; i < 2; ++i) {
+        TCITEMW it{};
+        it.mask = TCIF_TEXT;
+        it.pszText = (LPWSTR)tabs[i];
+        SendMessageW(g_dcTabs, TCM_INSERTITEMW, i, (LPARAM)&it);
+    }
+    const int top = y + 36;
+    // ---- SETUP
+    page = 0;
+    y = top;
+    heading(L"My camera showing", y); y += 22;
+    button(L"Hold time", 0, 3, y, DC_MYHOLD); button(L"Fade or cut", 1, 3, y, DC_MYTRANS); button(L"Camera type", 2, 3, y, DC_MYTRIG); y += B + 6;
+    button(L"Clear all my cameras", 0, 1, y, DC_MYCLEAR); y += B + 10;
+    heading(L"Selfie (your webcam; it stays on this PC)", y); y += 22;
+    button(L"Corner", 0, 3, y, DC_SELFIECORNER); button(L"Size", 1, 3, y, DC_SELFIESIZE); button(L"Round / square", 2, 3, y, DC_SELFIESHAPE); y += B + 6;
+    button(L"Next webcam", 0, 2, y, DC_SELFIECAM); y += B + 10;
+    heading(L"Screens", y); y += 22;
+    button(L"R  Win screen", 0, 2, y, DC_WINSTYLE); button(L"M  VS screen", 1, 2, y, DC_MATCHUP); y += B + 6;
+    button(L"F2  Help in picture", 0, 2, y, DC_HELP); button(L"Discord status on / off", 1, 2, y, DC_DISCORD); y += B + 10;
+    heading(L"Updates", y); y += 22;
+    button(L"Update now / restart to update", 0, 1, y, DC_UPDATE); y += B + 6;
+    const int pageEnd = y;
+    // ---- HELP
+    page = 1;
+    y = top;
+    heading(L"Keyboard", y); y += 22;
+    note(L"1-7 views (6, 7 the players' eyes), F free (right mouse looks, W A S D\nmoves, Q / E down and up, Shift faster), A auto, Tab\nnext match, H hub, V view layer, R win screen, M VS,\nC selfie, F11 full screen, F2 help. Ctrl + 1-8 saves\nmy camera, Shift + 1-8 shows it. Wheel zooms.", y, 5); y += 92;
+    heading(L"Controller (Xbox or PlayStation 4)", y); y += 22;
+    note(L"A next match, B hub, X auto, Y free camera, D-pad\nleft / right cameras, up / down layers, triggers zoom.", y, 2); y += 40;
+    note(L"Stream only the \"Project Arena - Spectator\" window;\nthis one stays off it. F1 shows or hides it.", y, 2);
+    // ---- every page: what is on screen now
+    page = -1;
+    y = pageEnd + 4;
+    heading(L"Now", y); y += 20;
+    a.dcStatus = add(L"STATIC", L"", SS_LEFT, L, y, full, 17 * 9, 0);
+    y += 17 * 9 + 8;
+    RECT fit{0, 0, W, y};   // (the window as tall as what is in it)
+    AdjustWindowRectEx(&fit, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOOLWINDOW);
+    SetWindowPos(a.dcPanel, nullptr, 0, 0, fit.right - fit.left, fit.bottom - fit.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    dcShowPage(0);
     ShowWindow(a.dcPanel, SW_SHOWNOACTIVATE);
 }
 
@@ -8699,7 +9641,9 @@ static Pose desktopControls(App& a, double t, float dt) {
     a.dcCmd = 0;
     if (dcPressed(a, VK_TAB)) cmd = DC_NEXT;
     if (dcPressed(a, 'H')) cmd = DC_HUB;
-    for (int v = 1; v <= 5; ++v) if (dcPressed(a, '0' + v)) cmd = DC_VIEW + v;
+    const bool ctrl = dcDown(a, VK_CONTROL), shift = dcDown(a, VK_SHIFT);
+    for (int v = 1; v <= 8; ++v)   // 1 to 5 the views; Ctrl + 1 to 8 saves the view as MY CAMERA n, Shift + 1 to 8 shows it
+        if (dcPressed(a, '0' + v)) cmd = ctrl ? DC_MYSET + v - 1 : shift ? DC_MYGO + v - 1 : v <= 7 ? DC_VIEW + v : 0;
     const bool freeKey = dcPressed(a, 'F'), zeroKey = dcPressed(a, '0');
     if (freeKey || zeroKey) cmd = DC_FREE;
     if (a.dcView != 0 && dcPressed(a, 'A')) cmd = DC_AUTO;   // (A moves left in the free camera)
@@ -8710,6 +9654,7 @@ static Pose desktopControls(App& a, double t, float dt) {
     if (dcPressed(a, 'V')) cmd = DC_LAYER;
     if (dcPressed(a, 'R')) cmd = DC_WINSTYLE;
     if (dcPressed(a, 'M')) cmd = DC_MATCHUP;
+    if (dcPressed(a, 'C')) cmd = DC_SELFIE;
     // a game controller: A next match, B hub, X auto camera, Y free camera, d-pad left / right the cameras,
     // triggers zoom, View the help bar, Menu full screen (the free camera: below)
     const DcPad pad = dcPad(a);
@@ -8723,9 +9668,11 @@ static Pose desktopControls(App& a, double t, float dt) {
         // the cameras: D-pad left / right, or LB / RB (in the free camera LB / RB move it down / up instead)
         const WORD next = XINPUT_GAMEPAD_DPAD_RIGHT | (a.dcView != 0 ? XINPUT_GAMEPAD_RIGHT_SHOULDER : 0);
         const WORD prev = XINPUT_GAMEPAD_DPAD_LEFT | (a.dcView != 0 ? XINPUT_GAMEPAD_LEFT_SHOULDER : 0);
-        if (b & (next | prev)) {
-            const int v = a.dcView == 0 ? 1 : a.dcView;
-            cmd = DC_VIEW + (v - 1 + ((b & next) ? 1 : 4)) % 5 + 1;
+        if (b & (next | prev)) {   // round the five views, then your cameras
+            const int n = 7 + (int)a.warps.size();
+            const int at = a.dcView == kDcMine && a.dcMy >= 0 ? 7 + a.dcMy : (a.dcView == 0 ? 1 : a.dcView) - 1;
+            const int k = (at + ((b & next) ? 1 : n - 1)) % n;
+            cmd = k < 7 ? DC_VIEW + k + 1 : DC_MYGO + k - 7;
         }
         if (b & XINPUT_GAMEPAD_BACK) cmd = DC_HELP;
         if (b & XINPUT_GAMEPAD_DPAD_UP) cmd = DC_LAYER;
@@ -8742,10 +9689,10 @@ static Pose desktopControls(App& a, double t, float dt) {
         LOGI("desktop: watching %s", ms[k % ms.size()].name);
     }
     if (cmd == DC_HUB) { a.watchIp = 0; a.dcHubPinned = true; LOGI("desktop: hub"); }
-    if (cmd > DC_VIEW && cmd <= DC_VIEW + 5) {
+    if (cmd > DC_VIEW && cmd <= DC_VIEW + 7) {
         a.dcView = cmd - DC_VIEW; a.dcAuto = false;
         if (a.dcEventKind) a.dcEventSkip = a.dcEventKind;   // picked during the fist bump / winner close-up: show it now
-        LOGI("desktop: camera %s", kDcViewName[a.dcView]);
+        LOGI("desktop: camera %s", kDcViewName[a.dcView % 8]);
     }
     if (cmd == DC_FREE) {   // free camera from where the camera is now
         const Pose cur = desktopPreset(a, a.dcView);
@@ -8756,7 +9703,77 @@ static Pose desktopControls(App& a, double t, float dt) {
         a.dcView = 0; a.dcAuto = false;
     }
     if (cmd == DC_AUTO) { a.dcAuto = !a.dcAuto; a.dcAutoAt = t + 8.0; if (a.dcAuto && a.dcView == 0) a.dcView = 1; }
+    // MY CAMERAS: save the view (free, a preset, or one of yours) as camera n, show camera n, change the one showing
+    auto showMine = [&](int i, bool byHand) {
+        if (i < 0 || i >= (int)a.warps.size()) return;
+        const App::WarpCam& w = a.warps[i];
+        if (w.trans && a.dcLastOk) { a.dcFrom = a.dcLast; a.dcGlide = 1.f; }
+        else a.dcGlide = 0.f;
+        a.dcView = kDcMine; a.dcMy = i;
+        a.dcFollowX = w.pose.p.x;
+        if (w.fov > 0) a.dcFov = w.fov;
+        if (byHand) { a.dcAuto = false; if (a.dcEventKind) a.dcEventSkip = a.dcEventKind; }
+        a.dcAutoAt = t + kHoldSecs[w.hold & 3];
+    };
+    if (cmd == DC_MYSAVE) cmd = DC_MYSET + std::min(7, (int)a.warps.size());   // (the button: the next free one)
+    if (cmd >= DC_MYSET && cmd < DC_MYSET + 8) {
+        const int i = cmd - DC_MYSET;
+        Pose cur = a.dcView == 0 ? Pose{Quat::axisAngle({0, 1, 0}, a.dcYaw) * Quat::axisAngle({1, 0, 0}, a.dcPitch), a.dcPos}
+                 : a.dcView == kDcMine && a.dcMy >= 0 && a.dcMy < (int)a.warps.size() ? a.dcLast : desktopPreset(a, a.dcView);
+        const Vec3 f = cur.q.rotate({0, 0, -1});
+        App::WarpCam w;
+        w.pose = {Quat::axisAngle({0, 1, 0}, std::atan2(-f.x, -f.z)), cur.p};
+        w.pitch = std::asin(clampf(f.y, -1.f, 1.f));
+        w.fov = a.dcFov;
+        w.hold = a.dcNewHold; w.trans = a.dcNewTrans;
+        if (i < (int)a.warps.size()) { w.trig = a.warps[i].trig; w.hold = a.warps[i].hold; w.trans = a.warps[i].trans; a.warps[i] = w; }
+        else a.warps.push_back(w);
+        const int at = std::min(i, (int)a.warps.size() - 1);
+        saveWarps(a);
+        LOGI("desktop: my camera %d saved (%.1f %.1f %.1f)", at + 1, w.pose.p.x, w.pose.p.y, w.pose.p.z);
+        a.dcView = kDcMine; a.dcMy = at; a.dcGlide = 0; a.dcFollowX = w.pose.p.x;
+        a.dcHintUntil = 0;
+    }
+    if (cmd >= DC_MYGO && cmd < DC_MYGO + 8) showMine(cmd - DC_MYGO, true);
+    {
+        App::WarpCam* cw = a.dcView == kDcMine && a.dcMy >= 0 && a.dcMy < (int)a.warps.size() ? &a.warps[a.dcMy] : nullptr;
+        if (cmd == DC_MYHOLD) { if (cw) cw->hold = (uint8_t)((cw->hold + 1) & 3); else a.dcNewHold = (uint8_t)((a.dcNewHold + 1) & 3); saveWarps(a); }
+        if (cmd == DC_MYTRANS) { if (cw) cw->trans ^= 1; else a.dcNewTrans ^= 1; saveWarps(a); }
+        if (cmd == DC_MYTRIG && cw) { cw->trig = (uint8_t)((cw->trig + 1) % 3); saveWarps(a); }
+        if (cmd == DC_MYCLEAR) { a.warps.clear(); a.dcMy = -1; if (a.dcView == kDcMine) a.dcView = 1; saveWarps(a); LOGI("desktop: my cameras cleared"); }
+    }
+    if (a.dcView == kDcMine && (a.dcMy < 0 || a.dcMy >= (int)a.warps.size())) a.dcView = 1;   // (cleared, or cleared in the headset)
     if (cmd == DC_HELP) a.dcHelp = !a.dcHelp;
+    if (cmd == DC_SELFIE) {   // SELFIE: your webcam over the broadcast (read only on this PC)
+        a.selfieOn = !a.selfieOn;
+        if (a.selfieOn) { webcam::setRound(a.selfieRound); webcam::start(a.selfieCam); } else webcam::stop();
+        saveSettings(a);
+        LOGI("desktop: selfie %s", a.selfieOn ? "on" : "off");
+    }
+    if (cmd == DC_SELFIECORNER) { a.selfieCorner = (a.selfieCorner + 1) % 4; saveSettings(a); }
+    if (cmd == DC_SELFIESIZE) { a.selfieSize = (a.selfieSize + 1) % 3; saveSettings(a); }
+    if (cmd == DC_SELFIESHAPE) { a.selfieRound = !a.selfieRound; webcam::setRound(a.selfieRound); saveSettings(a); }
+    if (cmd == DC_SELFIECAM) {   // the next camera (if there is more than one)
+        a.selfieCam = webcam::devices() > 1 ? (a.selfieCam + 1) % webcam::devices() : 0;
+        if (a.selfieOn) webcam::start(a.selfieCam);
+        saveSettings(a);
+    }
+    if (cmd == DC_UPDATE) {   // UPDATE NOW: download and check it; once it is ready, the same button restarts into it
+        std::string why;
+        const int how = updater::how(why);
+        const char* v = updateAvailable(a);
+        if (!v) MessageBoxA(a.dcPanel, (std::string("This is the newest version (") + kAppVersion + ").").c_str(), "Project Arena", MB_OK | MB_ICONINFORMATION);
+        else if (how == 1) MessageBoxA(a.dcPanel, "Steam updates this copy: restart Steam if it has not.", "Project Arena", MB_OK | MB_ICONINFORMATION);
+        else if (how == 2) updater::openPage();
+        else if (updater::state() == updater::READY) {
+            if (MessageBoxA(a.dcPanel, "The update is ready. Close the game, put the new version in place and start it again?\n(Your settings and cameras stay.)",
+                            "Project Arena", MB_YESNO | MB_ICONQUESTION) == IDYES && updater::restart()) { saveSettings(a); a.quit = true; }
+        } else if (updater::state() == updater::IDLE || updater::state() == updater::FAILED) {
+            const std::string q = std::string("Download version ") + v + " now? It is checked and unpacked while you watch; you choose when to restart.";
+            if (MessageBoxA(a.dcPanel, q.c_str(), "Project Arena", MB_YESNO | MB_ICONQUESTION) == IDYES) updater::start(v);
+        }
+    }
+    if (cmd == DC_DISCORD) { a.discordOn = !a.discordOn; saveSettings(a); LOGI("desktop: Discord status %s", a.discordOn ? "on" : "off"); }
     if (cmd == DC_LAYER || cmd == DC_LAYERBACK) {
         a.viewLayer = (a.viewLayer + (cmd == DC_LAYER ? 1 : 3)) % 4;
         LOGI("desktop: view layers %s", kDcLayerName[a.viewLayer]);
@@ -8777,10 +9794,29 @@ static Pose desktopControls(App& a, double t, float dt) {
         if (a.dcWatchAt == 0) a.dcWatchAt = t + 2.0;
         if (t > a.dcWatchAt) { a.watchIp = ms[0].ip; a.dcWatchAt = 0; LOGI("desktop: watching %s", ms[0].name); }
     }
-    if (a.dcAuto && a.watchIp && t > a.dcAutoAt) {   // auto director: side, blue end, high, orange end
-        static const int order[4] = {1, 3, 2, 4};
+    bool mineInTurn = false;
+    for (const App::WarpCam& w : a.warps) mineInTurn |= w.trig != 1;
+    if (a.dcAuto && a.watchIp && !a.warps.empty()) {   // AUTO with your cameras: an action camera near a hit takes over
+        for (const GameEvent& e : a.game.events) {
+            if (e.type != EventType::HitPlayer && e.type != EventType::Strike && e.type != EventType::MatchEnd) continue;
+            int best = -1;
+            float bd = 1e9f;
+            for (int i = 0; i < (int)a.warps.size(); ++i)
+                if (a.warps[i].trig == 1 && !(a.dcView == kDcMine && i == a.dcMy) && length(a.warps[i].pose.p - e.pos) < bd) { bd = length(a.warps[i].pose.p - e.pos); best = i; }
+            if (best >= 0) showMine(best, false);
+        }
+    }
+    if (a.dcAuto && a.watchIp && t > a.dcAutoAt && mineInTurn) {   // ... and goes round the others in turn, each its hold
+        const int n = (int)a.warps.size();
+        const int from = a.dcView == kDcMine ? a.dcMy : -1;
+        for (int k = 1; k <= n; ++k) {
+            const int i = (from + k + n) % n;
+            if (a.warps[i].trig != 1) { showMine(i, false); break; }
+        }
+    } else if (a.dcAuto && a.watchIp && t > a.dcAutoAt) {   // auto director: side, blue end, high, orange end
+        static const int order[6] = {1, 6, 3, 2, 7, 4};   // (each player's eyes in turn too)
         int k = 0;
-        for (int i = 0; i < 4; ++i) if (order[i] == a.dcView) k = (i + 1) % 4;
+        for (int i = 0; i < 6; ++i) if (order[i] == a.dcView) k = (i + 1) % 6;
         a.dcView = order[k];
         a.dcAutoAt = t + 9.0;
     }
@@ -8814,8 +9850,103 @@ static Pose desktopControls(App& a, double t, float dt) {
         return eventCamera(a, {q, a.dcPos}, t, dt, true);
     }
     a.dcMouse = m;
-    return eventCamera(a, desktopPreset(a, a.dcView), t, dt, false);
+    Pose base = desktopPreset(a, a.dcView);
+    a.dcEyesOf = -1;
+    if ((a.dcView == 6 || a.dcView == 7) && a.watchIp) {   // a player's own eyes (their body hidden; their hands show)
+        const int p = a.dcView - 6;
+        const Pose h = a.viewIn[p].head;
+        if (a.viewInValid[p] && h.p.y > 0.3f) {
+            const Pose want{h.q, h.p + h.q.rotate({0, 0, -0.06f})};
+            if (!a.dcEyeSet || length(a.dcEye.p - want.p) > 2.f) { a.dcEye = want; a.dcEyeSet = true; }
+            a.dcEye.p = lerp(a.dcEye.p, want.p, std::min(1.f, dt * 10.f));
+            a.dcEye.q = nlerp(a.dcEye.q, want.q, std::min(1.f, dt * 6.f));
+            base = a.dcEye;
+            a.dcEyesOf = p;
+        }
+    } else {
+        a.dcEyeSet = false;
+    }
+    if (a.dcView == kDcMine && a.dcMy >= 0 && a.dcMy < (int)a.warps.size()) {   // one of yours (a follow camera glides along the
+        const App::WarpCam& w = a.warps[a.dcMy];                           //  court with the ball, as in the headset)
+        base = {w.pose.q * Quat::axisAngle({1, 0, 0}, w.pitch), w.pose.p};
+        if (w.trig == 2) {
+            Vec3 bp;
+            if (liveBall(a, bp)) a.dcFollowX += (clampf(bp.x, -8.f, 8.f) - a.dcFollowX) * (1.f - std::exp(-dt * 1.8f));
+            base.p.x = a.dcFollowX;
+        }
+    }
+    if (a.dcGlide > 0) {   // a fade: from where the camera was, eased (0.8 s)
+        a.dcGlide = std::max(0.f, a.dcGlide - dt / 0.8f);
+        const float k = 1.f - a.dcGlide, e = k * k * (3 - 2 * k);
+        base = blendPose(a.dcFrom, base, e);
+    }
+    const Pose out = eventCamera(a, base, t, dt, false);
+    a.dcLast = out;
+    a.dcLastOk = true;
+    return out;
 }
+
+#ifdef _WIN32
+// SELFIE: the webcam's latest picture into its texture (a test card for pictures), drawn in its corner of the view
+static void drawSelfie(App& a, const Pose& eye, float ty, float tx) {
+    if (!a.selfieOn) return;
+    std::vector<uint8_t> px;
+    int w = 0, h = 0;
+    bool fresh = webcam::latest(a.selfieSeen, px, w, h);
+    if (a.selfieTest && !a.selfieTex) {   // (a test card: colour bars and a face-sized circle, round-masked like a camera's)
+        w = 640; h = 480; px.assign((size_t)w * h * 4, 0);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                uint8_t* o = &px[((size_t)y * w + x) * 4];
+                const int bar = x * 6 / w;
+                static const uint8_t kBars[6][3] = {{230, 230, 230}, {230, 220, 40}, {40, 220, 230}, {40, 200, 60}, {220, 50, 200}, {40, 60, 230}};
+                const float d = std::sqrt(float((x - 320) * (x - 320) + (y - 230) * (y - 230)));
+                const bool face = d < 110;
+                o[0] = face ? 240 : kBars[bar][0]; o[1] = face ? 190 : kBars[bar][1]; o[2] = face ? 150 : kBars[bar][2];
+                const float r2 = std::sqrt(float((x - 320) * (x - 320) + (y - 240) * (y - 240)));
+                o[3] = !a.selfieRound ? 255 : (uint8_t)(255.f * clampf((240.f - r2) / 1.5f, 0.f, 1.f));
+            }
+        fresh = true;
+    }
+    if (fresh && w > 0 && h > 0) {
+        if (!a.selfieTex) glGenTextures(1, &a.selfieTex);
+        glBindTexture(GL_TEXTURE_2D, a.selfieTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        a.selfieW = w; a.selfieH = h;
+    }
+    static const float kHeight[3] = {0.34f, 0.48f, 0.64f};   // (of the view's height, -1..1 units)
+    const float hh = kHeight[a.selfieSize % 3];
+    const float aspect = a.selfieH > 0 ? (float)a.selfieW / a.selfieH : 4.f / 3.f;
+    // what shows: round, a circle as tall as the picture; square, the whole picture
+    const float visW = (a.selfieRound ? hh : hh * aspect) * ty / tx;    // (in -1..1 units across)
+    const bool right = a.selfieCorner & 1, top = a.selfieCorner < 2;
+    const float cx = (right ? 1.f : -1.f) * (0.98f - 0.5f * visW);
+    const float cy = top ? 0.68f - 0.5f * hh : -0.84f + 0.5f * hh;   // (under the score; above the status line)
+    const Vec3 c = eye.transform({cx * tx, cy * ty, -0.999f});
+    const std::string ws = webcam::status();
+    const float cyan[4] = {0.3f, 0.85f, 1.0f, 1}, grey[4] = {0.65f, 0.7f, 0.78f, 1};
+    if (a.selfieTex && (ws.empty() || a.selfieTest)) {
+        const float white[4] = {1, 1, 1, 1};
+        a.gfx.drawTexturedPanel(Mat4::fromPose({eye.q, c}, {hh * ty * aspect, hh * ty, 1}), a.selfieTex, white, false);
+        const float ring[4] = {0.12f, 0.36f, 0.48f, 1};
+        if (a.selfieRound) a.gfx.drawSprite(c, hh * ty * 1.08f, ring, eye.p, 1);   // (a soft ring round it)
+        else {
+            const float ew = hh * ty * aspect, eh = hh * ty, t = 0.006f * ty;
+            const float edge[4] = {cyan[0], cyan[1], cyan[2], 0.9f};
+            a.gfx.drawPanel(Mat4::fromPose({eye.q, c + eye.q.rotate({0, 0.5f * eh, 0.0005f})}, {ew + t, t, 1}), edge);
+            a.gfx.drawPanel(Mat4::fromPose({eye.q, c + eye.q.rotate({0, -0.5f * eh, 0.0005f})}, {ew + t, t, 1}), edge);
+            a.gfx.drawPanel(Mat4::fromPose({eye.q, c + eye.q.rotate({0.5f * ew, 0, 0.0005f})}, {t, eh + t, 1}), edge);
+            a.gfx.drawPanel(Mat4::fromPose({eye.q, c + eye.q.rotate({-0.5f * ew, 0, 0.0005f})}, {t, eh + t, 1}), edge);
+        }
+    } else {   // no picture yet: why (STARTING, NO CAMERA FOUND, CAMERA IN USE OR BLOCKED ...)
+        a.gfx.drawText("SELFIE: " + (ws.empty() ? std::string("STARTING") : ws), {eye.q, c}, 0.03f * ty, grey);
+    }
+}
+#endif
 
 static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
     const float white[4] = {1, 1, 1, 1}, grey[4] = {0.65f, 0.7f, 0.78f, 1}, cyan[4] = {0.3f, 0.85f, 1.0f, 1};
@@ -8848,7 +9979,7 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
         if (g.np == 4) {   // FOUR CORNERS: four names and scores in their colours, or the two teams
             static const char* kTeamName[2][2] = {{"BLUE TEAM", "ORANGE TEAM"}, {"THE THREE", "THE ONE"}};
             panel(0, 0.86f, 1.70f, 0.26f);
-            if (g.tun.teamMode == TEAMS_FFA) {
+            if ((g.tun.teamMode == TEAMS_FFA || g.octagon())) {
                 for (int p = 0; p < 4; ++p) {
                     const float* pc = playerRGB(a, p);
                     const float c[4] = {0.6f * pc[0] + 0.4f, 0.6f * pc[1] + 0.4f, 0.6f * pc[2] + 0.4f, 1};
@@ -8876,10 +10007,10 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
                 const int wt = g.matchWinner;
                 const float* tc = teamRGB(a, wt);
                 const float c[4] = {0.6f * tc[0] + 0.4f, 0.6f * tc[1] + 0.4f, 0.6f * tc[2] + 0.4f, 1};
-                const std::string nm = g.tun.teamMode == TEAMS_FFA ? who(wt) : kTeamName[g.tun.teamMode == TEAMS_3V1][wt & 1];
+                const std::string nm = (g.tun.teamMode == TEAMS_FFA || g.octagon()) ? who(wt) : kTeamName[g.tun.teamMode == TEAMS_3V1][wt & 1];
                 panel(0, -0.55f, 1.40f, 0.40f);
                 txt(nm, 0, -0.47f, 0.12f, c);
-                txt(g.tun.teamMode == TEAMS_FFA ? "WINS!" : "WIN!", 0, -0.62f, 0.08f, gold4);
+                txt((g.tun.teamMode == TEAMS_FFA || g.octagon()) ? "WINS!" : "WIN!", 0, -0.62f, 0.08f, gold4);
             }
         } else {
         panel(0, 0.88f, a.nationsOn ? 1.50f : 1.15f, 0.2f);
@@ -8897,7 +10028,7 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
         }
         snprintf(buf, sizeof buf, "%s%s", w->name[0] ? w->name : "LIVE MATCH", ms.size() > 1 ? "   (TAB: NEXT MATCH)" : "");
         txt(buf, -0.62f, -0.93f, 0.028f, grey);
-        snprintf(buf, sizeof buf, "%s%s%s%s", kDcViewName[a.dcView % 6], a.dcAuto ? "  (AUTO)" : "", a.viewLayer ? "   " : "",
+        snprintf(buf, sizeof buf, "%s%s%s%s", dcViewName(a).c_str(), a.dcAuto ? "  (AUTO)" : "", a.viewLayer ? "   " : "",
                  a.viewLayer ? kDcLayerName[a.viewLayer & 3] : "");
         if (!(a.viewLayer >= 3 && !a.dcHelp)) txt(buf, 0.70f, -0.93f, 0.028f, grey);   // (KEY: a clean picture unless F2)
         const float gold[4] = {1.0f, 0.85f, 0.3f, 1};
@@ -8947,8 +10078,16 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
     } else {
         txt("PROJECT ARENA  -  SPECTATOR", 0, 0.88f, 0.07f, cyan);
         if (const char* v = updateAvailable(a)) {
-            snprintf(buf, sizeof buf, "UPDATE AVAILABLE: %s  -  ON STEAM OR GITHUB", v);
+            const updater::State us = updater::state();
+            if (us == updater::DOWNLOADING) snprintf(buf, sizeof buf, "UPDATE %s: DOWNLOADING %d%%", v, (int)(updater::progress() * 100));
+            else if (us == updater::READY) snprintf(buf, sizeof buf, "UPDATE %s READY: SETUP > RESTART TO UPDATE", v);
+            else if (us == updater::FAILED) snprintf(buf, sizeof buf, "UPDATE %s: %s", v, updater::error().c_str());
+            else snprintf(buf, sizeof buf, "UPDATE AVAILABLE: %s  -  SETUP > UPDATE NOW", v);
             txt(buf, 0, 0.72f, 0.03f, orange);
+        }
+        {
+            snprintf(buf, sizeof buf, "VERSION %s", kAppVersion);
+            txt(buf, 0.85f, -0.85f, 0.024f, grey);
         }
         if (!a.net.online()) txt("ON YOUR HOME NETWORK", 0, 0.79f, 0.035f, grey);
         else if (!a.net.onlineReady()) txt("CONNECTING TO THE COMMUNITY SERVER...", 0, 0.79f, 0.035f, grey);
@@ -8958,10 +10097,13 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
             txt(buf, 0, 0.79f, 0.035f, white);
         }
     }
+#ifdef _WIN32
+    drawSelfie(a, eye, ty, tx);
+#endif
     if (!a.dcHelp && nowSeconds() < a.dcHintUntil) txt("F1: CONTROLS", 0.82f, 0.93f, 0.028f, grey);
     if (a.dcHelp) {
         panel(0, -0.80f, 1.96f, 0.13f);
-        txt("1-5 CAMERAS   A AUTO   F FREE (RIGHT MOUSE + WASD / Q E)   WHEEL ZOOM   V LAYERS   TAB NEXT MATCH   H HUB   F11 FULL   F2 HIDE",
+        txt("1-7 CAMERAS   CTRL+1-8 SAVE   SHIFT+1-8 MINE   A AUTO   F FREE (RMB + WASD / Q E)   WHEEL ZOOM   V LAYERS   TAB NEXT   H HUB   F11 FULL   F2 HIDE",
             0, a.dcPadOk ? -0.775f : -0.80f, 0.026f, white);
         if (a.dcPadOk)
             txt("CONTROLLER:  A NEXT MATCH   B HUB   X AUTO   Y FREE (STICKS, LB / RB)   D-PAD CAMERAS   TRIGGERS ZOOM   VIEW HIDE",
@@ -9137,11 +10279,29 @@ static void desktopFrame(App& a) {
         statusAt = t + 0.5;
         const SpecMatch* w = nullptr;
         for (const SpecMatch& m : a.net.matches()) if (m.ip == a.watchIp) w = &m;
-        char b[200];
-        snprintf(b, sizeof b, "Now: %s\nCamera: %s%s, layers: %s%s\nWin screen: %s", w ? (w->name[0] ? w->name : "live match") : "the spectator hub",
-                 w ? kDcViewName[a.dcView % 6] : "the hub's", a.dcAuto ? " (auto)" : "", kDcLayerName[a.viewLayer & 3],
-                 a.viewLayer == 3 ? " (transparent)" : "", kDcWinName[a.dcWinStyle % 3]);
+        char b[400];
+        static const char* kHoldName[4] = {"2 s", "4 s", "8 s", "15 s"};
+        static const char* kTrigName[3] = {"in turn", "action", "follow"};
+        char mine[96] = "none saved yet";
+        if (!a.warps.empty()) {
+            const App::WarpCam* cw = a.dcView == kDcMine && a.dcMy >= 0 && a.dcMy < (int)a.warps.size() ? &a.warps[a.dcMy] : nullptr;
+            if (cw) snprintf(mine, sizeof mine, "%d saved; this one %s, %s, %s", (int)a.warps.size(), kHoldName[cw->hold & 3],
+                             cw->trans ? "fade" : "cut", kTrigName[std::min(2, (int)cw->trig)]);
+            else snprintf(mine, sizeof mine, "%d saved", (int)a.warps.size());
+        }
+        static const char* kCorner[4] = {"top left", "top right", "bottom left", "bottom right"};
+        static const char* kSize[3] = {"small", "medium", "large"};
+        char selfie[96];
+        const std::string ws = webcam::status();
+        if (!a.selfieOn) snprintf(selfie, sizeof selfie, "off (C)");
+        else snprintf(selfie, sizeof selfie, "%s, %s, %s%s%s", kCorner[a.selfieCorner & 3], kSize[a.selfieSize % 3], a.selfieRound ? "round" : "square",
+                      ws.empty() ? "" : " - ", ws.c_str());
+        snprintf(b, sizeof b, "Now: %s\nCamera: %s%s, layers: %s%s\nMy cameras: %s\nWin screen: %s\nDiscord status: %s\nSelfie: %s\nVersion: %s", w ? (w->name[0] ? w->name : "live match") : "the spectator hub",
+                 w ? dcViewName(a).c_str() : "the hub's", a.dcAuto ? " (auto)" : "", kDcLayerName[a.viewLayer & 3],
+                 a.viewLayer == 3 ? " (transparent)" : "", mine, kDcWinName[a.dcWinStyle % 3], a.discordOn ? "on" : "off", selfie, kAppVersion);
         SetWindowTextA(a.dcStatus, b);
+        for (int i = 0; i < 8; ++i)   // (my cameras' buttons: only the saved ones can be clicked)
+            if (HWND c = GetDlgItem(a.dcPanel, DC_MYGO + i)) EnableWindow(c, i < (int)a.warps.size());
     }
     const float dt = a.lastTime > 0 ? std::min(0.1f, float(t - a.lastTime)) : 0.f;
     a.lastTime = t;
@@ -9199,6 +10359,7 @@ static int desktopMain(App& a, bool asked) {
     GetCursorPos(&a.dcMouse);
     desktopPanel(a);
     a.dcHintUntil = nowSeconds() + 8.0;
+    if (a.selfieOn) { webcam::setRound(a.selfieRound); webcam::start(a.selfieCam); }   // (left on last time)
     while (!a.quit) {
         MSG m;
         while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); }
@@ -9206,6 +10367,8 @@ static int desktopMain(App& a, bool asked) {
         desktopFrame(a);
         SwapBuffers(a.hdc);
     }
+    webcam::stop();
+    discord::stop();   // (review 2026-11-02: left running, its thread aborted the game as it closed)
     shutDown(a);
     return 0;
 }
@@ -9246,6 +10409,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--swingtest")) view.swingTest = true;
         else if (!strcmp(argv[i], "--armsup") && i + 1 < argc) view.armsUp = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--dcshot") && i + 1 < argc) view.dcshot = argv[++i];
+        else if (!strcmp(argv[i], "--selfie") && i + 1 < argc) view.selfie = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--headselfie")) view.headSelfie = true;
         else if (!strcmp(argv[i], "--layer") && i + 1 < argc) view.layer = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--keycol") && i + 1 < argc) view.keyCol = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--nations") && i + 2 < argc) { view.nations[0] = argv[++i]; view.nations[1] = argv[++i]; }
@@ -9366,6 +10531,7 @@ int main(int argc, char** argv) {
     const bool vr = !spectateArg && initInstance(a) && initActions(a) && initSession(a);
     if (!initContent(a)) { LOGE("initialisation failed"); return 1; }
     a.serverOverride = serverArg ? serverArg : "";
+    discord::start();   // (only here: never for pictures, probes or reports)
     if (!vr) {
         a.viewLayer = view.layer & 3;   // --layer 0-3 / --keycol 0-3: start in a view layer (an OBS key / transparency setup)
         a.dcKeyCol = 3;   // KEY is transparent (--keycol is still accepted from old shortcuts, and ignored)
@@ -9385,6 +10551,7 @@ int main(int argc, char** argv) {
         SwapBuffers(a.hdc);
     }
     shutDown(a);
+    discord::stop();
     return 0;
 }
 #endif

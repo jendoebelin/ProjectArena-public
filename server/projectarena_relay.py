@@ -122,7 +122,9 @@ STAT_FIELDS = ('matches', 'wins', 'throws', 'on_target', 'hits', 'blocks', 'face
 MATCH_GAP = 30.0            # seconds: at most one result per host this often
 BROADCAST = 0xFFFFFFFF
 MAX_PAYLOAD = 1200
-RATE = 1000                 # packets / second per client (an arena host: ~450 game + forwarded voice)
+RATE = 1000                 # packets / second per client
+HOST_RATE = 2500            # ... an arena host (LIVE in the last HOST_HOLD s): a full room of four playing and four
+HOST_HOLD = 5.0             #     waiting is ~500 game packets a second, and ~150 more for each person talking (0.3.13)
 TIMEOUT = 10.0
 
 
@@ -145,7 +147,7 @@ def ip_text(v):
 
 
 class Client:
-    __slots__ = ('addr', 'token', 'vip', 'version', 'app', 'name', 'seen', 'bucket', 'bucket_t', 'joined', 'key', 'tank',
+    __slots__ = ('addr', 'token', 'vip', 'version', 'app', 'name', 'seen', 'bucket', 'bucket_t', 'host_until', 'joined', 'key', 'tank',
                  'last_match', 'last_req', 'trains', 'last_board')
 
     def __init__(self, addr, vip, version, name):
@@ -154,6 +156,7 @@ class Client:
         self.token = os.urandom(16)
         self.seen = self.bucket_t = self.joined = time.monotonic()
         self.bucket = RATE
+        self.host_until = 0.0   # (hosting: the host's rate, while its LIVE keeps coming)
         self.key, self.tank, self.last_match, self.last_req = None, (0, 0), -1e9, -1e9
         self.trains, self.last_board = 0, -1e9
 
@@ -445,7 +448,8 @@ class Relay(asyncio.DatagramProtocol):
             return
         c.seen = now
         # token bucket rate limit
-        c.bucket = min(RATE, c.bucket + (now - c.bucket_t) * RATE)
+        rate = HOST_RATE if c.host_until > now else RATE
+        c.bucket = min(rate, c.bucket + (now - c.bucket_t) * rate)
         c.bucket_t = now
         if c.bucket < 1:
             self.stats['dropped'] += 1
@@ -458,6 +462,7 @@ class Relay(asyncio.DatagramProtocol):
             self.drop(c, 'bye')
             return
         if ptype == LIVE:
+            c.host_until = now + HOST_HOLD
             if self.crowd is not None:
                 self.crowd.live(c, body, now)
             return

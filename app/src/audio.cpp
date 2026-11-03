@@ -192,6 +192,12 @@ void Audio::onEvent(const GameEvent& e, const Vec3& listener, bool ours, const V
     if (it == eventMap_.end()) it = eventMap_.find(eventName(e.type));
     if (it == eventMap_.end() && e.type == EventType::FistBump) it = eventMap_.find("KnuckleBlock");   // a solid knock
     if (it == eventMap_.end() && e.type == EventType::LeadChange) it = eventMap_.find("Recharge");    // (sets without the chime)
+    // FIREBALL BLITZ (0.3.13, sounds of their own to come): a knockout the lead's chime, a fizzle a failed throw's puff,
+    // the room closing in the countdown's beep (not the overtime call: since 0.3.13 a voice saying "sudden death")
+    if (it == eventMap_.end() && e.type == EventType::Knockout) it = eventMap_.find("LeadChange");
+    if (it == eventMap_.end() && e.type == EventType::Knockout) it = eventMap_.find("ShieldBreak");
+    if (it == eventMap_.end() && e.type == EventType::Fizzle) it = eventMap_.find("ThrowFail");
+    if (it == eventMap_.end() && e.type == EventType::RingClose) it = eventMap_.find("Countdown");
     if (it == eventMap_.end()) return;
     float d = length(e.pos - listener);
     float gain = (e.pos.x == 0 && e.pos.y == 0 && e.pos.z == 0) ? 1.f : clampf(2.0f / (1.0f + d), 0.15f, 1.f);

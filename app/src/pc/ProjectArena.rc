@@ -1,2 +1,4 @@
 // Project Arena PC: the icon (taskbar, title bar, Explorer). tools/gen_pc_icon.py makes ProjectArena.ico.
 1 ICON "ProjectArena.ico"
+// file names as UTF-8 (any letters in the game's path; Windows 10 1903 and later)
+1 24 "ProjectArena.manifest"

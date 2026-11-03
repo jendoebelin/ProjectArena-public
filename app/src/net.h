@@ -22,7 +22,7 @@ struct LanGame {
     uint32_t ip = 0, session = 0;
     char name[17] = {};
     bool advanced = false, full = false;
-    // 0.3.12 (network version 9): an EXPERIMENTAL room (expRoom: 0 DIAMOND, 1 FOUR CORNERS), its players and teams, and
+    // 0.3.12 (network version 9): an EXPERIMENTAL room (expRoom: 0 DIAMOND, 1 FOUR CORNERS, 2 FIREBALL BLITZ), its players and teams, and
     // each team's score (four in FREE-FOR-ALL)
     bool experimental = false;
     int expRoom = 0, players = 2, teamMode = 0;
@@ -35,6 +35,7 @@ struct LanGame {
     int score0 = 0, score1 = 0, spectators = 0, waiting = 0, queued = 0, inTank = 0;
     float clock = 0;
     double seen = 0;
+    uint32_t continues = 0;   // (0.3.13) the room was handed over from the host at this address (spectators follow it)
 };
 
 // One arena's people, as the host reports them.
@@ -88,6 +89,10 @@ public:
     // lobby: enter the arena hosted at ip. play: take the bot's place, or queue (JOIN ROOM: just wait outside)
     void join(uint32_t ip, bool play = true);
     void setBotFill(bool on) { botFill_ = on; }   // host: the practice bot plays a lone player (else they wait)
+    // host: ROOM TALK: PRIVATE (owner, 2026-11-02, "fog of war"): spectators see the match but don't hear the room's
+    // voices (the players and those waiting still do)
+    void setPrivateTalk(bool on) { privateTalk_ = on; }
+    bool privateTalk() const { return privateTalk_; }
     bool botFill() const { return botFill_; }
     void leave();                     // back to practice vs bot (tells the other side)
     void spectate();                  // watch every live arena (leaves any room first)
@@ -197,6 +202,24 @@ public:
     // from that arena for the rest of its session (their session, address and name). The host can't be removed.
     bool voteKick(uint32_t target);   // false: not allowed (not in a room, the host, yourself, or already voted)
     bool hostKick(uint32_t target);   // the host removes someone from its arena at once (0.3.8; owner's decision)
+    // MOVE PLAYERS (four players, owner 2026-10-30): the host swaps two corners (people or bots; their teams go with
+    // the corner, THE ONE with the player) or makes a corner THE ONE (3 v 1). Either restarts the match
+    bool hostSwap(int a, int b, Game& g);
+    bool hostMakeOne(int corner, Game& g);
+    // HOST HANDOFF (0.3.13, owner 2026-11-02: one headset going to sleep ended everyone's room). The host tells the room
+    // who comes next (HEIRS, once a second: the people in it, longest there first, and their addresses). When the host
+    // goes quiet for 5 s, or hands the room over (MAKE HOST, or LEAVE GAME with people still in it), the next one hosts
+    // it from the latest snapshot and everyone else follows; the room keeps its name and rules. A match in progress
+    // pauses and picks up where it was (balls back to their throwers, a 3 s countdown); if one of its players is gone,
+    // it starts again, as whenever a player leaves. A host that wakes up to find its room moved on rejoins it.
+    bool hostHandOff(uint32_t target, const Game& g);   // the host makes someone in the room the host; it stays, waiting
+    bool inherited() const { return inherited_ && mode_ == Mode::Host; }   // hosting a room taken over (its rules)
+    bool handingOver() const { return migrating_; }     // between hosts (the match is paused)
+    // IDLE ROOMS (same request): a player whose headset sits still (no movement, no buttons) for 2 minutes leaves the
+    // tank for the waiting area; a room where nobody has moved for 10 minutes closes, after a minute's warning.
+    // Spectators don't keep a room open. (Tests shorten both.)
+    void setIdleTimes(double away, double close) { awayAfter_ = away; idleClose_ = close; }
+    void deafen(double seconds) { deafUntil_ = now_ + seconds; }   // (tests: our Wi-Fi drops; nothing arrives for a while)
     uint32_t hostSession() const { return mode_ == Mode::Host ? session_ : mode_ == Mode::Client ? peerSession_ : 0; }
     int kickVotesNeeded() const;      // host: how many votes remove someone now (0 = too few people to vote)
     std::vector<Person> peopleHere() const;
@@ -218,7 +241,38 @@ private:
         uint8_t spot = 0;
         bool local = false;
         char name[17] = {};
+        double active = 0;            // last moved or pressed something (IDLE ROOMS)
+        Vec3 ref[3];                  // where head and hands were then
+        uint8_t refButtons = 0;
+        bool back = true;             // (a room taken over: heard from since)
     };
+    struct Heir { uint32_t id = 0, ip = 0; char name[17] = {}; };
+    void sendHeirs(uint32_t first = 0);
+    void handOver(uint32_t target, bool stay);
+    void promote(Game& g, bool oldStays, uint32_t oldIp, uint32_t oldId);
+    void follow(const Heir& h);
+    void nextHeir(Game& g);
+    void arrived();
+    void stepDown();                      // host -> no longer hosting: the room's state goes, our own settings come back
+    void sendJoin(bool play);
+    void dropRoom(const char* why);       // client: out of the room (and anything about who hosts it next)
+    bool heirBeacon(uint32_t id, uint32_t ip, double since) const;   // that heir hosts a room we heard since then
+    void closeRoom();
+    std::vector<Heir> heirs_;             // client: who hosts next, in order
+    uint8_t heirFlags_ = 0;               // 1 bot fills in, 2 private talk, 4 THE ONE takes turns, 8 THE ONE fixed
+    char heirRoom_[17] = {};              // the room's name
+    size_t heirAt_ = 0;
+    bool migrating_ = false, inherited_ = false, resumed_ = false, ownTalk_ = false, ownBotFill_ = true, oneTurns_ = false;
+    double migrateUntil_ = 0, resumeWait_ = 0, lastHeirs_ = 0, lastExchange_ = 0, lastClosingWarn_ = 0;
+    double promotedAt_ = 0;               // host: when we took the room over (0: we opened it)
+    double scoutUntil_ = 0;               // client, woken up: looking for where our room went (its new host's beacon)
+    double migrateFrom_ = 0;              // client: when the handover began (beacons heard since then count)
+    std::vector<Heir> heirRemoved_;       // client: the people the host removed (they stay out under the next host)
+    uint32_t prevHost_ = 0;               // host: the room's previous host (beacons); client: the host we left
+    uint32_t prevHostId_ = 0;
+    char roomName_[17] = {};              // host: the room's name (its first host's)
+    double awayAfter_ = 120.0, idleClose_ = 600.0;
+    double deafUntil_ = 0;
     struct Spectator { uint32_t ip = 0, id = 0; double seen = 0; uint8_t where = 0; Vec3 pos; char name[17] = {}; };
     void sendTo(const void* d, int n, uint32_t ip, uint16_t port);
     void rawSend(const void* d, int n, uint32_t ip, uint16_t port);
@@ -229,11 +283,12 @@ private:
     int humans() const;
     bool inTank(uint32_t id) const { for (int p = 0; p < kMaxPlayers; ++p) if (id && slot_[p] == id) return true; return false; }
     int np_ = 2;                      // host: the tank's places this match (the game's players)
+    int expRoom_ = 0;                 // host: its EXPERIMENTAL room (the status line names it)
     uint8_t wantBots() const;         // host: the slots the bots should play now
     void freeSpot(Member& m);
     void fillTank(Game& g);
     void rotate(Game& g);
-    void compactTank(Game& g, bool reset);
+    void compactTank(Game& g, bool reset, bool nextOne = true);   // (nextOne: THE ONE chosen again for a new match)
     void removeMember(uint32_t id, Game& g);
     void hostRoomInfo();              // rebuild room_ from the host's members
     void sendRoom();
@@ -265,7 +320,7 @@ private:
     uint8_t token_[16] = {};
     uint32_t vip_ = 0;                    // our virtual address on the relay
     double lastHello_ = 0, lastRelayPing_ = 0, lastRelayHeard_ = 0, lastJoin_ = 0;
-    bool botFill_ = true, joinPlay_ = true;
+    bool botFill_ = true, joinPlay_ = true, privateTalk_ = false;
     char serverName_[64] = {};
     int otherVer_ = 0;
     double otherVerSeen_ = -10;
@@ -290,6 +345,7 @@ private:
     bool kickByHost_ = false;             // (by the host's own decision, not by a vote)
     void countKickVote(uint32_t target, uint32_t voter);
     uint32_t slot_[kMaxPlayers] = {0, 0, 0, 0};   // host: member id in each tank slot (0 = empty / bot)
+    bool oneFixed_ = false;           // host: THE ONE's corner picked by the host (MOVE PLAYERS): it stays
     std::vector<uint32_t> queue_;         // host: queued member ids, front first
     RoomInfo room_;                       // host: built each frame; client: from ROOM packets
     std::vector<uint8_t> lastState_;

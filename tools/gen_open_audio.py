@@ -554,6 +554,11 @@ SOUNDS = [
 ]
 
 
+# recorded sounds that take a slot's place (tools/recorded_audio/<Slot>.wav): since 0.3.13 Overtime is a player's voice
+# saying "sudden death" (the owner's recording, 2026-11-02)
+RECORDED = os.path.join(ROOT, 'tools', 'recorded_audio')
+
+
 def save(name, x):
     os.makedirs(OUT, exist_ok=True)
     with wave.open(os.path.join(OUT, name + '.wav'), 'wb') as w:
@@ -571,9 +576,14 @@ def main():
             os.remove(os.path.join(OUT, f))
     lines = []
     for key, fn in SOUNDS:
-        x = fn()
-        x = x - np.mean(x)
-        x = import_sounds.fit(key, x, SR)
+        x = fn()   # (always made: the sounds after it keep their random draws)
+        rec = os.path.join(RECORDED, key + '.wav')
+        if os.path.exists(rec):   # a real recording for this slot replaces the synthesized one
+            y, rate = import_sounds.read_wav(rec)
+            x = import_sounds.fit(key, y, rate)
+        else:
+            x = x - np.mean(x)
+            x = import_sounds.fit(key, x, SR)
         name = 'oa_' + key
         save(name, x)
         lines.append('%s %s' % (key, name))

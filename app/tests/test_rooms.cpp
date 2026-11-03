@@ -53,10 +53,13 @@ struct Node {
     }
 };
 
+static bool g_still = false;   // (IDLE ROOMS: everyone's head bobs a little, as a person's does, unless set)
+
 static void pump(std::vector<std::unique_ptr<Node>>& ns, double seconds) {
     const double t0 = (double)std::chrono::steady_clock::now().time_since_epoch().count() * 1e-9;
     for (;;) {
         for (auto& n : ns) {
+            if (!g_still) n->local.head.p.y = 1.6f + 0.04f * (float)std::sin((double)std::chrono::steady_clock::now().time_since_epoch().count() * 1.3e-9);
             PlayerInput in[kMaxPlayers];
             if (n->net.exchange(n->local, in, n->game, 1.f / 90.f)) { n->game.step(1.f / 90.f, in); n->net.sendState(n->game); }
         }
@@ -326,6 +329,22 @@ int main() {
     bool fromSpec = false;
     for (const Net::VoiceFrame& f : ns[2]->net.voiceInbox()) fromSpec |= f.speaker == S.net.session() && f.role == Net::VOICE_SPECTATOR;
     CHECK(fromSpec, "players hear a spectator at their arena, tagged as a spectator (for MUTE SPECTATORS)");
+    {   // ROOM TALK: PRIVATE (owner, 2026-11-02): the spectator sees the match but doesn't hear the room; the room still does
+        Node* host = nullptr;
+        for (auto& n : ns) if (n->net.mode() == Net::Mode::Host && n->net.room().slot[0]) host = n.get();
+        CHECK(host != nullptr, "(the room's host)");
+        if (host) {
+            host->net.setPrivateTalk(true);
+            for (auto& n : ns) n->net.voiceInbox().clear();
+            ns[2]->net.sendVoice(frame);
+            pump(ns, 0.4);
+            bool specHears = false, roomHears = false;
+            for (const Net::VoiceFrame& f : S.net.voiceInbox()) specHears |= f.speaker == ns[2]->net.session();
+            for (const Net::VoiceFrame& f : waiter.net.voiceInbox()) roomHears |= f.speaker == ns[2]->net.session();
+            CHECK(!specHears && roomHears, "ROOM TALK: PRIVATE: the spectator hears nothing; the one waiting in the room still does");
+            host->net.setPrivateTalk(false);
+        }
+    }
     std::printf("[team cameras]\n");
     {
         Node& S2 = *ns[6];   // SIX (refused earlier) spectates now
@@ -484,6 +503,15 @@ int main() {
         pump(fs, 2.0);
         CHECK(Q.game.np == 4 && Q.net.room().slot[0] && Q.net.room().slot[1] && Q.net.room().slot[2], "three people queue into a FOUR CORNERS tank");
         CHECK(Q.net.room().isBot(3) && Q.game.pl[3].isBot && fs[1]->game.pl[3].isBot, "the empty corner: a bot (host and visitors agree)");
+        // MOVE PLAYERS (owner 2026-10-30): the host swaps itself into the bot's corner; the bot takes the host's
+        const uint32_t hostId = Q.net.room().slot[0];
+        CHECK(!fs[1]->net.hostSwap(0, 3, fs[1]->game), "only the host can move players");
+        CHECK(Q.net.hostSwap(0, 3, Q.game), "the host swaps two corners");
+        pump(fs, 1.0);
+        CHECK(Q.net.room().slot[3] == hostId && !Q.net.room().slot[0] && Q.net.room().isBot(0) && Q.game.pl[0].isBot && !Q.game.pl[3].isBot,
+              "the host plays the bot's corner, the bot the host's");
+        CHECK(fs[1]->net.room().slot[3] == hostId && fs[1]->game.pl[0].isBot && fs[2]->net.room().isBot(0), "and the visitors see it so");
+        Q.game.tun.teamMode = TEAMS_3V1;   // (from the next match: 3 v 1, the host THE ONE, owner 2026-10-30)
         fs[3]->net.join(qip, false);
         pump(fs, 1.0);
         fs[3]->net.queue(true);
@@ -495,7 +523,43 @@ int main() {
         for (int i = 1; i <= 3; ++i)
             for (int p = 0; p < 4; ++p) agree &= length(fs[i]->game.pl[p].in.head.p - Q.game.pl[p].in.head.p) < 0.05f || p == fs[i]->net.localSlot();
         CHECK(agree, "everyone sees the same four players where the host does");
-        CHECK(fs[2]->game.tun.experimental && fs[2]->game.tun.expRoom == 1 && fs[2]->game.tun.teamMode == TEAMS_2V2, "and plays the host's rules (FOUR CORNERS, 2 v 2)");
+        {   // four playing, four more waiting (owner, 2026-11-02: is there room for them?); a ninth is turned away
+            std::vector<std::unique_ptr<Node>> extra;
+            const char* xn[] = {"WAIT ONE", "WAIT TWO", "WAIT THREE", "WAIT FOUR", "WAIT FIVE"};
+            for (int i = 0; i < 5; ++i) { extra.emplace_back(new Node(xn[i], 4.f + i)); extra.back()->net.goOnline(server); }
+            std::vector<std::unique_ptr<Node>>& all = fs;
+            for (auto& n : extra) all.push_back(std::move(n));
+            pump(all, 1.0);
+            for (size_t i = all.size() - 5; i < all.size() - 1; ++i) all[i]->net.join(qip, false);
+            pump(all, 1.5);
+            all.back()->net.join(qip, false);
+            pump(all, 1.5);
+            int waiting = 0;
+            for (const RoomInfo::Member& m : Q.net.room().members) waiting += m.role == RoomInfo::WAITING;
+            const bool ninthIn = all.back()->net.mode() == Net::Mode::Client;
+            char msg[112];
+            std::snprintf(msg, sizeof msg, "a FOUR CORNERS room holds four playing and four waiting (%d waiting); a ninth is turned away", waiting);
+            CHECK(waiting == 4 && !ninthIn, msg);
+            for (size_t i = all.size() - 5; i < all.size(); ++i) { all[i]->net.leave(); }
+            pump(all, 1.0);
+            for (size_t i = all.size() - 5; i < all.size(); ++i) { if (all[i]->net.online()) all[i]->net.goOffline(); all[i]->net.shutdown(); }
+            all.resize(all.size() - 5);
+        }
+        CHECK(fs[2]->game.tun.experimental && fs[2]->game.tun.expRoom == 1 && fs[2]->game.tun.teamMode == TEAMS_3V1, "and plays the host's rules (FOUR CORNERS, 3 v 1)");
+        CHECK(Q.game.tun.theOne == Q.net.localSlot() && fs[2]->game.tun.theOne == Q.net.localSlot(), "3 v 1: the host is THE ONE (unless set to take turns)");
+        CHECK(Q.net.localSlot() == 3 && Q.net.room().slot[0] == fs[3]->net.session(), "the fourth person took the bot's corner, where it was (corners stay)");
+        {   // THE ONE goes with the player; the host can make another corner THE ONE, and it stays
+            const uint32_t one = Q.net.room().slot[Q.game.tun.theOne];
+            Q.net.hostSwap(3, 1, Q.game);
+            pump(fs, 1.0);
+            CHECK(Q.net.room().slot[Q.game.tun.theOne] == one && fs[2]->game.tun.theOne == Q.game.tun.theOne, "a swap: THE ONE goes with the player");
+            CHECK(Q.net.hostMakeOne(2, Q.game), "the host makes another corner THE ONE");
+            pump(fs, 1.0);
+            const uint32_t two = Q.net.room().slot[2];
+            Q.net.hostSwap(0, 3, Q.game);
+            pump(fs, 1.0);
+            CHECK(Q.game.tun.theOne == 2 && Q.net.room().slot[2] == two && fs[1]->game.tun.theOne == 2, "and it stays THE ONE through other swaps");
+        }
         const size_t bytes = Net::snapshotBytes(Q.game);
         char msg[96];
         std::snprintf(msg, sizeof msg, "a four-player snapshot with a full event log fits the relay (%d of 1200 bytes)", (int)bytes);
@@ -505,7 +569,136 @@ int main() {
         pump(fs, 2.0);
         CHECK(fs[5]->game.tun.experimental && fs[5]->game.tun.expRoom == 0 && fs[5]->game.np == 2 && fs[5]->net.localSlot() >= 0,
               "a DIAMOND room: its player gets the host's EXPERIMENTAL rules");
+        {   // FIREBALL BLITZ (0.3.13): its health, who plays, and its fireballs reach everyone; a full room fits the relay
+            Game full; full.tun.experimental = true; full.tun.expRoom = ROOM_BLITZ; full.tun.players = 4;
+            full.useArena(ARENA_OCTAGON, {}); full.resetWithBots(0xF);
+            for (auto& row : full.fire) for (Ball& f : row) { f.state = BallState::Flying; f.pos = {1, 1, 1}; f.instigator = 0; }
+            const size_t bytes = Net::snapshotBytes(full);
+            char msg[112];
+            std::snprintf(msg, sizeof msg, "FIREBALL BLITZ: four players and twelve fireballs with a full event log fit the relay (%d of 1200 bytes)", (int)bytes);
+            CHECK(bytes <= 1200, msg);
+            Q.game.tun.expRoom = ROOM_BLITZ;
+            Q.game.useArena(ARENA_OCTAGON, {});
+            for (int i = 1; i <= 3; ++i) { pump(fs, 0.3); fs[i]->game.useArena(fs[i]->game.tun.expRoom == ROOM_BLITZ ? ARENA_OCTAGON : ARENA_CLASSIC, {}); }
+            for (int i = 0; i < 40 && Q.game.match != MatchState::InProgress; ++i) pump(fs, 0.25);
+            Q.game.pl[2].health = 3;
+            Q.game.serve(0, Q.game.tun.start[0] + Vec3{0.5f, 1.3f, 0}, normalize(Vec3{1, 0.3f, 0.2f}), 8.f, {}, false);
+            pump(fs, 0.3);
+            bool same = true;
+            for (int i = 1; i <= 3; ++i) {
+                const Game& c = fs[i]->game;
+                same &= c.octagon() && c.pl[2].health == 3 && c.startMask == Q.game.startMask && c.fireCount(0) == Q.game.fireCount(0) && Q.game.fireCount(0) == 1;
+                same &= length(c.fire[0][0].pos - Q.game.fire[0][0].pos) < 1.0f && length(c.tun.start[1] - Q.game.tun.start[1]) < 1e-3f;
+            }
+            CHECK(Q.game.match == MatchState::InProgress && same, "FIREBALL BLITZ online: every visitor sees the health, the ring and the fireballs");
+        }
         for (auto& n : fs) { if (n->net.online()) n->net.goOffline(); n->net.shutdown(); }
+    }
+    std::printf("[HOST HANDOFF and IDLE ROOMS (0.3.13)]\n");
+    {   // owner, 2026-11-02: a host's headset going to sleep must not end everyone's room
+        std::vector<std::unique_ptr<Node>> hs;
+        const char* hn[] = {"OLD HOST", "HEIR ONE", "HEIR TWO", "GRIEFER"};
+        for (int i = 0; i < 4; ++i) hs.emplace_back(new Node(hn[i], -1.f + i));
+        for (auto& n : hs) n->net.goOnline(server);
+        pump(hs, 1.0);
+        Node& H = *hs[0];
+        Node& A = *hs[1];
+        Node& B = *hs[2];
+        H.game.tun.advanced = false; H.game.tun.meetTime = 0;
+        H.net.host();
+        pump(hs, 1.0);
+        uint32_t hip = 0;
+        for (const LanGame& lg : A.net.games()) if (std::strcmp(lg.name, "OLD HOST") == 0) hip = lg.ip;
+        A.net.join(hip, false);   // (A first: the longest in the room after the host, so next in line)
+        pump(hs, 1.0);
+        B.net.join(hip, false);
+        pump(hs, 1.0);
+        hs[3]->net.join(hip, false);   // (someone the host removes: they stay out under the next host too)
+        pump(hs, 1.0);
+        CHECK(H.net.hostKick(hs[3]->net.session()), "the host removes someone");
+        pump(hs, 1.0);
+        hs[3]->net.goOffline(); hs[3]->net.shutdown();
+        hs.pop_back();
+        A.net.queue(true);
+        pump(hs, 0.5);
+        B.net.queue(true);
+        for (int i = 0; i < 40 && H.game.match != MatchState::InProgress; ++i) pump(hs, 0.25);
+        H.game.pl[0].score = 3; H.game.pl[1].score = 2;
+        pump(hs, 0.5);
+        const float clock = H.game.roundClock;
+        CHECK(H.game.match == MatchState::InProgress && H.net.room().slot[0] == A.net.session() && H.net.room().slot[1] == B.net.session(),
+              "two players in a match, the host waiting outside");
+        // the host's headset goes to sleep: no frames from it at all
+        std::vector<std::unique_ptr<Node>> two;
+        two.push_back(std::move(hs[1])); two.push_back(std::move(hs[2]));
+        pump(two, 8.0);
+        CHECK(A.net.mode() == Net::Mode::Host && A.net.inherited() && B.net.mode() == Net::Mode::Client && B.net.hostSession() == A.net.session(),
+              "the host goes quiet: the longest in the room takes it over, the other follows");
+        CHECK(A.net.room().slot[0] == A.net.session() && A.net.room().slot[1] == B.net.session() && B.net.localSlot() == 1,
+              "and everyone keeps their place in the tank");
+        CHECK(A.game.pl[0].score == 3 && A.game.pl[1].score == 2 && B.game.pl[0].score == 3 && A.game.roundClock <= clock && A.game.roundClock > clock - 15.f,
+              "the match picks up where it was: the score and the clock");
+        for (int i = 0; i < 24 && (A.game.match != MatchState::InProgress || B.game.match != MatchState::InProgress); ++i) pump(two, 0.25);   // (the player sees it a snapshot later)
+        CHECK(A.game.match == MatchState::InProgress && B.game.match == MatchState::InProgress, "after a countdown it plays on");
+        if (A.game.match != MatchState::InProgress || B.game.match != MatchState::InProgress)
+            std::printf("       (host %d %.2f, player %d)\n", (int)A.game.match, A.game.stateTimer, (int)B.game.match);
+        bool named = false;
+        for (const LanGame& lg : B.net.games()) named |=std::strcmp(lg.name, "OLD HOST") == 0 && lg.continues == hip;
+        CHECK(named, "the room keeps its name, and says which host it came from (spectators follow it)");
+        // MAKE HOST: the new host hands the room on mid-match; it stays in its place
+        A.game.pl[0].score = 4;
+        pump(two, 0.3);
+        CHECK(A.net.hostHandOff(B.net.session(), A.game), "the host makes someone else the host");
+        pump(two, 3.0);
+        CHECK(B.net.mode() == Net::Mode::Host && A.net.mode() == Net::Mode::Client && A.net.hostSession() == B.net.session() && !A.net.handingOver(),
+              "MAKE HOST: the room changes hands at once");
+        CHECK(B.game.pl[0].score == 4 && B.net.room().slot[0] == A.net.session() && A.net.localSlot() == 0, "the old host plays on in its place, the score as it was");
+        {   // the one removed comes back under the new host: still turned away
+            Node G("GRIEFER", 3.f);
+            G.net.goOnline(server);
+            std::vector<std::unique_ptr<Node>>& t = two;
+            for (int i = 0; i < 10 && !G.net.onlineReady(); ++i) { pump(t, 0.1); PlayerInput in[kMaxPlayers]; G.net.exchange(G.local, in, G.game, 0.01f); }
+            uint32_t bip = 0;
+            for (int i = 0; i < 20 && !bip; ++i) {
+                pump(t, 0.1); PlayerInput in[kMaxPlayers]; G.net.exchange(G.local, in, G.game, 0.01f);
+                for (const LanGame& lg : G.net.games()) if (lg.session == B.net.session()) bip = lg.ip;
+            }
+            G.net.join(bip, false);
+            for (int i = 0; i < 15; ++i) { pump(t, 0.1); PlayerInput in[kMaxPlayers]; G.net.exchange(G.local, in, G.game, 0.01f); }
+            CHECK(bip && !G.net.inRoom(), "someone the old host removed can't come back under the new one");
+            G.net.goOffline(); G.net.shutdown();
+        }
+        // the old host wakes up: its room went on without it; it finds where it went (its beacons) and rejoins
+        hs[1] = std::move(two[0]); hs[2] = std::move(two[1]);
+        pump(hs, 6.0);
+        CHECK(H.net.mode() == Net::Mode::Client && H.net.hostSession() == B.net.session() && !H.net.handingOver() && H.net.localWaiting(),
+              "the old host wakes up and rejoins the room, waiting outside the tank");
+        // LEAVE GAME with people still in the room: it goes on with the next in line
+        B.net.leave();
+        pump(hs, 3.0);
+        CHECK(A.net.mode() == Net::Mode::Host && H.net.mode() == Net::Mode::Client && H.net.hostSession() == A.net.session(),
+              "a host leaving hands the room to the next in line rather than closing it");
+        // a player's own Wi-Fi drops for 7 s: they take the room over, but nobody follows and the host is still there:
+        // back to the real room (no copy of it under the same name)
+        H.net.deafen(7.0);
+        pump(hs, 7.0);
+        const bool split = H.net.mode() == Net::Mode::Host;
+        pump(hs, 5.0);
+        CHECK(split && H.net.mode() == Net::Mode::Client && H.net.hostSession() == A.net.session() && !H.net.handingOver() && A.net.mode() == Net::Mode::Host,
+              "a player whose own connection dropped takes the room over, finds the host still there, and goes back to it");
+        // IDLE ROOMS (shortened): nobody moves (these headsets never do), so the player leaves the tank, then the room closes
+        g_still = true;
+        A.local.head.p.x += 0.3f; H.local.head.p.x += 0.3f;   // (one last step each: the clocks start here)
+        pump(hs, 0.3);
+        A.net.setIdleTimes(2.0, 9.0);
+        pump(hs, 0.3);
+        if (A.net.localSlot() < 0) A.net.queue(true);
+        pump(hs, 0.3);
+        pump(hs, 3.0);
+        CHECK(A.net.mode() == Net::Mode::Host && A.net.localSlot() < 0, "a player whose headset sits still leaves the tank for the waiting area");
+        pump(hs, 6.0);
+        CHECK(A.net.mode() == Net::Mode::Offline && H.net.mode() == Net::Mode::Offline, "a room where nobody moves closes, for everyone in it");
+        for (auto& n : hs) { if (n->net.online()) n->net.goOffline(); n->net.shutdown(); }
     }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
