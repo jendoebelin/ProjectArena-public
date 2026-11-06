@@ -3,29 +3,65 @@
 #include "platform.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
+// a PCM WAV: 16-bit (the game's own sounds), and (0.3.16, SOUND STUDIO's own sounds) 8, 24 and 32-bit and 32-bit float;
+// more than two channels are mixed down to one
 static bool parseWav(const uint8_t* d, size_t n, std::vector<float>& out, int& channels, int& rate) {
     if (n < 44 || std::memcmp(d, "RIFF", 4) || std::memcmp(d + 8, "WAVE", 4)) return false;
     size_t p = 12;
-    int bits = 16;
+    int bits = 16, tag = 1;
     while (p + 8 <= n) {
         uint32_t sz; std::memcpy(&sz, d + p + 4, 4);
-        if (!std::memcmp(d + p, "fmt ", 4)) {
-            uint16_t ch; uint32_t sr; uint16_t bps;
-            std::memcpy(&ch, d + p + 10, 2); std::memcpy(&sr, d + p + 12, 4); std::memcpy(&bps, d + p + 22, 2);
-            channels = ch; rate = sr; bits = bps;
+        if (!std::memcmp(d + p, "fmt ", 4) && p + 8 + 16 <= n) {
+            uint16_t fmt, ch; uint32_t sr; uint16_t bps;
+            std::memcpy(&fmt, d + p + 8, 2); std::memcpy(&ch, d + p + 10, 2); std::memcpy(&sr, d + p + 12, 4); std::memcpy(&bps, d + p + 22, 2);
+            if (fmt == 0xFFFE && sz >= 26 && p + 8 + 26 <= n) std::memcpy(&fmt, d + p + 8 + 24, 2);   // (WAVE_FORMAT_EXTENSIBLE)
+            channels = ch; rate = (int)sr; bits = bps; tag = fmt;
         } else if (!std::memcmp(d + p, "data", 4)) {
-            if (bits != 16) return false;
-            size_t cnt = std::min<size_t>(sz, n - p - 8) / 2;
+            if (channels < 1 || channels > 8 || rate < 8000 || rate > 192000) return false;
+            const size_t bytes = std::min<size_t>(sz, n - p - 8), w = (size_t)bits / 8;
+            if (!(tag == 1 && (bits == 8 || bits == 16 || bits == 24 || bits == 32)) && !(tag == 3 && bits == 32)) return false;
+            const uint8_t* s = d + p + 8;
+            const size_t cnt = bytes / w;
             out.resize(cnt);
-            const int16_t* s = (const int16_t*)(d + p + 8);
-            for (size_t i = 0; i < cnt; ++i) out[i] = s[i] / 32768.f;
+            for (size_t i = 0; i < cnt; ++i) {
+                const uint8_t* q = s + i * w;
+                if (tag == 3) { float f; std::memcpy(&f, q, 4); out[i] = std::isfinite(f) ? std::max(-1.f, std::min(1.f, f)) : 0.f; }
+                else if (bits == 8) out[i] = (q[0] - 128) / 128.f;
+                else if (bits == 16) { int16_t v; std::memcpy(&v, q, 2); out[i] = v / 32768.f; }
+                else if (bits == 24) out[i] = (float)((int32_t)((uint32_t)q[0] << 8 | (uint32_t)q[1] << 16 | (uint32_t)q[2] << 24) >> 8) / 8388608.f;
+                else { int32_t v; std::memcpy(&v, q, 4); out[i] = (float)(v / 2147483648.0); }
+            }
+            if (channels > 2) {   // (mixed down)
+                const size_t frames = cnt / channels;
+                for (size_t f = 0; f < frames; ++f) {
+                    float sum = 0;
+                    for (int c = 0; c < channels; ++c) sum += out[f * channels + c];
+                    out[f] = sum / channels;
+                }
+                out.resize(frames);
+                channels = 1;
+            }
             return true;
         }
         p += 8 + sz + (sz & 1);
     }
     return false;
+}
+
+static void resampleTo48k(std::vector<float>& s, int channels, int rate) {   // linear, to the mixer's rate
+    if (rate == 48000 || s.empty()) return;
+    const size_t frames = s.size() / channels, outFrames = size_t(double(frames) * 48000 / rate);
+    std::vector<float> o(outFrames * channels);
+    for (size_t i = 0; i < outFrames; ++i) {
+        const double src = double(i) * rate / 48000;
+        const size_t i0 = std::min(frames - 1, size_t(src)), i1 = std::min(frames - 1, i0 + 1);
+        const float t = float(src - i0);
+        for (int ch = 0; ch < channels; ++ch) o[i * channels + ch] = s[i0 * channels + ch] * (1 - t) + s[i1 * channels + ch] * t;
+    }
+    s.swap(o);
 }
 
 const Audio::Clip* Audio::get(const std::string& name) {
@@ -175,10 +211,38 @@ void Audio::setLoop(const std::string& name, float gain) {
     if (g > 0.0005f) voices_.push_back({c, 0, g, g, true});
 }
 
-bool Audio::cue(const std::string& key, float gain, float pan) {
+const std::string* Audio::clipFor(const std::string& key) const {
+    auto o = override_.find(key);
+    if (o != override_.end()) return &o->second;
     auto it = eventMap_.find(key);
-    if (it == eventMap_.end()) return false;
-    play(it->second, gain, pan);
+    return it == eventMap_.end() ? nullptr : &it->second;
+}
+
+bool Audio::loadFile(const std::string& clip, const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::vector<uint8_t> file;
+    uint8_t buf[16384];
+    for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) file.insert(file.end(), buf, buf + n);
+    std::fclose(f);
+    Clip c;
+    int rate = 48000;
+    if (file.size() > 24u * 1024 * 1024 || !parseWav(file.data(), file.size(), c.samples, c.channels, rate) || c.samples.empty()) return false;
+    resampleTo48k(c.samples, c.channels, rate);   // (your own sounds may be at any rate; the library's are 48 kHz)
+    if (c.samples.size() / c.channels > 48000u * 30) c.samples.resize(48000u * 30 * c.channels);   // (30 s at most)
+    clips_[clip] = std::move(c);
+    return true;
+}
+
+void Audio::setOverride(const std::string& key, const std::string& clip) {
+    if (clip.empty()) override_.erase(key);
+    else override_[key] = clip;
+}
+
+bool Audio::cue(const std::string& key, float gain, float pan) {
+    const std::string* c = clipFor(key);
+    if (!c) return false;
+    play(*c, gain, pan);
     return true;
 }
 
@@ -188,6 +252,15 @@ void Audio::onEvent(const GameEvent& e, const Vec3& listener, bool ours, const V
     if (e.type == EventType::HitPlayer) key = ours ? "HitPlayerSelf" : "HitPlayerOpponent";
     if (e.type == EventType::RoundEnd || e.type == EventType::MatchEnd) key += ours ? "Win" : "Lose";
     if (e.type == EventType::Throw) key = e.value < 6 ? "ThrowSlow" : e.value < 9 ? "ThrowMed" : e.value < 12 ? "ThrowFast" : "ThrowFull";
+    {   // (SOUND STUDIO's choice for it)
+        auto o = override_.find(key);
+        if (o != override_.end()) {
+            const float d = length(e.pos - listener);
+            const float gain = (e.pos.x == 0 && e.pos.y == 0 && e.pos.z == 0) ? 1.f : clampf(2.0f / (1.0f + d), 0.15f, 1.f);
+            play(o->second, gain, clampf(dot(e.pos - listener, right) * 0.4f, -0.8f, 0.8f));
+            return;
+        }
+    }
     auto it = eventMap_.find(key);
     if (it == eventMap_.end()) it = eventMap_.find(eventName(e.type));
     if (it == eventMap_.end() && e.type == EventType::FistBump) it = eventMap_.find("KnuckleBlock");   // a solid knock

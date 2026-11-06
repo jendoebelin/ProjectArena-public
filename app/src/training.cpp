@@ -535,6 +535,13 @@ void Trainer::stop(Game& g) {
 }
 
 void Trainer::finish(bool passed) {
+    if (endless) {   // SOUND STUDIO: the moment goes on (no result, nothing kept or sent); the targets come back up
+        for (Target& x : targets) { x.down = false; x.downT = -1; }
+        refreshLive(L(), targets);
+        successes = attempts = throws = 0;
+        serve_ = 0;
+        return;
+    }
     phase = Phase::Done;
     result.lesson = lesson;
     result.passed = passed;

@@ -162,5 +162,12 @@
   "color": "#4dffa6",
   "image": "shotclock_0314.png",
   "text": "**⏱️ The shot clock, on show.** Hold your ball in your end and a thin ring builds round your floor launchpad. When it turns red, every throw your opponent makes is an automatic strike against you until you throw again. You can see your opponent's ring too, so watch for the moment theirs runs out.\n\n**✅ READY UP in rooms for four.** FOUR CORNERS and FIREBALL BLITZ matches now start only when every player in the tank presses **A**, so nobody gets caught still finding their place. After each match everyone heads back to the waiting area: JOIN QUEUE to play again.\n\n**🔧 Fixed:** fireballs and balls breaking into square blocks after a long session on the headset. The voice hint by your hand now shows only for your first 10 seconds in a room.\n\n0.3.13 and 0.3.14 can still play together.\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.15: BALL LOOK-AHEAD",
+  "color": "#5ec8ff",
+  "image": "lookahead_0315.png",
+  "text": "**🌍 Playing someone far away? Try BALL LOOK-AHEAD ONLINE.** It's experimental and off by default: turn it on in SETTINGS → GRAPHICS AND VIEW. In someone else's room, everything you did with the ball used to wait a round trip for the host. Across the world that's a quarter of a second. Your ball hung in your hand after you let go, and the other player's ball arrived later than it really did. With it on, your throw leaves your hand the moment you let go, and a grab or catch is in your hand at once. Their ball is shown where it really is, so your blocks and dodges line up with what you see. The ball also moves smoothly instead of stuttering. The host still decides every point, and nothing changes for the host. Try it and tell us how it plays: MENU → REPORT BUG works for that too.\n\n**🔧 Fixed:** HAND OFF HOST no longer covers the GAMES ONLINE heading. The masculine body's chest sits a little higher and wider.\n\n0.3.14 and 0.3.15 play together online.\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
  }
 ]

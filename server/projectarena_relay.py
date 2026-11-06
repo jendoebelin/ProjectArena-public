@@ -85,11 +85,21 @@ to the saved file, for the moderators only (players never see addresses). Files 
 "player_report" are those.
 Moderation: --bans FILE (default ./bans.txt, optional) lists one ban per line, an IP address or name:PLAYERNAME;
 "#" starts a comment. The file is re-read when it changes; banned players are disconnected and refused (BANNED).
+SOUND STUDIO (0.3.16): --sounds FOLDER (default ./sound_library) holds sounds players can try in the game and vote on,
+named Event__name.wav (Event: one of SOUND_EVENTS; name: a-z, 0-9 and _; WAV mono 48 kHz 16-bit; at most SOUND_MAX
+sounds, SOUND_PER_EVENT per event, the oldest first). Over TCP on the same port: b"PASND1\n", then u8 1 (the catalog;
+then the game's 16-byte statistics key, or 16 zeros): answered b"PASND1\n" and one line per sound,
+"file\tsize\tsha256\tmy vote (-1, 0, 1)\n", then b"END\n"; or u8 2 (a sound; then u8 length and the file name): answered
+u32 size and the file (0xFFFFFFFF: no such sound). Votes come on the UDP connection (SOUNDVOTE), one per player key and
+sound; players are only ever told their own. The owner, on the server: --sound-totals prints every sound's thumbs up and
+down; --sound-remove FILE --reason removed|adopted [--adopted-in VERSION] takes a sound out of the library (into
+FOLDER/removed, its totals kept in FOLDER/removed/results.log) and prints the result for the Discord post.
 Testing: --lag MS --jitter MS --loss PERCENT make the relay behave like a long internet path (forwarded game packets
 are delayed by lag plus a smoothly drifting 0..jitter ms, kept in order, and a share is dropped). Never on a public server.
 """
 import argparse
 import asyncio
+import re
 import base64
 import hashlib
 import hmac
@@ -107,6 +117,16 @@ HELLO, WELCOME, SEND, PING, BYE, DELIVER, ERROR = 1, 2, 3, 4, 5, 6, 7
 KEY, TANK, MATCH, STATSREQ, STATS, CONFIRM, DELETE, MYSTATS = 8, 9, 10, 11, 12, 13, 14, 15
 LIVE, CROWD = 16, 17
 TRAIN, BOARDREQ, BOARD = 18, 19, 20
+SOUNDVOTE = 21              # player -> server (0.3.16)  body: u8 length, the sound's file name, i8 vote (-1, 0, 1)
+# SOUND STUDIO's library (the game's sound events, app/assets_open/audio/events.txt; a sound is made for one of them)
+SOUND_EVENTS = ('Spawn', 'SpawnRise', 'Grab', 'Caught', 'ThrowSlow', 'ThrowMed', 'ThrowFast', 'ThrowFull', 'ThrowFail',
+                'Bounce', 'ShieldBlock', 'ShieldBreak', 'KnuckleBlock', 'HitPlayerOpponent', 'HitPlayerSelf', 'Returned',
+                'Foul', 'Countdown', 'RoundStart', 'RoundEndWin', 'RoundEndLose', 'MatchEndWin', 'MatchEndLose', 'Recharge',
+                'Strike', 'Overtime', 'FistBump', 'Ambience', 'Crowd', 'Cheer', 'ClockTick', 'LeadChange', 'TargetHit')
+SOUND_MAX, SOUND_PER_EVENT = 40, 5
+SOUND_BYTES = 1300000       # (12 s of 48 kHz mono 16-bit: the longest a crowd loop may be)
+SOUND_FILE = re.compile(r'^([A-Za-z]+)__([a-z0-9_]{1,24})\.wav$')
+SOUND_RATE = 120            # catalog and sound requests per address per minute
 # TRAINING's lessons (app/src/training.cpp; their ids never change): id -> (has a clock, the goal, throws or tries in it).
 # The goal: THROW lessons every target (one throw each at least), the others successes to pass. A passed run can't be
 # quicker than about 1.4 s a target (each takes your ball, which comes back in 1.7 s).
@@ -148,7 +168,7 @@ def ip_text(v):
 
 class Client:
     __slots__ = ('addr', 'token', 'vip', 'version', 'app', 'name', 'seen', 'bucket', 'bucket_t', 'host_until', 'joined', 'key', 'tank',
-                 'last_match', 'last_req', 'trains', 'last_board')
+                 'last_match', 'last_req', 'trains', 'last_board', 'sound_votes')
 
     def __init__(self, addr, vip, version, name):
         self.addr, self.vip, self.version, self.name = addr, vip, version, name
@@ -159,6 +179,7 @@ class Client:
         self.host_until = 0.0   # (hosting: the host's rate, while its LIVE keeps coming)
         self.key, self.tank, self.last_match, self.last_req = None, (0, 0), -1e9, -1e9
         self.trains, self.last_board = 0, -1e9
+        self.sound_votes = 0    # (SOUND STUDIO: votes from this connection)
 
 
 class Stats:
@@ -200,6 +221,10 @@ class Stats:
         n = self.db.execute('DELETE FROM players WHERE last_seen < ?', (int(time.time()) - months * 30 * 86400,)).rowcount
         self.db.execute('DELETE FROM player_modes WHERE key NOT IN (SELECT key FROM players)')
         self.db.execute('DELETE FROM training WHERE updated < ?', (int(time.time()) - months * 30 * 86400,))
+        try:   # (SOUND STUDIO's votes, 0.3.16: 24 months after they were last changed)
+            self.db.execute('DELETE FROM sound_votes WHERE updated < ?', (int(time.time()) - months * 30 * 86400,))
+        except sqlite3.OperationalError:
+            pass
         self.db.commit()
         if n:
             self.log('stats: %d players unseen for %d months removed' % (n, months))
@@ -228,6 +253,10 @@ class Stats:
     def delete(self, key):
         self.db.execute('DELETE FROM player_modes WHERE key = ?', (key,))
         self.db.execute('DELETE FROM training WHERE key = ?', (key,))
+        try:   # (SOUND STUDIO's votes, 0.3.16)
+            self.db.execute('DELETE FROM sound_votes WHERE key = ?', (key,))
+        except sqlite3.OperationalError:
+            pass
         n = self.db.execute('DELETE FROM players WHERE key = ?', (key,)).rowcount
         self.db.commit()
         return n
@@ -359,6 +388,7 @@ class Relay(asyncio.DatagramProtocol):
         self.player_stats = stats
         self.max_clients = max_clients
         self.bans = bans
+        self.sounds = None          # SOUND STUDIO's library (set by main)
         self.lag, self.jitter, self.loss = lag / 1000.0, jitter / 1000.0, loss / 100.0
         self.drift, self.last_out = {}, {}
         self.by_addr, self.by_vip = {}, {}
@@ -465,6 +495,10 @@ class Relay(asyncio.DatagramProtocol):
             c.host_until = now + HOST_HOLD
             if self.crowd is not None:
                 self.crowd.live(c, body, now)
+            return
+        if ptype == SOUNDVOTE:
+            if self.sounds is not None:
+                self.sounds.vote_message(c, body)
             return
         if ptype in (KEY, TANK, MATCH, STATSREQ, CONFIRM, DELETE, MYSTATS, TRAIN, BOARDREQ):
             self.stats_message(c, ptype, body, now)
@@ -891,9 +925,165 @@ REPORT_MAX = 200000
 REPORT_RATE = 20             # per address per hour
 
 
+def wav_ok(data):
+    """A plain PCM WAV, mono, 48 kHz, 16-bit (what the game plays)."""
+    if len(data) < 44 or data[:4] != b'RIFF' or data[8:12] != b'WAVE':
+        return False
+    at = 12
+    while at + 8 <= len(data):
+        cid, size = data[at:at + 4], struct.unpack_from('<I', data, at + 4)[0]
+        if cid == b'fmt ' and size >= 16:
+            fmt, ch, rate, _, _, bits = struct.unpack_from('<HHIIHH', data, at + 8)
+            return fmt == 1 and ch == 1 and rate == 48000 and bits == 16
+        at += 8 + size + (size & 1)
+    return False
+
+
+class Sounds:
+    """SOUND STUDIO's library: the sounds in --sounds, their catalog and the players' votes (in the statistics file)."""
+
+    def __init__(self, folder, stats, log):
+        self.folder, self.stats, self.log = folder, stats, log
+        os.makedirs(os.path.join(folder, 'removed'), exist_ok=True)
+        self.seen = None
+        self.items = []             # (file, size, sha256 hex, data), oldest first
+        self.recent = {}            # address -> request times (in memory only)
+        if stats is not None:
+            stats.db.execute('CREATE TABLE IF NOT EXISTS sound_votes (sound TEXT, key TEXT, vote INTEGER, updated INTEGER, '
+                             'PRIMARY KEY (sound, key))')
+            stats.db.commit()
+        self.scan()
+
+    def scan(self):
+        """Re-reads the folder when it has changed: the valid sounds, at most SOUND_PER_EVENT per event and SOUND_MAX."""
+        try:
+            names = sorted(n for n in os.listdir(self.folder) if os.path.isfile(os.path.join(self.folder, n)))
+            seen = tuple((n, os.path.getmtime(os.path.join(self.folder, n)), os.path.getsize(os.path.join(self.folder, n))) for n in names)
+        except OSError:
+            return
+        if seen == self.seen:
+            return
+        self.seen = seen
+        found = []
+        for n, mtime, size in seen:
+            m = SOUND_FILE.match(n)
+            if not m or m.group(1) not in SOUND_EVENTS or size > SOUND_BYTES:
+                if not n.startswith('.'):
+                    self.log('sounds: %s left out (not Event__name.wav, an unknown event, or too big)' % n)
+                continue
+            with open(os.path.join(self.folder, n), 'rb') as f:
+                data = f.read()
+            if not wav_ok(data):
+                self.log('sounds: %s left out (not a mono 48 kHz 16-bit WAV)' % n)
+                continue
+            found.append((mtime, n, data))
+        found.sort()
+        items, per = [], {}
+        for _, n, data in found:
+            ev = n.split('__', 1)[0]
+            if per.get(ev, 0) >= SOUND_PER_EVENT or len(items) >= SOUND_MAX:
+                self.log('sounds: %s left out (the library is full: %d, %d per event)' % (n, SOUND_MAX, SOUND_PER_EVENT))
+                continue
+            per[ev] = per.get(ev, 0) + 1
+            items.append((n, len(data), hashlib.sha256(data).hexdigest(), data))
+        self.items = items
+        self.log('sounds: %d in the library (%s)' % (len(items), os.path.abspath(self.folder)))
+
+    def find(self, name):
+        for it in self.items:
+            if it[0] == name:
+                return it
+        return None
+
+    def my_votes(self, key):
+        if self.stats is None or key is None:
+            return {}
+        return dict(self.stats.db.execute('SELECT sound, vote FROM sound_votes WHERE key = ?', (key,)).fetchall())
+
+    def vote_message(self, c, body):
+        if self.stats is None or c.key is None or len(body) < 2:
+            return
+        n = body[0]
+        if len(body) < 2 + n:
+            return
+        name, vote = body[1:1 + n].decode('ascii', 'replace'), struct.unpack_from('<b', body, 1 + n)[0]
+        c.sound_votes += 1
+        if c.sound_votes > 400 or vote not in (-1, 0, 1):
+            return
+        self.scan()
+        if self.find(name) is None:
+            return
+        db = self.stats.db
+        if vote == 0:
+            db.execute('DELETE FROM sound_votes WHERE sound = ? AND key = ?', (name, c.key))
+        else:
+            db.execute('INSERT OR REPLACE INTO sound_votes (sound, key, vote, updated) VALUES (?, ?, ?, ?)',
+                       (name, c.key, vote, int(time.time())))
+        db.commit()
+
+    def totals(self, name):
+        if self.stats is None:
+            return 0, 0
+        up = self.stats.db.execute('SELECT COUNT(*) FROM sound_votes WHERE sound = ? AND vote > 0', (name,)).fetchone()[0]
+        down = self.stats.db.execute('SELECT COUNT(*) FROM sound_votes WHERE sound = ? AND vote < 0', (name,)).fetchone()[0]
+        return up, down
+
+    async def handle(self, reader, writer, ip):
+        now = time.time()
+        times = [t for t in self.recent.get(ip, []) if now - t < 60]
+        if len(times) >= SOUND_RATE:
+            return
+        times.append(now)
+        self.recent[ip] = times
+        if len(self.recent) > 5000:
+            self.recent = {a: t for a, t in self.recent.items() if t and now - t[-1] < 60}
+        cmd = (await asyncio.wait_for(reader.readexactly(1), 10))[0]
+        self.scan()
+        if cmd == 1:   # the catalog, with this player's own votes
+            raw = await asyncio.wait_for(reader.readexactly(16), 10)
+            key = self.stats.ident(raw) if self.stats is not None and raw != bytes(16) else None
+            mine = self.my_votes(key)
+            out = b'PASND1\n' + b''.join(('%s\t%d\t%s\t%d\n' % (n, size, sha, mine.get(n, 0))).encode('ascii')
+                                         for n, size, sha, _ in self.items) + b'END\n'
+            writer.write(out)
+        elif cmd == 2:   # one sound
+            n = (await asyncio.wait_for(reader.readexactly(1), 10))[0]
+            name = (await asyncio.wait_for(reader.readexactly(n), 10)).decode('ascii', 'replace')
+            it = self.find(name)
+            writer.write(struct.pack('<I', 0xFFFFFFFF) if it is None else struct.pack('<I', it[1]) + it[3])
+
+
+def sound_admin(args, log):
+    """The owner's commands on the server: --sound-totals, --sound-remove FILE --reason removed|adopted."""
+    stats = Stats(args.stats, lambda m: None)
+    lib = Sounds(args.sounds, stats, lambda m: None)
+    if args.sound_totals:
+        for n, _, _, _ in lib.items:
+            up, down = lib.totals(n)
+            print('%-48s  up %4d  down %4d' % (n, up, down))
+        print('%d sounds in the library' % len(lib.items))
+        return 0
+    name = args.sound_remove
+    if not name.endswith('.wav'):
+        name += '.wav'
+    src = os.path.join(args.sounds, name)
+    if not os.path.isfile(src) or args.reason not in ('removed', 'adopted'):
+        print('no such sound (or --reason is not removed / adopted): %s' % name)
+        return 1
+    up, down = lib.totals(name)
+    ev, _, short = name[:-4].partition('__')
+    result = {'sound': short.replace('_', ' ').upper(), 'file': name, 'event': ev, 'up': up, 'down': down, 'reason': args.reason,
+              'adopted_in': args.adopted_in or '', 'date': time.strftime('%Y-%m-%d')}
+    os.replace(src, os.path.join(args.sounds, 'removed', name))
+    with open(os.path.join(args.sounds, 'removed', 'results.log'), 'a', encoding='utf-8') as f:
+        f.write(json.dumps(result) + '\n')
+    print(json.dumps(result))
+    return 0
+
+
 class Reports:
-    def __init__(self, folder, log, relay=None):
-        self.folder, self.log, self.relay = folder, log, relay
+    def __init__(self, folder, log, relay=None, sounds=None):
+        self.folder, self.log, self.relay, self.sounds = folder, log, relay, sounds
         self.recent = {}
         os.makedirs(folder, exist_ok=True)
 
@@ -901,10 +1091,13 @@ class Reports:
         peer = writer.get_extra_info('peername')
         ip = peer[0] if peer else '?'
         try:
-            head = await asyncio.wait_for(reader.readexactly(11), 10)
-            if head[:7] != b'PABUG1\n':
+            magic = await asyncio.wait_for(reader.readexactly(7), 10)
+            if magic == b'PASND1\n' and self.sounds is not None:   # SOUND STUDIO (0.3.16)
+                await self.sounds.handle(reader, writer, ip)
                 return
-            n = struct.unpack('<I', head[7:])[0]
+            if magic != b'PABUG1\n':
+                return
+            n = struct.unpack('<I', await asyncio.wait_for(reader.readexactly(4), 10))[0]
             if n > REPORT_MAX:
                 writer.write(b'TOO LARGE\n')
                 return
@@ -959,17 +1152,25 @@ async def main():
                     '(e.g. 127.0.0.1:47781, behind an HTTPS web server); off when empty')
     ap.add_argument('--crowd-origin', action='append', default=[], help='The Crowd: web page origin allowed to connect '
                     '(e.g. https://crowd.example.com; repeat for more; any when none)')
+    ap.add_argument('--sounds', default='sound_library', help='SOUND STUDIO: the folder of sounds players can try and vote on')
+    ap.add_argument('--sound-totals', action='store_true', help='owner: print every library sound\'s votes and exit')
+    ap.add_argument('--sound-remove', default='', help='owner: take this sound (its file name) out of the library and exit')
+    ap.add_argument('--reason', default='', help='with --sound-remove: removed (the community didn\'t like it) or adopted')
+    ap.add_argument('--adopted-in', default='', help='with --sound-remove --reason adopted: the version it is in')
     ap.add_argument('--lag', type=float, default=0.0, help='testing: extra one-way delay per forwarded packet (ms)')
     ap.add_argument('--jitter', type=float, default=0.0, help='testing: up to this much more delay at random (ms)')
     ap.add_argument('--loss', type=float, default=0.0, help='testing: percent of forwarded packets dropped')
     args = ap.parse_args()
     loop = asyncio.get_running_loop()
     stamp = lambda m: print(time.strftime('%H:%M:%S ') + m, flush=True)
+    if args.sound_totals or args.sound_remove:
+        raise SystemExit(sound_admin(args, stamp))
     relay = Relay(args.max_clients, stamp, args.lag, args.jitter, args.loss, Bans(args.bans, stamp), Latest(args.latest),
                   Stats(args.stats, stamp))
+    relay.sounds = Sounds(args.sounds, relay.player_stats, stamp)
     await loop.create_datagram_endpoint(lambda: relay, local_addr=(args.bind, args.port))
     stamp('Project Arena relay listening on UDP %s:%d' % (args.bind, args.port))
-    reports = Reports(args.reports, stamp, relay)
+    reports = Reports(args.reports, stamp, relay, relay.sounds)
     await asyncio.start_server(reports.handle, args.bind, args.port)
     stamp('bug reports: TCP %s:%d -> %s' % (args.bind, args.port, os.path.abspath(args.reports)))
     crowd = None

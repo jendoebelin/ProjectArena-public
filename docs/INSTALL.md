@@ -55,6 +55,9 @@ Streamers: capture the window in OBS.
   does too.
 - **PLAY PRACTICE**: you against the bot. **CUSTOMIZE AVATAR**: your look, which other players see. Its **PRESET**
   row ends in **COUNTRY FLAG**: a team kit in your country's colours, chosen in the **COUNTRY** row under it.
+- **SOUND STUDIO** (next to CUSTOMIZE AVATAR): try new sounds in the moment they play and vote on them (ONLINE: ON for
+  the community's); try your own `.wav` files (WAV only) from the game's `my_sounds` folder; propose your own
+  (`docs/SOUND_STUDIO.md`).
 - **MY STATS** (side menu): your career from online matches against other players. Other players and spectators see
   these numbers too; **DELETE MY STATS** erases them (`docs/PRIVACY.md`).
 - **MULTIPLAYER**:

@@ -1,0 +1,88 @@
+name: Sound proposal
+description: A sound you made (or made from other material) for one of the game's sound slots
+labels: [sound]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for making a sound! Every sound slot has a code (S01-S33); the asset catalog lets you hear the current
+        one. Attach your sound below (WAV, OGG, MP3 or FLAC: drag it into the box; zip it if GitHub refuses the type),
+        or link it. Format details: docs/SOUND_STUDIO.md. A pull request adding the file works too.
+  - type: dropdown
+    id: slot
+    attributes:
+      label: Which sound slot is it for?
+      options:
+        - "S01 Ball appears"
+        - "S02 Launcher rises"
+        - "S03 Grab"
+        - "S04 Catch"
+        - "S05 Throw (slow)"
+        - "S06 Throw (medium)"
+        - "S07 Throw (fast)"
+        - "S08 Throw (full power)"
+        - "S09 Dropped throw"
+        - "S10 Wall bounce"
+        - "S11 Shield block"
+        - "S12 Shield break"
+        - "S13 Knuckle punch"
+        - "S14 You scored"
+        - "S15 You were hit"
+        - "S16 Ball returns"
+        - "S17 Foul"
+        - "S18 Countdown beep"
+        - "S19 Round start"
+        - "S20 Round won"
+        - "S21 Round lost"
+        - "S22 Match won"
+        - "S23 Match lost"
+        - "S24 Recharge"
+        - "S25 Strike"
+        - "S26 Sudden death"
+        - "S27 Arena ambience"
+        - "S28 Fist bump"
+        - "S29 Crowd"
+        - "S30 Crowd cheer"
+        - "S31 Clock tick"
+        - "S32 Lead change"
+        - "S33 Target hit"
+    validations:
+      required: true
+  - type: input
+    id: name
+    attributes:
+      label: Its name
+      description: What to call it (letters, digits and spaces), e.g. Glass chime
+    validations:
+      required: true
+  - type: textarea
+    id: sound
+    attributes:
+      label: The sound
+      description: Drag the file here, or paste a link to it
+    validations:
+      required: true
+  - type: dropdown
+    id: use
+    attributes:
+      label: How would you like it used?
+      options:
+        - In the SOUND STUDIO first, for players to try and vote on
+        - Straight into the game and the public repository, if the owner accepts it
+        - Either is fine
+    validations:
+      required: true
+  - type: textarea
+    id: made
+    attributes:
+      label: What it is made from, and under which terms
+      description: >-
+        Your own recording or synthesis, or built from other material (say which, with links, and its licence, e.g.
+        Pixabay Content License, CC0, CC BY). Assets under terms other than the open assets' CC BY 4.0 are listed
+        in NOTICE with their sources.
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else

@@ -14,7 +14,7 @@ RELAY="$HERE/projectarena_relay.py"
 
 command -v python3 >/dev/null || { apt-get update && apt-get install -y python3; }
 id projectarena >/dev/null 2>&1 || useradd --system --home /opt/projectarena --shell /usr/sbin/nologin projectarena
-mkdir -p /opt/projectarena/bug_reports
+mkdir -p /opt/projectarena/bug_reports /opt/projectarena/sound_library/removed   # (sound_library: SOUND STUDIO, 0.3.16)
 install -m 0644 "$RELAY" /opt/projectarena/projectarena_relay.py
 # moderation: one ban per line (an IP address, or name:PLAYERNAME); the relay re-reads it when it changes
 [ -f /opt/projectarena/bans.txt ] || echo '# Project Arena bans: an IP address or name:PLAYERNAME per line' > /opt/projectarena/bans.txt

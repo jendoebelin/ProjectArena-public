@@ -52,8 +52,21 @@ int main(int argc, char** argv) {
         const double t = now() - t0;
         local.head = {Quat::axisAngle({0, 1, 0}, 0.3f * std::sin((float)t)), {0, 1.6f + 0.05f * std::sin(3 * (float)t), 0}};
         for (int h = 0; h < 2; ++h) local.hand[h].grip = {Quat{}, {h ? 0.25f : -0.25f, 1.1f, -0.3f}};
+        if (role == "hostflicker") {
+            // a headset left running unattended (0.3.16's idle fix): it lies still, but its tracking drops and comes
+            // back every half second, and while lost it reports its head and hands by the floor. The room must still
+            // close (idle times shortened: out of the tank after 5 s, the room closes after 20 s)
+            const bool lost = ((int)(t * 2.0)) % 2 == 1;
+            local.headTracked = !lost;
+            for (int h = 0; h < 2; ++h) local.hand[h].tracked = !lost;
+            local.head = {Quat{}, lost ? Vec3{0, 0.05f, 0} : Vec3{0, 1.6f, 0}};
+            for (int h = 0; h < 2; ++h) local.hand[h].grip = {Quat{}, lost ? Vec3{0, 0.02f, 0} : Vec3{h ? 0.25f : -0.25f, 1.1f, -0.3f}};
+        }
         if (!server || net.onlineReady()) {
-            if ((role == "host" || role == "hostout") && !hosting) { net.host(); net.setBotFill(true); hosting = true; }
+            if ((role == "host" || role == "hostout" || role == "hostflicker") && !hosting) {
+                net.host(); net.setBotFill(true); hosting = true;
+                if (role == "hostflicker") { net.setIdleTimes(5.0, 20.0); net.queue(true); }
+            }
             if (role == "spectate" && !spectating && t > 1.0) { net.spectate(); spectating = true; }
             if ((role == "join" || role == "queue") && !joined) {
                 std::vector<LanGame> gs = net.games();

@@ -59,6 +59,17 @@ the relay, which drops everyone for a few seconds (players reconnect by themselv
   `ssh -i oracle.key ubuntu@PUBLIC_IP "echo 0.3.5 | sudo tee /opt/projectarena/latest_version.txt"` (the relay
   re-reads it on its own; no restart).
 
+**SOUND STUDIO's library** (0.3.16; `docs/SOUND_STUDIO.md`): the sounds players can try, in
+`/opt/projectarena/sound_library` (setup.sh makes it; 40 sounds at most, 5 per slot, the oldest first).
+- Add one: on your computer `python -I tools/add_sound.py FILE S12 "name"` (it converts and checks it, and prints the
+  two commands for this server: copy it to /tmp, then install it into the folder). The relay lists it within seconds.
+  Only with the maker's agreement, and with what it is made from and its terms noted.
+- The votes: `ssh -i oracle.key ubuntu@PUBLIC_IP "cd /opt/projectarena && sudo -u projectarena python3 -I projectarena_relay.py --stats player_stats.db --sounds sound_library --sound-totals"`
+- Take one out (adopted into a release, or removed by the community's vote):
+  `... --sound-remove ShieldBreak__example_name --reason adopted --adopted-in 0.3.17` (or `--reason removed`): it goes to
+  `sound_library/removed`, and its result (votes, why) is printed and kept in `sound_library/removed/results.log` for
+  the Discord post. Headsets drop it the next time their studio opens.
+
 **Player statistics** (what is collected, the protections and the known gaps: `docs/DATA_AND_SECURITY.md`): the relay keeps every player's career (matches, wins, throws and throws on target, hits,
 blocks and balls faced, catches, top throw speed) in `/opt/projectarena/player_stats.db` (SQLite), keyed by a private
 random key each game makes for itself. Hosts report each finished match between two people; spectators and players

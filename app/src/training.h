@@ -138,6 +138,7 @@ public:
     Result result;
     std::vector<CueEvent> cues;   // this step's (sounds, flashes)
     std::string line;             // the coach's word now ("TAKE YOUR BALL")
+    bool endless = false;         // SOUND STUDIO: the lesson never ends and has no result (set after begin)
 
     const Lesson& L() const { return lessons()[lesson]; }
     // the lesson set up (its card), the coach showing it; `saved` keeps the rules the game had, for stop()

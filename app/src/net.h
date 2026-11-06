@@ -14,6 +14,7 @@
 #pragma once
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <string>
 #include <vector>
 #include "game.h"
@@ -67,7 +68,9 @@ struct SpecMatch {
     Game game;
     RoomInfo room;
     uint32_t lastSeq = 0, lastEventId = 0, lastRoomSeq = 0;
-    double lastSeen = 0;
+    double lastSeen = 0;           // its last room update or snapshot (it stays listed)
+    double stateSeen = -1e9;       // its last new snapshot: a game being played (0.3.16: a room that only sends its
+                                   // room updates is WAITING, not a LIVE MATCH)
     std::vector<uint8_t> state;
     bool fresh = false;
     std::vector<GameEvent> events;   // new events since they were last taken
@@ -77,6 +80,11 @@ struct SpecMatch {
 // Bug reports go to the community server (same host and port as the relay, over TCP): "PABUG1\n", u32 length, text.
 // Blocking with timeouts (call it off the render thread). err: a short upper-case reason on failure.
 bool sendBugReport(const char* hostPort, const std::string& text, std::string& err);
+// SOUND STUDIO (0.3.16): the community server's sound library over the same TCP port (blocking: off the render thread).
+// The catalog: each sound's file name (Event__name.wav), size, SHA-256 (hex) and this player's own vote (-1, 0, 1).
+struct LibSound { std::string file; uint32_t size = 0; std::string sha; int vote = 0; };
+bool fetchSoundCatalog(const char* hostPort, const uint8_t key[16], std::vector<LibSound>& out, std::string& err);
+bool fetchSound(const char* hostPort, const std::string& file, std::vector<uint8_t>& data, std::string& err);
 
 class Net {
 public:
@@ -103,6 +111,8 @@ public:
     void queue(bool join);            // waiting: join / leave the arena's queue
     void forfeit();                   // in the tank: give up the match and go back to the room's waiting area
     std::vector<SpecMatch>& matches() { return matches_; }
+    // a game being played there: a new snapshot in the last 3 s and not waiting for players (0.3.16; else WAITING)
+    bool live(const SpecMatch& m) const { return now_ - m.stateSeen < 3.0 && m.game.match != MatchState::WaitingForPlayers; }
     int spectatorCount() const { return (int)spectators_.size(); }
     void setName(const char* name);
     const char* name() const { return name_; }
@@ -123,6 +133,9 @@ public:
     };
     using MatchStats = MatchTally;   // (game.h)
     void setStatsKey(const uint8_t key[16]) { std::memcpy(statsKey_, key, 16); keySent_ = false; }
+    const uint8_t* statsKey() const { return statsKey_; }
+    bool sendSoundVote(const std::string& file, int vote);   // SOUND STUDIO: -1, 0 (taken back), 1; sent once online
+    bool pendingSoundVote(const std::string& file, int& vote) const;   // ... one still waiting to be sent
     // host, online, two people in the tank; score = points 0, points 1, rounds 0, rounds 1 (the other player confirms)
     // mode: Tunables::statsMode() (0 standard, 1 HOTDOG, 2 custom): careers keep each mode apart as well (0.3.8)
     void reportMatch(int winner, const MatchStats st[2], const uint8_t score[4], int mode = 0);
@@ -248,6 +261,9 @@ private:
         double active = 0;            // last moved or pressed something (IDLE ROOMS)
         Vec3 ref[3];                  // where head and hands were then
         uint8_t refButtons = 0;
+        uint8_t refTracked = 0;       // ... which of head, left, right hand were tracked (bits 0-2)
+        uint16_t moves[4] = {};       // diagnostics: what counted as moving since the last idle line (STIR_*)
+        uint16_t lost = 0, found = 0; // ... head tracking lost / found since then
         bool back = true;             // (a room taken over: heard from since)
     };
     struct Heir { uint32_t id = 0, ip = 0; char name[17] = {}; };
@@ -267,7 +283,7 @@ private:
     char heirRoom_[17] = {};              // the room's name
     size_t heirAt_ = 0;
     bool migrating_ = false, inherited_ = false, resumed_ = false, ownTalk_ = false, ownBotFill_ = true, oneTurns_ = false;
-    double migrateUntil_ = 0, resumeWait_ = 0, lastHeirs_ = 0, lastExchange_ = 0, lastClosingWarn_ = 0;
+    double migrateUntil_ = 0, resumeWait_ = 0, lastHeirs_ = 0, lastExchange_ = 0, lastClosingWarn_ = 0, lastIdleLog_ = 0;
     double promotedAt_ = 0;               // host: when we took the room over (0: we opened it)
     double scoutUntil_ = 0;               // client, woken up: looking for where our room went (its new host's beacon)
     double migrateFrom_ = 0;              // client: when the handover began (beacons heard since then count)
@@ -309,6 +325,7 @@ private:
     uint32_t statsHost_ = 0;
     CareerStats stats_[2];
     std::vector<std::vector<uint8_t>> trainQ_;   // TRAIN bodies waiting for the relay (and our key)
+    std::map<std::string, int> soundQ_;          // SOUND STUDIO's votes waiting for the relay (and our key)
     std::vector<Board> boards_;
     void relaySend(uint8_t type, const void* body, int n);
     LiveInfo live_;

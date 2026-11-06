@@ -37,6 +37,7 @@ fi
 
 cmd.exe //c "$(cygpath -w "$ROOT/tools/run_tests.bat")" | tail -1
 python -I "$ROOT/server/test_relay.py" | tail -1
+python -I "$ROOT/server/test_relay_sounds.py" | tail -1   # (SOUND STUDIO's library)
 "$ROOT/build.sh" release open
 python -I "$ROOT/tools/check_store_apk.py" "$APK" --release
 

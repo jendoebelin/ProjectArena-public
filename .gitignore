@@ -32,3 +32,4 @@ tools/UassetDump/obj/
 *.db
 *.db.salt
 /discord.local.cfg
+/sounds.local.cfg

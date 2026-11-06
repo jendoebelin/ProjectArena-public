@@ -52,22 +52,39 @@ static const uint16_t kRelayPort = 47780;
 enum : uint8_t { R_HELLO = 1, R_WELCOME = 2, R_SEND = 3, R_PING = 4, R_BYE = 5, R_DELIVER = 6, R_ERROR = 7,
                  R_KEY = 8, R_TANK = 9, R_MATCH = 10, R_STATSREQ = 11, R_STATS = 12, R_CONFIRM = 13, R_DELETE = 14,
                  R_MYSTATS = 15, R_LIVE = 16, R_CROWD = 17,     // (8-15: player statistics; 16-17: The Crowd)
-                 R_TRAIN = 18, R_BOARDREQ = 19, R_BOARD = 20 };  // (18-20: TRAINING's leaderboards, 0.3.12)
+                 R_TRAIN = 18, R_BOARDREQ = 19, R_BOARD = 20,    // (18-20: TRAINING's leaderboards, 0.3.12)
+                 R_SOUNDVOTE = 21 };                             // (21: SOUND STUDIO's votes, 0.3.16)
 static const double kRotateDelay = 6.0;          // match summary -> both players out, the queue in
 static const double kMemberTimeout = 4.0;
 
 static const char* ipStr(uint32_t ip) { in_addr ia{}; ia.s_addr = ip; return inet_ntoa(ia); }
 
 // IDLE ROOMS: has this person moved (head 5 cm, a hand 10 cm) or changed a button since `ref`? (A headset left on a
-// desk still tracks: it just doesn't move.) Moving resets `ref`.
-static bool stirred(Vec3 ref[3], uint8_t& refButtons, const PlayerInput& in) {
+// desk still tracks: it just doesn't move.) Only what is tracked counts (0.3.16, owner 2026-11-06: a host's headset
+// left running unattended kept its room open all day; tracking that came and went made its head and hands jump between
+// where they were and a made-up place by the floor, and every jump counted as moving). Tracking found again starts
+// afresh from where it is, the jump not counted; without the head tracked only the buttons count (nobody is wearing
+// it). Returns what moved (STIR_*), STIR_NONE if nothing; the moved parts' `ref` follow them.
+enum : uint8_t { STIR_NONE, STIR_HEAD, STIR_HAND, STIR_BUTTON };
+static uint8_t stirred(Vec3 ref[3], uint8_t& refButtons, uint8_t& refTracked, const PlayerInput& in) {
     uint8_t b = in.buttonA ? 1 : 0;
     for (int h = 0; h < 2; ++h) b |= (uint8_t)((in.hand[h].trigger > 0.5f ? 2 : 0) << h) | (uint8_t)((in.hand[h].squeeze > 0.5f ? 8 : 0) << h);
     const Vec3 now[3] = {in.head.p, in.hand[0].grip.p, in.hand[1].grip.p};
-    bool any = b != refButtons;
-    for (int k = 0; k < 3; ++k) any |= length(now[k] - ref[k]) > (k ? 0.10f : 0.05f);
-    if (any) { for (int k = 0; k < 3; ++k) ref[k] = now[k]; refButtons = b; }
-    return any;
+    const bool tracked[3] = {in.headTracked, in.headTracked && in.hand[0].tracked, in.headTracked && in.hand[1].tracked};
+    uint8_t why = b != refButtons ? STIR_BUTTON : STIR_NONE;
+    uint8_t t = 0;
+    for (int k = 0; k < 3; ++k) {
+        if (!tracked[k]) continue;
+        t |= (uint8_t)(1u << k);
+        if (!((refTracked >> k) & 1u)) { ref[k] = now[k]; continue; }   // (found again: from here)
+        if (length(now[k] - ref[k]) > (k ? 0.10f : 0.05f)) {
+            if (why == STIR_NONE) why = k ? STIR_HAND : STIR_HEAD;
+            ref[k] = now[k];
+        }
+    }
+    refTracked = t;
+    refButtons = b;
+    return why;
 }
 
 // ------------------------------------------------------------------ serialization
@@ -213,6 +230,101 @@ static bool readRoom(Reader& r, RoomInfo& ri, uint32_t& lastSeq) {
 // Android filters broadcast/multicast on Wi-Fi unless a MulticastLock is held. The app has no Java
 // code (NativeActivity), so main.cpp takes the lock through JNI. Failure is non-fatal (logged).
 extern bool netAcquireMulticastLock();
+
+// a TCP connection to the community server (bug reports, SOUND STUDIO's library); -1 and err on failure
+static int tcpOpen(const char* hostPort, std::string& err, int seconds = 8) {
+    std::string host = hostPort ? hostPort : "";
+    int port = 47780;
+    size_t c = host.rfind(':');
+    if (c != std::string::npos) { port = std::atoi(host.c_str() + c + 1); host = host.substr(0, c); }
+    addrinfo hints{}, *res = nullptr;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (host.empty() || getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) { err = "SERVER NOT FOUND"; return -1; }
+    sockaddr_in to = *(sockaddr_in*)res->ai_addr;
+    freeaddrinfo(res);
+    to.sin_port = htons((uint16_t)port);
+    int s = (int)socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s < 0) { err = "NO SOCKET"; return -1; }
+#ifdef _WIN32
+    DWORD tv = (DWORD)seconds * 1000;
+#else
+    timeval tv{seconds, 0};
+#endif
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof tv);
+    if (connect(s, (sockaddr*)&to, sizeof to) != 0) { closeSock(s); err = "SERVER NOT REACHABLE"; return -1; }
+    return s;
+}
+static bool tcpSend(int s, const std::string& msg) {
+    size_t sent = 0;
+    while (sent < msg.size()) {
+        int k = (int)send(s, msg.data() + sent, (int)(msg.size() - sent), 0);
+        if (k <= 0) return false;
+        sent += (size_t)k;
+    }
+    return true;
+}
+static void tcpReadAll(int s, std::vector<uint8_t>& got, size_t most) {   // until the server closes (or `most` bytes)
+    uint8_t buf[16384];
+    while (got.size() < most) {
+        int k = (int)recv(s, (char*)buf, sizeof buf, 0);
+        if (k <= 0) break;
+        got.insert(got.end(), buf, buf + k);
+    }
+}
+
+bool fetchSoundCatalog(const char* hostPort, const uint8_t key[16], std::vector<LibSound>& out, std::string& err) {
+    out.clear();
+    const int s = tcpOpen(hostPort, err);
+    if (s < 0) return false;
+    std::string msg = "PASND1\n";
+    msg += (char)1;
+    msg.append((const char*)key, 16);
+    std::vector<uint8_t> got;
+    if (tcpSend(s, msg)) tcpReadAll(s, got, 64 * 1024);
+    closeSock(s);
+    const std::string t(got.begin(), got.end());
+    if (t.compare(0, 7, "PASND1\n") != 0 || t.size() < 11 || t.compare(t.size() - 4, 4, "END\n") != 0) { err = "NO SOUND LIBRARY"; return false; }
+    size_t p = 7;
+    while (p < t.size() - 4) {
+        size_t e = t.find('\n', p);
+        if (e == std::string::npos) break;
+        const std::string line = t.substr(p, e - p);
+        p = e + 1;
+        LibSound ls;
+        size_t a = line.find('\t'), b = a == std::string::npos ? a : line.find('\t', a + 1), c = b == std::string::npos ? b : line.find('\t', b + 1);
+        if (c == std::string::npos) continue;
+        ls.file = line.substr(0, a);
+        ls.size = (uint32_t)std::strtoul(line.c_str() + a + 1, nullptr, 10);
+        ls.sha = line.substr(b + 1, c - b - 1);
+        ls.vote = std::atoi(line.c_str() + c + 1);
+        if (ls.file.size() < 8 || ls.file.find('/') != std::string::npos || ls.file.find('\\') != std::string::npos || ls.file.find("..") != std::string::npos ||
+            ls.size == 0 || ls.size > 1400000 || ls.sha.size() != 64)
+            continue;   // (never a path out of the library's folder)
+        out.push_back(ls);
+    }
+    return true;
+}
+
+bool fetchSound(const char* hostPort, const std::string& file, std::vector<uint8_t>& data, std::string& err) {
+    data.clear();
+    const int s = tcpOpen(hostPort, err, 15);
+    if (s < 0) return false;
+    std::string msg = "PASND1\n";
+    msg += (char)2;
+    msg += (char)(uint8_t)std::min<size_t>(file.size(), 255);
+    msg.append(file, 0, 255);
+    std::vector<uint8_t> got;
+    if (tcpSend(s, msg)) tcpReadAll(s, got, 1400000 + 4);
+    closeSock(s);
+    if (got.size() < 4) { err = "NO ANSWER"; return false; }
+    const uint32_t n = (uint32_t)got[0] | ((uint32_t)got[1] << 8) | ((uint32_t)got[2] << 16) | ((uint32_t)got[3] << 24);
+    if (n == 0xFFFFFFFFu) { err = "NOT IN THE LIBRARY"; return false; }
+    if (got.size() - 4 != n) { err = "CUT SHORT"; return false; }
+    data.assign(got.begin() + 4, got.end());
+    return true;
+}
 
 bool sendBugReport(const char* hostPort, const std::string& text, std::string& err) {
     std::string host = hostPort ? hostPort : "";
@@ -383,6 +495,21 @@ void Net::submitTraining(int lessonId, float seconds, int successes, int attempt
 void Net::requestBoard(int lessonId, int kind) {
     const uint8_t b[2] = {(uint8_t)lessonId, (uint8_t)(kind ? 1 : 0)};
     relaySend(R_BOARDREQ, b, 2);
+}
+
+// SOUND STUDIO (0.3.16): one vote per player key and sound. Kept until the community server can take it (with our
+// key): the studio's moment is a TRAINING lesson, which doesn't talk to the server, so a vote sent at once went to a
+// server that had let the connection go (owner's test, 2026-11-06). The latest vote for a sound replaces one waiting
+bool Net::sendSoundVote(const std::string& file, int vote) {
+    if (file.empty() || file.size() > 64) return false;
+    soundQ_[file] = vote < 0 ? -1 : vote > 0 ? 1 : 0;
+    return true;
+}
+bool Net::pendingSoundVote(const std::string& file, int& vote) const {
+    auto it = soundQ_.find(file);
+    if (it == soundQ_.end()) return false;
+    vote = it->second;
+    return true;
 }
 
 const Net::Board* Net::board(int lessonId, int kind) const {
@@ -1446,7 +1573,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
                 else {
                     readEvents(r, m->lastEventId, m->events);
                     if (m->events.size() > 64) m->events.erase(m->events.begin(), m->events.end() - 64);
-                    if (seq > m->lastSeq) { m->lastSeq = seq; m->state.assign(r.p, r.e); m->fresh = true; }
+                    if (seq > m->lastSeq) { m->lastSeq = seq; m->state.assign(r.p, r.e); m->fresh = true; m->stateSeen = now_; }
                 }
             }
         } else if (type == MSG_LEAVE) {
@@ -1615,6 +1742,16 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         bool anyKey = false;
         for (uint8_t k : statsKey_) anyKey |= k != 0;
         if (vip_ && anyKey && !keySent_) { relaySend(R_KEY, statsKey_, 16); keySent_ = true; }
+        for (int k = 0; k < 8 && vip_ && keySent_ && !soundQ_.empty(); ++k) {   // (SOUND STUDIO's votes, a few at a time)
+            const std::string f = soundQ_.begin()->first;
+            uint8_t b[66];
+            b[0] = (uint8_t)f.size();
+            std::memcpy(b + 1, f.data(), f.size());
+            b[1 + f.size()] = (uint8_t)(int8_t)soundQ_.begin()->second;
+            relaySend(R_SOUNDVOTE, b, (int)f.size() + 2);
+            LOGI("sound studio: vote %+d for %s sent", soundQ_.begin()->second, f.c_str());
+            soundQ_.erase(soundQ_.begin());
+        }
         for (int k = 0; k < 4 && vip_ && keySent_ && !trainQ_.empty(); ++k) {   // (TRAINING results, a few at a time)
             relaySend(R_TRAIN, trainQ_.front().data(), (int)trainQ_.front().size());
             LOGI("stats: training result sent (lesson %d)", trainQ_.front()[0]);
@@ -1727,7 +1864,26 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
                 }
         }
         // IDLE ROOMS: who has moved lately; a player gone still leaves the tank; a room gone still closes
-        for (Member& m : members_) if (stirred(m.ref, m.refButtons, m.local ? local : m.in)) m.active = now_;
+        for (Member& m : members_) {
+            const PlayerInput& mi = m.local ? local : m.in;
+            const bool hadHead = (m.refTracked & 1u) != 0;
+            const uint8_t why = stirred(m.ref, m.refButtons, m.refTracked, mi);
+            if (why != STIR_NONE) { m.active = now_; if (m.moves[why] < 65535) ++m.moves[why]; }
+            if (hadHead && !mi.headTracked && m.lost < 65535) ++m.lost;
+            if (!hadHead && mi.headTracked && m.found < 65535) ++m.found;
+        }
+        // (diagnostics, every minute: how long each person in the room has been still and what last counted as moving,
+        // so a host's log says why a room stayed open; no positions, only counts)
+        if (now_ - lastIdleLog_ >= 60.0) {
+            lastIdleLog_ = now_;
+            for (Member& m : members_) {
+                LOGI("net: idle check: %s still %.0f s (moves: head %u, hands %u, buttons %u; head tracking %s, lost %u, found %u)",
+                     m.local ? "the host" : (m.name[0] ? m.name : "a player"), now_ - m.active, m.moves[STIR_HEAD], m.moves[STIR_HAND],
+                     m.moves[STIR_BUTTON], (m.refTracked & 1u) ? "on" : "off", m.lost, m.found);
+                for (uint16_t& c : m.moves) c = 0;
+                m.lost = m.found = 0;
+            }
+        }
         for (int p = 0; p < np_; ++p) {
             Member* m = member(slot_[p]);
             if (!m || now_ - m->active < awayAfter_) continue;

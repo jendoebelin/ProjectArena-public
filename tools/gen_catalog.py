@@ -129,6 +129,13 @@ SOUNDS = [   # the subtle set (tools/gen_open_audio.py); the classic set is kept
     ('S26', 'Overtime', 'Sudden death', 'A deep pulsing swell with two heartbeat thumps.'),
     ('S27', 'Ambience', 'Arena ambience', 'A quiet 30-second loop: low hum, air and a distant crowd.'),
     ('S28', 'FistBump', 'Fist bump', 'A friendly metallic knock and a warm pulse when two players bump fists to start.'),
+    # (0.3.16: every sound event numbered, so a code always names one sound slot; the SOUND STUDIO and
+    # tools/add_sound.py use these codes too, app/src/sound_studio.cpp keeps the same list)
+    ('S29', 'Crowd', 'Crowd', 'An excited stadium crowd, looped; it grows louder with the fans\' hype (The Crowd).'),
+    ('S30', 'Cheer', 'Crowd cheer', 'The crowd erupts: a rising cheer with applause.'),
+    ('S31', 'ClockTick', 'Clock tick', 'A very soft, short wooden tick once a second in the last 10 seconds of a timed match or round.'),
+    ('S32', 'LeadChange', 'Lead change', 'A bright rising three-note chime with a light shimmer when someone new leads (FOUR CORNERS).'),
+    ('S33', 'TargetHit', 'Target hit', 'A bright glassy ping over a quick sparkle of breaking light when a TRAINING target is taken.'),
 ]
 
 CODE_FX = [

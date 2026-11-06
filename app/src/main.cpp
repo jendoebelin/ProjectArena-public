@@ -56,6 +56,7 @@ bool xrLoaderInit();   // pc/xr_loader.cpp
 #include "net.h"
 #include "record.h"
 #include "training.h"
+#include "sound_studio.h"
 #include "xcompat.h"
 #ifdef _WIN32
 #include "pc/discord_rpc.h"   // Discord status (PC only)
@@ -295,6 +296,16 @@ struct App {
     float leadFlash = 0;            // FOUR CORNERS: a new leader (2.5 -> 0: the room flashes their colour, "ORANGE LEADS")
     // TRAINING (0.3.12): the lessons (training.h), your bests (training.cfg), its menu pages and what pops up on court
     training::Trainer trainer;
+    // SOUND STUDIO (0.3.16, sound_studio.h): on (a TRAINING lesson runs endlessly as its moment), the section open, the
+    // library synced from the server, each event's choice (a library file; none: the game's own), the clips loaded
+    bool studioOn = false;
+    int studioSection = 0;
+    studio::Library studioLib;
+    std::vector<studio::Sound> studioSounds;
+    std::map<std::string, std::string> studioPick;
+    std::map<std::string, bool> studioLoaded;
+    std::string studioDelArmed;     // one of your own files, DELETE pressed once (pressed again soon: deleted)
+    double studioDelUntil = 0;
     training::Bests trainBests;
     bool trainOpen = false;         // the lessons
     int trainBoard = -2;            // a leaderboard page: the lesson's index (-1: overall; -2: none)
@@ -1387,7 +1398,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.15";
+static const char* kAppVersion = "0.3.16";
 // A scrolling texture's offset, kept in [0, 1) (the textures repeat, so it looks the same). The headset's fragment
 // shader works at medium precision (16-bit floats): an offset that grows with the time played lost its fractions after
 // some minutes, and the ball's and fireballs' plasma broke into big square blocks (a tester's report, 2026-11-02).
@@ -1693,6 +1704,21 @@ static float floorHere(const App& a) { return inLobby(a) ? kLobbyFloor : 0.f; }
 // TRAINING's own pages beside the court (a lesson's card and its result): no side menu, the court and the coach in view
 static float trainColX(int track) { return -0.325f + 0.325f * track; }   // the lessons page: a column a track
 static float trainRowY(int place) { return 0.165f - 0.0705f * place; }
+static float studioRowY(int k) { return 0.125f - 0.052f * k; }   // SOUND STUDIO's rows, an event each
+static int studioChosen(const App& a, const std::string& ev) {   // the library sound chosen for an event (-1: the game's own)
+    auto it = a.studioPick.find(ev);
+    if (it == a.studioPick.end() || it->second.empty()) return -1;
+    for (int i = 0; i < (int)a.studioSounds.size(); ++i)
+        if (a.studioSounds[i].ready && a.studioSounds[i].file == it->second) return i;
+    return -1;
+}
+static bool studioVoteLit(const App& a, uint32_t ip) {   // UP (ip bit 8) or DOWN of row ip & 255: your vote for its sound
+    const studio::Section& sec = studio::sections()[a.studioSection];
+    const uint32_t k = ip & 0xFFu;
+    if (k >= sec.events.size()) return false;
+    const int s = studioChosen(a, sec.events[k]);
+    return s >= 0 && a.studioSounds[s].vote == ((ip & 0x100u) ? 1 : -1);
+}
 static bool otherPage(const App& a) {   // a page other than TRAINING's is open
     return a.titleOpen || a.settingsOpen || a.statsOpen || a.helpOpen || a.bugOpen || a.reportOpen || a.rulesOpen || a.xpOpen ||
            a.statsNoticeOpen || a.movePlayersOpen || a.updateOpen;
@@ -2113,7 +2139,7 @@ enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, B
                      Train, TrainPick, TrainStart, TrainRetry, TrainNext, TrainList, TrainLeave, TrainBoard, TrainKind, TrainBoardBack, TrainShow, TrainVideo,
                      MovePlayers, MoveCorner, MoveOne, MoveBack, OptHealth, OptBalls, OptPlayers, Discord,
                      UpdateOpen, UpdateGo, UpdateRestart, UpdatePage, UpdateStore, UpdateBack, HeadSelfie, PrivateTalk, HandOff, HandOffTo,
-                     LookAhead };
+                     LookAhead, Studio, StudioSection, StudioPrev, StudioNext, StudioPlay, StudioVote, StudioMoment, StudioLeave, StudioDelete };
 struct MenuItem {
     std::string label;
     float x, y, w, h;
@@ -2262,6 +2288,29 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         }
         v.push_back({"LEADERBOARD: OVERALL", -0.20f, -0.46f, 0.38f, 0.055f, MenuAct::TrainBoard, 0xFFFFFFFFu, true});
         v.push_back({"MAIN MENU", 0.20f, -0.46f, 0.38f, 0.055f, MenuAct::TrainLeave, 0, true});
+        return v;
+    }
+    if (a.studioOn && !a.nameEdit && !otherPage(a)) {   // SOUND STUDIO: the sections, each event's choice, PLAY and the votes
+        const auto& S = studio::sections();
+        for (int i = 0; i < (int)S.size(); ++i)
+            v.push_back({S[i].name, -0.3125f + 0.125f * i, 0.205f, 0.12f, 0.05f, MenuAct::StudioSection, (uint32_t)i, true});   // (the open one lit)
+        const studio::Section& sec = S[a.studioSection];
+        for (int k = 0; k < (int)sec.events.size(); ++k) {
+            const float y = studioRowY(k);
+            v.push_back({"<", -0.13f, y, 0.045f, 0.045f, MenuAct::StudioPrev, (uint32_t)k, true});
+            v.push_back({">", 0.15f, y, 0.045f, 0.045f, MenuAct::StudioNext, (uint32_t)k, true});
+            v.push_back({"PLAY", 0.22f, y, 0.075f, 0.045f, MenuAct::StudioPlay, (uint32_t)k, true});
+            const int s = studioChosen(a, sec.events[k]);
+            if (s >= 0 && !a.studioSounds[s].official && !a.studioSounds[s].mine) {   // a library sound: your vote, lit
+                v.push_back({"UP", 0.29f, y, 0.055f, 0.045f, MenuAct::StudioVote, (uint32_t)k | 0x100u, true});
+                v.push_back({"DOWN", 0.35f, y, 0.06f, 0.045f, MenuAct::StudioVote, (uint32_t)k, true});
+            } else if (s >= 0 && a.studioSounds[s].mine) {   // your own file: DELETE (press twice), to free the headset's space
+                const bool armed = a.studioDelArmed == a.studioSounds[s].file && nowSeconds() < a.studioDelUntil;
+                v.push_back({armed ? "SURE?" : "DELETE", 0.32f, y, 0.115f, 0.045f, MenuAct::StudioDelete, (uint32_t)k, true});
+            }
+        }
+        v.push_back({"HIDE THIS PAGE", -0.19f, -0.455f, 0.36f, 0.055f, MenuAct::StudioMoment, 0, true});
+        v.push_back({"MAIN MENU", 0.19f, -0.455f, 0.36f, 0.055f, MenuAct::StudioLeave, 0, true});
         return v;
     }
     if (a.trainer.active() && !a.nameEdit && !otherPage(a)) {   // in a lesson: its card, its result, or (the menu button) a pause
@@ -2562,7 +2611,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"PLAY PRACTICE", -0.145f, 0.08f, 0.27f, 0.085f, MenuAct::Play, 0, true});
         v.push_back({"TRAINING", 0.145f, 0.08f, 0.27f, 0.085f, MenuAct::Train, 0, a.net.mode() == Net::Mode::Offline});
         v.push_back({"MULTIPLAYER", 0, -0.02f, 0.56f, 0.085f, MenuAct::Multi, 0, true});
-        v.push_back({"CUSTOMIZE AVATAR", 0, -0.12f, 0.56f, 0.085f, MenuAct::Avatar, 0, !a.avModels.empty()});
+        v.push_back({"CUSTOMIZE AVATAR", -0.145f, -0.12f, 0.27f, 0.085f, MenuAct::Avatar, 0, !a.avModels.empty()});
+        v.push_back({"SOUND STUDIO", 0.145f, -0.12f, 0.27f, 0.085f, MenuAct::Studio, 0, a.net.mode() == Net::Mode::Offline});
         v.push_back({"SETTINGS", -0.145f, -0.22f, 0.27f, 0.07f, MenuAct::Settings, 0, true});
         v.push_back({"HOW TO PLAY", 0.145f, -0.22f, 0.27f, 0.07f, MenuAct::Help, 0, true});
         v.push_back({"CHANGE NAME", 0, -0.31f, 0.56f, 0.07f, MenuAct::Name, 0, true});
@@ -2636,8 +2686,13 @@ static void openMenu(App& a, const PlayerInput& in) {
     Vec3 f = in.head.q.rotate({0, 0, -1});
     f.y = 0;
     f = length(f) > 1e-3f ? normalize(f) : Vec3{1, 0, 0};
-    float yaw = std::atan2(-f.x, -f.z);   // panel +Z faces the player
-    a.menuPose = {Quat::axisAngle({0, 1, 0}, yaw), in.head.p + f * 0.9f + Vec3{0, -0.15f, 0}};
+    Vec3 at = f;
+    if (a.studioOn && !inLobby(a)) {   // SOUND STUDIO: off to your left, so the court and the coach stay in view while it is open
+        const Vec3 left{f.z, 0, -f.x};
+        at = normalize(f * 0.64f + left * 0.77f);   // (50 degrees)
+    }
+    float yaw = std::atan2(-at.x, -at.z);   // panel +Z faces the player
+    a.menuPose = {Quat::axisAngle({0, 1, 0}, yaw), in.head.p + at * 0.9f + Vec3{0, -0.15f, 0}};
     if (inLobby(a))   // the lobby: always in the middle, between the posters, facing the balcony (owner)
         a.menuPose = {Quat{}, {kLobbySpot.x, in.head.p.y - 0.22f, kLobbySpot.z - 0.95f}};
     a.menuOpen = true;
@@ -2664,6 +2719,7 @@ static void beginLesson(App& a, int i, bool go) {   // its card (the coach shows
     a.trainBoard = -2;
     a.trainNewBest = false;
     a.trainPops.clear();
+    a.trainer.endless = false;   // (SOUND STUDIO sets it after)
     a.trainer.begin(a.game, i, a.classicCol);
     filmLoad(a, i);
     LOGI("training: lesson %d %s", training::lessons()[i].id, training::lessons()[i].name);
@@ -2678,12 +2734,150 @@ static void askBoard(App& a) {
     a.trainBoardAsked = nowSeconds();
 }
 
+// ---- SOUND STUDIO (0.3.16)
+static void studioApply(App& a, const std::string& ev) {   // the event's choice into the mixer (studio only)
+    const int s = studioChosen(a, ev);
+    if (s < 0) { a.audio.setOverride(ev, ""); return; }
+    if (a.studioSounds[s].mine) {   // your own .wav (my_sounds), loaded once
+        const std::string clip = "mine/" + a.studioSounds[s].file;
+        auto it = a.studioLoaded.find(clip);
+        if (it == a.studioLoaded.end()) it = a.studioLoaded.emplace(clip, a.audio.loadFile(clip, a.studioSounds[s].path)).first;
+        if (!it->second) a.net.noticeLocal("THAT FILE ISN'T A WAV THE GAME CAN PLAY - EXPORT IT AS WAV");
+        a.audio.setOverride(ev, it->second ? clip : "");
+        return;
+    }
+    if (a.studioSounds[s].official) {   // the game's own sound of another slot: its clip as it is
+        a.audio.setOverride(ev, a.audio.officialClip(a.studioSounds[s].event));
+        return;
+    }
+    const std::string& f = a.studioSounds[s].file;
+    const std::string clip = "studio/" + f;
+    auto it = a.studioLoaded.find(clip);
+    if (it == a.studioLoaded.end()) it = a.studioLoaded.emplace(clip, a.audio.loadFile(clip, a.studioLib.path(f))).first;
+    a.audio.setOverride(ev, it->second ? clip : "");
+}
+static void studioAddLocal(App& a) {   // your own .wav files (my_sounds) and the game's own sounds, after the library's
+    if (const char* d = dataDir(a))
+        for (const studio::Sound& m : studio::mySounds(std::string(d) + "/my_sounds")) a.studioSounds.push_back(m);
+    for (const studio::Sound& o : studio::officialSounds()) a.studioSounds.push_back(o);
+}
+static void studioOpenSection(App& a, int i) {   // a section, and its moment: its TRAINING lesson, endless
+    const auto& S = studio::sections();
+    a.studioSection = std::max(0, std::min((int)S.size() - 1, i));
+    const int id = S[a.studioSection].lesson ? S[a.studioSection].lesson : (a.trainer.active() ? 0 : 21);
+    const int li = id ? training::lessonById(id) : -1;
+    if (li >= 0 && (!a.trainer.active() || a.trainer.lesson != li)) {
+        beginLesson(a, li, true);
+        a.trainer.endless = true;
+    }
+    openMenu(a, a.localIn);
+}
+static void studioOpen(App& a) {
+    if (a.net.mode() != Net::Mode::Offline) return;
+    a.titleOpen = false;
+    a.studioOn = true;
+    a.studioSounds.clear();   // (yours and the game's own at once; the library's join them when synced)
+    for (auto it = a.studioLoaded.begin(); it != a.studioLoaded.end();)   // (your files read afresh: you may have changed them)
+        it = it->first.compare(0, 5, "mine/") == 0 ? a.studioLoaded.erase(it) : std::next(it);
+    studioAddLocal(a);
+    a.studioPick.clear();
+    if (const char* d = dataDir(a)) a.studioLib.sync(a.serverAddr, std::string(d) + "/sound_library", a.net.statsKey());
+    LOGI("sound studio: open");
+    studioOpenSection(a, 0);
+}
+static void studioLeave(App& a) {   // MAIN MENU: the game's own sounds again, out of the lesson to the lobby
+    a.studioOn = false;
+    a.audio.clearOverrides();
+    a.studioPick.clear();
+    if (a.trainer.active()) { stopTraining(a); a.lobby = true; }
+    LOGI("sound studio: closed");
+    openMenu(a, a.localIn);
+    a.titleOpen = true;
+}
+static void studioStep(App& a, int k, int d) {   // the event's next or previous choice, played at once
+    const studio::Section& sec = studio::sections()[a.studioSection];
+    if (k < 0 || k >= (int)sec.events.size()) return;
+    const std::string ev = sec.events[k];
+    const std::vector<int> ch = studio::choicesFor(ev, a.studioSounds);
+    const int cur = studioChosen(a, ev);
+    int at = 0;
+    for (int i = 0; i < (int)ch.size(); ++i) if (ch[i] == cur) at = i;
+    at = (at + d + (int)ch.size()) % (int)ch.size();
+    a.studioPick[ev] = ch[at] < 0 ? "" : a.studioSounds[ch[at]].file;
+    studioApply(a, ev);
+    a.audio.cue(ev);
+}
+static void studioVote(App& a, int k, int dir) {   // UP / DOWN; your vote pressed again takes it back
+    const studio::Section& sec = studio::sections()[a.studioSection];
+    if (k < 0 || k >= (int)sec.events.size()) return;
+    const int s = studioChosen(a, sec.events[k]);
+    if (s < 0 || a.studioSounds[s].official || a.studioSounds[s].mine) return;   // (votes are for the library's new sounds)
+    studio::Sound& snd = a.studioSounds[s];
+    const int v = snd.vote == dir ? 0 : dir;
+    if (a.net.sendSoundVote(snd.file, v)) {   // (kept until the community server takes it: at the latest when you leave)
+        snd.vote = v;
+        LOGI("sound studio: vote %+d for %s", v, snd.file.c_str());
+        a.net.noticeLocal(v > 0 ? "YOU VOTED UP - IT GOES TO THE COMMUNITY'S COUNT" : v < 0 ? "YOU VOTED DOWN - IT GOES TO THE COMMUNITY'S COUNT"
+                                                     : "YOUR VOTE IS TAKEN BACK");
+    }
+}
+static void studioDelete(App& a, int k) {   // one of your own files off the headset (DELETE, then SURE? within 4 s)
+    const studio::Section& sec = studio::sections()[a.studioSection];
+    if (k < 0 || k >= (int)sec.events.size()) return;
+    const std::string ev = sec.events[k];
+    const int s = studioChosen(a, ev);
+    if (s < 0 || !a.studioSounds[s].mine) return;
+    const studio::Sound snd = a.studioSounds[s];
+    if (a.studioDelArmed != snd.file || nowSeconds() > a.studioDelUntil) {
+        a.studioDelArmed = snd.file;
+        a.studioDelUntil = nowSeconds() + 4.0;
+        return;
+    }
+    a.studioDelArmed.clear();
+    const bool gone = std::remove(snd.path.c_str()) == 0;
+    LOGI("sound studio: %s %s", snd.path.c_str(), gone ? "deleted" : "could not be deleted");
+    if (!gone) { a.net.noticeLocal("COULDN'T DELETE THAT FILE"); return; }
+    a.studioSounds.erase(a.studioSounds.begin() + s);
+    for (auto& kv : a.studioPick) if (kv.second == snd.file) kv.second.clear();
+    for (const studio::Section& sc : studio::sections())
+        for (const char* e : sc.events) studioApply(a, e);
+    a.net.noticeLocal(("DELETED " + snd.name).c_str());
+}
+static void studioUpdate(App& a) {   // every frame: the synced library in; out of the studio if its lesson stopped
+    if (!a.studioOn) return;
+    if (!a.trainer.active() || a.net.mode() != Net::Mode::Offline) {
+        a.studioOn = false;
+        a.audio.clearOverrides();
+        a.studioPick.clear();
+        return;
+    }
+    std::vector<studio::Sound> got;
+    if (a.studioLib.take(got)) {
+        for (studio::Sound& s : got) a.net.pendingSoundVote(s.file, s.vote);   // (a vote not yet sent beats the server's)
+        a.studioSounds = got;
+        studioAddLocal(a);
+        for (const studio::Section& sec : studio::sections())
+            for (const char* ev : sec.events) studioApply(a, ev);
+    }
+}
+
 static void menuActivate(App& a, const MenuItem& it) {
     LOGI("menu: %s", it.label.c_str());
     if (it.act != MenuAct::Quit) a.quitArmed = false;
     switch (it.act) {
     case MenuAct::Experimental: a.xpOpen = true; break;
     case MenuAct::Train: a.titleOpen = false; a.trainOpen = true; break;
+    case MenuAct::Studio: studioOpen(a); break;
+    case MenuAct::StudioSection: studioOpenSection(a, (int)it.ip); break;
+    case MenuAct::StudioPrev: studioStep(a, (int)it.ip, -1); break;
+    case MenuAct::StudioNext: studioStep(a, (int)it.ip, 1); break;
+    case MenuAct::StudioPlay:
+        if (it.ip < studio::sections()[a.studioSection].events.size()) a.audio.cue(studio::sections()[a.studioSection].events[it.ip]);
+        break;
+    case MenuAct::StudioVote: studioVote(a, (int)(it.ip & 0xFFu), (it.ip & 0x100u) ? 1 : -1); break;
+    case MenuAct::StudioMoment: a.menuOpen = false; break;
+    case MenuAct::StudioLeave: studioLeave(a); break;
+    case MenuAct::StudioDelete: studioDelete(a, (int)it.ip); break;
     case MenuAct::TrainPick: beginLesson(a, (int)it.ip, false); break;
     case MenuAct::TrainStart: a.trainer.start(a.game); a.menuOpen = false; break;
     case MenuAct::TrainRetry: beginLesson(a, a.trainer.lesson, true); break;
@@ -3208,6 +3402,56 @@ static void drawMenu(App& a) {
         std::snprintf(buf, sizeof buf, "TRAINING SCORE %d.%d  (EVERY LESSON'S BEST ACCURACY ADDED UP)", a.trainBests.total() / 10, a.trainBests.total() % 10);
         text(buf, 0, -0.405f, 0.017f, grey);
         if (a.net.mode() != Net::Mode::Offline) text("LEAVE THE ROOM TO TRAIN", 0, -0.51f, 0.02f, white);
+    } else if (a.studioOn && !a.nameEdit && !otherPage(a)) {   // SOUND STUDIO
+        const studio::Section& sec = studio::sections()[a.studioSection];
+        const float gold[4] = {1.0f, 0.85f, 0.35f, 1};
+        text("SOUND STUDIO", 0, 0.31f, 0.05f, cyan);
+        const studio::Library::State st = a.studioLib.state();
+        if (st == studio::Library::LOADING)
+            std::snprintf(buf, sizeof buf, "GETTING THE LIBRARY FROM THE SERVER...  %d / %d", a.studioLib.progress(), a.studioLib.total());
+        else if (st == studio::Library::FAILED)
+            std::snprintf(buf, sizeof buf, "NO NEW SOUNDS: %s (ONLINE: ON)  -  THE GAME'S OWN CAN BE TRIED IN ANY SLOT", a.studioLib.error().c_str());
+        else {
+            int lib = 0;
+            for (const studio::Sound& s : a.studioSounds) lib += s.official || s.mine ? 0 : 1;
+            if (lib) std::snprintf(buf, sizeof buf, "%d NEW SOUNDS TO TRY, ONLY IN HERE  -  VOTE UP OR DOWN (AGAIN: TAKEN BACK)", lib);
+            else std::snprintf(buf, sizeof buf, "NO NEW SOUNDS YET: TRY THE GAME'S OWN IN ANY SLOT, OR PROPOSE ONE (DOCS/SOUND_STUDIO.MD)");
+        }
+        {   // your own: how many, how much room they take, where they go
+            int mine = 0;
+            double mb = 0;
+            for (const studio::Sound& s : a.studioSounds)
+                if (s.mine) {
+                    ++mine;
+                    if (FILE* f = std::fopen(s.path.c_str(), "rb")) { std::fseek(f, 0, SEEK_END); mb += std::ftell(f) / 1048576.0; std::fclose(f); }
+                }
+            char line[160];
+            if (mine) std::snprintf(line, sizeof line, "MINE: %d .WAV FILE%s, %.1f MB, IN THE GAME'S MY_SOUNDS FOLDER  -  DELETE ONE WITH ITS DELETE BUTTON",
+                                    mine, mine == 1 ? "" : "S", mb);
+            else std::snprintf(line, sizeof line, "TRY YOUR OWN: PUT .WAV FILES (WAV ONLY) IN THE GAME'S MY_SOUNDS FOLDER, THEN OPEN THE STUDIO AGAIN");
+            text(line, 0, -0.404f, 0.0105f, grey);
+        }
+        text(buf, 0, 0.27f, 0.0135f, st == studio::Library::FAILED ? gold : white);
+        text(sec.how, 0, 0.245f, 0.0125f, grey);
+        text("YOUR VOTE", 0.32f, 0.158f, 0.0125f, cyan);   // (over UP / DOWN: owner 2026-11-06, the votes weren't obvious)
+        text("SOUND", 0.01f, 0.158f, 0.0125f, cyan);
+        text("THE MOMENT PLAYS ON WHILE THIS PAGE IS OPEN: CHANGE A SOUND AND HEAR IT. MENU BRINGS THE PAGE BACK", 0, -0.383f, 0.0115f, grey);
+        for (int k = 0; k < (int)sec.events.size(); ++k) {
+            const float y = studioRowY(k);
+            const std::string ev = sec.events[k];
+            {   // its slot: the asset catalog's code and name ("S12 SHIELD BREAK"), smaller when long
+                const std::string sl = studio::slotName(ev);
+                text(sl, -0.265f, y - 0.006f, std::min(0.0165f, 0.215f / (0.75f * (float)sl.size())), white);
+            }
+            const int s = studioChosen(a, ev);
+            text(s < 0 ? std::string("OFFICIAL") : a.studioSounds[s].name, 0.01f, y - 0.002f, 0.0155f, s < 0 ? grey : cyan);
+            if (s >= 0 && a.studioSounds[s].mine)   // (your own .wav: only here)
+                text("MINE - ONLY ON THIS HEADSET", 0.01f, y - 0.019f, 0.0095f, grey);
+            else if (s >= 0 && a.studioSounds[s].official)   // (the game's own sound of another slot, tried here)
+                text("THE GAME'S OWN, TRIED HERE", 0.01f, y - 0.019f, 0.0095f, grey);
+            else if (s >= 0 && a.studioSounds[s].event != ev)   // (made for another event: tried here)
+                text("MADE FOR " + studio::slotName(a.studioSounds[s].event), 0.01f, y - 0.019f, 0.0095f, grey);
+        }
     } else if (a.trainer.active() && !a.nameEdit && !otherPage(a)) {   // a lesson: its card, its result, or paused
         using namespace training;
         const Lesson& L = a.trainer.L();
@@ -3489,7 +3733,8 @@ static void drawMenu(App& a) {
                             (it.act == MenuAct::ReportWhy && (int)it.ip == a.reportWhy) || (it.act == MenuAct::MoveCorner && (int)it.ip == a.moveSel) || (it.act == MenuAct::PtMode && (int)it.ip == a.ptMode) ||
                             (it.act == MenuAct::OptBot && it.ip >= 10 &&
                              (int)it.ip - 10 <= (a.optBotAdapt ? (int)std::lround(a.game.tun.botMatch) : a.optBotLevel)) ||
-                            (it.act == MenuAct::OptBot && it.ip == 2 && a.optBotAdapt);
+                            (it.act == MenuAct::OptBot && it.ip == 2 && a.optBotAdapt) ||
+                            (it.act == MenuAct::StudioSection && (int)it.ip == a.studioSection) || (it.act == MenuAct::StudioVote && studioVoteLit(a, it.ip));
         quad(it.x, it.y, it.w, it.h, 0.003f, !it.enabled && !row ? dis : ((int)i == a.menuHover || picked) ? hov : btn);
         float th = row ? 0.026f : 0.034f;
         const float tw = th * 0.75f * (float)it.label.size();          // the font's glyphs are 0.75 x their height
@@ -6008,8 +6253,10 @@ static void drawHub(App& a, int pass) {
         }
         drawMiniMatch(a, ms[i].game, at, q, s, pass, hover, &ms[i].room);
         if (pass == 1) {
+            // its glow on the floor round the pedestal (0.3.16: drawn at the table top, the miniature's own floor, it
+            // showed through the arena's glass, testers 2026-11-06)
             const float ring[4] = {hover ? 0.4f : 0.08f, hover ? 0.9f : 0.3f, hover ? 1.0f : 0.45f, 1};
-            a.gfx.drawSpriteFlat(at + Vec3{0, 0.002f, 0}, 1.5f, ring, {0, 1, 0}, 1);
+            a.gfx.drawSpriteFlat(Vec3{at.x, 0.008f, at.z}, 1.5f, ring, {0, 1, 0}, 1);
             Vec3 lf = normalize(Vec3{eye.x - at.x, 0, eye.z - at.z});
             Quat lq = Quat::axisAngle({0, 1, 0}, std::atan2(lf.x, lf.z));
             char buf[64];
@@ -6028,6 +6275,7 @@ static void drawHub(App& a, int pass) {
                          g.teamScore(1), clockLine(g).c_str());
             else snprintf(buf, sizeof buf, "%s%s   %d  -  %d   %s", g.tun.experimental ? "DIAMOND " : "", g.tun.shields ? "BASIC" : "BASIC HOTDOG",
                           g.pl[0].score, g.pl[1].score, clockLine(g).c_str());
+            if (!a.net.live(ms[i])) snprintf(buf, sizeof buf, "WAITING FOR PLAYERS");   // (0.3.16: no game going there)
             a.gfx.drawText(buf, {lq, at + Vec3{0, 0.39f, 0}}, 0.04f, grey);
         }
     }
@@ -6040,14 +6288,18 @@ static void drawHub(App& a, int pass) {
                 a.gfx.drawSprite(w.pos, 0.09f, kBlue, a.viewHead.p, 0);
             }
     }
+    // the hub's sign, for a headset (the PC window has its own title and TAB TO WATCH: the sign, up in the arena,
+    // ran into that title whenever the camera centred on a match, testers 2026-11-06; and pointing is a headset's)
     if (pass == 1) {
         Quat fq = Quat::axisAngle({0, 1, 0}, -kPi * 0.5f);   // facing a viewer looking +X
-        a.gfx.drawText("SPECTATOR HUB", {fq, {2.4f, 2.1f, 0}}, 0.14f, cyan);
-        if (n == 0) {
-            a.gfx.drawText("NO LIVE GAMES ON YOUR NETWORK YET", {fq, {2.4f, 1.6f, 0}}, 0.07f, white);
-            a.gfx.drawText("WHEN A PLAYER HOSTS A GAME IT APPEARS HERE", {fq, {2.4f, 1.45f, 0}}, 0.05f, grey);
-        } else {
-            a.gfx.drawText("POINT AT AN ARENA AND PULL THE TRIGGER TO WATCH IT", {fq, {2.4f, 1.85f, 0}}, 0.045f, grey);
+        if (!isDesktop(a)) {
+            a.gfx.drawText("SPECTATOR HUB", {fq, {2.4f, 2.1f, 0}}, 0.14f, cyan);
+            if (n == 0) {
+                a.gfx.drawText("NO LIVE GAMES ON YOUR NETWORK YET", {fq, {2.4f, 1.6f, 0}}, 0.07f, white);
+                a.gfx.drawText("WHEN A PLAYER HOSTS A GAME IT APPEARS HERE", {fq, {2.4f, 1.45f, 0}}, 0.05f, grey);
+            } else {
+                a.gfx.drawText("POINT AT AN ARENA AND PULL THE TRIGGER TO WATCH IT", {fq, {2.4f, 1.85f, 0}}, 0.045f, grey);
+            }
         }
         // pointer laser in the hub
         if (a.aimValid[a.pointerHand] && !a.menuOpen) {
@@ -7870,7 +8122,9 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
             } else if (a.trainer.phase == Phase::Card && !a.menuOpen && a.trainMenuAt == 0) {
                 a.trainer.start(a.game); LOGI("training: started (card closed)");
             }
-            if (!(a.builderOpen || a.tuneOpen || (a.menuOpen && mid))) a.trainer.step(a.game, dt, in);
+            // (SOUND STUDIO: its moment plays on with its page open beside you, to change a sound and hear it at once;
+            // owner's test 2026-11-06: having to close the menu to play and open it to choose wasn't something to guess)
+            if (!(a.builderOpen || a.tuneOpen || (a.menuOpen && mid && !a.studioOn))) a.trainer.step(a.game, dt, in);
             trainingFeedback(a, dt, before);
         } else if (a.net.exchange(mine, in, a.game, dt)) {
             // practice is paused while you customize your avatar (the builder only opens offline)
@@ -7890,6 +8144,7 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
             a.net.noticeLocal("TEAM CAMERAS RECEIVED");
         }
     }
+    studioUpdate(a);
     recordStep(a, dt);
     handleEvents(a);
     {   // the last 10 seconds of a timed match or round: a very soft tick each second (owner, 2026-10-27)
@@ -9100,6 +9355,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         }
 #endif
         if (v.dcshot == "hub") {   // the hub of live miniatures, this match among them
+            a.desktop = true;      // (as the PC window draws it: no headset's sign in the arena)
             a.net.matches().back().game = g;
             a.net.matches().back().room.botMask = 0xF;   // (its players shown: bots, here)
             a.watchIp = 0;
@@ -9174,6 +9430,24 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
                 for (int i = 0; i < 6; ++i) { Net::BoardRow r{}; std::snprintf(r.name, sizeof r.name, "%s", nm[i]); r.value = ms[i]; b.rows.push_back(r); }
                 a.net.boardForPictures(b);
             }
+        }
+        if (v.menu == "studio" || v.menu == "studiomatch") {   // SOUND STUDIO with a made-up library: SHIELD (or MATCH)
+            beginLesson(a, training::lessonById(21), true);
+            a.trainer.endless = true;
+            a.studioOn = true;
+            a.studioSection = v.menu == "studio" ? 0 : 4;
+            const char* files[4] = {"ShieldBreak__glass_crack.wav", "ShieldBreak__deep_thud.wav", "ShieldBlock__soft_tap.wav", "Countdown__beep_beep.wav"};
+            for (int i = 0; i < 4; ++i) {
+                studio::Sound s;
+                s.file = files[i]; s.event = studio::eventOf(files[i]); s.name = studio::prettyName(files[i]); s.ready = true; s.vote = i == 0 ? 1 : 0;
+                a.studioSounds.push_back(s);
+            }
+            for (const studio::Sound& o : studio::officialSounds()) a.studioSounds.push_back(o);
+            a.studioPick["Recharge"] = "official:Strike";   // (the game's own sound of another slot)
+            a.studioPick["ShieldBreak"] = files[0];
+            a.studioPick["ShieldBlock"] = files[1];   // (another event's sound, tried here)
+            a.studioPick["Countdown"] = files[3];
+            a.menuOpen = true;   // (starting the lesson closed it)
         }
         if (v.menu == "trainclick" && a.trainer.active()) {   // (a check: the result page's buttons answer the pointer)
             a.trainer.phase = training::Phase::Done;
@@ -10200,8 +10474,14 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
         if (!a.net.online()) txt("ON YOUR HOME NETWORK", 0, 0.79f, 0.035f, grey);
         else if (!a.net.onlineReady()) txt("CONNECTING TO THE COMMUNITY SERVER...", 0, 0.79f, 0.035f, grey);
         else if (ms.empty()) txt("NO LIVE MATCHES YET  -  THEY APPEAR HERE WHEN SOMEONE PLAYS", 0, 0.79f, 0.035f, grey);
-        else {
-            snprintf(buf, sizeof buf, "%d LIVE MATCH%s  -  TAB TO WATCH", (int)ms.size(), ms.size() == 1 ? "" : "ES");
+        else {   // (0.3.16: a room nobody plays in is WAITING, not a live match)
+            int live = 0;
+            for (const SpecMatch& m : ms) live += a.net.live(m) ? 1 : 0;
+            const int waiting = (int)ms.size() - live;
+            if (live && waiting)
+                snprintf(buf, sizeof buf, "%d LIVE MATCH%s, %d ROOM%s WAITING  -  TAB TO WATCH", live, live == 1 ? "" : "ES", waiting, waiting == 1 ? "" : "S");
+            else if (live) snprintf(buf, sizeof buf, "%d LIVE MATCH%s  -  TAB TO WATCH", live, live == 1 ? "" : "ES");
+            else snprintf(buf, sizeof buf, "%d ROOM%s WAITING FOR PLAYERS  -  TAB TO WATCH", waiting, waiting == 1 ? "" : "S");
             txt(buf, 0, 0.79f, 0.035f, white);
         }
     }

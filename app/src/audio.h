@@ -28,6 +28,15 @@ public:
     // ours: the event is on the listener's side (they were hit, their team won); right: the listener's right, flat
     void onEvent(const GameEvent& e, const Vec3& listener, bool ours, const Vec3& right = {0, 0, 1});
     void setVolume(float v) { volume_ = v < 0 ? 0 : v > 1 ? 1 : v; }   // master 0..1
+    // SOUND STUDIO (0.3.16): a sound from a file (the library's, downloaded) under a clip name of its own, and an event
+    // (events.txt's key, e.g. "ShieldBreak") played with another clip while the studio is open; "" puts the event back
+    bool loadFile(const std::string& clip, const std::string& path);
+    void setOverride(const std::string& key, const std::string& clip);
+    void clearOverrides() { override_.clear(); }
+    std::string officialClip(const std::string& key) const {   // events.txt's clip for an event ("" none)
+        auto it = eventMap_.find(key);
+        return it == eventMap_.end() ? std::string() : it->second;
+    }
     // voice chat (16 kHz mono): capture through a second, input stream (Quest: needs RECORD_AUDIO); each speaker's
     // frames go through a small jitter buffer and are mixed into the output
     bool startCapture();
@@ -46,6 +55,8 @@ private:
     std::vector<Voice> voices_;
     std::mutex mu_;
     std::map<std::string, std::string> eventMap_;
+    std::map<std::string, std::string> override_;   // SOUND STUDIO's choices: event key -> clip
+    const std::string* clipFor(const std::string& key) const;   // the event's clip: the studio's choice, else events.txt's
     std::atomic<float> volume_{0.8f};
     std::atomic<bool> outOn_{false}, capOn_{false}, paused_{false};
     std::mutex capMu_;

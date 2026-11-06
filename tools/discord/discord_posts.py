@@ -69,13 +69,16 @@ def send(url, post):
     if post.get('image'):
         embed['image'] = {'url': 'attachment://' + post['image']}
         files.append((post['image'], open(os.path.join(PICS, post['image']), 'rb').read()))
+    if post.get('video'):   # (an MP4 under the post, in Discord's player: 10 MB at most on a server without boosts)
+        files.append((post['video'], open(os.path.join(PICS, post['video']), 'rb').read()))
     b = uuid.uuid4().hex
     body = b''
     body += ('--%s\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n' % b).encode()
     body += json.dumps(payload).encode() + b'\r\n'
     for i, (name, data) in enumerate(files):
-        body += ('--%s\r\nContent-Disposition: form-data; name="files[%d]"; filename="%s"\r\nContent-Type: image/png\r\n\r\n'
-                 % (b, i, name)).encode() + data + b'\r\n'
+        kind = 'video/mp4' if name.lower().endswith('.mp4') else 'image/png'
+        body += ('--%s\r\nContent-Disposition: form-data; name="files[%d]"; filename="%s"\r\nContent-Type: %s\r\n\r\n'
+                 % (b, i, name, kind)).encode() + data + b'\r\n'
     body += ('--%s--\r\n' % b).encode()
     req = urllib.request.Request(url + '?wait=true', data=body, method='POST', headers={
         'Content-Type': 'multipart/form-data; boundary=' + b, 'User-Agent': 'ProjectArena/1.0'})

@@ -122,6 +122,18 @@ when it was last improved.
 - Results that can't be real for a lesson (too fast, more throws than it has) are refused and noted in the server's log
   with the player name.
 
+## SOUND STUDIO votes (from version 0.3.16)
+
+When you vote UP or DOWN on a sound in the SOUND STUDIO, your game sends the vote to the official server, which keeps,
+for each sound you voted on: your vote and when you last changed it.
+- They are kept under the same scrambled form of your player key as your statistics; no name, IP address or account.
+- **Not public**: you only ever see your own votes. The server's operator sees each sound's totals (how many up, how
+  many down), which may be posted on Discord when a sound leaves the library; never who voted.
+- Taking a vote back deletes it. **MENU → MY STATS → DELETE MY STATS** erases all of them with your statistics. They
+  are also removed 24 months after you last changed them.
+- To show the studio's sounds, your game downloads them from the server into its own folder; nothing from your
+  headset is sent for that except your scrambled key, so the server can tell you your own votes.
+
 ## The Crowd (live matches on the web, from version 0.3.7)
 
 When you host an **online** arena, the official server shows your match on The Crowd, a public web page
