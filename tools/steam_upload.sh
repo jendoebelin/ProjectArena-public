@@ -1,50 +1,46 @@
 #!/usr/bin/env bash
-# Uploads the PC build to Steam with SteamPipe (docs/STEAM.md). Builds build/pc/ProjectArena (tools/build_pc.bat),
-# copies it to build/steam/content, writes the app / depot build scripts and runs steamcmd.
+# Uploads the PC VR build to Steam (SteamPipe) and sets it live on the BETA branch, for testers to try before it goes
+# to everyone. Making it the default build is done by hand in Steamworks (App Admin > SteamPipe > Builds).
 #
-# Settings: steam.local.cfg in the project root (gitignored), for example
-#   STEAM_APP_ID=1234560        # the Playtest's app ID (or the main game's)
-#   STEAM_DEPOT_ID=1234561      # its Windows depot
-#   STEAM_USER=projectarena_build
-#   STEAMCMD=/c/steamworks_sdk/tools/ContentBuilder/builder/steamcmd.exe
-#   STEAM_BRANCH=testing        # set live on this branch after the upload ("" = don't set live)
+# Usage: ./tools/steam_upload.sh            (after ./tools/make_release.sh --github-only, which builds build/pc/ProjectArena)
 #
-# steamcmd asks for the password and the Steam Guard code itself: never put them in this file or on the command line.
-# Steam does not let a script set the "default" branch live; do that on the app's Builds page.
-# Usage: ./tools/steam_upload.sh [--preview] [--no-build]
-#   --preview   check the upload (logs and manifest in build/steam/output) without sending anything
-#   --no-build  upload build/pc/ProjectArena as it is
+# Needs, once (the owner's steps):
+#   1. Steamworks approval, the app's App ID and its Windows depot ID (Steamworks > App Admin > SteamPipe > Depots),
+#      and a branch called "beta" (SteamPipe > Builds > Manage beta branches; a password is optional).
+#   2. steamcmd from Valve (partner.steamgames.com/doc/sdk/uploading), unzipped to ~/steamcmd (or set STEAMCMD).
+#   3. ~/.projectarena-steam.cfg with three lines (kept out of the repository):
+#        APP_ID=<the App ID>
+#        DEPOT_ID=<the Windows depot ID>
+#        STEAM_USER=<the Steam account that uploads builds>
+#   The first upload asks for that account's password and Steam Guard code in steamcmd itself (they are typed there,
+#   never stored here); steamcmd remembers the sign-in after that.
+#
+# The same build as the GitHub zip: the game sees that Steam installed it (its folder is under steamapps) and turns
+# its own UPDATE NOW off, and its version line and bug reports say Steam.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CFG="$ROOT/steam.local.cfg"
-[ -f "$CFG" ] || { echo "missing $CFG (see the top of this script)" >&2; exit 1; }
-# shellcheck disable=SC1090
-. "$CFG"
-: "${STEAM_APP_ID:?set STEAM_APP_ID in steam.local.cfg}" "${STEAM_DEPOT_ID:?set STEAM_DEPOT_ID}" "${STEAM_USER:?set STEAM_USER}"
-: "${STEAMCMD:?set STEAMCMD (steamcmd.exe in the Steamworks SDK)}"
-STEAM_BRANCH="${STEAM_BRANCH-testing}"
-PREVIEW=0; BUILD=1
-for a in "$@"; do
-  case "$a" in --preview) PREVIEW=1 ;; --no-build) BUILD=0 ;; *) echo "unknown option $a" >&2; exit 1 ;; esac
-done
-[ "$STEAM_BRANCH" = "default" ] && { echo "Steam can't set the default branch live from a script: use STEAM_BRANCH=testing, then the Builds page" >&2; exit 1; }
-[ -x "$STEAMCMD" ] || [ -f "$STEAMCMD" ] || { echo "steamcmd not found at $STEAMCMD" >&2; exit 1; }
-
+CFG="${PROJECTARENA_STEAM_CFG:-$HOME/.projectarena-steam.cfg}"
+STEAMCMD="${STEAMCMD:-$HOME/steamcmd/steamcmd.exe}"
 VER=$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' "$ROOT/app/AndroidManifest.xml")
-if [ "$BUILD" = 1 ]; then cmd.exe //c "$(cygpath -w "$ROOT/tools/build_pc.bat")" | tail -1; fi
-PC="$ROOT/build/pc/ProjectArena"
-[ -f "$PC/ProjectArena.exe" ] && [ -d "$PC/assets" ] || { echo "no PC build in $PC" >&2; exit 1; }
-# the exe must carry this version (kAppVersion in app/src/main.cpp)
-grep -aq "$VER" "$PC/ProjectArena.exe" || { echo "ProjectArena.exe does not contain version $VER: rebuild" >&2; exit 1; }
+CONTENT="$ROOT/build/pc/ProjectArena"
+WORK="$ROOT/build/steam"
 
-S="$ROOT/build/steam"
-rm -rf "$S/content"; mkdir -p "$S/content" "$S/output" "$S/scripts"
-cp -r "$PC/." "$S/content/"
-W() { cygpath -w "$1"; }
-cat > "$S/scripts/depot_build_$STEAM_DEPOT_ID.vdf" <<EOF
+[ -f "$CFG" ] || { echo "no $CFG yet: see the top of this script (App ID, depot ID, Steam account)" >&2; exit 1; }
+APP_ID=$(sed -n 's/^APP_ID=\([0-9]*\).*/\1/p' "$CFG")
+DEPOT_ID=$(sed -n 's/^DEPOT_ID=\([0-9]*\).*/\1/p' "$CFG")
+STEAM_USER=$(sed -n 's/^STEAM_USER=\(.*\)$/\1/p' "$CFG" | tr -d '\r')
+[ -n "$APP_ID" ] && [ -n "$DEPOT_ID" ] && [ -n "$STEAM_USER" ] || { echo "$CFG needs APP_ID, DEPOT_ID and STEAM_USER" >&2; exit 1; }
+[ -x "$STEAMCMD" ] || [ -f "$STEAMCMD" ] || { echo "steamcmd not found at $STEAMCMD (set STEAMCMD)" >&2; exit 1; }
+[ -f "$CONTENT/ProjectArena.exe" ] || { echo "no PC build at $CONTENT: run ./tools/make_release.sh --github-only first" >&2; exit 1; }
+# the build must be this version's (a stale folder would ship old code)
+grep -aq "$VER" "$CONTENT/ProjectArena.exe" || { echo "$CONTENT/ProjectArena.exe is not $VER: build it again" >&2; exit 1; }
+
+mkdir -p "$WORK/output"
+W() { cygpath -w "$1" | sed 's/\\/\\\\/g'; }
+cat > "$WORK/depot_build.vdf" <<EOF
 "DepotBuild"
 {
-	"DepotID" "$STEAM_DEPOT_ID"
+	"DepotID" "$DEPOT_ID"
 	"FileMapping"
 	{
 		"LocalPath" "*"
@@ -52,26 +48,25 @@ cat > "$S/scripts/depot_build_$STEAM_DEPOT_ID.vdf" <<EOF
 		"Recursive" "1"
 	}
 	"FileExclusion" "*.pdb"
+	"FileExclusion" "update_probe.tmp"
+	"FileExclusion" "*.log"
 }
 EOF
-cat > "$S/scripts/app_build_$STEAM_APP_ID.vdf" <<EOF
+cat > "$WORK/app_build.vdf" <<EOF
 "AppBuild"
 {
-	"AppID" "$STEAM_APP_ID"
-	"Desc" "Project Arena $VER (PC VR + spectator window)"
-	"Preview" "$PREVIEW"
-	"ContentRoot" "$(W "$S/content")\\"
-	"BuildOutput" "$(W "$S/output")\\"
-	"SetLive" "$STEAM_BRANCH"
+	"AppID" "$APP_ID"
+	"Desc" "Project Arena $VER"
+	"ContentRoot" "$(W "$CONTENT")"
+	"BuildOutput" "$(W "$WORK/output")"
+	"SetLive" "beta"
 	"Depots"
 	{
-		"$STEAM_DEPOT_ID" "depot_build_$STEAM_DEPOT_ID.vdf"
+		"$DEPOT_ID" "$(W "$WORK/depot_build.vdf")"
 	}
 }
 EOF
-echo "uploading Project Arena $VER to app $STEAM_APP_ID depot $STEAM_DEPOT_ID$([ "$PREVIEW" = 1 ] && echo ' (preview: nothing is sent)')"
-echo "steamcmd will ask for the password and Steam Guard code of $STEAM_USER"
-"$STEAMCMD" +login "$STEAM_USER" +run_app_build "$(W "$S/scripts/app_build_$STEAM_APP_ID.vdf")" +quit
-echo "done: check the logs in $S/output (steamcmd's console can say OK when a depot failed)"
-[ -n "$STEAM_BRANCH" ] && [ "$PREVIEW" = 0 ] && echo "set live on branch '$STEAM_BRANCH'; testers pick it under Properties > Betas"
-exit 0
+echo "uploading Project Arena $VER (app $APP_ID, depot $DEPOT_ID) to Steam's beta branch as $STEAM_USER ..."
+"$STEAMCMD" +login "$STEAM_USER" +run_app_build "$(cygpath -w "$WORK/app_build.vdf")" +quit
+echo "done: Project Arena $VER is live on the beta branch. Test it (Steam > Project Arena > Properties > Betas), then"
+echo "make it the default build in Steamworks (App Admin > SteamPipe > Builds) when it's good."

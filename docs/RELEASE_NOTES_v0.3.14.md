@@ -1,4 +1,4 @@
-# Project Arena 0.3.14 (in progress)
+# Project Arena 0.3.14
 
 ## Changed
 - **The shot clock is on show.** A thin ring round each player's floor launchpad builds while their ball sits in their

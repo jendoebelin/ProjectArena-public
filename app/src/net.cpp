@@ -648,6 +648,15 @@ static void writeState(Writer& w, const Game& g) {
     // stop reading before them
     if (g.np == 2)
         for (int p = 0; p < 2; ++p) w.put<uint8_t>((uint8_t)std::max(0L, std::min(255L, std::lround(g.pl[p].shotClock * 10.f))));
+    // (0.3.15, BALL LOOK-AHEAD) what a player who isn't hosting needs to fly the balls on as the host will: each ball's
+    // spin (hundredths of a rad/s; curves), its bounces and whether it is fouled / going home. Older builds stop before it
+    if (g.np == 2)
+        for (int p = 0; p < 2; ++p) {
+            const Ball& b = g.pl[p].ball;
+            for (float v : {b.spin.x, b.spin.y, b.spin.z}) w.put<int16_t>((int16_t)std::max(-32000L, std::min(32000L, std::lround(v * 100.f))));
+            w.put<uint8_t>((uint8_t)((b.fouled ? 1 : 0) | (b.homing ? 2 : 0) | (std::min(b.bounces, 63) << 2)));
+        }
+    if (g.np == 2) w.put<float>(g.now);   // (... and the host's game clock: how far to look ahead, steady)
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -717,6 +726,25 @@ static bool readState(Reader& r, Game& g, int localIndex) {
     }
     if (np == 2 && r.ok && r.e - r.p >= 2)   // the shot clocks (hosts from 0.3.14)
         for (int p = 0; p < 2; ++p) g.pl[p].shotClock = r.get<uint8_t>() / 10.f;
+    for (int p = 0; p < np; ++p) {   // (a ball's own speed: what flying it on keeps; snapshots carry its velocity)
+        Ball& b = g.pl[p].ball;
+        b.speedLimit = length(b.vel);
+        b.spin = {};
+        b.fouled = b.homing = false;
+        b.bounces = 0;
+    }
+    if (np == 2 && r.ok && r.e - r.p >= 14)   // spin, bounces, fouled (hosts from 0.3.15: BALL LOOK-AHEAD)
+        for (int p = 0; p < 2; ++p) {
+            Ball& b = g.pl[p].ball;
+            b.spin.x = r.get<int16_t>() / 100.f; b.spin.y = r.get<int16_t>() / 100.f; b.spin.z = r.get<int16_t>() / 100.f;
+            const uint8_t f = r.get<uint8_t>();
+            b.fouled = (f & 1) != 0; b.homing = (f & 2) != 0; b.bounces = f >> 2;
+        }
+    g.ahead.snapNow = -1.f;
+    if (np == 2 && r.ok && r.e - r.p >= 4) {
+        const float hn = r.get<float>();
+        if (r.ok && std::isfinite(hn) && hn >= 0.f) g.ahead.snapNow = hn;
+    }
     return r.ok;
 }
 
@@ -968,6 +996,8 @@ void Net::stepDown() {
 
 void Net::sendJoin(bool play) {
     lastJoin_ = now_;
+    pingAvg_ = -1;   // (a new host: its round trip and its clock measured afresh)
+    hostOffSet_ = false;
     Writer j; header(j, MSG_JOIN, session_, ++seq_); j.put<uint8_t>(play ? 1 : 0); writeName(j, name_);
     sendTo(j.b.data(), (int)j.b.size(), peerIp_, kPort);
 }
@@ -1461,6 +1491,8 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
                 pingSum_ += ms;
                 ++pingN_;
                 lastPingMs_ = ms;
+                // (BALL LOOK-AHEAD's lead: the round trip, smoothed; a passing stall moves it only a little)
+                pingAvg_ = pingAvg_ <= 0 ? ms : pingAvg_ + (std::min(ms, pingAvg_ * 1.5f + 20.f) - pingAvg_) * 0.25f;
             }
         } else if (type == MSG_INPUT && fromMember) {
             fromMember->seen = now_;
@@ -1815,14 +1847,34 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
                            std::any_of(room_.members.begin(), room_.members.end(), [&](const RoomInfo::Member& m) { return m.id == session_; });
         if (!known && !migrating_ && peerIp_ && now_ - lastJoin_ > 1.0) sendJoin(joinPlay_);   // the JOIN may have been lost: ask again until the room lists us
         const int s = localSlot();
-        if (gotState) {
+        if (gotState) stateAt_ = now_;
+        // BALL LOOK-AHEAD (Game::lookAhead): the balls one round trip ahead of the host's latest snapshot. Each frame
+        // starts again from that snapshot (a frame without a new one too: the last frame's balls were already ahead)
+        const bool ahead = s >= 0 && lookAhead_ && pingAvg_ > 0 && !migrating_ && !lastState_.empty() && now_ - stateAt_ < 0.5;
+        if (gotState || ahead) {
             Reader rs{lastState_.data(), lastState_.data() + lastState_.size()};
             readState(rs, g, s);
         }
         g.events.swap(pendingEvents_);
         pendingEvents_.clear();
         if (s >= 0) g.pl[s].in = local;
-        (void)dt; (void)in;
+        if (ahead) {
+            // how far: to where the host's clock will be when what I do now reaches it. Its snapshots say its clock;
+            // the quickest of them tells how its clock runs against ours (a late packet only looks further behind),
+            // so the lead runs smoothly however unevenly they arrive (owner's test, 2026-11-05: the ball shook when the
+            // lead came from each snapshot's own arrival). Hosts before 0.3.15: the round trip and the snapshot's age
+            float lead = pingAvg_ / 1000.f + (float)(now_ - stateAt_);
+            if (g.ahead.snapNow >= 0) {
+                if (gotState) {
+                    const double off = g.ahead.snapNow - now_;
+                    if (!hostOffSet_ || off > hostOff_ || off < hostOff_ - 1.0) { hostOff_ = off; hostOffSet_ = true; }
+                }
+                hostOff_ -= dt * 0.005;   // (clocks drift a little: the quickest packets keep it honest)
+                lead = (float)(now_ + hostOff_ - g.ahead.snapNow) + pingAvg_ / 1000.f;
+            }
+            g.lookAhead(s, lead, dt);
+        }
+        (void)in;
         if (migrating_) {   // HOST HANDOFF: knocking on the new host's door until it answers (or the next one's)
             // one of the people in line already hosts the room (its beacon says so): straight there
             for (size_t i = 0; i < heirs_.size(); ++i)

@@ -1,6 +1,7 @@
 // Headless network probe: runs the game's real Net + Game code as a command-line program on a Quest (adb shell),
 // to test LAN and relay play between headsets without wearing them. Build: tools/build_net_probe.sh
-// Usage: net_probe <host|join|spectate> <seconds> [server host:port] [name] [suit]
+// Usage: net_probe <host|hostout|join|spectate> <seconds> [server host:port] [name] [suit]
+// (hostout: hosts and stays in the waiting area: whoever queues plays the host's bot, as a far-away host's bot)
 #include <chrono>
 #include <thread>
 #include <cstdio>
@@ -52,7 +53,7 @@ int main(int argc, char** argv) {
         local.head = {Quat::axisAngle({0, 1, 0}, 0.3f * std::sin((float)t)), {0, 1.6f + 0.05f * std::sin(3 * (float)t), 0}};
         for (int h = 0; h < 2; ++h) local.hand[h].grip = {Quat{}, {h ? 0.25f : -0.25f, 1.1f, -0.3f}};
         if (!server || net.onlineReady()) {
-            if (role == "host" && !hosting) { net.host(); hosting = true; }
+            if ((role == "host" || role == "hostout") && !hosting) { net.host(); net.setBotFill(true); hosting = true; }
             if (role == "spectate" && !spectating && t > 1.0) { net.spectate(); spectating = true; }
             if ((role == "join" || role == "queue") && !joined) {
                 std::vector<LanGame> gs = net.games();
@@ -62,7 +63,10 @@ int main(int argc, char** argv) {
         PlayerInput in[kMaxPlayers];
         // a hosting probe plays as a bot itself (else a dummy stands still mid-court and the bot plays alone)
         if (role == "host" && net.localIndex() == 0 && !net.localWaiting()) g.pl[0].isBot = true;
-        if (net.exchange(local, in, g, 1.f / 90.f)) { g.step(1.f / 90.f, in); net.sendState(g); }
+        static double lastFrame = 0;   // (stepped by the real time since the last frame, as the game is: its clock keeps time)
+        const float fdt = lastFrame > 0 ? (float)std::min(0.05, now() - lastFrame) : 1.f / 90.f;
+        lastFrame = now();
+        if (net.exchange(local, in, g, fdt)) { g.step(fdt, in); net.sendState(g); }
         const int L = net.localIndex();
         if (role == "queue" && joined && net.localWaiting() && net.localQueuePos() < 0 && t > 3) net.queue(true);
         if (role == "host" && hosting && net.localWaiting() && net.localQueuePos() < 0 && t > 1) net.queue(true);   // play the bot

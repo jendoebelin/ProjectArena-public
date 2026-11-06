@@ -541,6 +541,29 @@ public:
     // seconds in steps of dt; ends where it stops flying (a returning ball: its first point)
     void trialFlight(int p, const Vec3& from, const Vec3& dir, float speed, const Vec3& spin, bool assist, float horizon,
                      float dt, std::vector<BallPathPt>& out) const;
+    // BALL LOOK-AHEAD (owner, 2026-11-04: a match against a player on the other side of the world, a 245 ms round trip; as the one not
+    // hosting, "I saw the ball leave my hand late and his ball arrive later than it really did"). A player who isn't
+    // hosting calls this after each snapshot: the balls are drawn `lead` seconds (the round trip) ahead of it, where the
+    // host will have them when this player's hands get there, so a block made against what you see lands; and your own
+    // throw leaves your hand the moment you let go (launched here from your hand as the host will launch it). Display
+    // only: the host still decides every throw, block and point. A guess it disagrees with (it blocked or caught the
+    // ball) glides over to the real flight (a big one snaps). Two players in the classic court (not FIREBALL BLITZ).
+    void lookAhead(int local, float lead, float dt);
+    struct Ahead {
+        bool mine = false;          // my throw, flying here since I let go, until the snapshots show it
+        float mineAt = 0;
+        Ball mineBall;              // ... as launched
+        bool mineHost = false;      // ... the host's Throw for it has come
+        Vec3 shown[kMaxPlayers], moved[kMaxPlayers], err[kMaxPlayers];   // what was drawn, its last frame's move; the correction still gliding
+        bool valid[kMaxPlayers] = {};
+        float snapNow = -1;         // the host's game clock when it sent the latest snapshot (-1: a host before 0.3.15)
+        bool held = false;          // my grab or catch, in my hand here until the snapshots show it
+        int heldHand = -1;
+        float heldAt = 0, prevTrig[2] = {0, 0};
+        bool blk[kMaxPlayers] = {};   // my block of that ball, flying on here until the snapshots show the host's
+        Ball blkBall[kMaxPlayers];    // ... just after it
+        float blkAt[kMaxPlayers] = {}, blkReal[kMaxPlayers] = {};   // ... its time as drawn (my clock less the lead's part), and when seen
+    } ahead;
 
     // helpers exposed for rendering / tests
     Vec3 launcherPoint(int p, int h) const;
@@ -594,6 +617,7 @@ public:
     float meetGap = 0, meetTrig[2] = {0, 0};
 private:
     void stepPlayer(int p, float dt);
+    void recordHand(int p, int h);   // the hand's pose into its history (throw speed, spin, a shield's swing)
     void stepBall(int p, float dt);
     void stepBot(int p, float dt);
     void toFire(int p);                         // FIREBALL BLITZ: p's thrown ball becomes a fireball; its tee refills (or waits)

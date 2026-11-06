@@ -1387,7 +1387,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.14";
+static const char* kAppVersion = "0.3.15";
 // A scrolling texture's offset, kept in [0, 1) (the textures repeat, so it looks the same). The headset's fragment
 // shader works at medium precision (16-bit floats): an offset that grows with the time played lost its fractions after
 // some minutes, and the ball's and fireballs' plasma broke into big square blocks (a tester's report, 2026-11-02).
@@ -1467,7 +1467,10 @@ static std::string bugReportText(App& a, const char* title = "Project Arena bug 
     __system_property_get("ro.product.model", model);
     snprintf(b, sizeof b, "build: %s Quest (%s)\n", kAppVersion, model);
 #else
-    snprintf(b, sizeof b, "build: %s PC\n", kAppVersion);
+    {   // (a copy Steam installed says so: its updates come from Steam, its reports are told apart)
+        std::string why;
+        snprintf(b, sizeof b, "build: %s PC%s\n", kAppVersion, updater::how(why) == 1 ? " (Steam)" : "");
+    }
 #endif
     r += b;
     snprintf(b, sizeof b, "network: %s, %s, server %s\n", a.net.status(), a.net.online() ? "online" : "LAN",
@@ -2109,7 +2112,8 @@ enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, B
                      ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, ReportHostKick, OptBot, Record, OptMeet, GfxPage, FovDown, FovUp, OptRoom, OptTeams,
                      Train, TrainPick, TrainStart, TrainRetry, TrainNext, TrainList, TrainLeave, TrainBoard, TrainKind, TrainBoardBack, TrainShow, TrainVideo,
                      MovePlayers, MoveCorner, MoveOne, MoveBack, OptHealth, OptBalls, OptPlayers, Discord,
-                     UpdateOpen, UpdateGo, UpdateRestart, UpdatePage, UpdateStore, UpdateBack, HeadSelfie, PrivateTalk, HandOff, HandOffTo };
+                     UpdateOpen, UpdateGo, UpdateRestart, UpdatePage, UpdateStore, UpdateBack, HeadSelfie, PrivateTalk, HandOff, HandOffTo,
+                     LookAhead };
 struct MenuItem {
     std::string label;
     float x, y, w, h;
@@ -2498,7 +2502,10 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
 #else
         v.push_back({fx[a.fxLevel % 3], 0, -0.22f, 0.40f, 0.07f, MenuAct::Fx, 0, true});
 #endif
-        v.push_back({"BACK", 0, -0.33f, 0.36f, 0.06f, MenuAct::Back, 0, true});
+        // BALL LOOK-AHEAD (0.3.15): playing in someone else's room, the balls where the host will have them
+        v.push_back({a.net.lookAhead() ? "BALL LOOK-AHEAD ONLINE: ON" : "BALL LOOK-AHEAD ONLINE: OFF", 0, -0.30f, 0.50f, 0.06f,
+                     MenuAct::LookAhead, 0, true});
+        v.push_back({"BACK", 0, -0.39f, 0.36f, 0.055f, MenuAct::Back, 0, true});
         return v;
     }
     if (a.settingsOpen && a.voicePage) {
@@ -2590,15 +2597,17 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         else
             v.push_back({m == Net::Mode::Host ? "HOSTING" : "HOST A ROOM", lx, 0.12f, bw, 0.08f, MenuAct::Host, 0, m != Net::Mode::Host});
         v.push_back({inGame ? "LEAVE GAME" : "PRACTICE VS BOT", lx, 0.02f, bw, 0.08f, MenuAct::Leave, 0, inGame});
-        if (m == Net::Mode::Host) {   // HOST HANDOFF (0.3.13): someone else hosts the room from now on
-            bool anyone = false;
-            for (const Net::Person& p : a.net.peopleHere()) anyone |= p.role != Net::VOICE_SPECTATOR;
-            v.push_back({"HAND OFF HOST", rx, 0.175f, bw, 0.06f, MenuAct::HandOff, 0, anyone});
-        }
         v.push_back({"SETTINGS", lx, -0.08f, bw, 0.08f, MenuAct::Settings, 0, true});
         v.push_back({"SPECTATE GAMES", lx, -0.17f, bw, 0.08f, MenuAct::Spectate, 0, !inGame});
-        v.push_back({"CUSTOMIZE AVATAR", lx, -0.26f, bw, 0.08f, MenuAct::Avatar, 0,
-                     !a.avModels.empty() && (m == Net::Mode::Offline || m == Net::Mode::Searching)});
+        if (m == Net::Mode::Host) {   // HOST HANDOFF (0.3.13): someone else hosts the room from now on. In CUSTOMIZE AVATAR's place
+            // (never open while hosting): over the games list it covered GAMES ONLINE (owner's report, 2026-11-02)
+            bool anyone = false;
+            for (const Net::Person& p : a.net.peopleHere()) anyone |= p.role != Net::VOICE_SPECTATOR;
+            v.push_back({"HAND OFF HOST", lx, -0.26f, bw, 0.08f, MenuAct::HandOff, 0, anyone});
+        } else {
+            v.push_back({"CUSTOMIZE AVATAR", lx, -0.26f, bw, 0.08f, MenuAct::Avatar, 0,
+                         !a.avModels.empty() && (m == Net::Mode::Offline || m == Net::Mode::Searching)});
+        }
         v.push_back({"CLOSE MENU", lx, -0.35f, bw, 0.06f, MenuAct::Close, 0, true});
         v.push_back({"CHANGE NAME", rx, -0.35f, bw, 0.06f, MenuAct::Name, 0, true});
         v.push_back({a.net.online() ? "ONLINE: ON" : "ONLINE: OFF (LAN)", rx, -0.26f, bw, 0.06f, MenuAct::Online, 0, !inGame});
@@ -2815,6 +2824,11 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::UpdateOpen: a.titleOpen = false; a.updateOpen = true; break;
     case MenuAct::HeadSelfie: a.headSelfie = !a.headSelfie; saveSettings(a); break;
     case MenuAct::PrivateTalk: a.net.setPrivateTalk(!a.net.privateTalk()); saveSettings(a); break;
+    case MenuAct::LookAhead:
+        a.net.setLookAhead(!a.net.lookAhead());
+        saveSettings(a);
+        LOGI("menu: ball look-ahead %s", a.net.lookAhead() ? "on" : "off");
+        break;
     case MenuAct::UpdateBack: a.updateOpen = false; a.titleOpen = true; break;
 #ifdef __ANDROID__
     case MenuAct::UpdateStore: androidOpenUrl(kStorePage); break;
@@ -3498,7 +3512,12 @@ static void drawMenu(App& a) {
     }
     if (!a.statsOpen && !a.trainOpen && a.trainBoard < -1 && !(a.trainer.active() && !otherPage(a))) text("POINT AND PULL THE TRIGGER TO SELECT", 0, -0.455f, 0.022f, grey);
     if ((a.titleOpen || a.settingsOpen || a.updateOpen) && !a.nameEdit) {   // the version, bottom right (owner, 2026-10-30)
+#ifdef __ANDROID__
         snprintf(buf, sizeof buf, "VERSION %s", kAppVersion);
+#else
+        std::string why;
+        snprintf(buf, sizeof buf, "VERSION %s%s", kAppVersion, updater::how(why) == 1 ? " STEAM" : "");   // (a Steam copy)
+#endif
         text(buf, 0.37f, -0.487f, 0.016f, grey);
     }
     if (a.spectating && a.watchIp && !a.titleOpen && !a.settingsOpen && !a.nameEdit && !a.helpOpen) {
@@ -8275,6 +8294,7 @@ static void saveSettings(App& a) {
                 (a.guestRules ? a.ownRules : a.game.tun).oneTurns ? 1 : 0, (a.guestRules ? a.ownRules : a.game.tun).health,
                 (a.guestRules ? a.ownRules : a.game.tun).fireBalls, (a.guestRules ? a.ownRules : a.game.tun).octPlayers, a.discordOn ? 1 : 0,
                 a.net.privateTalk() ? 1 : 0, a.headSelfie ? 1 : 0, a.selfieOn ? 1 : 0, a.selfieCorner, a.selfieSize, a.selfieRound ? 1 : 0, a.selfieCam);
+        fprintf(fp, "lookahead=%d\n", a.net.lookAhead() ? 1 : 0);
         fclose(fp);
     }
 }
@@ -8326,6 +8346,7 @@ static void loadSettings(App& a) {
         else if (k == "selfie") a.selfieOn = v != 0;
         else if (k == "headselfie") a.headSelfie = v != 0;
         else if (k == "privatetalk") a.net.setPrivateTalk(v != 0);
+        else if (k == "lookahead") a.net.setLookAhead(v != 0);
         else if (k == "selfiecorner") a.selfieCorner = std::max(0, std::min(3, (int)v));
         else if (k == "selfiesize") a.selfieSize = std::max(0, std::min(2, (int)v));
         else if (k == "selfieround") a.selfieRound = v != 0;
@@ -8796,7 +8817,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         a.tuneHover = 2 * 1 + 1;
     }
     if (v.scene == "action" || v.scene == "foul" || v.scene == "exp" || v.scene == "expcorners" || v.scene == "throw" ||
-        v.scene == "block" || v.scene == "strike") {   // store art: blue throws, orange raises a shield, the ball mid-court
+        v.scene == "block" || v.scene == "strike" || v.scene == "release" || v.scene == "swing") {   // store art: blue throws, orange raises a shield, the ball mid-court
         Game& g = a.game;
         g.match = MatchState::InProgress;
         g.pl[0].score = 3;
@@ -8856,6 +8877,38 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         }
         // (manual and box pictures) the ball just leaving blue's hand; meeting orange's shield; through orange's strike ring
         if (v.scene == "throw") { b0.scale = 1.f; b0.pos = g.pl[0].in.hand[1].grip.p + Vec3{0.45f, 0.02f, -0.02f}; }
+        if (v.scene == "swing") {   // (thumbnails: mid-swing, the throwing arm reaching through the release, the guard
+            // hand back by the chest, the ball a moment out of the hand and curving away)
+            PlayerInput& in = g.pl[0].in;
+            const Quat q = in.head.q;
+            in.hand[1].grip = {q * Quat::axisAngle({0, 1, 0}, -0.35f) * Quat::axisAngle({1, 0, 0}, 0.20f), in.head.p + q.rotate({0.34f, -0.24f, -0.50f})};
+            in.hand[0].grip = {q * Quat::axisAngle({1, 0, 0}, 0.60f), in.head.p + q.rotate({-0.24f, -0.38f, -0.22f})};
+            a.viewIn[0] = in;
+            b0.scale = 1.f;
+            b0.pos = in.hand[1].grip.p + Vec3{0.55f, 0.12f, 0.22f};
+            b0.spin = {0, 14.f, 0};   // (a curve: the twisting tracers)
+            // the trail the game draws behind a flying ball, along the curve it took from the hand (oldest first)
+            App::Trail& tr = a.trail[0];
+            const Vec3 from = in.hand[1].grip.p, to = b0.pos, bend{0.f, -0.05f, -0.06f};
+            tr.n = 16;
+            for (int i = 0; i < tr.n; ++i) {
+                const float t = (float)i / (tr.n - 1);
+                const Vec3 c = from + (to - from) * t + bend * std::sin(kPi * t);
+                const float ang = t * 6.f;
+                const Vec3 w = Vec3{0, std::cos(ang), std::sin(ang)} * 0.03f;
+                tr.core[i] = c; tr.helixA[i] = c + w; tr.helixB[i] = c - w;
+            }
+        }
+        if (v.scene == "release") {   // (thumbnails, seen from the front: blue in the guard stance, elbows down by the ribs,
+            // the ball just off the right hand; the follow-through above reads as broken arms from in front, owner 2026-11-02)
+            PlayerInput& in = g.pl[0].in;
+            const Quat q = in.head.q;
+            in.hand[1].grip = {q * Quat::axisAngle({1, 0, 0}, 0.45f), in.head.p + q.rotate({0.22f, -0.32f, -0.42f})};
+            in.hand[0].grip = {q * Quat::axisAngle({1, 0, 0}, 0.60f), in.head.p + q.rotate({-0.22f, -0.36f, -0.30f})};
+            a.viewIn[0] = in;
+            b0.scale = 1.f;
+            b0.pos = in.hand[1].grip.p + Vec3{0.38f, 0.04f, 0.f};
+        }
         if (v.scene == "block") { b0.scale = 1.3f; b0.pos = g.shieldPose(1, 1).p + Vec3{-0.30f, 0.f, 0.f}; }
         if (v.scene == "strike") { b0.scale = 1.f; b0.pos = g.strikeZoneCenter(1) + Vec3{-0.05f, 0.10f, 0.42f}; }   // (beside orange, in the ring)
     }

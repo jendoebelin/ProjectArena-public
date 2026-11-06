@@ -73,6 +73,7 @@ class Body:
         if key == 'f':
             self.round_bust()   # a rounded, lifted bust instead of MPFB's conical one
         else:
+            self.lift_chest()
             self.smooth_bust()
             self.smooth_bust(radius=0.035, iters=40, strength=1.0)   # then flatten the nipple point itself
         J = self.J
@@ -96,6 +97,25 @@ class Body:
         self.Wd = np.zeros((len(self.P), 7))
         for k in range(4):
             np.add.at(self.Wd, (np.arange(len(self.P)), self.B[:, k]), self.W[:, k])
+
+    def lift_chest(self, dy=0.030, dx=0.012, radius=0.11):
+        """The masculine base mesh's pectorals sat low and close together (a tester's report, 2026-11-02: the nipples
+        23 cm below the neck base and 19 cm apart, on shoulders 41 cm across; about 19 cm down and 21-22 cm apart
+        looks right). Each pectoral moves up by dy and out by dx, fading smoothly to nothing at `radius` from its
+        nipple, so the surface stays whole; the UVs (and the skin's details) go with it."""
+        sel = self.region == 5
+        if not sel.any():
+            return
+        out = np.zeros_like(self.P)
+        for side in (-1.0, 1.0):
+            c = self.P[sel & (np.sign(self.P[:, 0]) == side)].mean(0)
+            d = np.linalg.norm(self.P - c, axis=1)
+            w = np.clip(1 - d / radius, 0, 1)
+            w = w * w * (3 - 2 * w)                    # smoothstep falloff
+            w *= (np.sign(self.P[:, 0]) == side)       # (each side only its own: the sternum stays put)
+            out[:, 0] += side * dx * w
+            out[:, 1] += dy * w
+        self.P = self.P + out
 
     def smooth_bust(self, radius=0.095, iters=70, strength=0.85):
         """The base meshes' nipples make a pointed bust (worse once a garment is pushed out along the normals):

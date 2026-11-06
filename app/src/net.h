@@ -91,6 +91,10 @@ public:
     void setBotFill(bool on) { botFill_ = on; }   // host: the practice bot plays a lone player (else they wait)
     // host: ROOM TALK: PRIVATE (owner, 2026-11-02, "fog of war"): spectators see the match but don't hear the room's
     // voices (the players and those waiting still do)
+    // BALL LOOK-AHEAD (SETTINGS > GRAPHICS AND VIEW; off unless the player turns it on, owner 2026-11-05): not hosting,
+    // the balls are drawn a round trip ahead and your throw leaves your hand at once (Game::lookAhead)
+    void setLookAhead(bool on) { lookAhead_ = on; }
+    bool lookAhead() const { return lookAhead_; }
     void setPrivateTalk(bool on) { privateTalk_ = on; }
     bool privateTalk() const { return privateTalk_; }
     bool botFill() const { return botFill_; }
@@ -326,6 +330,11 @@ private:
     double otherVerSeen_ = -10;
     uint32_t seq_ = 0, lastRecvSeq_ = 0, lastRoomSeq_ = 0;
     uint32_t statRecv_ = 0, statLost_ = 0, statLate_ = 0;
+    float pingAvg_ = -1;           // BALL LOOK-AHEAD: the round trip (ms), smoothed
+    bool lookAhead_ = false;       // (off unless the player turns it on: owner, 2026-11-05)
+    double stateAt_ = 0;           // when the latest snapshot came (Net's clock)
+    double hostOff_ = 0;           // the host's game clock minus ours, from its quickest snapshot
+    bool hostOffSet_ = false;
     float pingMin_ = 0, pingMax_ = 0, lastPingMs_ = -1;   // round trips (ms) since the last stats line; the latest
     double pingSum_ = 0, lastPingSent_ = 0;
     uint32_t pingN_ = 0;

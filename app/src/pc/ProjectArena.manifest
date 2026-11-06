@@ -2,7 +2,7 @@
 <!-- Project Arena PC (0.3.13): file names as UTF-8 everywhere (Windows 10 1903 and later), so the game runs from a folder
      with any letters in its path (a user name with an accent: review, 2026-11-02, the game wouldn't start there). -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="ProjectArena" version="0.3.14.0"/>
+  <assemblyIdentity type="win32" name="ProjectArena" version="0.3.15.0"/>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>

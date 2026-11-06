@@ -30,8 +30,20 @@ Quest and PC players meet in the same rooms online.
 
 **No headset? Watch instead.** Without a headset connected (or with `ProjectArena.exe --spectate`) the PC version
 opens a spectator window: it finds a live match on the community server and shows it with names and the score.
-Keys: **1-5** cameras, **A** auto camera, **F** free camera (right mouse + WASD), **Tab** next match, **H** hub,
-**F11** full screen. Streamers: capture the window in OBS.
+Keys:
+
+- **1-7** cameras (fixed views; **6** and **7** are the two players' own eyes), **A** auto camera, **Tab** next match,
+  **H** hub.
+- **F** (or **0**) free camera: **hold the right mouse button and move the mouse to look around**, **W A S D** to
+  move, **Q / E** down and up, **Shift** faster. The fixed cameras don't turn; only the free camera does.
+- **Mouse wheel** zooms (in every camera).
+- **Ctrl + 1-8** saves the view as one of MY CAMERAS, **Shift + 1-8** shows it.
+- **V** view layers, **R** win screen, **M** VS screen, **C** selfie, **F11** full screen, **F1** the controls window,
+  **F2** the help bar.
+- A game controller works too: in the free camera the left stick moves, the right stick looks, **LB / RB** down and
+  up, and a left stick click is faster.
+
+Streamers: capture the window in OBS.
 
 ## Playing
 
@@ -52,6 +64,8 @@ Keys: **1-5** cameras, **A** auto camera, **F** free camera (right mouse + WASD)
     you) to play. Others pick your room and press **JOIN**, then **JOIN QUEUE**.
   - Two players start face to face in the centre: hold your trigger and **bump fists** (or wait 10 seconds).
   - **FORFEIT MATCH** takes you back to the waiting area. **SPECTATE GAMES** shows every live match.
+  - Playing someone far away? **SETTINGS → GRAPHICS AND VIEW → BALL LOOK-AHEAD ONLINE** (experimental, off by
+    default): in someone else's room your throws leave your hand at once and their ball is shown where it really is.
 - Voice chat in a room: hold the **left grip** to talk (SETTINGS → VOICE AND MUTES for open mic and mutes).
 - Something wrong? **MENU → REPORT BUG** sends a short note and the game's recent log to us. Someone behaving
   badly? **MENU → REPORT PLAYER** (report or mute them, or **VOTE TO REMOVE** them from your arena: it takes more than

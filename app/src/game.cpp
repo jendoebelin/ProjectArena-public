@@ -1205,12 +1205,7 @@ void Game::stepPlayer(int p, float dt) {
     for (int h = 0; h < 2; ++h) {
         HandState& hs = s.hands[h];
         const HandInput& hi = s.in.hand[h];
-        hs.hist[hs.histHead] = launcherPoint(p, h);
-        hs.angHist[hs.histHead] = hi.angVel;
-        hs.gripHist[hs.histHead] = hi.grip;
-        hs.histT[hs.histHead] = now;
-        hs.histHead = (hs.histHead + 1) & 63;
-        hs.histN = std::min(64, hs.histN + 1);
+        recordHand(p, h);
 
         bool pressed = hi.trigger > 0.55f && hs.prevTrigger <= 0.55f;
         bool released = hi.trigger < 0.35f;
@@ -1334,6 +1329,162 @@ Vec3 Game::botInReach(int p, int h, const Pose& grip) const {
     const Vec3 sh = botShoulder(p, h), w = botWrist(h, grip), d = w - sh;
     const float l = length(d);
     return l > tun.botArm ? grip.p + d * (tun.botArm / l - 1.f) : grip.p;   // (the hand moves in with its wrist)
+}
+
+void Game::lookAhead(int L, float lead, float dt) {
+    if (L < 0 || L >= np || np != 2 || octagon() || dt <= 0) return;
+    dt = std::min(dt, 0.05f);
+    lead = clampf(lead, 0.f, 0.4f);
+    now += dt;   // (a client's game isn't stepped: its clock runs here, for the hands' history)
+    PlayerState& me = pl[L];
+    for (int h = 0; h < 2; ++h) recordHand(L, h);
+    auto flying = [](const Ball& b) { return b.state == BallState::Flying || b.state == BallState::Returning; };
+    const bool canThrow = match == MatchState::InProgress || match == MatchState::WaitingForPlayers;
+    Ball& mb = me.ball;
+    // my grab (off the tee) or catch: in my hand at once, by the game's own rules (the host takes it when my trigger
+    // reaches it). A catch is judged against the ball as drawn: where the host will have it when my hand gets there
+    if (ahead.held) {
+        if (mb.state == BallState::Held || ahead.mine || !canThrow || now - ahead.heldAt > lead + 0.5f) ahead.held = false;
+    } else if (!ahead.mine && canThrow && mb.state != BallState::Held && lead > 0.02f) {
+        const Vec3 drawn = ahead.valid[L] ? ahead.shown[L] : mb.pos;
+        for (int h = 0; h < 2 && !ahead.held; ++h) {
+            const HandInput& hi = me.in.hand[h];
+            if (!hi.tracked) continue;
+            const bool pressed = hi.trigger > 0.55f && ahead.prevTrig[h] <= 0.55f;
+            const float reach = tun.catchHalfHeight + ballRadius(L);
+            const bool grab = mb.state == BallState::Idle &&
+                              ((pressed && length(launcherPoint(L, h) - mb.pos) < 0.25f) || (hi.trigger > 0.5f && length(catcherPoint(L, h) - mb.pos) < reach));
+            const bool caught = hi.trigger > 0.5f && flying(mb) && mb.instigator == L && length(catcherPoint(L, h) - drawn) < reach;
+            if (grab || caught) { ahead.held = true; ahead.heldHand = h; ahead.heldAt = now; }
+        }
+    }
+    for (int h = 0; h < 2; ++h) ahead.prevTrig[h] = me.in.hand[h].trigger;
+    if (ahead.held) { mb.state = BallState::Held; mb.heldHand = ahead.heldHand; mb.vel = mb.spin = {}; ahead.valid[L] = false; }
+    // a ball in my hand is drawn in my hand as it is now (the snapshot has my hand as the host last heard of it), and
+    // its shield is up at once
+    if (mb.state == BallState::Held && mb.heldHand >= 0 && mb.heldHand < 2) mb.pos = me.in.hand[mb.heldHand].grip.transform(tun.holdOffset);
+    for (int h = 0; h < 2; ++h)
+        me.hands[h].shieldUp = me.in.hand[h].tracked && mb.state == BallState::Held && mb.heldHand == h && mb.charged && tun.shields &&
+                               !ahead.mine;   // (thrown here: the snapshots still have it in my hand for a round trip)
+    // my throw: the host launches it when my let-go reaches it, from the same hand motion; here it leaves at once
+    if (ahead.mine) {
+        // the host has it once its own Throw (or ThrowFail) for me has come (owner's test, 2026-11-05: a ball caught and
+        // sent straight back was taken as the host's at once, its snapshot still had my ball flying home, mine, and the
+        // throw drawn here was dropped: the ball flew on past me and snapped back 3.5 m)
+        for (const GameEvent& e : events)
+            if ((e.type == EventType::Throw || e.type == EventType::ThrowFail) && e.player == L) ahead.mineHost = true;
+        const bool hostHas = ahead.mineHost && (mb.state != BallState::Held || mb.heldHand < 0);
+        if (hostHas || !canThrow || now - ahead.mineAt > lead + 0.5f) {
+            ahead.mine = false;
+            if (!hostHas) ahead.valid[L] = false;   // (the host didn't throw it: back to what it says)
+        }
+    } else if (mb.state == BallState::Held && mb.heldHand >= 0 && mb.heldHand < 2 && canThrow && lead > 0.02f) {
+        const int h = mb.heldHand;
+        const HandInput& hi = me.in.hand[h];
+        const Vec3 v = handVelocity(L, h, now);
+        const float sp = length(v);
+        if (hi.tracked && hi.trigger < 0.35f && sp >= tun.throwMinHandSpeed) {
+            const Ball keep = mb;
+            const size_t ne = events.size();
+            mb.pos = launcherPoint(L, h);
+            launch(L, h, normalize(v), throwSpeedFromHandSpeed(sp, L), peakAngVel(L, h, now));
+            events.resize(ne);   // (the host's Throw comes with a snapshot: its sound plays once)
+            ahead.mineBall = mb;   // (as launched: each frame flies it on from here)
+            mb = keep;
+            ahead.mine = true;
+            ahead.mineHost = false;
+            ahead.mineAt = now;
+            ahead.valid[L] = false;
+        }
+    }
+    // the balls as the host will have them: a copy of the game flies them on from the snapshot (my hands where they
+    // are now: where the host will have them then; the other's as last sent). How far: all the lead at my end of the
+    // court, where my hands meet a ball (what I do there lands); none at the other's end, where what they do with it
+    // (a block, a catch) is drawn where it happens instead of flying on past it and snapping back. A ball coming at me
+    // looks a little quicker, one going away a little slower (owner's test, 2026-11-05: snaps of up to 3.5 m when the
+    // whole lead flew on past the other's blocks)
+    Game c = *this;
+    c.events.clear();
+    const float step = 1.f / 90.f;
+    const float xMe = tun.start[L].x, xThem = tun.start[1 - L].x;
+    auto weight = [&](const Vec3& at) { return std::fabs(xMe - xThem) < 1.f ? 1.f : clampf((at.x - xThem) / (xMe - xThem), 0.f, 1.f); };
+    // my block, once seen, is kept until the snapshots show the host's (owner's test, 2026-11-05: flown again from each
+    // snapshot against my hand as it is now, gone on past the block, the ball flipped between two paths every other
+    // frame: a zigzagging tail)
+    for (int p = 0; p < 2; ++p) {
+        if (!ahead.blk[p]) continue;
+        const Ball& sb = pl[p].ball;
+        const bool hostHas = flying(sb) && sb.instigator == L && sb.vel.x * (xThem - xMe) > 0.f;
+        if (hostHas || !flying(sb) || now - ahead.blkReal[p] > lead + 0.5f) ahead.blk[p] = false;
+    }
+    for (int p = 0; p < 2; ++p) {
+        Ball& b = c.pl[p].ball;
+        // a flight launched here (my throw, my block): flown from then on by the time the ball is drawn at. That time
+        // runs `lead` ahead at my end and with the snapshots at the other's: here (now - (1 - w) * lead) on my clock
+        const bool local = (p == L && ahead.mine) || ahead.blk[p];
+        if (local) {
+            const Ball& from = p == L && ahead.mine ? ahead.mineBall : ahead.blkBall[p];
+            const float at = p == L && ahead.mine ? ahead.mineAt : ahead.blkAt[p];
+            const float w = weight(ahead.valid[p] ? ahead.shown[p] : from.pos);
+            const float fly = std::max(0.f, (now - (1.f - w) * lead) - at);
+            b = from;
+            for (float t = 0; t < fly - 1e-4f && flying(b); t += step) c.stepBall(p, std::min(step, fly - t));
+        } else if (flying(b)) {
+            const float l = lead * weight(b.pos);
+            for (float t = 0; t < l - 1e-4f && flying(b); t += step) {
+                const float h = std::min(step, l - t);
+                const size_t ne = c.events.size();
+                c.stepBall(p, h);
+                bool myBlock = false;
+                for (size_t i = ne; i < c.events.size(); ++i)
+                    myBlock |= (c.events[i].type == EventType::ShieldBlock || c.events[i].type == EventType::KnuckleBlock) && c.events[i].player == L;
+                if (myBlock && flying(b) && !ahead.blk[p]) {   // (blocked at the time it is drawn at, t + h after the snapshot)
+                    ahead.blk[p] = true;
+                    ahead.blkBall[p] = b;
+                    ahead.blkAt[p] = now - lead + t + h;
+                    ahead.blkReal[p] = now;
+                }
+            }
+        } else {
+            ahead.valid[p] = false;
+            ahead.err[p] = {};
+            continue;
+        }
+        if (!flying(b)) {   // (it lands, is caught or goes home within the lead: drawn as the copy has it)
+            ahead.valid[p] = false;
+            ahead.err[p] = {};
+            pl[p].ball = b;
+            continue;
+        }
+        // a guess the snapshots correct glides over (about a tenth of a second) from where the ball was heading as drawn;
+        // a big one snaps
+        if (ahead.valid[p]) {
+            const Vec3 corr = ahead.shown[p] + ahead.moved[p] - b.pos;
+            // (my own throw: a softer glide, over about a fifth of a second: the host's throw, from my hand motion as it
+            // arrived, differs a little from the one launched here)
+            ahead.err[p] = length(corr) < 3.f ? corr * std::exp(-dt * (p == L ? 5.f : 10.f)) : Vec3{};
+        } else {
+            ahead.err[p] = {};
+            ahead.moved[p] = b.vel * dt;
+        }
+        Ball shown = b;
+        shown.pos = b.pos + ahead.err[p];
+        if (ahead.valid[p]) ahead.moved[p] = shown.pos - ahead.shown[p];
+        ahead.shown[p] = shown.pos;
+        ahead.valid[p] = true;
+        pl[p].ball = shown;
+    }
+}
+
+void Game::recordHand(int p, int h) {
+    HandState& hs = pl[p].hands[h];
+    const HandInput& hi = pl[p].in.hand[h];
+    hs.hist[hs.histHead] = launcherPoint(p, h);
+    hs.angHist[hs.histHead] = hi.angVel;
+    hs.gripHist[hs.histHead] = hi.grip;
+    hs.histT[hs.histHead] = now;
+    hs.histHead = (hs.histHead + 1) & 63;
+    hs.histN = std::min(64, hs.histN + 1);
 }
 
 void Game::predictBall(int owner, int reader, float horizon, float dt, std::vector<BallPathPt>& out) const {
@@ -1678,7 +1829,8 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
                 if (g > bestGap) { bestGap = g; bestO = o; }
                 if (g > 0.06f) ok.push_back({move - 0.3f * o.y, o, 0x40000000u | uint32_t(iff * 4 + iy) << 8 | uint32_t(ix + 10)});   // (ducking costs a little more)
             }
-        std::sort(ok.begin(), ok.end(), [](const Spot& a, const Spot& b) { return a.cost < b.cost; });
+        // (stable: spots of equal cost, a step left and one right, in one order on every platform, and in the Unity port)
+        std::stable_sort(ok.begin(), ok.end(), [](const Spot& a, const Spot& b) { return a.cost < b.cost; });
         // each as it stands, or with the arm holding its ball (shield up) pulled in, if that hand gets there in time
         int tried = 0;
         for (size_t j = 0; j < ok.size() && tried < 16; ++j)

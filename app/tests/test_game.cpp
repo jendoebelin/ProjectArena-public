@@ -50,32 +50,36 @@ static bool hasEvent(const std::vector<GameEvent>& ev, EventType t, int player =
     return false;
 }
 
-static void run(Game& g, PlayerInput in[2], float seconds, std::vector<GameEvent>* log = nullptr) {
+// one step with a copy of the inputs: g.np of them (`in` holds that many: two, or four in a game for four; the game
+// reads and writes back one per player, so a two-entry copy for a four-player game ran past its end)
+static void stepCopy(Game& g, const PlayerInput* in) {
+    PlayerInput tmp[kMaxPlayers];
+    for (int p = 0; p < g.np; ++p) tmp[p] = in[p];
+    g.step(1.f / 72, tmp);
+}
+
+static void run(Game& g, PlayerInput* in, float seconds, std::vector<GameEvent>* log = nullptr) {
     for (float t = 0; t < seconds; t += 1.f / 72) {
-        PlayerInput tmp[2] = {in[0], in[1]};
-        g.step(1.f / 72, tmp);
+        stepCopy(g, in);
         if (log) log->insert(log->end(), g.events.begin(), g.events.end());
     }
 }
 
-static void grabBall(Game& g, PlayerInput in[2], int h = 1) {
+static void grabBall(Game& g, PlayerInput* in, int h = 1) {
     Vec3 off = in[0].hand[h].grip.q.rotate(g.tun.launcherOffset);
     in[0].hand[h].grip.p = g.pl[0].ball.pos - off;
     in[0].hand[h].trigger = 1;
-    PlayerInput tmp[2] = {in[0], in[1]};
-    g.step(1.f / 72, tmp);
+    stepCopy(g, in);
 }
 
-static void swingAndRelease(Game& g, PlayerInput in[2], Vec3 dir, float speed, std::vector<GameEvent>& log, int h = 1) {
+static void swingAndRelease(Game& g, PlayerInput* in, Vec3 dir, float speed, std::vector<GameEvent>& log, int h = 1) {
     for (int i = 0; i < 15; ++i) {
         in[0].hand[h].grip.p += dir * (speed / 72);
-        PlayerInput tmp[2] = {in[0], in[1]};
-        g.step(1.f / 72, tmp);
+        stepCopy(g, in);
         log.insert(log.end(), g.events.begin(), g.events.end());
     }
     in[0].hand[h].trigger = 0;
-    PlayerInput tmp[2] = {in[0], in[1]};
-    g.step(1.f / 72, tmp);
+    stepCopy(g, in);
     log.insert(log.end(), g.events.begin(), g.events.end());
 }
 
