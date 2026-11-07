@@ -64,7 +64,7 @@ Open an issue with the **Idea** form: what you would like and why (a mode, a rul
 
 ## Rules of the road
 
-- **Only your own work.** No assets, sounds or code from other games, Sparc included, and nothing you do not have
+- **Only your own work.** No assets, sounds or code from other games, and nothing you do not have
   the right to give away. Credit anything CC0 / CC BY you build on.
 - **Licences:** code under MIT (`LICENSE`); art and sound under CC BY 4.0 (`LICENSE-ASSETS.md`), credited to you.
 - **Be kind.** We follow `CODE_OF_CONDUCT.md` here and in the game.

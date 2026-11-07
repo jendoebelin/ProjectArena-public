@@ -22,6 +22,11 @@ uniform vec4 uUVRect;
 uniform int uTuck;          // hair under headgear: kept inside it (uTuckTex: per direction from uTuckC, the radius)
 uniform vec3 uTuckC;
 uniform sampler2D uTuckTex;
+uniform highp int uDecals;  // prints on the garment (DrawParams::decal): its bind-space position in each box
+uniform mat4 uDecalM[2];
+out vec3 vDec0;
+out vec3 vDec1;
+out vec2 vDecN;
 out vec3 vN;
 out vec3 vW;
 out vec2 vUV;
@@ -38,6 +43,11 @@ void main() {
         float x = r - (lim - 0.006);
         if (x > 0.0) p.xyz = uTuckC + d * ((lim - 0.006 + 0.006 * (1.0 - exp(-x / 0.006))) / r);
         pin = clamp((0.45 - lim) * 4.0, 0.0, 1.0);
+    }
+    if (uDecals > 0) {   // (before skinning: the print stays on the same stitches however the body bends)
+        vDec0 = (uDecalM[0] * p).xyz;
+        vDec1 = (uDecalM[1] * p).xyz;
+        vDecN = vec2((mat3(uDecalM[0]) * aNrm).z, (mat3(uDecalM[1]) * aNrm).z);
     }
     if (uSkinned == 1) {   // linear blend skinning over the avatar's 9 bones (avatar.h BONE_*)
         mat4 S = uBones[int(aBone.x)] * aWeight.x + uBones[int(aBone.y)] * aWeight.y +
@@ -90,7 +100,17 @@ uniform vec4 uDesGlow;
 uniform int uChar;        // avatar parts: character lighting (wrapped key light + a fill from the viewer)
 uniform int uCloth;       // garment fabric: knit texture and sheen instead of a glossy highlight
 uniform sampler2D uFabric;
+uniform highp int uDecals;   // (highp: the vertex shader's int precision, or the two stages won't link)
+uniform sampler2D uDecalTex;
+in vec3 vDec0;
+in vec3 vDec1;
+in vec2 vDecN;
 out vec4 oColor;
+vec3 printed(vec3 alb, vec3 d, float facing) {   // a print (uDecalTex) where this point lies in its box, facing out
+    if (facing <= 0.0 || abs(d.x) > 0.5 || abs(d.y) > 0.5 || abs(d.z) > 0.5) return alb;
+    vec4 t = texture(uDecalTex, vec2(d.x + 0.5, 0.5 - d.y));
+    return mix(alb, t.rgb, t.a);
+}
 // Stand-in for reflections of the arena: dark below, the bright band of stadium light slats around the horizon,
 // cool ceiling glow above.
 vec3 arenaEnv(vec3 r) {
@@ -160,6 +180,10 @@ void main() {
             vec4 pt = texture(uPatternTex, vUV);
             alb = mix(alb, uPatCol.rgb, pt.r);
             glowAdd += uPatGlow.rgb * pt.g;
+        }
+        if (uDecals > 0) {   // NATIONS: the flags printed on the jersey (lit and knit like the rest of it)
+            alb = printed(alb, vDec0, vDecN.x);
+            if (uDecals > 1) alb = printed(alb, vDec1, vDecN.y);
         }
         float hemi = 0.5 + 0.5 * n.y;
         float ndl = max(dot(n, -uLightDir), 0.0);
@@ -245,7 +269,7 @@ GLuint Renderer::loadTexture(const std::string& rel, bool srgb) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        LOGI("texture %s %ux%u", file.c_str(), w, h);
+        LOGI("texture %s %ux%u (gl %u)", file.c_str(), w, h, t);
     } else {
         LOGW("missing texture %s", file.c_str());
     }
@@ -369,6 +393,10 @@ static GLuint g_softTex[2] = {0, 0};   // gaussian blob, soft ring
 static GLint g_uUVRect = -1;
 
 bool Renderer::init() {
+    // a new context: these hold the last one's texture names (quitting and starting again keeps the process on Quest,
+    // and a stale name lands on the new context's texture of that number: the fireballs' glow showed the US flag)
+    g_softTex[0] = g_softTex[1] = 0;
+    g_fontTex = 0;
     prog_ = glCreateProgram();
     glAttachShader(prog_, compile(GL_VERTEX_SHADER, kVS));
     glAttachShader(prog_, compile(GL_FRAGMENT_SHADER, kFS));
@@ -404,6 +432,8 @@ bool Renderer::init() {
     uSkinned_ = glGetUniformLocation(prog_, "uSkinned");
     uTuck_ = glGetUniformLocation(prog_, "uTuck");
     uTuckC_ = glGetUniformLocation(prog_, "uTuckC");
+    uDecals_ = glGetUniformLocation(prog_, "uDecals");
+    uDecalM_ = glGetUniformLocation(prog_, "uDecalM");
     uBones_ = glGetUniformLocation(prog_, "uBones");
     uDesign_ = glGetUniformLocation(prog_, "uDesign");
     uDesCol_ = glGetUniformLocation(prog_, "uDesCol");
@@ -416,6 +446,8 @@ bool Renderer::init() {
     glUniform1i(glGetUniformLocation(prog_, "uPatternTex"), 2);
     glUniform1i(glGetUniformLocation(prog_, "uFabric"), 3);
     glUniform1i(glGetUniformLocation(prog_, "uTuckTex"), 4);
+    glUniform1i(glGetUniformLocation(prog_, "uDecalTex"), 5);
+    glUniform1i(uDecals_, 0);
     glUniform1i(uTuck_, 0);
     uChar_ = glGetUniformLocation(prog_, "uChar");
     uCloth_ = glGetUniformLocation(prog_, "uCloth");
@@ -546,6 +578,12 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
     const bool skin = m.skinned && dp.bones;
     glUniform1i(uSkinned_, skin ? 1 : 0);
     if (skin) glUniformMatrix4fv(uBones_, 9, GL_FALSE, dp.bones[0].m);
+    const int decals = dp.decalTex ? std::max(0, std::min(2, dp.decals)) : 0;
+    glUniform1i(uDecals_, decals);
+    if (decals) {
+        glUniformMatrix4fv(uDecalM_, 2, GL_FALSE, dp.decal[0].m);
+        glActiveTexture(GL_TEXTURE5); glBindTexture(GL_TEXTURE_2D, dp.decalTex);
+    }
     glUniform1i(uTuck_, dp.tuck ? 1 : 0);
     if (dp.tuck) {
         glUniform3fv(uTuckC_, 1, dp.tuckC);
@@ -608,6 +646,7 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
     glUniform2f(uUVOff_, 0, 0);   // text / ribbons don't go through draw(): leave neutral values behind
     glUniform1i(uSkinned_, 0);
     glUniform1i(uTuck_, 0);
+    glUniform1i(uDecals_, 0);   // (left on, the next thing drawn another way wore the flag: the fireballs did)
     glUniform1i(uDesign_, 0);
     glUniform1i(uChar_, 0);
     glUniform1i(uCloth_, 0);
@@ -662,7 +701,13 @@ static GLuint makeSoftTexture(int kind) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    LOGI("texture soft %d (gl %u)", kind, t);
     return t;
+}
+
+GLuint Renderer::softTexture(int kind) {
+    if (!g_softTex[0]) { g_softTex[0] = makeSoftTexture(0); g_softTex[1] = makeSoftTexture(1); }
+    return g_softTex[kind & 1];
 }
 
 void Renderer::drawSpriteFlat(const Vec3& c, float size, const float rgba[4], const Vec3& n, int tex) {

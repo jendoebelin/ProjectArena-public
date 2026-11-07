@@ -12,4 +12,4 @@ The code (game, tools, server) is under the MIT license: see `LICENSE`.
 
 Exceptions:
 - The avatar bodies are built from MPFB2 / MakeHuman base meshes, which are CC0 (public domain).
-- Project Arena contains no assets from Sparc or any other CCP Games product. "Sparc" is a trademark of CCP hf.
+- Project Arena contains no assets from any other game.

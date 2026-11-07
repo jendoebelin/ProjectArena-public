@@ -5,6 +5,8 @@
 #   --github-only  the GitHub files only, signed with the anonymous GitHub key (no password asked)
 #   --store-only   only ProjectArena-<ver>-store.apk for the Meta upload (your key; asks for the password), added to
 #                  the release folder without touching the GitHub files there (their SHA256SUMS stay valid)
+# The store APK is its own build (./build.sh release open store): Meta's entitlement check, with the app's ID from
+# meta.local.cfg. The GitHub APK is built without it (sideloaded copies never check).
 # Your key: ~/projectarena-release.jks, alias projectarena (docs/META_STORE.md); never put its password on the command
 # line. Override with PROJECTARENA_KEYSTORE / PROJECTARENA_KEY_ALIAS. The GitHub key (no personal details in its
 # certificate; 2026-10-17): ~/projectarena-github.jks, alias projectarena-github, password in ~/.projectarena-github-key.pass.
@@ -16,7 +18,8 @@ VER=$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' "$ROOT/app/AndroidMani
 OUT="$ROOT/build/release-$VER"
 GHKS="${PROJECTARENA_GITHUB_KEYSTORE:-$HOME/projectarena-github.jks}"
 BT="${ANDROID_HOME:-/c/Android/sdk}/build-tools/34.0.0"
-APK="$ROOT/build/ProjectArena-release-open.apk"
+APK="$ROOT/build/ProjectArena-release-open.apk"              # GitHub / SideQuest: no entitlement check
+STOREAPK="$ROOT/build/ProjectArena-release-open-store.apk"    # the Meta store: with it
 
 if [ "$WHAT" != --github-only ]; then   # your key
   export PROJECTARENA_KEYSTORE="${PROJECTARENA_KEYSTORE:-$HOME/projectarena-release.jks}"
@@ -38,23 +41,27 @@ fi
 cmd.exe //c "$(cygpath -w "$ROOT/tools/run_tests.bat")" | tail -1
 python -I "$ROOT/server/test_relay.py" | tail -1
 python -I "$ROOT/server/test_relay_sounds.py" | tail -1   # (SOUND STUDIO's library)
-"$ROOT/build.sh" release open
-python -I "$ROOT/tools/check_store_apk.py" "$APK" --release
+if [ "$WHAT" != --github-only ]; then
+  "$ROOT/build.sh" release open store
+  python -I "$ROOT/tools/check_store_apk.py" "$STOREAPK" --release --store
+fi
 
 if [ "$WHAT" = --store-only ]; then
   mkdir -p "$OUT"
-  cp "$APK" "$OUT/ProjectArena-$VER-store.apk"
+  cp "$STOREAPK" "$OUT/ProjectArena-$VER-store.apk"
   "$BT/apksigner.bat" verify --print-certs "$OUT/ProjectArena-$VER-store.apk" | grep -i "certificate DN"
   echo "store APK: $OUT/ProjectArena-$VER-store.apk (upload it in the Meta dashboard; not for GitHub)"
   exit 0
 fi
 
+"$ROOT/build.sh" release open
+python -I "$ROOT/tools/check_store_apk.py" "$APK" --release --github
 mkdir -p "$OUT"   # start the GitHub files afresh, but keep a store APK already built (and maybe uploaded)
 find "$OUT" -mindepth 1 -maxdepth 1 ! -name "ProjectArena-$VER-store.apk" -exec rm -rf {} +
 if [ "$WHAT" = --github-only ]; then
   cp "$APK" "$OUT/ProjectArena-$VER.apk"
 else
-  cp "$APK" "$OUT/ProjectArena-$VER-store.apk"   # for the Meta upload (your key); not for GitHub
+  cp "$STOREAPK" "$OUT/ProjectArena-$VER-store.apk"   # for the Meta upload (your key; the entitlement check); not for GitHub
   "$BT/apksigner.bat" sign --ks "$(cygpath -w "$GHKS")" --ks-pass "file:$(cygpath -w "$HOME/.projectarena-github-key.pass")" \
     --ks-key-alias projectarena-github --out "$OUT/ProjectArena-$VER.apk" "$ROOT/build/release-open/aligned.apk"
 fi

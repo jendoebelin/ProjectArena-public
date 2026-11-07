@@ -15,6 +15,6 @@
 
 ## Checklist
 
-- [ ] This is my own work (or CC0 / CC BY and credited); nothing from other games, Sparc included
+- [ ] This is my own work (or CC0 / CC BY and credited); nothing from other games
 - [ ] I agree to publish it under the project's licences (code MIT, art and sound CC BY 4.0)
 - [ ] Tests still pass (code changes)

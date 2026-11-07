@@ -5,8 +5,7 @@
 ![The Project Arena court](docs/images/arena.jpg)
 
 A free, open-source VR court sport for **Meta Quest** and **PC VR**: throw, curve and punch energy balls at your
-opponent in a neon glass arena. Inspired by CCP Games' *Sparc* (2017); an independent game with its own code, art and
-sound.
+opponent in a neon glass arena. Its own code, art and sound.
 
 **[Get the game](https://github.com/jendoebelin/ProjectArena-public/releases/latest)** ·
 **[Join the Quest alpha](https://www.meta.com/s/4NDP5YlGM)** ·
@@ -74,5 +73,3 @@ Build: `docs/BUILD.md`. Running a server: `docs/SERVER_SETUP.md`.
 ## License
 
 Code: MIT (`LICENSE`). Art and sound: CC BY 4.0 (`LICENSE-ASSETS.md`). Third-party notices: `NOTICE.txt`.
-Project Arena is not affiliated with or endorsed by CCP Games; "Sparc" is a trademark of CCP hf. It contains no CCP
-assets.

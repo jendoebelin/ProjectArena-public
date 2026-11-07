@@ -27,9 +27,6 @@ Submit for Review until the public launch (ROADMAP 4c).
   > - Career statistics from online matches: wins, throw accuracy, blocks, top speed. See yours in MY STATS, and
   >   delete them any time.
   > - Free and open source: no ads, no accounts, no tracking. Report a bug or a player from any menu.
-  >
-  > Inspired by CCP Games' Sparc (2017). Project Arena is an independent game with its own code, art and sound, not
-  > affiliated with or endorsed by CCP Games.
 
 ## Categorization
 
@@ -116,6 +113,10 @@ and wording, which Meta changes from time to time:
   while the arena is open; not stored.
   From 0.3.12: TRAINING's results for the leaderboards (each passed lesson's best time and accuracy, with the player
   name; public in the game; under the same hashed key; deleted with the statistics).
+  From 0.3.16: SOUND STUDIO votes (up or down on a community sound, and when it was last changed; under the same
+  hashed key; **not public**: only the player sees their own votes, the operator sees each sound's totals; deleted
+  when taken back, with the statistics, or 24 months after the last change). MINE (the player's own .wav files)
+  stays on the headset; nothing is uploaded.
 - **Diagnostics:** bug reports and player reports with the game's recent log, **only when the user sends one**.
   From 0.3.11: the game's version number is sent at each connection and written in the server's log next to the
   player name (to see who needs an update).
@@ -126,6 +127,11 @@ and wording, which Meta changes from time to time:
   **Not** advertising, analytics or sale; nothing is shared with third parties.
 - **Deletion:** in the app (MY STATS > DELETE MY STATS) and by email (vrsportsfan@gmail.com).
 - **Encryption in transit:** no (plain UDP to the game server). Say so if asked.
+- **Meta's entitlement check** (store version, from 0.3.17): the game asks Meta's Platform SDK, on the headset,
+  whether the account owns the game, and reads only yes or no. Nothing about it is sent to our server or kept.
+  Meta's page says the check needs no Data Use Checkup request on Quest
+  (https://developers.meta.com/horizon/documentation/native/ps-entitlement-check/, read 2026-11-06); the app asks
+  for no Platform SDK user data (no user ID, name or friends).
 
 ## User Reporting (Engagement > User Reporting; done 2026-10-17)
 

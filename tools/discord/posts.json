@@ -169,5 +169,13 @@
   "color": "#5ec8ff",
   "image": "lookahead_0315.png",
   "text": "**🌍 Playing someone far away? Try BALL LOOK-AHEAD ONLINE.** It's experimental and off by default: turn it on in SETTINGS → GRAPHICS AND VIEW. In someone else's room, everything you did with the ball used to wait a round trip for the host. Across the world that's a quarter of a second. Your ball hung in your hand after you let go, and the other player's ball arrived later than it really did. With it on, your throw leaves your hand the moment you let go, and a grab or catch is in your hand at once. Their ball is shown where it really is, so your blocks and dodges line up with what you see. The ball also moves smoothly instead of stuttering. The host still decides every point, and nothing changes for the host. Try it and tell us how it plays: MENU → REPORT BUG works for that too.\n\n**🔧 Fixed:** HAND OFF HOST no longer covers the GAMES ONLINE heading. The masculine body's chest sits a little higher and wider.\n\n0.3.14 and 0.3.15 play together online.\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.16: SOUND STUDIO",
+  "color": "#5ec8ff",
+  "image": "studio_title_0316.png",
+  "video": "sound_studio_0316.mp4",
+  "text": "**🎧 New: the SOUND STUDIO**, on the main menu next to CUSTOMIZE AVATAR. Try sounds right in the moment they belong to, across every part of the game: SHIELD, THROWS, BALL, HITS, MATCH and CROWD. Pick SHIELD and the coach throws straight at your shield, so you hear the block, the break and the recharge as in a match. The page stays open beside you, so you can change a sound and hear it straight away.\n\n**Try anything anywhere:** any of the game's own sounds in any slot, the community's new sounds as they arrive, or your own: put .wav files (WAV only) in the game's my_sounds folder and they show up as MINE, only on your headset.\n\n**Vote UP or DOWN** on the community's new sounds. The favourites become the game's official sounds. Want to make one? Propose it here or with the Sound proposal form on GitHub (docs/SOUND_STUDIO.md has the slots and the format).\n\n**🔧 Fixed:** rooms left open by an unattended headset now close after 10 minutes. The spectator hub shows WAITING FOR PLAYERS when nobody is playing, and its text no longer overlaps on the PC.\n\n0.3.14, 0.3.15 and 0.3.16 play together online.\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
  }
 ]

@@ -57,6 +57,7 @@ bool xrLoaderInit();   // pc/xr_loader.cpp
 #include "record.h"
 #include "training.h"
 #include "sound_studio.h"
+#include "entitlement.h"   // the Meta store's ownership check (store builds only)
 #include "xcompat.h"
 #ifdef _WIN32
 #include "pc/discord_rpc.h"   // Discord status (PC only)
@@ -420,6 +421,8 @@ struct App {
     int lastNation = 1;             // PRESET > COUNTRY FLAG: the country it picks first (the last one chosen)
     std::vector<uint32_t> kickVoted;   // REPORT PLAYER > VOTE TO REMOVE: who we voted on (this session)
     bool statsNoticeOpen = false, statsNoticeSeen = false;   // the one-time notice about statistics (settings.cfg)
+    bool ownFail = false, ownQuit = false;   // a store build: Meta couldn't confirm the purchase (the page, then the game closes)
+    double ownFailAt = 0;
     Vec3 builderHit;
     bool builderHitValid = false;
     PlayerInput viewIn[kMaxPlayers];   // what is drawn for each player (remote ones smoothed)
@@ -428,6 +431,11 @@ struct App {
     bool settingsOpen = false;
     int pointerHand = 1;           // hand that points at menus (settings: right / left)
     int fxLevel = 0;               // hit effects: 0 full, 1 soft, 2 low (photosensitivity)
+    // BALL MARKS (0.3.17, a community idea): where a ball bounces off the floor, a wall or the glass, a mark that
+    // fades. Style 0: a glowing ring in the thrower's colour; 1: a scorch (a hot glow that cools, a burnt patch)
+    struct Mark { Vec3 p, n; float age = 0, life = 1.5f, size = 0.3f, rgb[3] = {1, 1, 1}, roll = 0; uint32_t seed = 0; };
+    std::vector<Mark> marks;
+    int markStyle = 1;
     // FIELD OF VIEW (owner, 2026-10-29): how big the arena feels, -4..+4 in 5% steps. A headset's lenses fix its real
     // field of view; this draws the eyes closer together (the room feels bigger) or further apart (smaller). Picture
     // only: hands, reach and the court stay true, and the headset still gets the real eye poses.
@@ -439,6 +447,7 @@ struct App {
     bool firstHelp = false;
     bool startTitle = true;        // show HOW TO PLAY on the first launch
     bool helpOpen = false;         // the menu shows HOW TO PLAY (first launch, or MENU > HOW TO PLAY)
+    bool creditsOpen = false;      // HOW TO PLAY > CREDITS (shown while helpOpen)
     bool nameEdit = false;
     int editTarget = 0;            // keyboard edits: 0 the lobby name, 1 the community server address, 2 team, 3 Sparc server,
                                    // 4 bug note, 5 player report note
@@ -1398,7 +1407,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.16";
+static const char* kAppVersion = "0.3.17";
 // A scrolling texture's offset, kept in [0, 1) (the textures repeat, so it looks the same). The headset's fragment
 // shader works at medium precision (16-bit floats): an offset that grows with the time played lost its fractions after
 // some minutes, and the ball's and fireballs' plasma broke into big square blocks (a tester's report, 2026-11-02).
@@ -1721,7 +1730,7 @@ static bool studioVoteLit(const App& a, uint32_t ip) {   // UP (ip bit 8) or DOW
 }
 static bool otherPage(const App& a) {   // a page other than TRAINING's is open
     return a.titleOpen || a.settingsOpen || a.statsOpen || a.helpOpen || a.bugOpen || a.reportOpen || a.rulesOpen || a.xpOpen ||
-           a.statsNoticeOpen || a.movePlayersOpen || a.updateOpen;
+           a.statsNoticeOpen || a.movePlayersOpen || a.updateOpen || a.ownFail;
 }
 static bool trainSide(const App& a) {
     using training::Phase;
@@ -1765,6 +1774,70 @@ static const float* playerRGB(const App& a, int p) {
     const Game& g = a.game;
     if (g.np == 2) return a.sideRGB[p & 1];
     return (g.tun.teamMode == TEAMS_FFA || g.octagon()) ? kFourRGB[p & 3] : a.sideRGB[g.team(p) & 1];
+}
+
+// BALL MARKS: the surface the ball bounced off (asked of the arena's own collision, the same on every machine: the event
+// carries only where the ball was), and a mark on it, sized by the ball's speed
+static void addMark(App& a, const Vec3& at, int player, float speed) {
+    if (a.fxLevel >= 2 && (a.marks.size() & 1)) return;   // (HIT EFFECTS: LOW: half of them)
+    static const Vec3 dirs[] = {{0, -1, 0}, {0, 1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1},
+                                {0.7071f, 0, 0.7071f}, {-0.7071f, 0, 0.7071f}, {0.7071f, 0, -0.7071f}, {-0.7071f, 0, -0.7071f}};
+    // (sweepArena tests a sphere at the end point against surfaces it is moving into: a sphere round the bounce point
+    // nudged toward each direction finds the surfaces on that side; the nearest wins)
+    const float R = 0.22f;
+    float best = 1e9f;
+    Vec3 bp, bn;
+    for (const Vec3& d : dirs) {
+        Vec3 hp, hn;
+        uint32_t tags = 0;
+        if (!a.game.sweepArena(at - d * 0.01f, at, R, hp, hn, tags)) continue;
+        const Vec3 surf = hp - hn * R;
+        if (length(surf - at) < best) { best = length(surf - at); bp = surf; bn = hn; }
+    }
+    if (best > 1e8f || length(bn) < 0.5f) return;
+    if (dot(bn, at - bp) < 0) bn = -bn;   // (facing the ball's side)
+    App::Mark m;
+    m.n = normalize(bn);
+    m.p = bp + m.n * 0.006f;
+    m.size = clampf(0.20f + 0.016f * speed, 0.20f, 0.55f) * (a.fxLevel >= 1 ? 0.85f : 1.f);
+    m.life = 4.0f;
+    const float* c = player >= 0 ? playerRGB(a, player) : nullptr;
+    for (int k = 0; k < 3; ++k) m.rgb[k] = c ? c[k] : 1.f;
+    static uint32_t h = 4242u;
+    h = h * 1664525u + 1013904223u;
+    m.seed = h;
+    m.roll = (h >> 8) / 16777216.f * 6.2832f;
+    if (a.marks.size() >= 48) a.marks.erase(a.marks.begin());
+    a.marks.push_back(m);
+}
+
+static void drawMarks(App& a) {
+    // a ripple in the surface (owner's reference, 2026-11-07: a shimmer in the glass, not a bright spot): as the ball
+    // leaves, a thin faint ring in the thrower's colour spreads out, with hue-shifted rings just inside and outside it
+    // (an iridescent edge); a faint haze stays where it hit, fading over 4 s, so that angle can be aimed for again
+    const float soft = a.fxLevel >= 1 ? 0.7f : 1.f;
+    for (const App::Mark& m : a.marks) {
+        const float t = m.age / m.life;
+        const Vec3 at = m.p + m.n * 0.002f;
+        const float* c = m.rgb;
+        const float in[3] = {0.5f * c[0] + 0.5f * c[2], 0.5f * c[1] + 0.5f * c[0], 0.5f * c[2] + 0.5f * c[1]};   // (the hue a little
+        const float out[3] = {0.5f * c[0] + 0.5f * c[1], 0.5f * c[1] + 0.5f * c[2], 0.5f * c[2] + 0.5f * c[0]};  // either way round)
+        const float haze = 0.10f * std::pow(1.f - t, 1.5f) * soft * std::min(1.f, m.age / 0.05f);
+        const float hz[4] = {(0.5f + 0.5f * c[0]) * haze, (0.5f + 0.5f * c[1]) * haze, (0.5f + 0.5f * c[2]) * haze, 1};
+        a.gfx.drawSpriteFlat(at, m.size * 0.55f, hz, m.n, 0);
+        const float rt = m.age / 0.9f;   // the ripple: out to the mark's size in 0.9 s, fading as it goes
+        if (rt < 1.f) {
+            const float e = 1.f - rt * (2.f - rt);   // (eases out)
+            const float k = (1.f - rt) * (1.f - rt) * 0.55f * soft;
+            const float R = m.size * (0.25f + 0.85f * (1.f - e));
+            const float main[4] = {c[0] * k, c[1] * k, c[2] * k, 1};
+            const float ki = k * 0.45f;
+            const float ci[4] = {in[0] * ki, in[1] * ki, in[2] * ki, 1}, co[4] = {out[0] * ki, out[1] * ki, out[2] * ki, 1};
+            a.gfx.drawSpriteFlat(at, R, main, m.n, 1);
+            a.gfx.drawSpriteFlat(at, R * 0.93f, ci, m.n, 1);
+            a.gfx.drawSpriteFlat(at, R * 1.07f, co, m.n, 1);
+        }
+    }
 }
 static const float* teamRGB(const App& a, int t) {   // (a team's colour: the same as its players')
     return a.game.np == 4 && (a.game.tun.teamMode == TEAMS_FFA || a.game.octagon()) ? kFourRGB[t & 3] : a.sideRGB[t & 1];
@@ -1974,6 +2047,23 @@ static void recenter(App& a, const Pose& headTrack, int local) {
 }
 
 static int g_lastLocal = 0;
+static void openMenu(App& a, const PlayerInput& in);
+static const double kOwnFailSeconds = 30.0;   // the purchase not confirmed: the page, then the game closes
+// a store build whose purchase Meta couldn't confirm (entitlement.h): out of any room, every page shut, a page that says
+// why with QUIT GAME, and the game closes by itself after kOwnFailSeconds (Meta: "show an error message and quit")
+static void ownershipFailed(App& a, const PlayerInput& in) {
+    LOGE("store: the purchase couldn't be confirmed (%s)", entitlement::why());
+    if (a.net.inRoom()) a.net.leave();
+    if (a.builderOpen) closeBuilder(a);
+    if (a.tuneOpen) closeTuning(a);
+    a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen =
+        a.helpOpen = a.movePlayersOpen = a.updateOpen = a.statsOpen = a.statsNoticeOpen = a.nameEdit = a.startTitle = false;
+    a.ownFail = true;
+    a.ownFailAt = nowSeconds();
+    a.quitArmed = true;   // (QUIT GAME: one press)
+    openMenu(a, in);
+}
+
 static PlayerInput readInput(App& a, XrTime t, int local) {
     PlayerInput in;
     XrActiveActionSet aas{a.actionSet, XR_NULL_PATH};
@@ -2110,8 +2200,20 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
         a.titleOpen = true;
         if (a.firstHelp) { a.firstHelp = false; a.helpOpen = true; }
     }
+#ifdef __ANDROID__
+    if (!a.ownFail && entitlement::poll() == entitlement::State::Failed) ownershipFailed(a, in);
+#endif
+    if (a.ownFail) {   // the page stays up; the game closes by itself
+        a.menuOpen = true;
+        if (!a.ownQuit && nowSeconds() - a.ownFailAt > kOwnFailSeconds) {
+            a.ownQuit = true;
+            LOGI("store: closing (the purchase wasn't confirmed)");
+            saveSettings(a);
+            if (a.session != XR_NULL_HANDLE) xrRequestExitSession(a.session); else a.quit = true;
+        }
+    }
     bool menu = getBool(a, a.menu);
-    if (menu && !a.prevMenu) {
+    if (menu && !a.prevMenu && !a.ownFail) {
         if (a.builderOpen) closeBuilder(a);
         else if (a.tuneOpen) closeTuning(a);
         else if (a.menuOpen) { a.menuOpen = false; a.nameEdit = false; a.helpOpen = false; a.settingsOpen = false; a.titleOpen = false; a.quitArmed = false; LOGI("menu: closed"); }
@@ -2139,7 +2241,31 @@ enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, B
                      Train, TrainPick, TrainStart, TrainRetry, TrainNext, TrainList, TrainLeave, TrainBoard, TrainKind, TrainBoardBack, TrainShow, TrainVideo,
                      MovePlayers, MoveCorner, MoveOne, MoveBack, OptHealth, OptBalls, OptPlayers, Discord,
                      UpdateOpen, UpdateGo, UpdateRestart, UpdatePage, UpdateStore, UpdateBack, HeadSelfie, PrivateTalk, HandOff, HandOffTo,
-                     LookAhead, Studio, StudioSection, StudioPrev, StudioNext, StudioPlay, StudioVote, StudioMoment, StudioLeave, StudioDelete };
+                     LookAhead, Studio, StudioSection, StudioPrev, StudioNext, StudioPlay, StudioVote, StudioMoment, StudioLeave, StudioDelete,
+                     Credits, CreditsBack };
+// HOW TO PLAY > CREDITS: one page, film-credit style (small grey headings, the names under them)
+enum { CR_HEAD, CR_NAME, CR_SMALL };
+struct CreditRow { int kind; const char* text; };
+static const CreditRow kCredits[] = {
+    {CR_HEAD, "CREATED AND DIRECTED BY"},
+    {CR_NAME, "JENNIFER DOEBELIN"},
+    {CR_HEAD, "STUDIO"},
+    {CR_NAME, "CROSSGENGAMING"},
+    {CR_HEAD, "MADE WITH"},
+    {CR_NAME, "CLAUDE"},
+    {CR_HEAD, "COMMUNITY"},
+    {CR_NAME, "ASTROBLEEM    R0GUEICE    THEINSANIAC"},
+    {CR_NAME, "SPEKKIOCT"},
+    {CR_HEAD, "THANK YOU"},
+    {CR_NAME, "EVERY ALPHA TESTER"},
+#ifdef PA_STORE
+    {CR_SMALL, "OPENXR LOADER (KHRONOS GROUP)  -  ANDROID NATIVE APP GLUE  -  META PLATFORM SDK"},
+#else
+    {CR_SMALL, "OPENXR LOADER (KHRONOS GROUP)  -  ANDROID NATIVE APP GLUE"},
+#endif
+    {CR_SMALL, "LICENCES: NOTICE.TXT AT GITHUB.COM/JENDOEBELIN/PROJECTARENA-PUBLIC"},
+};
+
 struct MenuItem {
     std::string label;
     float x, y, w, h;
@@ -2246,7 +2372,7 @@ static int navCurrent(const App& a) {
 static std::vector<MenuItem> menuItemsBase(App& a);
 static std::vector<MenuItem> menuItems(App& a) {
     std::vector<MenuItem> v = menuItemsBase(a);
-    if (!a.nameEdit && !trainSide(a)) {   // the side menu: every area one click away
+    if (!a.nameEdit && !trainSide(a) && !a.ownFail) {   // the side menu: every area one click away
         const Net::Mode m = a.net.mode();
         const bool offline = m == Net::Mode::Offline || m == Net::Mode::Searching;
         const bool people = a.net.inRoom() || m == Net::Mode::Spectate;
@@ -2265,6 +2391,10 @@ static std::vector<MenuItem> menuItems(App& a) {
 
 static std::vector<MenuItem> menuItemsBase(App& a) {
     std::vector<MenuItem> v;
+    if (a.ownFail) {   // a store build, the purchase not confirmed: only QUIT GAME
+        v.push_back({"QUIT GAME", 0, -0.33f, 0.34f, 0.07f, MenuAct::Quit, 0, true});
+        return v;
+    }
     if (a.statsNoticeOpen && !a.nameEdit) {   // the one-time notice before the first online match
         v.push_back({"OK", 0, -0.33f, 0.30f, 0.07f, MenuAct::StatsNoticeOk, 0, true});
         return v;
@@ -2511,8 +2641,13 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"DONE", 0.31f, -0.27f, 0.20f, 0.07f, MenuAct::KeyDone, 0, true});
         return v;
     }
+    if (a.helpOpen && a.creditsOpen) {   // HOW TO PLAY > CREDITS
+        v.push_back({"BACK", 0, -0.33f, 0.30f, 0.07f, MenuAct::CreditsBack, 0, true});
+        return v;
+    }
     if (a.helpOpen) {
-        v.push_back({"GOT IT", 0, -0.33f, 0.36f, 0.07f, MenuAct::HelpDone, 0, true});
+        v.push_back({"GOT IT", -0.20f, -0.33f, 0.30f, 0.07f, MenuAct::HelpDone, 0, true});
+        v.push_back({"CREDITS", 0.20f, -0.33f, 0.30f, 0.07f, MenuAct::Credits, 0, true});
         return v;
     }
     if (a.settingsOpen && a.ptPage) {
@@ -2552,7 +2687,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({fx[a.fxLevel % 3], 0, -0.22f, 0.40f, 0.07f, MenuAct::Fx, 0, true});
 #endif
         // BALL LOOK-AHEAD (0.3.15): playing in someone else's room, the balls where the host will have them
-        v.push_back({a.net.lookAhead() ? "BALL LOOK-AHEAD ONLINE: ON" : "BALL LOOK-AHEAD ONLINE: OFF", 0, -0.30f, 0.50f, 0.06f,
+        // (two-player rooms only: in four-player rooms and FIREBALL BLITZ it stands down, Game::lookAhead)
+        v.push_back({a.net.lookAhead() ? "BALL LOOK-AHEAD (1-V-1 ONLINE): ON" : "BALL LOOK-AHEAD (1-V-1 ONLINE): OFF", 0, -0.30f, 0.62f, 0.06f,
                      MenuAct::LookAhead, 0, true});
         v.push_back({"BACK", 0, -0.39f, 0.36f, 0.055f, MenuAct::Back, 0, true});
         return v;
@@ -2616,8 +2752,14 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"SETTINGS", -0.145f, -0.22f, 0.27f, 0.07f, MenuAct::Settings, 0, true});
         v.push_back({"HOW TO PLAY", 0.145f, -0.22f, 0.27f, 0.07f, MenuAct::Help, 0, true});
         v.push_back({"CHANGE NAME", 0, -0.31f, 0.56f, 0.07f, MenuAct::Name, 0, true});
-        v.push_back({"EXPERIMENTAL", -0.145f, -0.385f, 0.27f, 0.045f, MenuAct::Experimental, 0, true});
-        v.push_back({"REPORT A BUG", 0.145f, -0.385f, 0.27f, 0.045f, MenuAct::Bug, 0, true});
+        // (the cross-play test with the original game's community server, EXPERIMENTAL, doesn't work and is hidden from
+        // players: owner, 2026-11-06, for the store release; it stays in developer mode)
+        if (a.devMode) {
+            v.push_back({"EXPERIMENTAL", -0.145f, -0.385f, 0.27f, 0.045f, MenuAct::Experimental, 0, true});
+            v.push_back({"REPORT A BUG", 0.145f, -0.385f, 0.27f, 0.045f, MenuAct::Bug, 0, true});
+        } else {
+            v.push_back({"REPORT A BUG", 0, -0.385f, 0.56f, 0.045f, MenuAct::Bug, 0, true});
+        }
         if (updateAvailable(a)) v.push_back({"UPDATE NOW", 0.215f, 0.145f, 0.16f, 0.04f, MenuAct::UpdateOpen, 0, true});
         return v;
     }
@@ -2932,7 +3074,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         case NAV_STATS: a.statsOpen = true; a.myStatsAskAt = 0; a.deleteArmedUntil = 0; break;
         case NAV_REPORT: go(MenuAct::Report); break;
         case NAV_BUG: go(MenuAct::Bug); break;
-        case NAV_HELP: a.helpOpen = true; break;
+        case NAV_HELP: a.helpOpen = true; a.creditsOpen = false; break;
         default: break;
         }
         break;
@@ -3187,9 +3329,12 @@ static void menuActivate(App& a, const MenuItem& it) {
         saveSettings(a);
         break;
     }
-    case MenuAct::Help: a.helpOpen = true; break;
+    case MenuAct::Help: a.helpOpen = true; a.creditsOpen = false; break;
+    case MenuAct::Credits: a.creditsOpen = true; break;
+    case MenuAct::CreditsBack: a.creditsOpen = false; break;
     case MenuAct::HelpDone:
         a.helpOpen = false;
+        a.creditsOpen = false;
         if (!a.titleOpen) a.menuOpen = false;
         if (const char* ext = dataDir(a))
             if (FILE* fp = fopen((std::string(ext) + "/help_seen").c_str(), "w")) fclose(fp);
@@ -3336,7 +3481,7 @@ static void drawMenu(App& a) {
         }
         a.gfx.drawText(s, {a.menuPose.q, at(x, y, 0.006f)}, h, c);
     };
-    const float ua = a.ptRunning ? 0.998f : 0.f;   // over your room the menus are solid (never see-through)
+    const float ua = (a.ptRunning || a.ownFail) ? 0.998f : 0.f;   // over your room the menus are solid (never see-through); the store page too
     const float bg[4] = {0.004f, 0.007f, 0.016f, std::max(ua, 0.90f)}, edge[4] = {0.05f, 0.35f, 0.60f, std::max(ua, 0.9f)};
     const float btn[4] = {0.03f, 0.05f, 0.08f, std::max(ua, 0.95f)}, hov[4] = {0.05f, 0.40f, 0.75f, std::max(ua, 0.98f)},
                 dis[4] = {0.015f, 0.015f, 0.02f, std::max(ua, 0.9f)};
@@ -3346,12 +3491,21 @@ static void drawMenu(App& a) {
         quad(0, -0.09f, 1.04f, 0.98f, -0.002f, edge);
         quad(0, -0.09f, 1.0f, 0.94f, 0, bg);
     }
-    if (!a.nameEdit && !airy && !trainSide(a)) {   // side menu
+    if (!a.nameEdit && !airy && !trainSide(a) && !a.ownFail) {   // side menu
         quad(kNavX, -0.09f, 0.30f, 0.98f, -0.002f, edge);
         quad(kNavX, -0.09f, 0.28f, 0.94f, 0, bg);
     }
     char buf[96];
-    if (a.trainBoard >= -1 && !a.nameEdit) {   // a TRAINING leaderboard
+    if (a.ownFail) {   // a store build: Meta couldn't confirm the purchase
+        text("PROJECT ARENA COULDN'T CONFIRM YOUR PURCHASE", 0, 0.25f, 0.034f, cyan);
+        text("META COULDN'T CONFIRM THAT THIS ACCOUNT OWNS THE GAME", 0, 0.15f, 0.021f, white);
+        text("CHECK THAT THE HEADSET IS SIGNED IN TO THE ACCOUNT THAT GOT IT", 0, 0.08f, 0.021f, white);
+        text("AND IS CONNECTED TO THE INTERNET, THEN START THE GAME AGAIN", 0, 0.035f, 0.021f, white);
+        const int left = std::max(0, (int)std::ceil(kOwnFailSeconds - (nowSeconds() - a.ownFailAt)));
+        std::snprintf(buf, sizeof buf, "THE GAME CLOSES IN %d S", left);
+        text(buf, 0, -0.06f, 0.024f, grey);
+        text("HELP: THE PROJECT ARENA DISCORD, OR GITHUB.COM/JENDOEBELIN/PROJECTARENA-PUBLIC", 0, -0.20f, 0.016f, grey);
+    } else if (a.trainBoard >= -1 && !a.nameEdit) {   // a TRAINING leaderboard
         const bool overall = a.trainBoard < 0;
         const training::Lesson* L = overall ? nullptr : &training::lessons()[a.trainBoard];
         const int kind = overall ? 1 : a.trainBoardKind;
@@ -3681,6 +3835,14 @@ static void drawMenu(App& a) {
                     : a.depthFailed ? "WINDOW: ROOM DEPTH COULD NOT START" : "WINDOW: STARTING ROOM DEPTH";
             text(h, 0, 0.205f, 0.022f, grey);
         }
+    } else if (a.helpOpen && a.creditsOpen && !a.nameEdit) {   // HOW TO PLAY > CREDITS
+        text("CREDITS", 0, 0.29f, 0.055f, cyan);
+        float y = 0.205f;
+        for (const CreditRow& r : kCredits) {
+            if (r.kind == CR_SMALL && y > -0.20f) y = -0.20f;   // (the components and licences: at the foot)
+            text(r.text, 0, y, r.kind == CR_HEAD ? 0.016f : r.kind == CR_NAME ? 0.025f : 0.014f, r.kind == CR_NAME ? white : grey);
+            y -= r.kind == CR_HEAD ? 0.028f : r.kind == CR_NAME ? 0.045f : 0.028f;
+        }
     } else if (a.helpOpen && !a.nameEdit) {
         text("HOW TO PLAY", 0, 0.29f, 0.055f, cyan);
         static const char* lines[] = {
@@ -3741,7 +3903,7 @@ static void drawMenu(App& a) {
         if (tw > it.w * 0.90f) th *= it.w * 0.90f / tw;                 // long labels shrink instead of spilling over
         text(it.label, it.x, it.y, th, it.enabled || row ? white : grey);
     }
-    if (games == 0 && !a.nameEdit && !a.helpOpen && !a.titleOpen && !a.settingsOpen && !a.xpOpen && !a.bugOpen && !a.reportOpen && !a.rulesOpen && !a.movePlayersOpen && !a.updateOpen &&
+    if (games == 0 && !a.ownFail && !a.nameEdit && !a.helpOpen && !a.titleOpen && !a.settingsOpen && !a.xpOpen && !a.bugOpen && !a.reportOpen && !a.rulesOpen && !a.movePlayersOpen && !a.updateOpen &&
         !a.statsOpen && !a.statsNoticeOpen && !a.trainOpen && a.trainBoard < -1 && !(a.trainer.active() && !otherPage(a))) {
         if (int ov = a.net.otherVersion()) {
             const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
@@ -3796,6 +3958,8 @@ static void addHitFx(App& a, const Vec3& at, int victim, int scorer) {
 }
 
 static void updateFx(App& a, float dt) {
+    for (App::Mark& m : a.marks) m.age += dt;   // BALL MARKS fade out
+    a.marks.erase(std::remove_if(a.marks.begin(), a.marks.end(), [](const App::Mark& m) { return m.age > m.life; }), a.marks.end());
     for (size_t i = 0; i < a.hits.size();) {
         a.hits[i].t += dt;
         if (a.hits[i].t > 2.2f) { a.hits[i] = a.hits.back(); a.hits.pop_back(); } else ++i;
@@ -3943,9 +4107,11 @@ static void countStat(App& a, const GameEvent& e) {
     a.liveStats[0] = s[0]; a.liveStats[1] = s[1];
 }
 
+static void addMark(App& a, const Vec3& at, int player, float speed);
 static void handleEvents(App& a) {
     const int L = a.net.localIndex();
     for (GameEvent e : a.game.events) {
+        if (e.type == EventType::Bounce) addMark(a, e.pos, e.player, e.value);
         bool mine = !a.viewing && e.player == L;
         if (a.net.mode() == Net::Mode::Host && a.net.online()) countStat(a, e);
         if (e.type == EventType::MatchEnd && a.net.mode() == Net::Mode::Client && a.net.online() && a.net.localSlot() >= 0 &&
@@ -4344,20 +4510,25 @@ static void preSwing(App& a, int key, const PlayerInput& in, float deg, float tu
 static void drawAvatarBody(App& a, const PlayerInput& in, int team, int pass, const Mat4& pre, bool preMirror, bool lod,
                            float flash, int swingKey = -1) {
     avatar::Rig rig = avatar::solveRig(in, in.avatar);
-    if (pass == 1 && !lod && avatar::nationOf(in.avatar)) {
-        // NATIONS: the country's flag high on the jersey's back, just under the collar, leaning with the upper back
-        // (bind pose; owner, 2026-10-29: on the number panel it sat at the waist)
+    // NATIONS: the country's flag printed high on the jersey's back, just under the collar (owner, 2026-10-29: on the
+    // number panel it sat at the waist), and small on the left chest. Printed on the cloth itself (bind pose boxes),
+    // so it bends and turns with it (GitHub-free report, 2026-11-07: as a flat card it stuck out like paper)
+    int nationDecals = 0;
+    Mat4 nationBox[2];
+    GLuint nationTex = 0;
+    if (!lod && avatar::nationOf(in.avatar)) {
         const bool fem = avatar::bodyType(in.avatar) == 1;
-        const Pose at{Quat::axisAngle({1, 0, 0}, deg2rad(15.f)), fem ? Vec3{0, -0.11f, 0.090f} : Vec3{0, -0.12f, 0.125f}};
-        const avatar::Nation* N = avatar::nation(avatar::nationOf(in.avatar));
-        const float white[4] = {1, 1, 1, 1};
-        a.gfx.drawTexturedPanel(pre * rig.skin[avatar::BONE_TORSO] * Mat4::fromPose(at, {0.13f, 0.13f / 1.5f, 1}),
-                                a.gfx.texture(N->flag, true), white, false);
-        // and a small emblem on the left chest, facing forward (-Z), leaning with the chest (measured on av_top_1)
+        auto box = [](const Pose& at, float w, float h, float depth) {   // bind space -> the unit box at `at`
+            const Pose inv{at.q.conj(), at.q.conj().rotate(-at.p)};
+            return Mat4::fromPose({Quat{}, {0, 0, 0}}, {1.f / w, 1.f / h, 1.f / depth}) * Mat4::fromPose(inv);
+        };
+        const Pose back{Quat::axisAngle({1, 0, 0}, deg2rad(15.f)), fem ? Vec3{0, -0.11f, 0.090f} : Vec3{0, -0.12f, 0.125f}};
         const Pose crest{Quat::axisAngle({0, 1, 0}, kPi) * Quat::axisAngle({1, 0, 0}, -deg2rad(fem ? 45.f : 18.f)),
                          fem ? Vec3{-0.08f, -0.118f, -0.147f} : Vec3{-0.08f, -0.150f, -0.131f}};
-        a.gfx.drawTexturedPanel(pre * rig.skin[avatar::BONE_TORSO] * Mat4::fromPose(crest, {0.055f, 0.055f / 1.5f, 1}),
-                                a.gfx.texture(N->flag, true), white, false);
+        nationBox[0] = box(back, 0.13f, 0.13f / 1.5f, 0.16f);   // (deep enough for every build's back, short of the chest)
+        nationBox[1] = box(crest, 0.055f, 0.055f / 1.5f, 0.10f);
+        nationTex = a.gfx.texture(avatar::nation(avatar::nationOf(in.avatar))->flag, true);
+        nationDecals = 2;
     }
     static std::vector<avatar::PartDraw> list;
     list.clear();
@@ -4378,6 +4549,12 @@ static void drawAvatarBody(App& a, const PlayerInput& in, int team, int pass, co
         if (p.flags & avatar::PART_NEON)
             for (int k = 0; k < 3; ++k) dp.emissiveAdd[k] += L.ch[avatar::CH_GLOW][k] * 0.35f;
         if (p.flags & avatar::PART_SKINNED) dp.bones = rig.skin;
+        if (nationDecals && (p.flags & avatar::PART_SKINNED) && !std::strncmp(p.model, "av_top_", 7)) {   // (the jersey)
+            dp.decals = nationDecals;
+            dp.decal[0] = nationBox[0];
+            dp.decal[1] = nationBox[1];
+            dp.decalTex = nationTex;
+        }
         if (p.flags & avatar::PART_PULSE) dp.uvOff[1] = wrapUV(-(nowSeconds() - a.startTime) * 1.6);   // ~40 cm/s
         Mat4 swing[avatar::BONE_COUNT], model = pre * p.m;   // (hair: its own bones, the first 7; the renderer reads them all)
         for (Mat4& b : swing) b = Mat4::identity();
@@ -5955,7 +6132,7 @@ static void lobbyAction(App& a, int which, const PlayerInput& in) {
     switch (which) {
     case 0: case kPosterCount: menuPage(); a.rulesOpen = true; a.rulesForHost = false; break;   // PLAY THE BOT / the court
     case 1: menuPage(); break;                                                       // MULTIPLAYER page
-    case 2: menuPage(); a.helpOpen = true; break;
+    case 2: menuPage(); a.helpOpen = true; a.creditsOpen = false; break;
     case 3: if (!a.avModels.empty()) openBuilder(a, in); break;
     case 4: a.net.spectate(); a.watchIp = 0; break;
     case 5: menuPage(); a.settingsOpen = true; break;
@@ -6549,7 +6726,9 @@ static const std::vector<CrowdSpot>& crowdSpots(int p) {
 // Flags in the stands: one for each fan waving that end's flag on their phone (the country's flag; without a country,
 // a foam finger in the end's colour). The pole stands still in the stand; the cloth flies in the wind, its ripples running out from the pole
 // (drawn in strips), livelier as the end's hype rises.
-static void drawFanFlags(App& a, float now) {
+// (wide, dropY: the stadium as drawn: the EXPERIMENTAL arenas widen it and lower it; 1, 0 for the classic court)
+static void drawFanFlags(App& a, float now, float wide, float dropY) {
+    auto in = [&](const Vec3& v) { return Vec3{v.x * wide, v.y + dropY, v.z * wide}; };   // a classic stand spot, there
     const CrowdInfo* c = crowdNow(a);
     if (a.crowdMode >= 2) return;   // (SETTINGS > CROWD: OFF)
     const int kStrips = 6;
@@ -6565,15 +6744,15 @@ static void drawFanFlags(App& a, float now) {
             if (!N) {   // no country: a foam finger (#1) in the end's colour, waved from the wrist (owner, 2026-10-21)
                 const float sway = 0.35f * std::sin(now * 4.2f * wind + s.phase);
                 const Quat qf = q * Quat::axisAngle({0, 0, 1}, sway);
-                const Vec3 wrist = s.p + Vec3{0, 1.15f, 0};
+                const Vec3 wrist = in(s.p) + Vec3{0, 1.15f, 0};
                 const float col[4] = {a.sideRGB[p][0], a.sideRGB[p][1], a.sideRGB[p][2], 1};
                 a.gfx.drawTexturedPanel(Mat4::fromPose({qf, wrist + qf.rotate({0, 0.32f, 0})}, {0.64f, 0.64f, 1}),
                                         a.gfx.texture("fx_foam", true), col, false);
                 continue;
             }
-            const Vec3 top = s.p + Vec3{0, poleH, 0};
+            const Vec3 top = in(s.p) + Vec3{0, poleH, 0};
             const float pole[4] = {0.55f, 0.56f, 0.6f, 1};
-            a.gfx.drawBox(Mat4::fromPose({q, s.p + Vec3{0, poleH * 0.5f, 0}}, {0.015f, poleH * 0.5f, 0.015f}), pole, false);   // (half sizes)
+            a.gfx.drawBox(Mat4::fromPose({q, in(s.p) + Vec3{0, poleH * 0.5f, 0}}, {0.015f, poleH * 0.5f, 0.015f}), pole, false);   // (half sizes)
             // the cloth: strips out from the pole along the stand (+X), each bent by a wave that grows toward the free end
             const Pose base{q, top + q.rotate({0, -H * 0.5f, 0})};
             float zPrev = 0.f;
@@ -6600,7 +6779,8 @@ static void drawFanFlags(App& a, float now) {
         if (f.age < 0) continue;
         const float t = f.age / f.life;
         const float alpha = std::min(1.f, f.age * 6.f) * (1.f - t * t);
-        Vec3 d = eye - f.p;
+        const Vec3 fp = in(f.p);
+        Vec3 d = eye - fp;
         const float L = length(d);
         if (L < 1e-3f) continue;
         d = d / L;
@@ -6611,18 +6791,18 @@ static void drawFanFlags(App& a, float now) {
         const float white[4] = {1, 1, 1, alpha};
         const float* sc = a.sideRGB[f.side];
         if (f.kind == 2 && N) {
-            a.gfx.drawTexturedPanel(Mat4::fromPose({q, f.p}, {sz, sz / 1.5f, 1}), a.gfx.texture(N->flag, true), white, false);
+            a.gfx.drawTexturedPanel(Mat4::fromPose({q, fp}, {sz, sz / 1.5f, 1}), a.gfx.texture(N->flag, true), white, false);
         } else if (f.kind == 2) {   // no country: a foam finger in the end's colour
             const float col[4] = {sc[0], sc[1], sc[2], alpha};
-            a.gfx.drawTexturedPanel(Mat4::fromPose({q, f.p}, {sz * 1.2f, sz * 1.2f, 1}), a.gfx.texture("fx_foam", true), col, false);
+            a.gfx.drawTexturedPanel(Mat4::fromPose({q, fp}, {sz * 1.2f, sz * 1.2f, 1}), a.gfx.texture("fx_foam", true), col, false);
         } else if (!a.game.tun.shields) {   // HOTDOG MODE: hot dogs and smiley faces (the community's nod)
-            a.gfx.drawTexturedPanel(Mat4::fromPose({q, f.p}, {sz * 1.1f, sz * 1.1f, 1}),
+            a.gfx.drawTexturedPanel(Mat4::fromPose({q, fp}, {sz * 1.1f, sz * 1.1f, 1}),
                                     a.gfx.texture(f.kind == 0 ? "fx_hotdog" : "fx_smile", true), white, false);
         } else {
             const bool star = f.kind == 1;
             const float col[4] = {star ? 1.f : 0.55f + 0.45f * sc[0], star ? 0.85f : 0.25f + 0.45f * sc[1],
                                   star ? 0.3f : 0.35f + 0.45f * sc[2], alpha};
-            a.gfx.drawTexturedPanel(Mat4::fromPose({q, f.p}, {sz, sz, 1}), a.gfx.texture(star ? "fx_star" : "fx_heart", true), col, false);
+            a.gfx.drawTexturedPanel(Mat4::fromPose({q, fp}, {sz, sz, 1}), a.gfx.texture(star ? "fx_star" : "fx_heart", true), col, false);
         }
     }
 }
@@ -7362,7 +7542,10 @@ static void drawWorld(App& a, int pass) {
     }
     float teamCol[kMaxPlayers][4];   // (each player's colour, for its ball, spawner, ring and trail)
     for (int p = 0; p < kMaxPlayers; ++p) { for (int k = 0; k < 3; ++k) teamCol[p][k] = pcol[p][k]; teamCol[p][3] = 1; }
-    if (pass == 1 && !minimal && !a.mrView && !exp) drawFanFlags(a, now);   // The Crowd: flags waving in the stands (not yet in the widened stadium)
+    if (pass == 1 && !a.marks.empty()) drawMarks(a);   // BALL MARKS where the balls bounced
+    if (pass == 1 && !minimal && !a.mrView)   // The Crowd: flags waving in the stands, the cheers pouring out of them (the
+        drawFanFlags(a, now, corners || oct ? 1.35f : 1.f,   // EXPERIMENTAL arenas: in their widened, lowered stadium)
+                     corners ? exparena::kFloor - 0.4f : oct ? -0.4f : 0.f);
     if (pass == 1 && !minimal && !a.mrView && !corners && !oct) drawJumbotron(a);   // the screen over centre court: names, score, stats
     for (int p = 0; p < g.np && !minimal; ++p) {
         if (oct && !g.alive(p)) continue;   // (FIREBALL BLITZ: out, no tee)
@@ -8384,7 +8567,18 @@ static void pollXrEvents(App& a) {
                 bi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                 if (XR_SUCCEEDED(xrBeginSession(a.session, &bi))) {
                     a.running = true;
-                    if (a.xrRequestDisplayRefreshRateFB) a.xrRequestDisplayRefreshRateFB(a.session, 90.0f);
+                    if (a.xrRequestDisplayRefreshRateFB) {
+                        // 90 Hz; Quest 2 72 Hz: its GPU is about half a Quest 3's, and FIREBALL BLITZ keeps a Quest 3's
+                        // ~65-80% busy at 90 (measured 2026-11-07), too close at 90 on a Quest 2 (72: a quarter more time a frame)
+                        float hz = 90.0f;
+#ifdef __ANDROID__
+                        char model[92] = "";
+                        __system_property_get("ro.product.model", model);
+                        if (std::strstr(model, "Quest 2")) hz = 72.0f;
+#endif
+                        LOGI("display: %.0f Hz asked", hz);
+                        a.xrRequestDisplayRefreshRateFB(a.session, hz);
+                    }
                 }
             } else if (a.state == XR_SESSION_STATE_STOPPING) {
                 xrEndSession(a.session);
@@ -8785,6 +8979,7 @@ void android_main(android_app* app) {
     app->activity->vm->AttachCurrentThread(&env, nullptr);
     g_vm = app->activity->vm;
     g_activity = app->activity->clazz;
+    entitlement::start(env, app->activity->clazz);   // (store builds: Meta asks for it within 10 s of launch)
 
     if (!initGraphics(a) || !initInstance(a) || !initActions(a) || !initSession(a) || !initContent(a)) {
         LOGE("initialisation failed");
@@ -8802,6 +8997,7 @@ void android_main(android_app* app) {
             if (a.resumed || a.running) break;
         }
         if (a.quit) { ANativeActivity_finish(app->activity); a.quit = false; }
+        entitlement::poll();   // (Meta's answer read even with the headset off; readInput shows the page)
         if (!a.instance) continue;
         pollXrEvents(a);
         if (!a.running) { usleep(10000); continue; }
@@ -8855,6 +9051,7 @@ struct ShotView {
     bool passthrough = false;   // --passthrough MODE (1 ARENA, 2 WINDOW, 3 OUTLINE): drawn over a stand-in room (a checkerboard)
     int ptMode = 1;
     float ptRoom = 1.f;         // --ptroom: ROOM BRIGHTNESS in the picture
+    int marks = -1;             // --marks STYLE (0 ring, 1 scorch): BALL MARKS on the floor and walls, at several ages
 };
 
 static Pose lookFrom(const Vec3& pos, const Vec3& target);
@@ -9301,6 +9498,18 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         if (has("sudden")) a.game.overtime = true;
         if (has("clock")) { a.game.pl[0].shotClock = 4.f; a.game.pl[1].shotClock = 0.f; }   // the SHOT CLOCK rings: building, run out
     }
+    if (v.marks >= 0) {   // --marks: bounces on the floor, both side walls and the far end, from just now to fading out
+        a.markStyle = v.marks;
+        const struct { Vec3 p; int who; float speed, age; } k[] = {
+            {{-2.0f, 0.14f, 0.6f}, 0, 14.f, 0.04f}, {{-3.6f, 0.14f, -0.8f}, 1, 9.f, 0.35f}, {{-5.4f, 0.14f, 0.3f}, 0, 6.f, 1.1f},
+            {{-2.6f, 1.3f, 2.55f}, 0, 16.f, 0.12f}, {{-4.4f, 0.9f, 2.55f}, 1, 8.f, 0.9f}, {{-3.2f, 1.6f, -2.55f}, 1, 12.f, 0.5f},
+            {{-6.0f, 1.1f, -2.55f}, 0, 7.f, 2.0f}, {{-9.45f, 1.5f, 0.6f}, 1, 15.f, 0.2f}};
+        for (const auto& m : k) {
+            addMark(a, m.p, m.who, m.speed);
+            if (!a.marks.empty()) a.marks.back().age = std::min(m.age, a.marks.back().life * 0.9f);
+        }
+        LOGI("picture: %zu marks", a.marks.size());
+    }
     if (v.crowdFans >= 0) {   // --crowd: fans on phones (the jumbotron's count and hype; END's lights flaring)
         a.testCrowdOn = true;
         a.testCrowd.fans = v.crowdFans;
@@ -9413,11 +9622,13 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         a.gfxPage = v.menu == "graphics";
         if (a.gfxPage) a.roomFeel = 2;
         if (v.menu == "passthrough") { a.settingsOpen = true; a.ptPage = true; a.hasPassthrough = true; a.ptMode = PT_WINDOW; a.ptFloor = 1.f; }
-        a.helpOpen = v.menu == "help";
+        a.helpOpen = v.menu == "help" || v.menu.rfind("credits", 0) == 0;
+        a.creditsOpen = v.menu.rfind("credits", 0) == 0;   // (HOW TO PLAY > CREDITS)
         if (v.menu == "name") { a.nameEdit = true; a.editTarget = 0; a.nameBuf = "MOJO"; }
         if (v.menu == "titlename") { a.titleOpen = true; a.nameEdit = true; a.editTarget = 0; a.nameBuf = "MOJO"; }   // (CHANGE NAME pressed on the title page)
         if (v.menu == "spectate") a.net.spectate();
         if (v.menu == "statsnotice") a.statsNoticeOpen = true;
+        if (v.menu == "ownfail") { a.ownFail = true; a.ownFailAt = nowSeconds() - 4.0; }   // (a store build, the purchase not confirmed)
         if (v.menu == "trainlist" || v.menu == "trainboard") {   // TRAINING: the lessons (some passed), a leaderboard
             a.trainBests.load("1 1 14.2 5 5\n2 1 25.3 8 11\n3 1 16.0 5 7\n4 1 21.7 4 9\n");
             a.trainOpen = v.menu == "trainlist";
@@ -10829,6 +11040,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--swingdeg") && i + 1 < argc) view.swingDeg = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--swinghold") && i + 1 < argc) view.swingHold = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--look") && i + 1 < argc) view.look = argv[++i];
+        else if (!strcmp(argv[i], "--marks") && i + 1 < argc) view.marks = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--face") && i + 2 < argc) { view.face = (atoi(argv[i + 1]) & 1) | (atoi(argv[i + 2]) << 1); i += 2; }
         else if (!strcmp(argv[i], "--passthrough") && i + 1 < argc) { view.passthrough = true; view.ptMode = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "--ptroom") && i + 1 < argc) view.ptRoom = (float)atof(argv[++i]);

@@ -1,12 +1,15 @@
 """Check an APK against Meta Horizon Store manifest rules (VRC.Quest.Packaging.1 / .4) before uploading.
 Rules from https://developers.meta.com/horizon/resources/publish-mobile-manifest/ (checked October 2026).
 
-    python -I tools/check_store_apk.py build/ProjectArena-release-open.apk [--release]
+    python -I tools/check_store_apk.py build/ProjectArena-release-open.apk [--release] [--store | --github]
+--store: the Meta upload must carry the entitlement check (Meta's lib/arm64-v8a/libovrplatformloader.so, VRC.Quest.Security.1);
+--github: the GitHub / SideQuest APK must not (sideloaded copies never check, and Meta's SDK isn't ours to share there).
 """
 import os
 import re
 import subprocess
 import sys
+import zipfile
 
 AAPT2 = os.path.join(os.environ.get('ANDROID_HOME', r'C:\Android\sdk'), 'build-tools', '34.0.0', 'aapt2.exe')
 
@@ -45,6 +48,15 @@ def main():
         need(not debuggable, 'not debuggable (release)')
     lab = re.search(r"application: label='([^']*)'", badging)
     need(lab is not None and lab.group(1).strip() != '', 'application label: %s' % (lab.group(1) if lab else '?'))
+    with zipfile.ZipFile(apk) as z:
+        meta = 'lib/arm64-v8a/libovrplatformloader.so' in z.namelist()
+        libs = sorted(n for n in z.namelist() if n.startswith('lib/'))
+    extra = [n for n in libs if n.rsplit('/', 1)[-1] not in ('libprojectarena.so', 'libopenxr_loader.so', 'libovrplatformloader.so')]
+    need(not extra, "only the game's own native libraries: %s" % (', '.join(extra) if extra else 'yes'))
+    if '--store' in sys.argv:
+        need(meta, "the entitlement check: Meta's libovrplatformloader.so in the APK (./build.sh release open store)")
+    if '--github' in sys.argv:
+        need(not meta, "no entitlement check in the GitHub / SideQuest APK (no Meta SDK library)")
     size = os.path.getsize(apk)
     need(size < 1 << 30, 'APK under 1 GB: %.1f MB' % (size / 1e6))
     print('store manifest check: %s' % ('PASS' if not fails else 'FAIL (%d)' % len(fails)))

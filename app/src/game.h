@@ -651,7 +651,9 @@ private:
     void launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist = true);
     void spawnBall(int p);
     void deflect(Ball& b, const Vec3& n, int deflector, float assistDeg, const Vec3& from);
+public:   // (BALL MARKS ask it which surface a bounce was on)
     bool sweepArena(const Vec3& from, const Vec3& to, float r, Vec3& hitPos, Vec3& hitN, uint32_t& tags) const;
+private:
     bool hitsBody(int victim, const Vec3& pos, float r) const;
     bool hitsShield(int p, int h, const Vec3& from, const Vec3& to, float r, Vec3& n) const;
     bool hitsBox(const Pose& box, const Vec3& half, const Vec3& from, const Vec3& to, float r, Vec3& n) const;

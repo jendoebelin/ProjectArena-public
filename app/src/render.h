@@ -54,6 +54,12 @@ struct DrawParams {
     // hair under headgear: a tuckTexture() (per direction from tuckC, model space, the radius the hair stays inside)
     GLuint tuck = 0;
     float tuckC[3] = {0, 0, 0};
+    // printed on a skinned garment (NATIONS: the flag on the jersey's back and chest): up to two boxes in the model's
+    // bind space (decal[i]: bind space -> a unit box, x / y across the print, z through the cloth); the texture is
+    // printed where the cloth lies inside a box and faces along its +z, so it bends with the cloth
+    int decals = 0;
+    Mat4 decal[2];
+    GLuint decalTex = 0;
 };
 
 class Renderer {
@@ -77,6 +83,7 @@ public:
     void drawSprite(const Vec3& c, float size, const float rgba[4], const Vec3& viewer, int tex = 0, float roll = 0.f);
     // flat sprite lying in the plane with normal `n` (e.g. a glow on the floor)
     void drawSpriteFlat(const Vec3& c, float size, const float rgba[4], const Vec3& n, int tex = 0);
+    GLuint softTexture(int kind);   // the sprites' soft blob (0) or soft ring (1), for blended marks
     // camera-facing additive light ribbon through pts[0..n) (oldest first); width/alpha taper toward the tail
     void drawRibbon(const Vec3* pts, int n, float width, const float rgba[4], bool taper = true);   // taper: a trail (thin, faint tail)
     GLuint texture(const char* name, bool srgb) { return loadTexture(name, srgb); }   // tex/<name>.tex, cached
@@ -107,7 +114,7 @@ private:
     GLint dMVP_ = -1, dModel_ = -1, dDepthVP_ = -1, dDepthView_ = -1, dNearFar_ = -1, dLayer_ = -1, dTex_ = -1, dCol_ = -1;
     GLint uUVOff_ = -1, uErode_ = -1, uRim_ = -1, uPattern_ = -1, uPatCol_ = -1, uPatGlow_ = -1;
     GLint uSkinned_ = -1, uBones_ = -1, uDesign_ = -1, uDesCol_ = -1, uDesGlow_ = -1;
-    GLint uChar_ = -1, uCloth_ = -1, uTuck_ = -1, uTuckC_ = -1;
+    GLint uChar_ = -1, uCloth_ = -1, uTuck_ = -1, uTuckC_ = -1, uDecals_ = -1, uDecalM_ = -1;
     GLuint fabricTex_ = 0;   // open_fabric: the knit for MAT_CLOTH
     GLint uMVP_, uModel_, uShader_, uTint_, uEmissive_, uUV_, uHasDiffuse_, uHasMask_, uTeam0_, uTeam1_, uEye_, uLightDir_;
     Mat4 view_, proj_, viewProj_;

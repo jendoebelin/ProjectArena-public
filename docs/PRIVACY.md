@@ -1,6 +1,6 @@
 # Project Arena privacy policy
 
-_Last updated: 29 October 2026. Contact: vrsportsfan@gmail.com._
+_Last updated: 6 November 2026. Contact: vrsportsfan@gmail.com._
 
 Project Arena is a free, open-source VR game. This policy explains what the game and the community servers do with
 information about you.
@@ -172,6 +172,13 @@ The PC spectator view can show your webcam in a corner of its picture, for strea
 PC and draws it into the picture on your screen; it never saves it, and never sends it anywhere (what you stream is
 up to you and your streaming software). It is off until you press C or the Selfie button, and the camera is released
 when you turn it off.
+
+## The store's ownership check (Meta Quest store version, from version 0.3.17)
+
+When the version from the Meta Horizon Store starts, it asks Meta's software on your headset whether your account
+owns the game, as every store game must. The game only learns yes or no; it asks Meta for nothing else about you
+(no user ID, name or friends) and sends nothing about it to our server. Meta handles the check under its own privacy
+policy. The GitHub, SideQuest and PC versions don't do this check.
 
 ## Updates (from version 0.3.13)
 
