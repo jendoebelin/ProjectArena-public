@@ -17,4 +17,16 @@ State poll();
 // Why it failed, for the log (empty otherwise).
 const char* why();
 
+// In-app update (store builds, once the check has passed; everything else: Unavailable). UPDATE NOW asks the store
+// for the latest version, downloads it, and installs it: the headset closes the game and opens the new version.
+enum class Update { Unavailable, Checking, UpToDate, Available, Downloading, Downloaded, Installing, Failed };
+void updateCheck();      // ask the store (again at most every 30 s)
+void updateDownload();   // Available -> Downloading -> Downloaded
+void updateInstall();    // Downloaded -> Installing (the game closes)
+Update updateState();
+const char* updateLatest();   // the store's latest version name
+double updateSizeMB();
+float updateProgress();       // 0..1 while downloading
+const char* updateError();    // why it Failed (Meta's words)
+
 }  // namespace entitlement

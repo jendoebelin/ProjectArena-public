@@ -76,5 +76,7 @@ python -I "$ROOT/tools/check_pc_icon.py" "$(cygpath -w "$ROOT/build/pc/ProjectAr
 rm -rf "$ROOT/build/pc/ProjectArena/streaming" && cp -r "$ROOT/streaming" "$ROOT/build/pc/ProjectArena/streaming"   # backgrounds + OBS guide
 (cd "$ROOT/build/pc" && rm -f "$OUT/ProjectArena-$VER-PC.zip" && powershell.exe -NoProfile -Command \
   "Compress-Archive -Path ProjectArena -DestinationPath '$(cygpath -w "$OUT")\ProjectArena-$VER-PC.zip'")
+# the streaming kit (OBS backgrounds and guide) as its own download, as in every release since 0.3.8
+powershell.exe -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$ROOT/streaming")' -DestinationPath '$(cygpath -w "$OUT")\ProjectArena-$VER-streaming-kit.zip' -Force"
 (cd "$OUT" && sha256sum ProjectArena-$VER.apk ProjectArena-$VER-PC.zip README-PC.txt README-Quest.txt > SHA256SUMS.txt)
 echo "release folder: $OUT  (GitHub: ProjectArena-$VER.apk$([ "$WHAT" = all ] && echo "; Meta upload: ProjectArena-$VER-store.apk"))"

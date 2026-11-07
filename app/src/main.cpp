@@ -423,6 +423,7 @@ struct App {
     bool statsNoticeOpen = false, statsNoticeSeen = false;   // the one-time notice about statistics (settings.cfg)
     bool ownFail = false, ownQuit = false;   // a store build: Meta couldn't confirm the purchase (the page, then the game closes)
     double ownFailAt = 0;
+    bool storeAsked = false;   // (the store asked for its latest version this run)
     Vec3 builderHit;
     bool builderHitValid = false;
     PlayerInput viewIn[kMaxPlayers];   // what is drawn for each player (remote ones smoothed)
@@ -1407,7 +1408,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.17";
+static const char* kAppVersion = "0.3.18";
 // A scrolling texture's offset, kept in [0, 1) (the textures repeat, so it looks the same). The headset's fragment
 // shader works at medium precision (16-bit floats): an offset that grows with the time played lost its fractions after
 // some minutes, and the ball's and fireballs' plasma broke into big square blocks (a tester's report, 2026-11-02).
@@ -1428,6 +1429,14 @@ static bool versionNewer(const char* a, const char* b) {
 }
 // the relay says a newer release is out: the title panel (and the PC spectator's hub) say where to get it
 static const char* updateAvailable(App& a) {
+    // a store copy (0.3.18): the store says (asked once the ownership check passes); its timing is the store's own
+    if (entitlement::updateState() != entitlement::Update::Unavailable) {
+        const entitlement::Update us = entitlement::updateState();
+        if (us == entitlement::Update::Available || us == entitlement::Update::Downloading ||
+            us == entitlement::Update::Downloaded || us == entitlement::Update::Installing)
+            return entitlement::updateLatest()[0] ? entitlement::updateLatest() : "THE NEWEST VERSION";
+        return nullptr;
+    }
     const char* v = a.net.latestVersion();
     if (!v[0] || !versionNewer(v, kAppVersion)) return nullptr;
     static std::string shown;
@@ -2242,7 +2251,7 @@ enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, B
                      MovePlayers, MoveCorner, MoveOne, MoveBack, OptHealth, OptBalls, OptPlayers, Discord,
                      UpdateOpen, UpdateGo, UpdateRestart, UpdatePage, UpdateStore, UpdateBack, HeadSelfie, PrivateTalk, HandOff, HandOffTo,
                      LookAhead, Studio, StudioSection, StudioPrev, StudioNext, StudioPlay, StudioVote, StudioMoment, StudioLeave, StudioDelete,
-                     Credits, CreditsBack };
+                     Credits, CreditsBack, UpdateStoreGet, UpdateStoreInstall };
 // HOW TO PLAY > CREDITS: one page, film-credit style (small grey headings, the names under them)
 enum { CR_HEAD, CR_NAME, CR_SMALL };
 struct CreditRow { int kind; const char* text; };
@@ -2491,8 +2500,23 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         std::string why;
         const int how = updateHow(why);
 #ifdef __ANDROID__
-        if (how != 1) v.push_back({"OPEN THE STORE PAGE", 0, how == 2 ? 0.06f : 0.0f, 0.56f, 0.08f, MenuAct::UpdateStore, 0, true});
-        if (how != 0) v.push_back({"OPEN THE GITHUB PAGE", 0, how == 2 ? -0.04f : 0.0f, 0.56f, 0.08f, MenuAct::UpdatePage, 0, true});
+        using U = entitlement::Update;
+        const U us = entitlement::updateState();
+        if (how == 0 && us != U::Unavailable) {   // a store copy (0.3.18): the update downloads and installs right here
+            char lb[48];
+            if (us == U::Available) {
+                if (entitlement::updateSizeMB() > 0.5) std::snprintf(lb, sizeof lb, "DOWNLOAD UPDATE (%.0f MB)", entitlement::updateSizeMB());
+                else std::snprintf(lb, sizeof lb, "DOWNLOAD UPDATE");
+                v.push_back({lb, 0, 0.04f, 0.56f, 0.08f, MenuAct::UpdateStoreGet, 0, true});
+            } else if (us == U::Downloading) v.push_back({"DOWNLOADING...", 0, 0.04f, 0.56f, 0.08f, MenuAct::None, 0, false});
+            else if (us == U::Downloaded) v.push_back({"INSTALL AND RESTART", 0, 0.04f, 0.56f, 0.08f, MenuAct::UpdateStoreInstall, 0, true});
+            else if (us == U::Installing) v.push_back({"INSTALLING...", 0, 0.04f, 0.56f, 0.08f, MenuAct::None, 0, false});
+            if (us == U::UpToDate || us == U::Failed)
+                v.push_back({"OPEN THE STORE PAGE", 0, -0.06f, 0.56f, 0.06f, MenuAct::UpdateStore, 0, true});
+        } else {   // the store page for everyone (a sideloaded copy can switch to the store's), GitHub's for sideloaded ones
+            v.push_back({"OPEN THE STORE PAGE", 0, how == 0 ? 0.0f : 0.06f, 0.56f, 0.08f, MenuAct::UpdateStore, 0, true});
+            if (how != 0) v.push_back({"OPEN THE GITHUB PAGE", 0, -0.04f, 0.56f, 0.08f, MenuAct::UpdatePage, 0, true});
+        }
 #else
         const updater::State st = updater::state();
         if (how == 0 && st == updater::READY) v.push_back({"RESTART NOW", 0, 0.04f, 0.56f, 0.08f, MenuAct::UpdateRestart, 0, true});
@@ -3157,7 +3181,9 @@ static void menuActivate(App& a, const MenuItem& it) {
         break;
     case MenuAct::OptHealth: { static const int kHealth[4] = {1, 3, 5, 10}; int i = 0; while (i < 4 && kHealth[i] <= a.optHealth) ++i; a.optHealth = kHealth[i % 4]; break; }
     case MenuAct::Discord: a.discordOn = !a.discordOn; saveSettings(a); break;
-    case MenuAct::UpdateOpen: a.titleOpen = false; a.updateOpen = true; break;
+    case MenuAct::UpdateOpen: a.titleOpen = false; a.updateOpen = true; entitlement::updateCheck(); break;   // (store copies: ask the store)
+    case MenuAct::UpdateStoreGet: entitlement::updateDownload(); break;
+    case MenuAct::UpdateStoreInstall: saveSettings(a); if (a.net.inRoom()) a.net.leave(); entitlement::updateInstall(); break;
     case MenuAct::HeadSelfie: a.headSelfie = !a.headSelfie; saveSettings(a); break;
     case MenuAct::PrivateTalk: a.net.setPrivateTalk(!a.net.privateTalk()); saveSettings(a); break;
     case MenuAct::LookAhead:
@@ -3715,7 +3741,7 @@ static void drawMenu(App& a) {
         text("3 MINUTE MATCH - KNUCKLE GUARDS - MORE AIM ASSIST", 0, -0.115f, 0.019f, grey);
         text("DIAMOND FOR TWO, FOUR CORNERS FOR FOUR, FIREBALL BLITZ: LAST ONE STANDING", 0, -0.265f, 0.019f, grey);
     } else if (a.updateOpen && !a.nameEdit) {
-        const char* v = a.net.latestVersion();
+        const char* v = entitlement::updateLatest()[0] ? entitlement::updateLatest() : a.net.latestVersion();
         snprintf(buf, sizeof buf, "UPDATE TO %s", v[0] ? v : "THE NEWEST VERSION");
         text(buf, 0, 0.29f, 0.055f, cyan);
         snprintf(buf, sizeof buf, "THIS IS %s", kAppVersion);
@@ -3735,7 +3761,29 @@ static void drawMenu(App& a) {
             else text("COULD NOT UPDATE: " + updater::error(), 0, 0.12f, 0.022f, amber);
         }
 #else
-        (void)how;
+        using U = entitlement::Update;
+        const U us = entitlement::updateState();
+        const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
+        if (how == 0 && us != U::Unavailable) {
+            if (us == U::Checking) text("ASKING THE STORE FOR THE NEWEST VERSION", 0, 0.12f, 0.020f, grey);
+            else if (us == U::Available) {
+                std::string nm = entitlement::updateLatest();
+                for (char& c : nm) c = (char)std::toupper((unsigned char)c);
+                text("THE STORE HAS " + (nm.empty() ? std::string("IT") : nm) + " READY: IT DOWNLOADS HERE, THEN THE GAME RESTARTS ON IT", 0, 0.12f, 0.018f, grey);
+            } else if (us == U::Downloading) {
+                snprintf(buf, sizeof buf, "DOWNLOADING   %d%%", (int)(entitlement::updateProgress() * 100.f));
+                text(buf, 0, 0.12f, 0.026f, white);
+            } else if (us == U::Downloaded) text("DOWNLOADED: INSTALL AND RESTART (YOUR SETTINGS STAY)", 0, 0.12f, 0.022f, amber);
+            else if (us == U::Installing) text("INSTALLING: THE GAME CLOSES AND OPENS AGAIN", 0, 0.12f, 0.022f, amber);
+            else if (us == U::UpToDate) text("THE STORE HASN'T GOT IT YET: A NEW VERSION CAN TAKE A WHILE TO ARRIVE", 0, 0.12f, 0.018f, grey);
+            else if (us == U::Failed) {
+                std::string e = entitlement::updateError();
+                for (char& c : e) c = (char)std::toupper((unsigned char)c);
+                text("COULD NOT UPDATE: " + e, 0, 0.12f, 0.018f, amber);
+            }
+        } else if (how != 0) {
+            text("TO SWITCH TO THE STORE VERSION, UNINSTALL THIS COPY FIRST (A STORE COPY STARTS NEW CAREER STATS)", 0, -0.13f, 0.016f, grey);
+        }
 #endif
     } else if (a.movePlayersOpen && a.moveHost && !a.nameEdit) {
         text("HAND OFF HOST", 0, 0.29f, 0.055f, cyan);
@@ -8997,7 +9045,9 @@ void android_main(android_app* app) {
             if (a.resumed || a.running) break;
         }
         if (a.quit) { ANativeActivity_finish(app->activity); a.quit = false; }
-        entitlement::poll();   // (Meta's answer read even with the headset off; readInput shows the page)
+        if (entitlement::poll() == entitlement::State::Owned) {   // (Meta's answer read even with the headset off; readInput shows the page)
+            if (!a.storeAsked) { a.storeAsked = true; entitlement::updateCheck(); }   // a store copy: a newer version in the store? (UPDATE NOW)
+        }
         if (!a.instance) continue;
         pollXrEvents(a);
         if (!a.running) { usleep(10000); continue; }

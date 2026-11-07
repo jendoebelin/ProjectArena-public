@@ -177,5 +177,12 @@
   "image": "studio_title_0316.png",
   "video": "sound_studio_0316.mp4",
   "text": "**🎧 New: the SOUND STUDIO**, on the main menu next to CUSTOMIZE AVATAR. Try sounds right in the moment they belong to, across every part of the game: SHIELD, THROWS, BALL, HITS, MATCH and CROWD. Pick SHIELD and the coach throws straight at your shield, so you hear the block, the break and the recharge as in a match. The page stays open beside you, so you can change a sound and hear it straight away.\n\n**Try anything anywhere:** any of the game's own sounds in any slot, the community's new sounds as they arrive, or your own: put .wav files (WAV only) in the game's my_sounds folder and they show up as MINE, only on your headset.\n\n**Vote UP or DOWN** on the community's new sounds. The favourites become the game's official sounds. Want to make one? Propose it here or with the Sound proposal form on GitHub (docs/SOUND_STUDIO.md has the slots and the format).\n\n**🔧 Fixed:** rooms left open by an unattended headset now close after 10 minutes. The spectator hub shows WAITING FOR PLAYERS when nobody is playing, and its text no longer overlaps on the PC.\n\n0.3.14, 0.3.15 and 0.3.16 play together online.\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.17: BALL MARKS",
+  "color": "#5ec8ff",
+  "image": "ball_marks_0317.png",
+  "text": "**New: BALL MARKS.** Every bounce off the floor, a wall or the glass leaves a faint ripple in the thrower's colour that fades over a few seconds, so you can see where that angle landed and hit it again. A community idea!\n**New: CREDITS** on the HOW TO PLAY page.\n**New: The Crowd fills the stands in FOUR CORNERS and FIREBALL BLITZ.** Cheers, hearts and flags now pour out of the stands there too.\n\n**🔧 Fixed:**\n- Country flags are printed on the jersey and bend with it, no more paper flag sticking out of your back.\n- After quitting and restarting, the fireballs' glow could show a flag.\n- Quest 2 runs at 72 Hz for steady frames.\n- BALL LOOK-AHEAD now says it's for 1-v-1 online rooms.\n\n0.3.14 to 0.3.17 play together online.\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
  }
 ]
