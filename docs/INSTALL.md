@@ -2,13 +2,12 @@
 
 ## Meta Quest (Quest 2, 3, 3S, Pro)
 
-**From the Meta Horizon Store (alpha channel, no developer mode):**
-1. On your phone or computer, sign in to the Meta account your headset uses and open
-   **https://www.meta.com/s/4NDP5YlGM**. Accept the invite: access is instant.
-2. Find **Project Arena** in the Store or your Library on the headset and install it. Updates arrive automatically.
+**From the Meta Horizon Store (free, no developer mode):**
+1. On your phone or computer, signed in to the Meta account your headset uses, open
+   **https://www.meta.com/experiences/1342896058915258/** and press **Get**. (Or in the headset: the **Store**, **Project Arena**, **Get**.)
+2. Start it from your **Library**. Updates arrive automatically.
 
-(Trouble with the link? Email **vrsportsfan@gmail.com** with the email address of your Meta account. Help and news:
-the Discord server, https://discord.gg/KuNkSbVHzh)
+(Help and news: the Discord server, https://discord.gg/KuNkSbVHzh, or email **vrsportsfan@gmail.com**.)
 
 The release page has a step-by-step `README-Quest.txt` for both ways.
 
