@@ -8,7 +8,7 @@ A free, open-source VR court sport for **Meta Quest** and **PC VR**: throw, curv
 opponent in a neon glass arena. Its own code, art and sound.
 
 **[Get the game](https://github.com/jendoebelin/ProjectArena-public/releases/latest)** ·
-**[Join the Quest alpha](https://www.meta.com/s/4NDP5YlGM)** ·
+**[Get it on Meta Quest](https://www.meta.com/experiences/1342896058915258/)** ·
 **[Discord: news, help and matches](https://discord.gg/KuNkSbVHzh)** ·
 **[The Crowd: cheer from your phone](https://crowd.aftersparc.com)**
 
