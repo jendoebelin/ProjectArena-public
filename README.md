@@ -1,6 +1,6 @@
 # Project Arena
 
-**[Watch the Trailer](https://www.youtube.com/watch?v=GfhpzuYmMMk)** 
+**[Watch the Trailer](https://www.youtube.com/watch?v=YuG306OO5O0)** 
 
 ![The Project Arena court](docs/images/arena.jpg)
 
