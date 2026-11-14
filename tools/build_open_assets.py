@@ -8,8 +8,32 @@ Pipeline
   4. this script                     npz -> .mdl (welded, per-material shaders from tools/blender/palette.py),
                                      lightmaps -> .tex, floor + mirrored-light reflection layer, collision
 
-Usage: python -I tools/build_open_assets.py [--preview] [--skip-blender | --skip-arena | --arena-only]
-  --arena-only: the textures and the court / stadium only (no props, heads, bodies or sounds: those stay as they are)
+Usage: python -I tools/build_open_assets.py [--preview] [--skip-blender | --skip-arena] [--arena-only] [--audio]
+  --skip-blender  no Blender runs: the models are rebuilt from the exports already in build/open_src
+  --skip-arena    keep the baked court / stadium exports, re-export the props, heads and bodies
+  --arena-only    the textures and the court / stadium only (no props, heads, bodies or sounds: those stay as they are);
+                  with --skip-blender, from the court / stadium exports already there (e.g. after a palette change)
+  --audio         also rebuild the sound set (tools/gen_open_audio.py; it changes three committed sounds, see there)
+  --preview       a quick, low-quality arena bake
+
+A rebuild changes only what changed: a model is written only when it is a different model (write_model; Blender
+exports the same triangles in another order on every run, which is not a change), and the sounds stay as they are
+unless --audio is given. The run ends with the list of the models it wrote; commit those only if they were meant to
+change. The textures (tools/gen_open_textures.py, every run) and the skinned bodies (tools/build_body_parts.py, every
+run but --arena-only) come out byte for byte the same from the same sources.
+
+Who writes what in app/assets_open (today no file has two writers):
+  this script                arena, court_*, floor*, environment, stadium_fx, env_fx, arena.col, tex/open_*_lm;
+                             the props (props.npz: ball, spawner, gauntlets and their hand / cuff parts, knuckle
+                             guard, shield, strike ring, head, torso); the head parts (avatar_head_*.npz: hair with
+                             its .swing, gear and visors with their .tuck, masks); an assets_clean model that is
+                             missing here (none is today: this script builds all their names)
+  tools/build_body_parts.py  av_bhead_*, av_top_*, av_tpulse_*, av_bottom_*, av_wfade_*, tex/open_design_*,
+                             tex/open_pat_*, app/src/avatar_bodies.inc
+  tools/gen_open_textures.py the other tex/open_* textures
+  tools/gen_open_audio.py    audio/ (only with --audio)
+  not run from here          tex/flag_* (gen_flags.py), tex/fx_* (gen_crowd_fx.py), vr_splash.png (gen_splash.py),
+                             contributed models (import_glb.py), tutorials/ (make_tutorial.py)
 """
 import math
 import os
@@ -99,6 +123,73 @@ def material_base(name, lm_tex=None, lm_scale=1.0):
         ('open_' + d['tex']) if d.get('tex') else ''
 
 
+# ---------------------------------------------------------------- a model is written only when it changed
+# Blender's exports are not stable: two runs of the same script give the same triangles in another order, with normals
+# that differ in the last bit (make_props.py run twice in Blender 5.2, 2026-11-09), so the welded models come out in
+# other bytes that draw the same. Every rebuild would rewrite every model, the ones nobody changed among them. A
+# model's file is kept when the new one is the same model: the same header, sections and materials, positions, uvs,
+# colours and skin weights bit for bit, normals within NORMAL_TOL, each section the same triangles (in any order, each
+# with its winding). Anything else, a material flag too, is a change and is written.
+NORMAL_TOL = 1e-5
+WRITTEN, KEPT = [], []
+
+
+def _tri_set(idx):
+    t = idx.reshape(-1, 3)
+    k = np.argmin(t, axis=1)
+    t = np.stack([t[np.arange(len(t)), (k + j) % 3] for j in range(3)], 1)   # smallest corner first, winding kept
+    return t[np.lexsort(t.T[::-1])]
+
+
+def same_model(old, new):
+    """True when two .mdl files (bytes; layout: app/src/render.cpp loadModel) are the same model (see above)."""
+    if old[:24] != new[:24] or len(old) != len(new) or old[:4] != b'SMDL':
+        return False
+    ver, nv, ni, ns, nm = struct.unpack_from('<5I', old, 4)
+    vsz = 52 if ver >= 3 else 44
+    vo = np.frombuffer(old, np.uint8, nv * vsz, 24).reshape(nv, vsz)
+    vn = np.frombuffer(new, np.uint8, nv * vsz, 24).reshape(nv, vsz)
+    p = 24 + nv * vsz + ni * 4
+    if old[p:] != new[p:]:   # sections and materials
+        return False
+    rest = np.r_[0:12, 24:vsz]   # all of a vertex but its normal (bytes 12-23)
+    if not np.array_equal(vo[:, rest], vn[:, rest]):
+        return False
+    no = vo[:, 12:24].copy().view('<f4')
+    nn = vn[:, 12:24].copy().view('<f4')
+    if nv and np.abs(no.astype(np.float64) - nn).max() > NORMAL_TOL:
+        return False
+    io = np.frombuffer(old, '<u4', ni, 24 + nv * vsz)
+    inew = np.frombuffer(new, '<u4', ni, 24 + nv * vsz)
+    for st, cnt, _ in np.frombuffer(old, '<u4', ns * 3, p).reshape(-1, 3):
+        if not np.array_equal(_tri_set(io[st:st + cnt]), _tri_set(inew[st:st + cnt])):
+            return False
+    return True
+
+
+def write_model(path, data):
+    """Write a model's bytes unless the file there is already the same model. Returns 'kept' or 'written'."""
+    name = os.path.basename(path)
+    if os.path.exists(path):
+        with open(path, 'rb') as f:
+            old = f.read()
+        if old == data or same_model(old, data):
+            KEPT.append(name)
+            return 'kept'
+    with open(path, 'wb') as f:
+        f.write(data)
+    WRITTEN.append(name)
+    return 'written'
+
+
+def mdl_bytes(ver, V, I, secs, mats):
+    out = [b'SMDL' + struct.pack('<5I', ver, len(V), len(I), len(secs), len(mats)), V.tobytes(), I.tobytes()]
+    out += [struct.pack('<3I', *s) for s in secs]
+    for sh, tint, em, uv, flags, tex in mats:
+        out.append(struct.pack('<I4f4f2I', sh, *tint, *em, uv, flags) + tex.encode().ljust(64, b'\0') + b''.ljust(64, b'\0'))
+    return b''.join(out)
+
+
 def write_mdl(path, groups, lm_tex=None, lm_scale=1.0, mats_override=None):
     verts, idxs, secs, mats = [], [], [], []
     nv = ni = 0
@@ -117,17 +208,8 @@ def write_mdl(path, groups, lm_tex=None, lm_scale=1.0, mats_override=None):
         mats.append(m)
     V = np.concatenate(verts)
     I = np.concatenate(idxs).astype(np.uint32)
-    with open(path, 'wb') as f:
-        f.write(b'SMDL' + struct.pack('<5I', 2, len(V), len(I), len(secs), len(mats)))
-        f.write(V.tobytes())
-        f.write(I.tobytes())
-        for s in secs:
-            f.write(struct.pack('<3I', *s))
-        for sh, tint, em, uv, flags, tex in mats:
-            f.write(struct.pack('<I4f4f2I', sh, *tint, *em, uv, flags))
-            f.write(tex.encode().ljust(64, b'\0'))
-            f.write(b''.ljust(64, b'\0'))
-    print('  %-18s %7d verts %7d tris %3d mats' % (os.path.basename(path), len(V), len(I) // 3, len(mats)))
+    how = write_model(path, mdl_bytes(2, V, I, secs, mats))
+    print('  %-18s %7d verts %7d tris %3d mats  %s' % (os.path.basename(path), len(V), len(I) // 3, len(mats), how))
 
 
 # ---------------------------------------------------------------- lightmaps
@@ -334,17 +416,9 @@ def write_v3(base, groups, weights, note):
         mats.append(material(name, None, 1.0))
     V = np.concatenate(verts)
     I = np.concatenate(idxs).astype(np.uint32)
-    with open(base + '.mdl', 'wb') as f:
-        f.write(b'SMDL' + struct.pack('<5I', 3, len(V), len(I), len(secs), len(mats)))
-        f.write(V.tobytes())
-        f.write(I.tobytes())
-        for s_ in secs:
-            f.write(struct.pack('<3I', *s_))
-        for sh, tint, em, uv, flags, tex in mats:
-            f.write(struct.pack('<I4f4f2I', sh, *tint, *em, uv, flags))
-            f.write(tex.encode().ljust(64, b'\0'))
-            f.write(b''.ljust(64, b'\0'))
-    print('  %-18s %7d verts %7d tris %3d mats (%s)' % (os.path.basename(base) + '.mdl', len(V), len(I) // 3, len(mats), note))
+    how = write_model(base + '.mdl', mdl_bytes(3, V, I, secs, mats))
+    print('  %-18s %7d verts %7d tris %3d mats (%s)  %s' % (os.path.basename(base) + '.mdl', len(V), len(I) // 3, len(mats),
+                                                             note, how))
 
 
 def write_rig_text(base, C, chains, exits=False):
@@ -618,6 +692,7 @@ def main():
     write_mdl(os.path.join(OUT, 'floor_reflect_env.mdl'), refl_e, mats_override=rmats_e)  # the stadium in the floor
     write_collision(os.path.join(OUT, 'arena.col'))
     if '--arena-only' in sys.argv:
+        report()
         print('done (arena only) ->', OUT)
         return
     built = {'arena', 'environment'} | build_props() | build_props('avatar_head_m.npz') | build_props('avatar_head_f.npz')
@@ -632,15 +707,25 @@ def main():
         if f.endswith('.mdl') and (f.startswith(old) or unsuffixed):
             os.remove(os.path.join(OUT, f))
             print('  removed old part', f)
-    for f in sorted(os.listdir(CLEAN)):
+    for f in sorted(os.listdir(CLEAN)):   # only a model the open set lacks: never over one already here (a contributed one)
         src = os.path.join(CLEAN, f)
-        if os.path.isfile(src) and f.endswith('.mdl') and f[:-4] not in built:
+        if os.path.isfile(src) and f.endswith('.mdl') and f[:-4] not in built and not os.path.exists(os.path.join(OUT, f)):
             shutil.copy2(src, os.path.join(OUT, f))
             print('  %-18s (from assets_clean)' % f)
-    print('audio')
-    subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tools', 'gen_open_audio.py')], check=True,
-                   stdout=subprocess.DEVNULL)
+    if '--audio' in sys.argv:
+        print('audio')
+        subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tools', 'gen_open_audio.py')], check=True,
+                       stdout=subprocess.DEVNULL)
+    else:
+        print('audio: kept as it is (--audio rebuilds it)')
+    report()
     print('done ->', OUT)
+
+
+def report():
+    print('models from this script: %d written, %d kept (unchanged)' % (len(WRITTEN), len(KEPT)))
+    for name in WRITTEN:
+        print('  written', name)
 
 
 if __name__ == '__main__':

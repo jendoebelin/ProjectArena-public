@@ -29,18 +29,10 @@ SIDEBANNER = (0.0, 2.2, 6.9, 0.0, -4.0)         # the same for banners: players 
 # Meta's hero safe area (dashboard preview): about x 17.5..82.5 %, y 13.5..83 %; the strip below stays clear
 
 # name, width, height, camera, vertical fov, scene, title height (fraction), title offset (-1..1, + up)
-ART = [
-    ('hero_cover', 3000, 900, SIDEBANNER, 52, 'action', 0.13, 0.42),
-    ('cover_landscape', 2560, 1440, (0.0, 2.2, 6.9, 0.0, -3.0), 72, 'action', 0.08, 0.42),   # title well below the top
-    ('cover_square', 1440, 1440, COVER, 66, 'action', 0.07, 0.70),
-    ('cover_portrait', 1008, 1440, COVER, 76, 'action', 0.046, 0.72),
-    ('mini_landscape', 1080, 360, SIDEBANNER, 57, 'action', 0.14, 0.42),
-    ('screenshot_1', 2560, 1440, SHOULDER, 60, 'action', 0.0, 0.0),
-    ('screenshot_2', 2560, 1440, SIDE, 60, 'action', 0.0, 0.0),
-    ('screenshot_3', 2560, 1440, MENU, 96, 'menu:title', 0.0, 0.0),
-    ('screenshot_4', 2560, 1440, OVERVIEW, 60, 'action', 0.0, 0.0),
-    ('screenshot_5', 2560, 1440, MENU, 96, 'menu:help', 0.0, 0.0),
-]
+# (2026-11-07, owner: all promo and store art is real footage of real people playing. The staged bot scenes that were
+# here, the covers and screenshots, are gone; those images now come from real captures. Only the icon and its tiles,
+# which aren't gameplay, are made here. The ART list below stays empty unless it's for something that isn't gameplay.)
+ART = []
 
 
 def icon(path, size=512):
@@ -98,13 +90,15 @@ def main():
     if not os.path.exists(EXE):
         sys.exit('build the PC version first: tools\\build_pc.bat')
     os.makedirs(OUT, exist_ok=True)
-    for name, w, h, cam, fov, scene, th, ty in ART:
+    for name, w, h, cam, fov, scene, th, ty, *more in ART:
         ppm = os.path.join(OUT, name + '.ppm')
-        cmd = [EXE, '--selftest', ppm, '--view', str(w), str(h)] + ['%g' % c for c in cam] + ['%g' % fov]
+        if cam is None: cmd = [EXE, '--selftest', ppm, '--size', str(w), str(h)]
+        else: cmd = [EXE, '--selftest', ppm, '--view', str(w), str(h)] + ['%g' % c for c in cam] + ['%g' % fov]
         if scene.startswith('menu:'):
             cmd += ['--menu', scene[5:]]
         elif scene:
             cmd += ['--scene', scene]
+        if more: cmd += more[0]   # (after the scene: the builder reads --nations only after --scene builder)
         img = render(cmd, ppm)
         if th > 0:   # the same view again with the plain white title; the glow is made here
             img = with_title(img, render(cmd + ['--title', TITLE, '%g' % -th, '%g' % ty], ppm), th * h)

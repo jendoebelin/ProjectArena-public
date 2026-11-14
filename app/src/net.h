@@ -265,6 +265,11 @@ private:
         uint16_t moves[4] = {};       // diagnostics: what counted as moving since the last idle line (STIR_*)
         uint16_t lost = 0, found = 0; // ... head tracking lost / found since then
         bool back = true;             // (a room taken over: heard from since)
+        float rttMs = -1;             // host: the round trip to this player, smoothed (-1: not measured yet)
+        // HAND TIMES: their headset's clock against ours (its quickest input packets: the least delay), and when
+        // their latest input was taken, on our clock (-1: they don't send their clock: older builds)
+        double clockOff = 0, clockAt = 0, sampleAt = -1;
+        bool clockSet = false;
     };
     struct Heir { uint32_t id = 0, ip = 0; char name[17] = {}; };
     void sendHeirs(uint32_t first = 0);

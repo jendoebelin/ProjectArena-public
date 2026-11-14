@@ -1,5 +1,8 @@
-"""Steam art (docs/STEAM.md), rendered by the PC build like the Meta art (tools/gen_store_art.py): the same staged
-rally, cameras and title treatment, at Steam's sizes.
+"""Steam art (docs/STEAM.md), rendered by the PC build: a staged bot rally, cameras and title treatment, at Steam's sizes.
+
+NOT FOR PUBLIC USE AS IT IS (owner, 2026-11-07): all promo and store art is real footage of real people playing; see
+tools/gen_store_art_real.py for the Meta art. These staged renders are private drafts only (pass --staged to render
+them); the Steam set is to be remade from real captures before the Steam page goes up.
 
     tools\\build_pc.bat && python -I tools/gen_steam_art.py      ->  build/steam_art/
 
@@ -80,6 +83,9 @@ def logo(path, w=1280, h=720):
 
 
 def main():
+    if '--staged' not in sys.argv:
+        sys.exit('this renders staged bot scenes: private drafts only (owner, 2026-11-07: public art is real footage;'
+                 ' tools/gen_store_art_real.py). Pass --staged to render them anyway.')
     if not os.path.exists(meta.EXE):
         sys.exit('build the PC version first: tools\\build_pc.bat')
     os.makedirs(OUT, exist_ok=True)

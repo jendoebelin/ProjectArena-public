@@ -54,6 +54,12 @@ the relay, which drops everyone for a few seconds (players reconnect by themselv
 - Ban someone: `ssh -t -i oracle.key ubuntu@PUBLIC_IP "sudo nano /opt/projectarena/bans.txt"`, add a line with their
   address (`203.0.113.7`) or `name:PLAYERNAME`, save. It takes effect within a few seconds, no restart. Delete the
   line to lift the ban. An address ban is stronger (a name can be changed), but a home address can change too.
+- Blocked names (relays from 2026-11-13): names with slurs or hate words are refused (the lists `NAME_WORDS_ANYWHERE`
+  and `NAME_WORDS_ALONE` in `projectarena_relay.py`). The game shows NAME NOT ALLOWED: CHANGE NAME TO PLAY ONLINE and
+  stays offline until the name changes; renaming to one while online disconnects. Look-alike digits (N1), spaces and
+  repeated letters don't get around it. To block another word, add `word:WORD` to bans.txt (found anywhere in a
+  name; at least 3 letters, and long enough not to catch ordinary names). The log shows `refused a name with a
+  blocked word` or `leave NAME name not allowed`, never the word itself.
 - Check the folder regularly (a few times a week) once strangers play together; act on reports quickly.
 - After each release, set the current version so older games (0.3.4 on) say UPDATE AVAILABLE:
   `ssh -i oracle.key ubuntu@PUBLIC_IP "echo 0.3.5 | sudo tee /opt/projectarena/latest_version.txt"` (the relay

@@ -85,12 +85,16 @@ if [ "$MODE" = release ]; then
 fi
 
 echo "== packaging"
+# the licensed music (app/assets_music: Suno, used under its terms, not CC BY) beside the open set, when there is any
+MUSIC_DIR="$ROOT/app/assets_music/assets"
+MUSIC_ARGS=()
+if [ "$ASSET_SET" = open ] && ls "$MUSIC_DIR"/music/*.wav >/dev/null 2>&1; then MUSIC_ARGS=(-A "$MUSIC_DIR"); fi
 "$BT/aapt2$EXE" link -o "$OUT/base.apk" --manifest "$ROOT/app/AndroidManifest.xml" -I "$PLATFORM" \
-  -A "$ASSET_DIR" --min-sdk-version 32 --target-sdk-version 34 --no-compile-sdk-metadata -0 wav   # models, textures and collision compressed (the game reads assets with AAsset_read)
+  -A "$ASSET_DIR" "${MUSIC_ARGS[@]}" --min-sdk-version 32 --target-sdk-version 34 --no-compile-sdk-metadata -0 wav   # models, textures and collision compressed (the game reads assets with AAsset_read)
 # add native libs uncompressed (extractNativeLibs=false) then page-align
 python -I "$ROOT/tools/add_libs.py" "$OUT/base.apk" "$OUT/apk" "$OUT/unaligned.apk"
 "$BT/zipalign$EXE" -f -p 4 "$OUT/unaligned.apk" "$OUT/aligned.apk"
-if [ "$ASSET_SET" = open ]; then python -I "$ROOT/tools/check_open_apk.py" "$OUT/aligned.apk" "$ASSET_DIR"; fi
+if [ "$ASSET_SET" = open ]; then python -I "$ROOT/tools/check_open_apk.py" "$OUT/aligned.apk" "$ASSET_DIR" "$MUSIC_DIR"; fi
 
 echo "== signing"
 KS="$ROOT/build/debug.keystore"

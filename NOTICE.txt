@@ -1,5 +1,6 @@
 Project Arena
-Copyright (c) 2026 the Project Arena authors. Game code, tools, art and sound are original work.
+Copyright (c) 2026 the Project Arena authors. Game code, tools, art and sound are original work,
+except the licensed sounds listed below.
 
 Third-party components shipped in the application:
 
@@ -16,5 +17,16 @@ Third-party components shipped in the application:
    Copyright (c) Meta Platform Technologies, LLC and its affiliates. All rights reserved.
    Used under the Meta Platform Technologies SDK License Agreement: https://developer.oculus.com/licenses/oculussdk/
    (the store's ownership check; not part of this repository or the GitHub / SideQuest builds)
+
+Licensed sounds shipped in the application (not part of this repository, not under its CC BY 4.0 asset licence):
+
+- The arena crowd cheer: made with Suno (suno.com) on CrossGenGaming's paid plan, used under Suno's terms.
+- The crowd's disappointment: "Crowd Disappointment Reaction" by Universfield, from Pixabay (pixabay.com),
+  used under the Pixabay Content License.
+- The wall bounce: a bounce sound effect by u_57dzwigavg, from Pixabay, used under the Pixabay Content License.
+
+The shield break (app/assets_open/audio/oa_ShieldBreak.wav, from tools/recorded_audio/ShieldBreak.wav): a community
+contribution, layered from three Pixabay sound effects (by freesound_community, EAGLAXLE and DRAGON-STUDIO) under the
+Pixabay Content License, which allows new works made from them; used with the contributor's permission.
 
 Tools used to make the art (not shipped): Blender (GPL) with the MPFB2 add-on (GPL; its MakeHuman base meshes and targets are CC0).

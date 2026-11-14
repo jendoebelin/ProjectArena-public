@@ -85,6 +85,8 @@ to the saved file, for the moderators only (players never see addresses). Files 
 "player_report" are those.
 Moderation: --bans FILE (default ./bans.txt, optional) lists one ban per line, an IP address or name:PLAYERNAME;
 "#" starts a comment. The file is re-read when it changes; banned players are disconnected and refused (BANNED).
+Blocked names (2026-11-13): a name with a slur or hate word (NAME_WORDS_*, and the bans file's word:WORD lines) is
+refused at HELLO (ERROR NAME NOT ALLOWED...), a rename to one while online disconnects; the log never has the name.
 SOUND STUDIO (0.3.16): --sounds FOLDER (default ./sound_library) holds sounds players can try in the game and vote on,
 named Event__name.wav (Event: one of SOUND_EVENTS; name: a-z, 0-9 and _; WAV mono 48 kHz 16-bit; at most SOUND_MAX
 sounds, SOUND_PER_EVENT per event, the oldest first). Over TCP on the same port: b"PASND1\n", then u8 1 (the catalog;
@@ -146,12 +148,60 @@ RATE = 1000                 # packets / second per client
 HOST_RATE = 2500            # ... an arena host (LIVE in the last HOST_HOLD s): a full room of four playing and four
 HOST_HOLD = 5.0             #     waiting is ~500 game packets a second, and ~150 more for each person talking (0.3.13)
 TIMEOUT = 10.0
+NAME_REFUSED = 'NAME NOT ALLOWED: CHANGE NAME TO PLAY ONLINE'   # (ERROR: at most 48, the game shows it as a notice)
 
 
-def clean_name(raw):
+def tidy_name(raw):
+    """A name as the game's keyboard can type it: upper case A-Z, 0-9, space, - and ., at most 16."""
     s = raw.split(b'\0')[0].decode('ascii', 'replace').upper()
     s = ''.join(c if ('A' <= c <= 'Z' or '0' <= c <= '9' or c in ' -.') else ' ' for c in s).strip()
     return s[:16] or 'PLAYER'
+
+
+# Names nobody may use online (owner, 2026-11-13: a player renamed themselves to a racist slur mid-session). Slurs and
+# hate words. A name is read with look-alike digits as letters (N1GG3R) and each letter allowed to repeat (NIIIGGER).
+# NAME_WORDS_ANYWHERE are found inside a longer name too, with its spaces, dashes and dots left out (N I G G E R);
+# NAME_WORDS_ALONE only as a whole word of the name, digits around it ignored and an S on the end allowed (so RACCOON,
+# SPICY, KNIGHT and PAKISTAN stay fine; COON, SPICS and FAG69 do not). The owner adds more without a code change:
+# word:WORD lines in the bans file, found anywhere like the first list (keep those words long enough to be safe).
+# A game with such a name is told NAME NOT ALLOWED and disconnected (a rename while online too); the relay's own
+# displays (the Crowd page, the boards) show PLAYER instead.
+NAME_WORDS_ANYWHERE = ('NIGGER', 'NIGGA', 'NIGGUH', 'NIGLET', 'NIGNOG', 'FAGOT', 'FAGIT', 'WETBACK', 'JIGABOO',
+                       'PORCHMONKEY', 'JUNGLEBUNNY', 'TOWELHEAD', 'RAGHEAD', 'CHINGCHONG', 'HITLER', 'SIEGHEIL',
+                       'WHITEPOWER', 'GASTHEJEW', 'KKK')
+NAME_WORDS_ALONE = ('NIG', 'KIKE', 'KYKE', 'CHINK', 'SPIC', 'SPICK', 'SPIK', 'GOOK', 'COON', 'BEANER', 'WOP', 'PAKI',
+                    'DYKE', 'FAG', 'TRANNY', 'SHEMALE', 'RETARD', 'RETARDED', 'NAZI')
+NAME_NUMBERS_ALONE = ('1488',)
+LOOKALIKE = str.maketrans('013456789', 'OIEASGTBG')
+
+
+def _name_pattern(word):
+    return ''.join(re.escape(c) + '+' for c in word)
+
+
+NAME_ANYWHERE_RE = re.compile('|'.join(_name_pattern(w) for w in NAME_WORDS_ANYWHERE))
+NAME_ALONE_RE = re.compile('(?:%s)S*' % '|'.join(_name_pattern(w) for w in NAME_WORDS_ALONE))
+
+
+def name_blocked(name, extra=()):
+    """True for a name with a slur or hate word in it (and the bans file's word: lines, given as extra)."""
+    parts = [p for p in re.split(r'[ .\-]+', name) if p]
+    if any(p in NAME_NUMBERS_ALONE for p in parts):
+        return True
+    squashed = ''.join(parts).translate(LOOKALIKE)
+    if NAME_ANYWHERE_RE.search(squashed) or any(w in squashed for w in extra):
+        return True
+    for p in parts:
+        for form in (p.translate(LOOKALIKE), p.strip('0123456789').translate(LOOKALIKE)):
+            if form and NAME_ALONE_RE.fullmatch(form):
+                return True
+    return False
+
+
+def clean_name(raw):
+    """tidy_name, and PLAYER for a blocked name: what the relay itself shows of a name (the Crowd page, the boards)."""
+    s = tidy_name(raw)
+    return 'PLAYER' if name_blocked(s) else s
 
 
 def app_version(body):
@@ -350,11 +400,12 @@ class Latest:
 
 
 class Bans:
-    """--bans FILE: IP addresses and name:PLAYERNAME lines, re-read whenever the file changes."""
+    """--bans FILE: IP addresses, name:PLAYERNAME and word:WORD lines (no name containing WORD may be used, see
+    name_blocked), re-read whenever the file changes."""
 
     def __init__(self, path, log):
         self.path, self.log = path, log
-        self.ips, self.names, self.mtime = set(), set(), None
+        self.ips, self.names, self.words, self.mtime = set(), set(), (), None
         self.reload()
 
     def reload(self):
@@ -365,17 +416,21 @@ class Bans:
         if mtime == self.mtime:
             return False
         self.mtime = mtime
-        ips, names = set(), set()
+        ips, names, words = set(), set(), set()
         if mtime is not None:
             with open(self.path, encoding='utf-8', errors='replace') as f:
                 for line in f:
                     line = line.split('#', 1)[0].strip()
                     if line.lower().startswith('name:'):
-                        names.add(clean_name(line[5:].encode('ascii', 'replace')))
+                        names.add(tidy_name(line[5:].encode('ascii', 'replace')))
+                    elif line.lower().startswith('word:'):
+                        w = ''.join(c for c in tidy_name(line[5:].encode('ascii', 'replace')) if c not in ' .-')
+                        if len(w) >= 3:   # (shorter would block half the names)
+                            words.add(w.translate(LOOKALIKE))
                     elif line:
                         ips.add(line)
-        self.ips, self.names = ips, names
-        self.log('bans: %d addresses, %d names (%s)' % (len(ips), len(names), self.path))
+        self.ips, self.names, self.words = ips, names, tuple(sorted(words))
+        self.log('bans: %d addresses, %d names, %d words (%s)' % (len(ips), len(names), len(words), self.path))
         return True
 
     def banned(self, ip, name):
@@ -396,6 +451,7 @@ class Relay(asyncio.DatagramProtocol):
         self.log = log
         self.transport = None
         self.stats = {'forwarded': 0, 'dropped': 0}
+        self.name_refused = {}                  # address -> when its blocked name was last logged
         self.pending, self.confirms = {}, {}   # host vip -> its result waiting for a confirmation (and the reverse)
         self.crowd = None                       # The Crowd (fans on phones), when --crowd is on
 
@@ -432,6 +488,19 @@ class Relay(asyncio.DatagramProtocol):
             if vip not in self.by_vip:
                 return vip
 
+    def refuse_name(self, addr, now):
+        """A blocked name (name_blocked): the game is told and, if it was online (a rename), disconnected. The log
+        never has the name: a renamed player is logged under the name they had, a new one once in 10 minutes."""
+        self.error(addr, NAME_REFUSED)
+        old = self.by_addr.get(addr)
+        if old is not None:
+            self.drop(old, 'name not allowed (renamed to a blocked word)')
+        elif now - self.name_refused.get(addr, -1e9) > 600:
+            if len(self.name_refused) > 1000:
+                self.name_refused.clear()
+            self.name_refused[addr] = now
+            self.log('refused a name with a blocked word (a new connection)')
+
     def drop(self, c, why):
         self.by_addr.pop(c.addr, None)
         self.by_vip.pop(c.vip, None)
@@ -450,12 +519,15 @@ class Relay(asyncio.DatagramProtocol):
         if ptype == HELLO:
             if len(body) < 17:
                 return
-            version, name = body[0], clean_name(body[1:17])
+            version, name = body[0], tidy_name(body[1:17])
             if self.bans is not None and self.bans.banned(addr[0], name):
                 self.error(addr, 'BANNED')
                 old = self.by_addr.get(addr)
                 if old is not None:
                     self.drop(old, 'banned')
+                return
+            if name_blocked(name, self.bans.words if self.bans is not None else ()):
+                self.refuse_name(addr, now)
                 return
             c = self.by_addr.get(addr)
             if c is None:
@@ -640,6 +712,9 @@ class Relay(asyncio.DatagramProtocol):
             for c in [c for c in self.by_addr.values() if self.bans.banned(c.addr[0], c.name)]:
                 self.error(c.addr, 'BANNED')
                 self.drop(c, 'banned')
+            for c in [c for c in self.by_addr.values() if name_blocked(c.name, self.bans.words)]:
+                self.error(c.addr, NAME_REFUSED)
+                self.drop(c, 'name not allowed (a new word: line)')
 
     def addresses_of(self, name):
         """moderators: where a reported player name is connected from right now"""
@@ -1118,7 +1193,7 @@ class Reports:
                 if line.startswith('player: '):
                     name = ''.join(c for c in line[8:] if c.isalnum() or c in '-_')[:16] or 'player'
                 if kind == 'player report' and line.startswith('reported: ') and self.relay is not None:
-                    who = clean_name(line[10:].split(' (session', 1)[0].encode('ascii', 'replace'))
+                    who = tidy_name(line[10:].split(' (session', 1)[0].encode('ascii', 'replace'))
                     where = self.relay.addresses_of(who)
                     extra = 'reported player on the relay now: %s %s\n' % (who, ', '.join(where) if where else '(not connected)')
             prefix = 'player_report_' if kind == 'player report' else ''

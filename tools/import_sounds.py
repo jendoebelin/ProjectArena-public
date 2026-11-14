@@ -29,14 +29,14 @@ SLOTS = {
     'Spawn': (1.0, -30, False), 'SpawnRise': (1.6, -30, False), 'Grab': (0.6, -28, False), 'Caught': (0.8, -27, False),
     'ThrowSlow': (0.9, -29, False), 'ThrowMed': (0.9, -27, False), 'ThrowFast': (1.0, -25, False),
     'ThrowFull': (1.1, -23, False), 'ThrowFail': (1.0, -30, False), 'Bounce': (0.5, -32, False),
-    'ShieldBlock': (0.6, -31, False), 'ShieldBreak': (1.0, -24, False), 'KnuckleBlock': (0.7, -25, False),
+    'ShieldBlock': (0.6, -31, False), 'ShieldBreak': (2.0, -24, False), 'KnuckleBlock': (0.7, -25, False),
     'HitPlayerOpponent': (1.6, -22, False), 'HitPlayerSelf': (1.4, -23, False), 'Returned': (1.4, -28, False),
     'Foul': (1.2, -25, False), 'Countdown': (0.6, -27, False), 'ClockTick': (0.3, -38, False), 'RoundStart': (1.8, -23, False),
     'RoundEndWin': (4.5, -22, False), 'RoundEndLose': (4.0, -24, False), 'MatchEndWin': (8.0, -20, False),
     'MatchEndLose': (7.0, -23, False), 'Recharge': (1.2, -27, False), 'Strike': (1.6, -24, False),
     'Overtime': (2.5, -22, False), 'FistBump': (0.9, -24, False), 'Ambience': (40.0, -34, True),
     # The Crowd (fans on phones): a loop whose volume follows the hype, and a cheer when an end's hype jumps
-    'Crowd': (12.0, -26, True), 'Cheer': (3.5, -22, False),
+    'Crowd': (0.9, -32, False), 'Cheer': (3.5, -22, False),
     'LeadChange': (1.1, -27, False),   # FOUR CORNERS: a new leader (0.3.12)
     'TargetHit': (0.9, -22, False),    # TRAINING: a target taken (0.3.12)
 }

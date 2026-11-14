@@ -722,6 +722,21 @@ void Renderer::drawSpriteFlat(const Vec3& c, float size, const float rgba[4], co
     quad.mats[0].diffuse = 0;
 }
 
+void Renderer::drawShadowFlat(const Vec3& c, float size, float alpha, const Vec3& n) {
+    if (!g_softTex[0]) { g_softTex[0] = makeSoftTexture(0); g_softTex[1] = makeSoftTexture(1); }
+    Quat q = fromTo({0, 0, 1}, normalize(n));
+    const float rgba[4] = {0, 0, 0, alpha};   // (black through the blended pass: the soft blob's alpha darkens)
+    std::memcpy(quad.mats[0].tint, rgba, 16);
+    quad.mats[0].shader = SH_UNLIT;
+    quad.mats[0].diffuse = g_softTex[0];
+    quad.mats[0].flags = MAT_TWOSIDED;
+    DrawParams dp;
+    dp.forceShader = SH_UNLIT;
+    dp.alphaMul = 0.998f;   // (below 0.999: the blended pass)
+    draw(quad, Mat4::fromPose({q, c}, {size, size, 1}), dp, 1);
+    quad.mats[0].diffuse = 0;
+}
+
 void Renderer::drawSprite(const Vec3& c, float size, const float rgba[4], const Vec3& viewer, int tex, float roll) {
     Vec3 n = viewer - c;
     if (length2(n) < 1e-6f) n = {0, 0, 1};

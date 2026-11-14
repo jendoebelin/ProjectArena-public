@@ -50,6 +50,7 @@ bool xrLoaderInit();   // pc/xr_loader.cpp
 
 #include "avatar.h"
 #include "game.h"
+#include "reach_log.h"
 #include "log.h"
 #include "render.h"
 #include "audio.h"
@@ -141,6 +142,10 @@ struct App {
     std::string dcTag;              // --tag NAME: "Project Arena - Spectator - NAME", so OBS can tell several windows apart
     Vec3 dcClose[2];                // the win screen's close-ups: each player's head, smoothed
     double dcCloseT = 0;
+    // the win screen's players as last seen in the room (a player who leaves while it shows stays, still, with their name;
+    // the host puts a bot's input in an empty place, so their own last pose, not the slot's new one)
+    PlayerInput dcHeldIn[2];
+    std::string dcHeldName[2];
     bool dcKey[256] = {};
     uint16_t dcPadPrev = 0;   // the game controller's buttons last frame
     bool dcPadOk = false;
@@ -241,7 +246,16 @@ struct App {
     // mapping from tracking space to the court ("app space")
     Pose trackToWorld;
     bool recentered = false;
+    // KEEPING THE CENTRE (0.3.19, issue #16; players 2026-11-11: "the view doesn't keep its center"): the headset says
+    // its origin will move (a system recenter, the headset back on, tracking settling) before it does; each change waits
+    // here until the frame it takes effect (its changeTime), then is applied (applySpaceChanges). Applied at once, the
+    // court was re-anchored against the old origin and left off by the change (often ~20 degrees) until B
+    struct PendingSpaceChange { XrTime changeTime; bool poseValid; XrPosef delta; };
+    std::deque<PendingSpaceChange> spaceChanges;
     bool prevRecenter = false;
+    // PLAYERS' NAMES (0.3.19, owner 2026-11-11: a quick way to see who's who, nothing over heads all the time): the left
+    // stick's click shows everyone's name over their head until it's clicked again
+    bool showNames = false, prevNamesClick = false;
 
     Renderer gfx;
     Model arena, environment, projectile, shell, spawner, shield, lancer, knuckle, head, torso, strikezone;
@@ -255,10 +269,17 @@ struct App {
     struct Trail {
         Vec3 core[48], helixA[48], helixB[48];
         int n = 0;
+        int stale = 0;      // frames the ball hasn't moved (a picture from the host only every few frames)
         float spinAngle = 0;
         float strikeFlash = 0;
         Vec3 burstPos; float burst = 0;   // dissolve burst at the back wall
     } trail[kMaxPlayers];
+    // FIREBALL BLITZ: where each fireball was drawn lately (its echoes: smaller copies following it along its path)
+    struct FireEcho {
+        static constexpr int kN = 32;
+        Vec3 p[kN]; float t[kN] = {};
+        int n = 0, head = 0;
+    } fireEcho[kMaxPlayers][Game::kMaxFire];
     XrAction thumbstick = XR_NULL_HANDLE, thumbstickL = XR_NULL_HANDLE;
     // push-to-talk, the left hand's grip as suits each controller: Quest Touch its squeeze, Valve Index a firm squeeze (its
     // force: Index reads 'squeeze' as soon as the strapped controller is held, which kept a tester's mic open), Vive / WMR
@@ -358,6 +379,10 @@ struct App {
     Net::CareerStats myCareer;
     bool myCareerOk = false;
     double myStatsAskAt = 0, deleteArmedUntil = 0;
+    // DEFAULTS (0.3.19, owner 2026-11-11): each settings page's own button puts that page back as a fresh install has
+    // it; pressed twice within 4 s (the first press arms it: RESET? PRESS AGAIN). Which page is armed: DEF_*
+    double defaultsArmedUntil = 0;
+    int defaultsArmed = -1;
     int dcMatchup = 1;
     bool dcMatchupForce = false;
     double dcVsT = 0;
@@ -366,7 +391,8 @@ struct App {
     bool nationsOn = false;
     // The Crowd (fans on phones): each end's light flare from cheers (1 -> 0), the crowd sound's level, the last
     // update seen, whether an end's cheer has played (until its hype settles); testCrowd: --crowd in the pictures
-    float crowdFlare[2] = {0, 0}, crowdLevel = 0;
+    float crowdFlare[2] = {0, 0};
+    double crowdBlipAt = 0, crowdBlipFor = -1;   // THE CROWD: the last crowd blip, and the update it answered
     double crowdAt = -1;
     bool crowdCheered[2] = {false, false};
     CrowdInfo testCrowd;
@@ -499,6 +525,15 @@ struct App {
     // SELFIE in the headset (0.3.13, spectators who stream): a camera in front of your avatar, its picture in the lower
     // right of your view (and so in a cast or recording); its render target, and when it last drew
     bool headSelfie = false;
+    // SELFIE CAPTURE (promo, sideloaded builds only; adb: touch <externalDataPath>/selfie_capture_on or _off): while
+    // on, the selfie camera's view is also drawn at 2560x1440 twice a second and saved as
+    // <externalDataPath>/selfiecap_<launch time>_NNNNN.ppm (the time keeps a later session from writing over an
+    // earlier one's frames); the spectator's own view doesn't change
+    bool hsCap = false;
+    double hsCapAt = 0;
+    int hsCapN = 0;
+    long hsCapStamp = 0;
+    unsigned hsCapFbo = 0, hsCapTex = 0, hsCapDepth = 0;
     unsigned hsFbo = 0, hsTex = 0, hsDepth = 0;
     double hsAt = 0;
     bool selfieOn = false, selfieRound = true, selfieTest = false;
@@ -506,6 +541,7 @@ struct App {
     unsigned selfieTex = 0;
     uint32_t selfieSeen = 0;
     int optHealth = 5, optBalls = 1, optOctPlayers = 4;   // FIREBALL BLITZ: HEALTH, BALLS (4 = RAPID FIRE), PLAYERS (practice)
+    int optStrikeSpeed = 0;        // STRIKE SPEED (0.3.19): 0 REGULATION, 1 FAST, 2 FASTER
     // FIREBALL BLITZ on screen: the last knockout or "THE ROOM CLOSES IN" (and how long it shows), the fireballs' puffs as they
     // fizzle out, and the ring as last seen (it closing in: a blink to your new place)
     std::string octMsg;
@@ -549,6 +585,7 @@ struct App {
     bool devMode = false;
     bool noOnline = false;   // --selftest: never connect to the community server
     int trailMax = 0;        // --record: the newest points of a ball's trail drawn (0 all; -1 none, --notrail)
+    bool mockContact = false;   // --contact (pictures only, a mock-up for the owner, 2026-11-11): contact shadows
     // voice chat: push-to-talk (left grip) by default, open mic, or off; mutes by who is talking
     int voiceMode = 0;             // 0 push-to-talk, 1 open mic, 2 off
     bool muteSpectators = false, mutePlayers = false, muteAll = false;
@@ -1408,7 +1445,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.18";
+static const char* kAppVersion = "0.3.19";
 // A scrolling texture's offset, kept in [0, 1) (the textures repeat, so it looks the same). The headset's fragment
 // shader works at medium precision (16-bit floats): an offset that grows with the time played lost its fractions after
 // some minutes, and the ball's and fireballs' plasma broke into big square blocks (a tester's report, 2026-11-02).
@@ -1448,7 +1485,7 @@ static bool isDesktop(const App&) { return false; }
 #else
 static bool isDesktop(const App& a) { return a.desktop; }   // (the PC spectator window, no headset)
 #endif
-static const char* kStorePage = "https://www.meta.com/s/4NDP5YlGM";
+static const char* kStorePage = "https://www.meta.com/experiences/1342896058915258/";   // (the store page since the launch, 2026-11-10; was the alpha invite)
 static const char* kReleasePage = "https://github.com/jendoebelin/ProjectArena-public/releases/latest";
 // how this copy updates. Quest: 0 the Meta store, 1 sideloaded (adb, SideQuest), 2 can't tell (both offered). PC: 0 here
 // (download and restart), 1 Steam, 2 the download page only. `why`: what to say about it
@@ -1788,7 +1825,10 @@ static const float* playerRGB(const App& a, int p) {
 // BALL MARKS: the surface the ball bounced off (asked of the arena's own collision, the same on every machine: the event
 // carries only where the ball was), and a mark on it, sized by the ball's speed
 static void addMark(App& a, const Vec3& at, int player, float speed) {
-    if (a.fxLevel >= 2 && (a.marks.size() & 1)) return;   // (HIT EFFECTS: LOW: half of them)
+    // (HIT EFFECTS: LOW: every other bounce. It used to skip whenever the count of marks showing was odd, so once one
+    // showed every bounce was refused until it faded: about one at a time, not half; found porting to Unity, 2026-11-09)
+    static uint32_t bounces = 0;
+    if (a.fxLevel >= 2 && (bounces++ & 1)) return;
     static const Vec3 dirs[] = {{0, -1, 0}, {0, 1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1},
                                 {0.7071f, 0, 0.7071f}, {-0.7071f, 0, 0.7071f}, {0.7071f, 0, -0.7071f}, {-0.7071f, 0, -0.7071f}};
     // (sweepArena tests a sphere at the end point against surfaces it is moving into: a sphere round the bounce point
@@ -2073,7 +2113,34 @@ static void ownershipFailed(App& a, const PlayerInput& in) {
     openMenu(a, in);
 }
 
+// KEEPING THE CENTRE: the origin changes whose time has come (their changeTime at or before this frame's)
+static void applySpaceChanges(App& a, XrTime t) {
+    while (!a.spaceChanges.empty() && a.spaceChanges.front().changeTime <= t) {
+        const App::PendingSpaceChange c = a.spaceChanges.front();
+        a.spaceChanges.pop_front();
+        const XrPosef& d = c.delta;
+        const float moved = std::sqrt(d.position.x * d.position.x + d.position.z * d.position.z);
+        const float turned = 2.f * std::acos(std::min(1.f, std::fabs(d.orientation.w))) * 57.2958f;
+        if (c.poseValid && a.recentered && moved < 0.25f && turned < 10.f) {
+            // small: tracking settling. Keep the court fixed across the room, but follow a new floor height
+            // (compensating the height kept the court at the old, wrong floor)
+            XrPosef dxz = d;
+            dxz.position.y = 0;
+            a.trackToWorld = a.trackToWorld * fromXr(dxz);
+            LOGI("reference space shifted (%.3f, %.3f, %.3f): compensated across, floor %+.3f m followed",
+                 d.position.x, d.position.y, d.position.z, d.position.y);
+        } else if (c.poseValid && a.recentered) {
+            // large: a system recenter (the Meta button, the headset back on): put them back on their spot, facing in
+            LOGI("system recenter (moved %.2f m, turned %.0f deg): re-placing the player", moved, turned);
+            a.recentered = false;
+        } else {
+            a.recentered = false;   // no valid delta: re-anchor on the next tracked frame
+        }
+    }
+}
+
 static PlayerInput readInput(App& a, XrTime t, int local) {
+    applySpaceChanges(a, t);   // (KEEPING THE CENTRE: before the head is read against the origin)
     PlayerInput in;
     XrActiveActionSet aas{a.actionSet, XR_NULL_PATH};
     XrActionsSyncInfo si{XR_TYPE_ACTIONS_SYNC_INFO};
@@ -2085,7 +2152,15 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
     xrLocateSpace(a.headSpace, a.appSpace, t, &hl);
     bool headOk = (hl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) && (hl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
     Pose headTrack = fromXr(hl.pose);
-    bool rc = getBool(a, a.buttonB) || getBool(a, a.thumbClick, a.handPath[0]) || getBool(a, a.thumbClick, a.handPath[1]);
+    bool rc = getBool(a, a.buttonB) || getBool(a, a.thumbClick, a.handPath[1]);   // (B, the right stick: recenter)
+    {   // the left stick's click: PLAYERS' NAMES on / off
+        const bool nc = getBool(a, a.thumbClick, a.handPath[0]);
+        if (nc && !a.prevNamesClick) {
+            a.showNames = !a.showNames;
+            a.net.noticeLocal(a.showNames ? "PLAYERS' NAMES ON" : "PLAYERS' NAMES OFF");
+        }
+        a.prevNamesClick = nc;
+    }
     if (local != g_lastLocal) { a.recentered = false; g_lastLocal = local; }
     {   // moving between playing / the hub / watching a match re-places the viewer
         uint32_t key = a.spectating ? (a.watchIp ? a.watchIp : 1u) : a.net.localWaiting() ? 10u + (uint32_t)a.net.localSpot()
@@ -2149,6 +2224,18 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
                 fileRemove(sf);
                 if (a.net.mode() == Net::Mode::Spectate) a.net.leave(); else { a.net.spectate(); a.watchIp = 0; }
             }
+#ifndef PA_STORE
+            // promo: SELFIE CAPTURE. touch selfie_capture_on or selfie_capture_off: the file's presence sets the state,
+            // so a touch the game missed (closed, asleep) still does what it says at the next launch
+            for (int on = 0; on < 2; ++on) {
+                std::string cf = std::string(ext) + (on ? "/selfie_capture_on" : "/selfie_capture_off");
+                if (!fileExists(cf)) continue;
+                fileRemove(cf);
+                a.hsCap = on != 0;
+                LOGI("selfie capture %s%s", a.hsCap ? "on" : "off",
+                     a.hsCap && !(a.headSelfie && a.spectating) ? " (nothing is saved until you spectate with SELFIE on)" : "");
+            }
+#endif
             std::string wf = std::string(ext) + "/watch_first";        // test hook: watch the first live match
             if (fileExists(wf)) {
                 fileRemove(wf);
@@ -2246,12 +2333,12 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 
 // ------------------------------------------------------------------ lobby menu
 enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute, ReportKick, StatsNoticeOk,
-                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, ReportHostKick, OptBot, Record, OptMeet, GfxPage, FovDown, FovUp, OptRoom, OptTeams,
+                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, OptStrike, ReportHostKick, OptBot, Record, OptMeet, GfxPage, FovDown, FovUp, OptRoom, OptTeams,
                      Train, TrainPick, TrainStart, TrainRetry, TrainNext, TrainList, TrainLeave, TrainBoard, TrainKind, TrainBoardBack, TrainShow, TrainVideo,
                      MovePlayers, MoveCorner, MoveOne, MoveBack, OptHealth, OptBalls, OptPlayers, Discord,
                      UpdateOpen, UpdateGo, UpdateRestart, UpdatePage, UpdateStore, UpdateBack, HeadSelfie, PrivateTalk, HandOff, HandOffTo,
                      LookAhead, Studio, StudioSection, StudioPrev, StudioNext, StudioPlay, StudioVote, StudioMoment, StudioLeave, StudioDelete,
-                     Credits, CreditsBack, UpdateStoreGet, UpdateStoreInstall };
+                     Credits, CreditsBack, UpdateStoreGet, UpdateStoreInstall, Defaults };
 // HOW TO PLAY > CREDITS: one page, film-credit style (small grey headings, the names under them)
 enum { CR_HEAD, CR_NAME, CR_SMALL };
 struct CreditRow { int kind; const char* text; };
@@ -2264,7 +2351,7 @@ static const CreditRow kCredits[] = {
     {CR_NAME, "CLAUDE"},
     {CR_HEAD, "COMMUNITY"},
     {CR_NAME, "ASTROBLEEM    R0GUEICE    THEINSANIAC"},
-    {CR_NAME, "SPEKKIOCT"},
+    {CR_NAME, "SPEKKIOCT    SKANDI"},
     {CR_HEAD, "THANK YOU"},
     {CR_NAME, "EVERY ALPHA TESTER"},
 #ifdef PA_STORE
@@ -2286,10 +2373,65 @@ struct MenuItem {
 static void haptic(App& a, int hand, float amp, float seconds);
 
 // ---- MATCH OPTIONS: the page's choices <-> the rules, their labels, and whether a match is on
+// DEFAULTS (0.3.19): each settings page back as a fresh install has it, that page only. Never: a person muted by
+// name, the name, the avatar, the stats, the server (its own USE DEFAULT); MATCH OPTIONS keeps the bot's level, MATCH MY
+// LEVEL and FIST BUMP FIRST (yours, not the rules') and which rules and room you picked
+enum { DEF_SETTINGS, DEF_GRAPHICS, DEF_VOICE, DEF_PASSTHROUGH, DEF_MATCH };
+static const char* defaultsLabel(const App& a, int page) {
+    const bool armed = a.defaultsArmed == page && nowSeconds() < a.defaultsArmedUntil;
+    return armed ? (page == DEF_MATCH ? "PRESS AGAIN" : "RESET? PRESS AGAIN") : "DEFAULTS";
+}
+static void applyDefaults(App& a, int page) {
+    // (the values are App's own initial ones: a fresh install's)
+    switch (page) {
+    case DEF_SETTINGS:
+        a.volume = 8; a.audio.setVolume(a.volume / 10.f);
+        a.pointerHand = 1;
+        a.hideOutside = false;
+        a.crowdMode = 0;
+        a.turnMode = 0;
+        if (!a.net.inherited()) { a.net.setBotFill(true); a.botFill = true; }   // (a room taken over keeps its own)
+        break;
+    case DEF_GRAPHICS:
+        a.roomFeel = 0;
+        a.fxLevel = 0;
+        a.net.setLookAhead(false);
+        a.discordOn = true;
+        break;
+    case DEF_VOICE:   // (anyone muted by name stays muted)
+        a.voiceMode = 0; a.micDenied = false;
+        a.muteSpectators = a.mutePlayers = a.muteAll = false;
+        a.net.setPrivateTalk(false);
+        break;
+    case DEF_PASSTHROUGH:
+        a.ptMode = 0; a.ptFloor = 0.8f; a.ptGlass = 1.f; a.ptRoom = 1.f; a.ptMono = false; a.ptEdges = false;
+        a.ptEdgeReveal = true; a.ptPeekOn = true;
+        a.ptStyleDirty = true;
+        break;
+    case DEF_MATCH: {   // the rules' own: as a fresh Tunables has them (Basic 3 min, Advanced untimed rounds, shields on,
+                        // knuckle guards as the rules say; FIREBALL BLITZ: its own, no shields, knuckle guards on)
+        const Tunables t;
+        a.optShields = t.shields; a.optKnuckle = t.knuckleMode;
+        a.optMatchTime = t.basicMatchTime; a.optRoundTime = t.advancedRoundTime;
+        a.optHealth = t.health; a.optBalls = t.fireBalls; a.optOctPlayers = t.octPlayers;
+        a.optTeams = t.teamMode; a.optOneTurns = t.oneTurns;
+        a.optStrikeSpeed = t.strikeSpeed;
+        if (a.optExperimental && a.optExpRoom == ROOM_BLITZ) { a.optShields = false; a.optKnuckle = 1; }
+        break;
+    }
+    }
+}
+
+static const char* strikeLabel(const Tunables& t) {
+    static const char* k[3] = {"STRIKES: REGULATION", "STRIKES: FAST", "STRIKES: FASTER"};
+    return k[std::max(0, std::min(2, t.strikeSpeed))];
+}
+
 static void optionsFrom(App& a, const Tunables& t) {
     a.optAdvanced = t.advanced; a.optShields = t.shields; a.optKnuckle = t.knuckleMode; a.optExperimental = t.experimental; a.optExpRoom = t.expRoom; a.optTeams = t.teamMode; a.optOneTurns = t.oneTurns;
     a.optHealth = t.health; a.optBalls = t.fireBalls; a.optOctPlayers = t.octPlayers;
     a.optMatchTime = t.basicMatchTime; a.optRoundTime = t.advancedRoundTime;
+    a.optStrikeSpeed = t.strikeSpeed;
     a.optBotLevel = t.botLevel; a.optBotAdapt = t.botAdapt; a.optBotMeet = t.botMeet;
 }
 // EXPERIMENTAL's rooms (0.3.12): DIAMOND (two players) and FOUR CORNERS (four: the CORNERS room as the owner asked,
@@ -2305,6 +2447,7 @@ static void optionsInto(const App& a, Tunables& t) {
     t.oneTurns = a.optOneTurns && a.rulesForHost;
     if (!a.rulesForHost && !a.net.inRoom()) t.theOne = 0;   // (practice 3 v 1: you are THE ONE; hosting, the room decides)
     t.basicMatchTime = a.optMatchTime; t.advancedRoundTime = a.optRoundTime;
+    t.strikeSpeed = std::max(0, std::min(2, a.optStrikeSpeed));
     t.botLevel = a.optBotLevel; t.botAdapt = a.optBotAdapt; t.botMeet = a.optBotMeet;
 }
 static std::string timeLabel(float secs, bool rounds) {
@@ -2325,6 +2468,7 @@ static std::string rulesLine(const Tunables& t) {
     if (!t.advanced && t.basicMatchTime <= 0) s += " - FREE PLAY";
     else if (!t.advanced && t.basicMatchTime != 180.f) s += " - " + std::to_string((int)t.basicMatchTime / 60) + " MIN";
     if (t.knuckleMode >= 0 && (t.knuckleMode != 0) != !t.advanced) s += t.knuckleMode ? " - KNUCKLE GUARDS" : " - NO KNUCKLE GUARDS";
+    if (t.perStrike() != t.speedIncreasePerStrike) s += t.strikeSpeed >= 2 ? " - FASTER STRIKES" : " - FAST STRIKES";
     return s;
 }
 // the clock as the boards show it: 2:41, FREE PLAY, SUDDEN DEATH (empty: an untimed Advanced round)
@@ -2567,7 +2711,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
             static const char* kRoomName[kRooms] = {"ROOM: DIAMOND", "ROOM: FOUR CORNERS", "ROOM: FIREBALL BLITZ"};
             v.push_back({kRoomName[std::max(0, std::min(kRooms - 1, t.expRoom))], 0.19f, y[0], 0.36f, 0.075f, MenuAct::OptRoom, 0, true});
         } else {
-            v.push_back({t.shields ? "SHIELDS: ON" : "SHIELDS: OFF  (HOTDOG MODE)", 0, y[0], 0.74f, 0.075f, MenuAct::OptShields, 0, true});
+            v.push_back({t.shields ? "SHIELDS: ON" : "SHIELDS: OFF (HOTDOG)", -0.19f, y[0], 0.36f, 0.075f, MenuAct::OptShields, 0, true});
+            v.push_back({strikeLabel(t), 0.19f, y[0], 0.36f, 0.075f, MenuAct::OptStrike, 0, true});
         }
         const bool oct = t.experimental && t.expRoom == ROOM_BLITZ;
         if (oct) {   // FIREBALL BLITZ: HEALTH beside KNUCKLES (no teams: everyone for themselves)
@@ -2580,7 +2725,12 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
             v.push_back({t.knuckleGuards() ? "KNUCKLES: ON" : "KNUCKLES: OFF", -0.19f, y[1], 0.36f, 0.075f, MenuAct::OptKnuckle, 0, true});
             v.push_back({tl, 0.19f, y[1], 0.36f, 0.075f, MenuAct::OptTeams, 0, true});
         } else {
-            v.push_back({t.knuckleGuards() ? "KNUCKLE GUARDS: ON" : "KNUCKLE GUARDS: OFF", 0, y[1], 0.74f, 0.075f, MenuAct::OptKnuckle, 0, true});
+            if (t.experimental) {   // (DIAMOND: STRIKE SPEED beside it; ROOM is beside SHIELDS)
+                v.push_back({t.knuckleGuards() ? "KNUCKLES: ON" : "KNUCKLES: OFF", -0.19f, y[1], 0.36f, 0.075f, MenuAct::OptKnuckle, 0, true});
+                v.push_back({strikeLabel(t), 0.19f, y[1], 0.36f, 0.075f, MenuAct::OptStrike, 0, true});
+            } else {
+                v.push_back({t.knuckleGuards() ? "KNUCKLE GUARDS: ON" : "KNUCKLE GUARDS: OFF", 0, y[1], 0.74f, 0.075f, MenuAct::OptKnuckle, 0, true});
+            }
         }
         const std::string tl = std::string(t.advanced ? "ROUND TIME: " : "MATCH TIME: ") + timeLabel(t.advanced ? t.advancedRoundTime : t.basicMatchTime, t.advanced);
         if (oct) {   // (FIREBALL BLITZ: the time in half the row, BALLS beside it)
@@ -2611,6 +2761,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         const char* go = a.rulesEdit ? (rulesLive(a) ? "APPLY FROM THE NEXT MATCH" : "APPLY") : a.rulesForHost ? "OPEN MY ARENA" : "START PRACTICE";
         v.push_back({go, 0.19f, bot ? -0.32f : -0.24f, 0.36f, 0.08f, MenuAct::OptGo, 0, true});
         v.push_back({"BACK", -0.19f, bot ? -0.32f : -0.24f, 0.36f, 0.08f, MenuAct::OptBack, 0, true});
+        // (beside the title: the rules' own settings; the bot's level stays as you chose it)
+        v.push_back({defaultsLabel(a, DEF_MATCH), 0.355f, 0.29f, 0.15f, 0.05f, MenuAct::Defaults, DEF_MATCH, true});
         return v;
     }
     if (a.rulesOpen && !a.nameEdit) {
@@ -2694,7 +2846,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({a.ptEdges ? "OBJECT EDGES: ON" : "OBJECT EDGES: OFF", 0.19f, -0.22f, 0.36f, 0.06f, MenuAct::PtEdges, 0, true});
         v.push_back({a.ptEdgeReveal ? "ROOM AT EDGES: ON" : "ROOM AT EDGES: OFF", -0.19f, -0.29f, 0.36f, 0.06f, MenuAct::PtReveal, 0, true});
         v.push_back({a.ptPeekOn ? "PEEK (HOLD Y): ON" : "PEEK (HOLD Y): OFF", 0.19f, -0.29f, 0.36f, 0.06f, MenuAct::PtPeek, 0, true});
-        v.push_back({"BACK", 0, -0.375f, 0.36f, 0.06f, MenuAct::Back, 0, true});
+        v.push_back({"BACK", -0.19f, -0.375f, 0.36f, 0.06f, MenuAct::Back, 0, true});
+        v.push_back({defaultsLabel(a, DEF_PASSTHROUGH), 0.19f, -0.375f, 0.36f, 0.06f, MenuAct::Defaults, DEF_PASSTHROUGH, true});
         return v;
     }
     if (a.settingsOpen && a.gfxPage) {   // GRAPHICS: field of view (room size feel) and hit effects; the arena around it
@@ -2714,7 +2867,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         // (two-player rooms only: in four-player rooms and FIREBALL BLITZ it stands down, Game::lookAhead)
         v.push_back({a.net.lookAhead() ? "BALL LOOK-AHEAD (1-V-1 ONLINE): ON" : "BALL LOOK-AHEAD (1-V-1 ONLINE): OFF", 0, -0.30f, 0.62f, 0.06f,
                      MenuAct::LookAhead, 0, true});
-        v.push_back({"BACK", 0, -0.39f, 0.36f, 0.055f, MenuAct::Back, 0, true});
+        v.push_back({"BACK", -0.19f, -0.39f, 0.36f, 0.055f, MenuAct::Back, 0, true});
+        v.push_back({defaultsLabel(a, DEF_GRAPHICS), 0.19f, -0.39f, 0.36f, 0.055f, MenuAct::Defaults, DEF_GRAPHICS, true});
         return v;
     }
     if (a.settingsOpen && a.voicePage) {
@@ -2726,7 +2880,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         // (hosting: whether spectators hear the room; owner, 2026-11-02: practise your strategy where rivals can watch)
         v.push_back({a.net.privateTalk() ? "ROOM TALK: PRIVATE (SPECTATORS DON'T HEAR IT)" : "ROOM TALK: OPEN (SPECTATORS HEAR IT)",
                      0, -0.28f, 0.80f, 0.07f, MenuAct::PrivateTalk, 0, true});
-        v.push_back({"BACK", 0, -0.385f, 0.36f, 0.055f, MenuAct::Back, 0, true});
+        v.push_back({"BACK", -0.19f, -0.385f, 0.36f, 0.055f, MenuAct::Back, 0, true});
+        v.push_back({defaultsLabel(a, DEF_VOICE), 0.19f, -0.385f, 0.36f, 0.055f, MenuAct::Defaults, DEF_VOICE, true});
         return v;
     }
     if (a.settingsOpen) {
@@ -2754,8 +2909,9 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         const bool custom = PA_DEFAULT_SERVER[0] && a.serverAddr != PA_DEFAULT_SERVER;
         v.push_back({sv, custom ? -0.12f : 0.f, -0.31f, custom ? 0.50f : 0.74f, 0.065f, MenuAct::Server, 0, true});
         if (custom) v.push_back({"USE DEFAULT", 0.26f, -0.31f, 0.22f, 0.065f, MenuAct::ServerDefault, 0, true});
-        v.push_back({"BACK", a.devMode ? -0.19f : 0.f, -0.385f, 0.36f, 0.055f, MenuAct::Back, 0, true});
-        if (a.devMode) v.push_back({"TUNING (DEVELOPER)", 0.19f, -0.385f, 0.36f, 0.055f, MenuAct::Tuning, 0, true});
+        v.push_back({"BACK", -0.19f, -0.385f, 0.36f, 0.055f, MenuAct::Back, 0, true});
+        v.push_back({defaultsLabel(a, DEF_SETTINGS), 0.19f, -0.385f, 0.36f, 0.055f, MenuAct::Defaults, DEF_SETTINGS, true});
+        if (a.devMode) v.push_back({"TUNING (DEVELOPER)", 0, -0.455f, 0.36f, 0.05f, MenuAct::Tuning, 0, true});
         return v;
     }
     if (a.xpOpen) {
@@ -2852,11 +3008,7 @@ static void openMenu(App& a, const PlayerInput& in) {
     Vec3 f = in.head.q.rotate({0, 0, -1});
     f.y = 0;
     f = length(f) > 1e-3f ? normalize(f) : Vec3{1, 0, 0};
-    Vec3 at = f;
-    if (a.studioOn && !inLobby(a)) {   // SOUND STUDIO: off to your left, so the court and the coach stay in view while it is open
-        const Vec3 left{f.z, 0, -f.x};
-        at = normalize(f * 0.64f + left * 0.77f);   // (50 degrees)
-    }
+    const Vec3 at = f;   // (in front of you, SOUND STUDIO too: owner, 2026-11-12: off to the left was off-putting)
     float yaw = std::atan2(-at.x, -at.z);   // panel +Z faces the player
     a.menuPose = {Quat::axisAngle({0, 1, 0}, yaw), in.head.p + at * 0.9f + Vec3{0, -0.15f, 0}};
     if (inLobby(a))   // the lobby: always in the middle, between the posters, facing the balcony (owner)
@@ -2935,6 +3087,11 @@ static void studioOpenSection(App& a, int i) {   // a section, and its moment: i
     if (li >= 0 && (!a.trainer.active() || a.trainer.lesson != li)) {
         beginLesson(a, li, true);
         a.trainer.endless = true;
+        // the page opens once you stand on the court (owner, 2026-11-12: opened in the lobby, it stayed behind there
+        // and the studio began with no menu), as a lesson's card does
+        a.menuOpen = false;
+        a.trainMenuAt = nowSeconds() + 0.35;
+        return;
     }
     openMenu(a, a.localIn);
 }
@@ -3111,6 +3268,19 @@ static void menuActivate(App& a, const MenuItem& it) {
         LOGI("record my matches: %s", a.recordOn ? "on" : "off");
         saveSettings(a);
         break;
+    case MenuAct::Defaults:   // two presses within 4 s, on the same page
+        if (a.defaultsArmed == (int)it.ip && nowSeconds() < a.defaultsArmedUntil) {
+            applyDefaults(a, (int)it.ip);
+            a.defaultsArmed = -1;
+            a.defaultsArmedUntil = 0;
+            if (it.ip != DEF_MATCH) saveSettings(a);   // (MATCH OPTIONS: nothing changes until START / APPLY)
+            a.net.noticeLocal(it.ip == DEF_MATCH ? "THE RULES' OWN SETTINGS - PRESS APPLY OR START" : "BACK TO THE DEFAULTS");
+            LOGI("menu: defaults on page %u", it.ip);
+        } else {
+            a.defaultsArmed = (int)it.ip;
+            a.defaultsArmedUntil = nowSeconds() + 4.0;
+        }
+        break;
     case MenuAct::DeleteStats:   // two presses within 4 s
         if (nowSeconds() < a.deleteArmedUntil) {
             a.net.deleteMyStats();
@@ -3175,6 +3345,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         a.rulesStep = 1;
         break;
     case MenuAct::OptShields: a.optShields = !a.optShields; break;
+    case MenuAct::OptStrike: a.optStrikeSpeed = (a.optStrikeSpeed + 1) % 3; break;   // REGULATION, FAST, FASTER
     case MenuAct::OptRoom:   // DIAMOND, FOUR CORNERS, FIREBALL BLITZ (its own defaults: knuckle guards on, no shields)
         a.optExpRoom = (a.optExpRoom + 1) % kRooms;
         if (a.optExpRoom == ROOM_BLITZ) { a.optShields = false; a.optKnuckle = 1; }
@@ -3901,9 +4072,9 @@ static void drawMenu(App& a) {
             "PUNCH BALLS AWAY WITH YOUR KNUCKLE GUARD",
             "BALL THROUGH THEIR RING = STRIKE: BIGGER, FASTER",
             "THROW PAST YOUR FOUL LINE TO RECHARGE",
-            "",
-            "B / STICK CLICK: RECENTER    MENU: GAMES, AVATAR"};
-        for (int i = 0; i < 9; ++i) text(lines[i], 0, 0.20f - 0.055f * i, 0.024f, i == 8 ? grey : white);
+            "LEFT STICK CLICK: PLAYERS' NAMES",
+            "B / RIGHT STICK CLICK: RECENTER   MENU: GAMES"};
+        for (int i = 0; i < 9; ++i) text(lines[i], 0, 0.20f - 0.055f * i, 0.024f, i >= 7 ? grey : white);
     } else if (a.nameEdit) {
         text(a.editTarget == 5 ? "REPORT NOTE" : a.editTarget == 4 ? "BUG NOTE" : a.editTarget == 3 ? "SPARC SERVER" : a.editTarget == 2 ? "TEAM NAME" : a.editTarget ? "COMMUNITY SERVER" : "YOUR NAME", 0, 0.29f, 0.055f, cyan);
         {
@@ -4385,15 +4556,23 @@ static void updateCrowd(App& a, float dt) {
                 a.crowdFlare[p] = std::max(a.crowdFlare[p], std::min(1.f, 0.35f + c->cheers[p] / (4.f + 2.f * c->fans)));
                 burstCrowdFx(a, p, std::min(40, 2 * c->cheers[p]));   // rapid cheering pours more out
             }
-            if (c->hype[p] >= 60 && !a.crowdCheered[p]) { a.crowdCheered[p] = true; if (sound) a.audio.play("oa_Cheer", 0.8f); }
+            if (c->hype[p] >= 60 && !a.crowdCheered[p]) { a.crowdCheered[p] = true; if (sound) { const std::string clip = a.audio.officialClip("Cheer"); a.audio.play(clip.empty() ? "oa_Cheer" : clip, 0.8f, 0.f, false, true); } }
             if (c->hype[p] < 35) a.crowdCheered[p] = false;
         }
     }
-    const float hype = c ? std::max(c->hype[0], c->hype[1]) / 100.f : 0.f;
-    const float target = c && c->fans > 0 && sound ? 0.12f + 0.6f * hype : 0.f;
-    a.crowdLevel += (target - a.crowdLevel) * std::min(1.f, dt * 2.f);
-    if (target == 0.f && a.crowdLevel < 0.003f) a.crowdLevel = 0.f;
-    a.audio.setLoop("oa_Crowd", a.crowdLevel);
+    // the fans' cheering: a short, quiet crowd blip when they cheer, at most one every 1.5 s, a little louder with their
+    // hype (owner, 2026-11-12: the crowd loop that ran under the whole match, louder with the hype, was annoying; S29
+    // is a blip now). Under voices: Audio's CROWD UNDER VOICES
+    if (c && sound && c->fans > 0 && (c->cheers[0] > 0 || c->cheers[1] > 0) && c->at != a.crowdBlipFor) {
+        a.crowdBlipFor = c->at;
+        const double now = nowSeconds();
+        if (now - a.crowdBlipAt >= 1.5) {
+            a.crowdBlipAt = now;
+            const float hype = std::max(c->hype[0], c->hype[1]) / 100.f;
+            const std::string clip = a.audio.officialClip("Crowd");
+            a.audio.play(clip.empty() ? "oa_Crowd" : clip, 0.35f + 0.4f * hype, 0.f, false, true);
+        }
+    }
 }
 
 // a country's flag (w x h metres, centred on the pose, facing its +Z); nothing for no country
@@ -5974,6 +6153,51 @@ static void headSelfieRender(App& a) {
     drawOwnAvatar(a, 0);
     drawWorld(a, 1);
     drawOwnAvatar(a, 1);
+#ifndef PA_STORE
+    if (a.hsCap && nowSeconds() - a.hsCapAt >= 0.5 && dataDir(a)) {   // SELFIE CAPTURE: the same camera, full size, saved
+        a.hsCapAt = nowSeconds();
+        const int CW = 2560, CH = 1440;
+        if (!a.hsCapFbo) {
+            glGenRenderbuffers(1, &a.hsCapDepth);
+            glBindRenderbuffer(GL_RENDERBUFFER, a.hsCapDepth);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, CW, CH);
+            glGenTextures(1, &a.hsCapTex);
+            glBindTexture(GL_TEXTURE_2D, a.hsCapTex);
+            glTexStorage2D(GL_TEXTURE_2D, 1, GL_SRGB8_ALPHA8, CW, CH);
+            glGenFramebuffers(1, &a.hsCapFbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, a.hsCapFbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, a.hsCapTex, 0);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, a.hsCapDepth);
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, a.hsCapFbo);
+        glViewport(0, 0, CW, CH);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        const float tx = t * CW / CH;
+        a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(tx), std::atan(tx), std::atan(t), -std::atan(t), 0.05f, 2000.f), eye.p);
+        drawWorld(a, 0);
+        drawOwnAvatar(a, 0);
+        drawWorld(a, 1);
+        drawOwnAvatar(a, 1);
+        std::vector<uint8_t> px((size_t)CW * CH * 4);   // (RGBA rows are 4-byte aligned: the default pack alignment)
+        glReadPixels(0, 0, CW, CH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        if (!a.hsCapStamp) a.hsCapStamp = (long)std::time(nullptr);
+        char name[64];
+        std::snprintf(name, sizeof name, "/selfiecap_%ld_%05d.ppm", a.hsCapStamp, ++a.hsCapN);
+        if (std::FILE* fp = std::fopen((std::string(dataDir(a)) + name).c_str(), "wb")) {
+            std::fprintf(fp, "P6\n%d %d\n255\n", CW, CH);
+            std::vector<uint8_t> row((size_t)CW * 3);
+            for (int y = CH - 1; y >= 0; --y) {   // (GL's rows run bottom up)
+                const uint8_t* s = &px[(size_t)y * CW * 4];
+                for (int x = 0; x < CW; ++x) { row[x * 3] = s[x * 4]; row[x * 3 + 1] = s[x * 4 + 1]; row[x * 3 + 2] = s[x * 4 + 2]; }
+                std::fwrite(row.data(), 1, row.size(), fp);
+            }
+            std::fclose(fp);
+        } else {
+            LOGI("selfie capture: can't write %s%s (storage full?); capture off", dataDir(a), name);
+            a.hsCap = false;
+        }
+    }
+#endif
     a.rttPass = false;
     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)keepFbo);
     glViewport(keepVp[0], keepVp[1], keepVp[2], keepVp[3]);
@@ -6269,6 +6493,16 @@ static void drawLobby(App& a, int pass) {
     }
 }
 
+// PLAYERS' NAMES: a name over a head, turned to face you, on a dark plate so it reads against the arena
+static void drawNameTag(App& a, const std::string& name, const Vec3& at) {
+    const Vec3 f = normalize(Vec3{a.viewHead.p.x - at.x, 0, a.viewHead.p.z - at.z});
+    const Pose p{Quat::axisAngle({0, 1, 0}, std::atan2(f.x, f.z)), at};
+    const float h = 0.075f, w = std::max(0.2f, h * 0.75f * (float)name.size() + 0.06f);
+    const float plate[4] = {0.01f, 0.02f, 0.04f, 0.78f}, white[4] = {1, 1, 1, 1};
+    a.gfx.drawPanel(Mat4::fromPose(p * Pose{Quat{}, {0, 0, -0.003f}}, {w, h * 1.5f, 1}), plate);
+    a.gfx.drawText(name, p, h, white);
+}
+
 static void drawRoomPeople(App& a, int pass) {
     const RoomInfo* rm = currentRoom(a);
     if (!rm) return;
@@ -6289,6 +6523,8 @@ static void drawRoomPeople(App& a, int pass) {
                 a.gfx.drawText(kPlace[std::max(0, std::min(3, (int)m.queuePos))], {Quat::axisAngle({0, 1, 0}, std::atan2(f.x, f.z)), m.in.head.p + Vec3{0, 0.32f, 0}},
                                0.07f, kRed);
             }
+            if (pass == 1 && a.showNames)
+                if (const char* n = rm->nameOf(m.id)) drawNameTag(a, n, m.in.head.p + Vec3{0, m.queuePos >= 0 ? 0.44f : 0.32f, 0});
         }
     }
     // your own hands while you wait outside (the tank only draws the two players' hands), and a pointer for the kiosk
@@ -6308,6 +6544,11 @@ static void drawRoomPeople(App& a, int pass) {
         for (int h = 0; h < 2; ++h)
             if (a.localIn.hand[h].tracked)
                 drawLancerAt(a, Mat4::fromPose(a.localIn.hand[h].grip), h, look, pass, Mat4::identity(), false, a.myAvatar);
+    }
+    if (pass == 1 && a.showNames) {   // PLAYERS' NAMES: the players in the match, not yourself
+        const int L = a.watchIp != 0 ? -1 : a.net.localSlot();
+        for (int p = 0; p < a.game.np; ++p)
+            if (p != L && a.game.pl[p].in.headTracked) drawNameTag(a, playerLabel(a, p), a.game.pl[p].in.head.p + Vec3{0, 0.36f, 0});
     }
     if (pass != 1) return;
     // the holding area: a glowing strip with four spots (everyone in the room sees it, players included)
@@ -7363,9 +7604,49 @@ static void drawFireballs(App& a, int pass, const float (*teamCol)[4]) {
     for (int p = 0; p < g.np; ++p)
         for (int k = 0; k < Game::kMaxFire; ++k) {
             const Ball& f = g.fire[p][k];
-            if (f.state != BallState::Flying) continue;
+            App::FireEcho& fe = a.fireEcho[p][k];
+            if (f.state != BallState::Flying) { fe.n = 0; continue; }
             const float* tc = teamCol[p & 3];
             const float r = g.tun.projectileRadius * f.scale;
+            // its echoes (a player's idea, 2026-11-10: smaller copies trailing the one you threw, along the hops it just
+            // made). Drawn here only, from where this screen showed it: no rule or network change. Smaller and fainter
+            // with age, without the core, the floor light or the warning, so the real one always stands out
+            {
+                const int N = App::FireEcho::kN;
+                const int last = (fe.head + N - 1) % N;
+                if (fe.n && length(f.pos - fe.p[last]) > 1.5f) fe.n = 0;   // (a new fireball in this place)
+                if (!fe.n || now - fe.t[last] >= 1.f / 120.f) {           // (once a frame, however often it's drawn)
+                    fe.p[fe.head] = f.pos; fe.t[fe.head] = now;
+                    fe.head = (fe.head + 1) % N; fe.n = std::min(N, fe.n + 1);
+                }
+                const float fireC[3] = {1.0f, 0.42f, 0.08f};
+                for (int e = 1; e <= 4; ++e) {
+                    const float want = now - 0.055f * e;   // (where it was this long ago, between two of the points)
+                    Vec3 at{};
+                    bool found = false;
+                    for (int i = 0; i + 1 < fe.n && !found; ++i) {
+                        const int a1 = (fe.head + N - 1 - i) % N, a0 = (fe.head + N - 2 - i) % N;
+                        if (fe.t[a0] <= want && want <= fe.t[a1]) {
+                            const float u = (want - fe.t[a0]) / std::max(1e-4f, fe.t[a1] - fe.t[a0]);
+                            at = lerp(fe.p[a0], fe.p[a1], u);
+                            found = true;
+                        }
+                    }
+                    if (!found || length(at - f.pos) < r * 1.6f) continue;   // (too young, or bunched up behind a slow one)
+                    const float fade = 0.75f - 0.15f * e;                     // 0.6, 0.45, 0.3, 0.15
+                    const float sc = f.scale * (g.tun.projectileRadius / 0.08f) * (0.72f - 0.12f * e);   // 60 .. 24 %
+                    DrawParams ep;
+                    for (int c = 0; c < 3; ++c) ep.tintMul[c] = 2.0f * fade * (0.65f * fireC[c] + 0.35f * tc[c]);
+                    ep.alphaMul = fade;
+                    ep.uvOff[0] = wrapUV(now * 0.6 + e * 0.13); ep.uvOff[1] = wrapUV(now * 0.4);
+                    a.gfx.draw(a.projectile, Mat4::fromPose({Quat{}, at}, {sc, sc, sc}), ep, pass);
+                    a.gfx.draw(a.shell, Mat4::fromPose({Quat::axisAngle(kUpV, now * 9.f + e), at}, {sc, sc, sc}), ep, pass);
+                    if (pass == 1) {
+                        const float eg[4] = {(0.5f + 0.5f * tc[0]) * fade, (0.25f + 0.25f * tc[1]) * fade, (0.05f + 0.2f * tc[2]) * fade, 1};
+                        a.gfx.drawSprite(at, r * 6.f * (0.72f - 0.12f * e), eg, a.viewHead.p, 0);
+                    }
+                }
+            }
             {   // the ball you threw, as it was on the tee, on fire: its plasma sphere and shell in fire colours, both passes
                 DrawParams bp;
                 const float fire[3] = {1.0f, 0.42f, 0.08f};
@@ -7591,6 +7872,29 @@ static void drawWorld(App& a, int pass) {
     float teamCol[kMaxPlayers][4];   // (each player's colour, for its ball, spawner, ring and trail)
     for (int p = 0; p < kMaxPlayers; ++p) { for (int k = 0; k < 3; ++k) teamCol[p][k] = pcol[p][k]; teamCol[p][3] = 1; }
     if (pass == 1 && !a.marks.empty()) drawMarks(a);   // BALL MARKS where the balls bounced
+    if (pass == 1 && a.mockContact) {   // (--contact, pictures only: a soft shadow on the floor under each player and ball)
+        const Game& cg = a.game;
+        auto floorBelow = [&](const Vec3& at, float& y) {   // the arena's own floor under it (as BALL MARKS finds surfaces)
+            Vec3 hp, hn; uint32_t tags = 0;
+            if (!cg.sweepArena(at, {at.x, -2.f, at.z}, 0.02f, hp, hn, tags) || hn.y < 0.6f) return false;
+            y = hp.y - 0.02f + 0.006f;
+            return true;
+        };
+        for (int p = 0; p < cg.np; ++p) {
+            const Vec3 h = cg.pl[p].in.head.p;
+            float y;
+            if (!floorBelow(h, y)) y = 0.03f;   // (where the players stand, beyond the balls' floor: the drawn floor)
+            a.gfx.drawShadowFlat({h.x, y, h.z}, 0.95f, 0.6f, {0, 1, 0});
+            auto ballShadow = [&](const Ball& b) {
+                float fy;
+                if (b.state == BallState::Dead || !floorBelow(b.pos, fy)) return;
+                const float ht = b.pos.y - fy;
+                a.gfx.drawShadowFlat({b.pos.x, fy, b.pos.z}, 0.22f + 0.14f * ht, 0.6f * clampf(1.f - ht / 3.f, 0.15f, 1.f), {0, 1, 0});
+            };
+            ballShadow(cg.pl[p].ball);
+            for (int k = 0; k < Game::kMaxFire; ++k) if (cg.fire[p][k].state == BallState::Flying) ballShadow(cg.fire[p][k]);
+        }
+    }
     if (pass == 1 && !minimal && !a.mrView)   // The Crowd: flags waving in the stands, the cheers pouring out of them (the
         drawFanFlags(a, now, corners || oct ? 1.35f : 1.f,   // EXPERIMENTAL arenas: in their widened, lowered stadium)
                      corners ? exparena::kFloor - 0.4f : oct ? -0.4f : 0.f);
@@ -7628,7 +7932,8 @@ static void drawWorld(App& a, int pass) {
         if (only >= 0 && p != only) continue;
         // (TRAINING: nobody at the far end, or the coach's own game shows it there)
         if (p == 1 && a.trainer.active() && !a.trainer.coachThere()) continue;
-        if (a.spectating && a.watchIp && !a.watchRoom.slot[p] && !a.watchRoom.isBot(p) && anyoneWatched) continue;
+        // (an empty place left out; the close-ups (VS, the win screen) picked their player themselves: always drawn)
+        if (only < 0 && a.spectating && a.watchIp && !a.watchRoom.slot[p] && !a.watchRoom.isBot(p) && anyoneWatched) continue;
         if (oct && g.match != MatchState::WaitingForPlayers && !((g.startMask >> p) & 1)) continue;   // (FIREBALL BLITZ: not in this match)
         if (oct && !g.alive(p) && g.match != MatchState::WaitingForPlayers) {   // (knocked out: a faint ghost where they watch from)
             const PlayerState& ps0 = g.pl[p];
@@ -8143,6 +8448,32 @@ static void discordUpdate(App& a) {
 }
 #endif
 
+// ---- REACH LOG (developer mode only): reach_log.h; the lines go to <files>/reach_log.csv
+static void reachLog(App& a, float dt) {
+    static ReachLog R;
+    static FILE* f = nullptr;
+    static bool tried = false;
+    if (!a.devMode || a.spectating) { R.have = false; return; }
+    if (!tried) {
+        tried = true;
+        if (const char* dir = dataDir(a)) {
+            const std::string fn = std::string(dir) + "/reach_log.csv";
+            bool fresh = true;
+            if (FILE* e = std::fopen(fn.c_str(), "rb")) { std::fseek(e, 0, SEEK_END); fresh = std::ftell(e) == 0; std::fclose(e); }
+            f = std::fopen(fn.c_str(), "a");
+            if (f && fresh) std::fprintf(f, "%s\n", ReachLog::kHeader);
+            if (f) { std::fprintf(f, "# session, %s\n", kAppVersion); std::fflush(f); }
+            LOGI("reach log %s: %s", f ? "on" : "could not open", fn.c_str());
+        }
+    }
+    if (!f) return;
+    std::vector<std::string> lines;
+    const Net::Mode m = a.net.mode();
+    R.step(a.game, a.net.localIndex(), dt, m == Net::Mode::Client ? "guest" : m == Net::Mode::Host ? "host" : "offline", lines);
+    for (const std::string& s : lines) std::fprintf(f, "%s\n", s.c_str());
+    if (!lines.empty()) std::fflush(f);
+}
+
 static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
     a.sparc.update(t);   // EXPERIMENTAL cross-play link (does nothing unless connected)
     // the EXPERIMENTAL rooms: by the rules in play (practice, rooms, spectating; 0.3.12); the lobby stays classic, two
@@ -8395,24 +8726,36 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
         tr.strikeFlash = std::max(0.f, tr.strikeFlash - dt);
         tr.burst = std::max(0.f, tr.burst - dt);
         const bool rising = b.state == BallState::Spawning && b.pos.y > 0.f;
-        if (b.state != BallState::Flying && b.state != BallState::Returning && !rising) { tr.n = 0; continue; }
+        if (b.state != BallState::Flying && b.state != BallState::Returning && !rising) { tr.n = 0; tr.stale = 0; continue; }
         float sl = rising ? 10.f : length(b.spin);
         tr.spinAngle += sl * dt;
         Vec3 axis = rising ? Vec3{0, 1, 0} : sl > 1e-3f ? b.spin / sl : Vec3{0, 1, 0};
         Vec3 perp = normalize(cross(axis, std::fabs(axis.y) < 0.9f ? Vec3{0, 1, 0} : Vec3{1, 0, 0}));
         float hr = a.game.ballRadius(p) * 1.3f;
-        Vec3 offA = Quat::axisAngle(axis, tr.spinAngle).rotate(perp) * hr;
-        if (tr.n == 48) {
-            for (int i = 1; i < 48; ++i) { tr.core[i - 1] = tr.core[i]; tr.helixA[i - 1] = tr.helixA[i]; tr.helixB[i - 1] = tr.helixB[i]; }
-            tr.n = 47;
+        // (someone waiting or watching gets the host's picture 30 times a second, the headset draws 72-90: the ball
+        // stood still for frames while its spiral turned on the spot, then jumped, drawn as arrows (owner, 2026-11-12,
+        // in the queue). A point only when it has moved, the frames between filled along the way, as smooth and as
+        // long as a player's)
+        if (tr.n > 0 && length(b.pos - tr.core[tr.n - 1]) < 1e-5f) { ++tr.stale; continue; }
+        const int k = tr.n > 0 ? std::min(tr.stale + 1, 8) : 1;
+        const Vec3 from = tr.n > 0 ? tr.core[tr.n - 1] : b.pos;
+        tr.stale = 0;
+        for (int j = 1; j <= k; ++j) {
+            const Vec3 at = from + (b.pos - from) * ((float)j / (float)k);
+            const Vec3 offA = Quat::axisAngle(axis, tr.spinAngle - (float)(k - j) * sl * dt).rotate(perp) * hr;
+            if (tr.n == 48) {
+                for (int i = 1; i < 48; ++i) { tr.core[i - 1] = tr.core[i]; tr.helixA[i - 1] = tr.helixA[i]; tr.helixB[i - 1] = tr.helixB[i]; }
+                tr.n = 47;
+            }
+            tr.core[tr.n] = at;
+            tr.helixA[tr.n] = at + offA;
+            tr.helixB[tr.n] = at - offA;
+            tr.n++;
         }
-        tr.core[tr.n] = b.pos;
-        tr.helixA[tr.n] = b.pos + offA;
-        tr.helixB[tr.n] = b.pos - offA;
-        tr.n++;
     }
     for (const GameEvent& e : a.game.events)
         if (e.type == EventType::Strike && e.player >= 0) a.trail[e.player].strikeFlash = 1.0f;
+    reachLog(a, dt);   // (developer mode: the REACH LOG, reach_log.csv)
     if (a.devMode) {   // diagnostics: when the opponent's ball passes the local player's hands, log ball vs bumper geometry
         static float prevX[2] = {0, 0};
         const int Lp = a.net.localIndex(), O = 1 - Lp;
@@ -8643,24 +8986,11 @@ static void pollXrEvents(App& a) {
             // world = trackToWorld_old * pose_prev(newOrigin) * p_new. The user recenters explicitly with B.
             auto* rc = (XrEventDataReferenceSpaceChangePending*)&ev;
             if (rc->referenceSpaceType != a.spaceType) break;
-            const XrPosef& d = rc->poseInPreviousSpace;
-            const float moved = std::sqrt(d.position.x * d.position.x + d.position.z * d.position.z);
-            const float turned = 2.f * std::acos(std::min(1.f, std::fabs(d.orientation.w))) * 57.2958f;
-            if (rc->poseValid && a.recentered && moved < 0.25f && turned < 10.f) {
-                // small: tracking settling. Keep the court fixed across the room, but follow a new floor height
-                // (compensating the height kept the court at the old, wrong floor)
-                XrPosef dxz = rc->poseInPreviousSpace;
-                dxz.position.y = 0;
-                a.trackToWorld = a.trackToWorld * fromXr(dxz);
-                LOGI("reference space shifted (%.3f, %.3f, %.3f): compensated across, floor %+.3f m followed",
-                     d.position.x, d.position.y, d.position.z, d.position.y);
-            } else if (rc->poseValid && a.recentered) {
-                // large: the player held the Meta button (system recenter): put them back on their spot, facing in
-                LOGI("system recenter (moved %.2f m, turned %.0f deg): re-placing the player", moved, turned);
-                a.recentered = false;
-            } else {
-                a.recentered = false;   // no valid delta: re-anchor on the next tracked frame
-            }
+            // (applied when it takes effect: applySpaceChanges, from readInput with the frame's display time)
+            App::PendingSpaceChange c{rc->changeTime, rc->poseValid != XR_FALSE, rc->poseInPreviousSpace};
+            auto at = a.spaceChanges.begin();
+            while (at != a.spaceChanges.end() && at->changeTime <= c.changeTime) ++at;
+            a.spaceChanges.insert(at, c);
             break;
         }
         case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
@@ -8776,22 +9106,26 @@ static void saveSettings(App& a) {
     const char* ext = dataDir(a);
     if (!ext) return;
     std::string f = std::string(ext) + "/settings.cfg";
+    // the player's own rules: a host's while we are its guest, or TRAINING's (and SOUND STUDIO's) lesson rules while one
+    // runs, were saved as theirs (owner, 2026-11-12: FIST BUMP FIRST went off after the studio; the lesson turns it off)
+    const Tunables& R = a.guestRules ? a.ownRules : a.trainer.active() ? a.trainer.savedRules() : a.game.tun;
     if (FILE* fp = fopen(f.c_str(), "w")) {
         fprintf(fp, "cfgver=8\n");
         fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nsparcserver=%s\nstatsnotice=%d\ncrowd=%d\nshields=%d\nknuckles=%d\nmatchtime=%.0f\nroundtime=%.0f\nturn=%d\nbotlevel=%d\nbotadapt=%d\nbotmatch=%.2f\nrecord=%d\nbotmeet=%d\nroomfeel=%d\nexperimental=%d\nexproom=%d\nteams=%d\noneturns=%d\nhealth=%d\nfireballs=%d\noctplayers=%d\ndiscord=%d\nprivatetalk=%d\nheadselfie=%d\nselfie=%d\nselfiecorner=%d\nselfiesize=%d\nselfieround=%d\nselfiecam=%d\n",
-                (a.guestRules ? a.ownRules : a.game.tun).advanced ? 1 : 0, a.game.tun.shieldPlacement, a.tunePitchDeg, a.tuneFwd, a.tuneUp, a.volume,
+                R.advanced ? 1 : 0, a.game.tun.shieldPlacement, a.tunePitchDeg, a.tuneFwd, a.tuneUp, a.volume,
                 a.pointerHand, a.fxLevel, a.hideOutside ? 1 : 0, a.voiceMode, a.muteSpectators ? 1 : 0, a.mutePlayers ? 1 : 0,
                 a.muteAll ? 1 : 0, a.onlinePref ? 1 : 0, a.botFill ? 1 : 0, a.ptMode, a.ptFloor, a.ptGlass, a.ptRoom, a.ptMono ? 1 : 0, a.ptEdges ? 1 : 0, a.ptEdgeReveal ? 1 : 0, a.ptPeekOn ? 1 : 0, a.team.c_str(),
                 (a.serverOverride.empty() ? a.serverAddr : a.serverSaved).c_str(),
-                a.sparcAddr.c_str(), a.statsNoticeSeen ? 1 : 0, a.crowdMode, (a.guestRules ? a.ownRules : a.game.tun).shields ? 1 : 0,
-                (a.guestRules ? a.ownRules : a.game.tun).knuckleMode, (a.guestRules ? a.ownRules : a.game.tun).basicMatchTime,
-                (a.guestRules ? a.ownRules : a.game.tun).advancedRoundTime, a.turnMode, (a.guestRules ? a.ownRules : a.game.tun).botLevel,
-                (a.guestRules ? a.ownRules : a.game.tun).botAdapt ? 1 : 0, (a.guestRules ? a.ownRules : a.game.tun).botMatch, a.recordOn ? 1 : 0,
-                (a.guestRules ? a.ownRules : a.game.tun).botMeet ? 1 : 0, a.roomFeel, (a.guestRules ? a.ownRules : a.game.tun).experimental ? 1 : 0, (a.guestRules ? a.ownRules : a.game.tun).expRoom, (a.guestRules ? a.ownRules : a.game.tun).teamMode,
-                (a.guestRules ? a.ownRules : a.game.tun).oneTurns ? 1 : 0, (a.guestRules ? a.ownRules : a.game.tun).health,
-                (a.guestRules ? a.ownRules : a.game.tun).fireBalls, (a.guestRules ? a.ownRules : a.game.tun).octPlayers, a.discordOn ? 1 : 0,
+                a.sparcAddr.c_str(), a.statsNoticeSeen ? 1 : 0, a.crowdMode, R.shields ? 1 : 0,
+                R.knuckleMode, R.basicMatchTime,
+                R.advancedRoundTime, a.turnMode, R.botLevel,
+                R.botAdapt ? 1 : 0, R.botMatch, a.recordOn ? 1 : 0,
+                R.botMeet ? 1 : 0, a.roomFeel, R.experimental ? 1 : 0, R.expRoom, R.teamMode,
+                R.oneTurns ? 1 : 0, R.health,
+                R.fireBalls, R.octPlayers, a.discordOn ? 1 : 0,
                 a.net.privateTalk() ? 1 : 0, a.headSelfie ? 1 : 0, a.selfieOn ? 1 : 0, a.selfieCorner, a.selfieSize, a.selfieRound ? 1 : 0, a.selfieCam);
         fprintf(fp, "lookahead=%d\n", a.net.lookAhead() ? 1 : 0);
+        fprintf(fp, "strikespeed=%d\n", R.strikeSpeed);
         fclose(fp);
     }
 }
@@ -8861,6 +9195,7 @@ static void loadSettings(App& a) {
         else if (k == "knuckles") a.game.tun.knuckleMode = std::max(-1, std::min(1, (int)v));
         else if (k == "matchtime") a.game.tun.basicMatchTime = clampf(v, 0.f, 3600.f);
         else if (k == "roundtime") a.game.tun.advancedRoundTime = clampf(v, 0.f, 3600.f);
+        else if (k == "strikespeed") a.game.tun.strikeSpeed = std::max(0, std::min(2, (int)v));
         else if (k == "hideoutside") a.hideOutside = v != 0;
         else if (k == "passthrough") {}   // always OFF when the game starts (owner, 2026-10-18); the page keeps the rest
         else if (k == "ptfloor") a.ptFloor = clampf(v, 0.f, 1.f);
@@ -9094,6 +9429,8 @@ struct ShotView {
     int aimPlayer = -1; Vec3 aimFrom, aimAt;   // --recordaim P dx dy dz ax ay az: a camera that follows player P's head
     std::string opts;   // --opts hotdog,free,adv,round2,time5,kg0,kg1: MATCH OPTIONS in the pictures
     float mockDark = -1.f;   // --mockdark K: pictures only, a darker arena (GitHub #9): floor, dais and structure x K
+    bool contact = false;    // --contact: pictures only, contact shadows under the players and balls (a mock-up)
+    bool depthOut = false;   // --depth: also OUT.depth (float32 depth, W x H rows bottom-up) for the AO mock-up
     int winStyle = 0;           // --winscreen split|winner|camera (or 0-2): its WIN SCREEN
     bool swingTest = false;   // --swingtest: the head snaps round just before the picture (the hair mid-swing)
     float armsUp = -1;        // --armsup DEG: the tuning scene's hands raised this far (0 forward, 90 overhead)
@@ -9522,6 +9859,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
                 avatar::setNation(a.game.pl[p].in.avatar, n);
             }
     }
+    a.mockContact = v.contact;
     if (v.mockDark >= 0.f) {   // --mockdark K (a mock-up for the owner; not a game setting): the grey parts darker.
         // Material order as tools/build_open_assets.py writes them (sorted names): environment 1 dais, 14 structure;
         // floor 2 runway, 3 seam, 4 tile; environment 4 screen, 13 stand edges
@@ -9843,6 +10181,11 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         glEnable(GL_FRAMEBUFFER_SRGB);
     }
     glFinish();
+    if (v.depthOut) {   // (--depth: the AO mock-up's input; near 0.05, far 2000, OpenGL's -1..1 depth range)
+        std::vector<float> dz((size_t)W * H);
+        glReadPixels(0, 0, W, H, GL_DEPTH_COMPONENT, GL_FLOAT, dz.data());
+        if (FILE* fd = fopen((std::string(out) + ".depth").c_str(), "wb")) { fwrite(dz.data(), sizeof(float), dz.size(), fd); fclose(fd); }
+    }
     std::vector<uint8_t> px((size_t)W * H * 4);
     glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
     const GLenum err = glGetError();
@@ -10869,6 +11212,17 @@ static void desktopRender(App& a, const Pose& eye, int W, int H, float dt) {
         else glClearColor(bg[p][0], bg[p][1], bg[p][2], 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glDisable(GL_SCISSOR_TEST);
+        // the player as the room last listed them: one who left while this shows stays, still, with their name
+        // (no room list yet: everyone is here)
+        bool listed = a.watchRoom.botMask != 0 || !a.watchRoom.members.empty();
+        for (int k = 0; k < kMaxPlayers; ++k) listed |= a.watchRoom.slot[k] != 0;
+        const bool here = !listed || a.watchRoom.slot[p] != 0 || a.watchRoom.isBot(p);
+        std::string nm = sideName(a, p);
+        if (const char* n = a.watchRoom.nameOf(a.watchRoom.slot[p])) nm = n;
+        else if (p == 1 && a.watchRoom.bot) nm = "BOT";
+        if (first || here) { a.dcHeldIn[p] = a.viewIn[p]; a.dcHeldName[p] = nm; }
+        const PlayerInput liveIn = a.viewIn[p];
+        if (!here) { a.viewIn[p] = a.dcHeldIn[p]; nm = a.dcHeldName[p]; }
         // the close-up: in front of the player (blue stands at -X and faces +X), the head and shoulders, drifting
         const Vec3 head = a.viewIn[p].head.p;
         a.dcClose[p] = first ? head : a.dcClose[p] + (head - a.dcClose[p]) * std::min(1.f, dt * 3.f);
@@ -10882,6 +11236,7 @@ static void desktopRender(App& a, const Pose& eye, int W, int H, float dt) {
         drawWorld(a, 0);
         drawWorld(a, 1);
         a.onlyPlayer = -1;
+        a.viewIn[p] = liveIn;
         // the label: the winner's name and WINS!, the other's name and the score
         glDisable(GL_DEPTH_TEST);
         auto txt = [&](const std::string& s, float x, float y, float h, const float* c) {
@@ -10892,9 +11247,6 @@ static void desktopRender(App& a, const Pose& eye, int W, int H, float dt) {
         if (a.nationsOn) for (int k = 0; k < 3; ++k) { blue[k] = 0.65f * a.sideRGB[0][k] + 0.35f; orange[k] = 0.65f * a.sideRGB[1][k] + 0.35f; }
         const float white[4] = {1, 1, 1, 1}, grey[4] = {0.70f, 0.74f, 0.80f, 1}, bar[4] = {0.0f, 0.01f, 0.03f, 0.72f};
         a.gfx.drawPanel(Mat4::fromPose({e.q, e.transform({0, -0.72f * hty, -1.002f})}, {1.8f * htx, 0.42f * hty, 1}), bar);
-        std::string nm = sideName(a, p);
-        if (const char* n = a.watchRoom.nameOf(a.watchRoom.slot[p])) nm = n;
-        else if (p == 1 && a.watchRoom.bot) nm = "BOT";
         drawFlag(a, a.sideNation[p], {e.q, e.transform({-0.70f * htx, -0.72f * hty, -1.001f})}, 0.26f * hty * 1.5f);   // NATIONS
         for (char& c : nm) c = (char)std::toupper((unsigned char)c);
         const float pop = p == wn ? 1.f + 0.6f * std::pow(std::max(0.f, 1.f - age / 0.4f), 2.f) : 1.f;
@@ -11079,6 +11431,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--recordframes") && i + 1 < argc)
             for (const char* c = argv[++i]; *c; ) { view.recordFrames.push_back(atoi(c)); while (*c && *c != ',') ++c; if (*c) ++c; }
         else if (!strcmp(argv[i], "--mockdark") && i + 1 < argc) view.mockDark = (float)atof(argv[++i]);
+        else if (!strcmp(argv[i], "--contact")) view.contact = true;
+        else if (!strcmp(argv[i], "--depth")) view.depthOut = true;
         else if (!strcmp(argv[i], "--crowd") && i + 3 < argc) {
             view.crowdFans = atoi(argv[++i]); view.crowdHype[0] = atoi(argv[++i]); view.crowdHype[1] = atoi(argv[++i]);
             if (i + 1 < argc && argv[i + 1][0] != '-') view.crowdCheer = atoi(argv[++i]);

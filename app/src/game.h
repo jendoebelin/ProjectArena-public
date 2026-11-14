@@ -94,7 +94,8 @@ struct Tunables {
     int statsMode() const {
         if (!shields) return 1;
         // (knuckle guards count by what is in play: "off" chosen in Basic and then Advanced picked is Advanced's own rule)
-        const bool std_ = knuckleGuards() == !advanced && (advanced ? advancedRoundTime <= 0.f : basicMatchTime == 180.0f);
+        const bool std_ = knuckleGuards() == !advanced && (advanced ? advancedRoundTime <= 0.f : basicMatchTime == 180.0f) &&
+                          perStrike() == speedIncreasePerStrike;   // (STRIKE SPEED other than REGULATION: custom)
         return std_ ? 0 : 2;
     }
 
@@ -139,6 +140,13 @@ struct Tunables {
     float minInputSpeed = 0.0f, maxInputSpeed = 6.50f;        // Brawl tuning 0 / 650 cm/s (C++ defaults 150 / 800)
     float projectileMinSpeed = 0.0f, projectileMaxSpeed = 14.0f;
     float speedIncreasePerStrike = 0.5f;      // UProjectileSpeedParams.SpeedIncreasePerStrike 50 cm/s
+    // STRIKE SPEED (0.3.19, a host's MATCH OPTION; owner 2026-11-11: regulation stays the default): 0 REGULATION (the
+    // original's 0.5 m/s a strike), 1 FAST (1.0), 2 FASTER (1.5). Two-player rooms (classic, DIAMOND) only
+    int strikeSpeed = 0;
+    float perStrike() const {
+        const bool twoPlayer = !experimental || expRoom == ROOM_DIAMOND;
+        return speedIncreasePerStrike * (1 + (twoPlayer ? std::max(0, std::min(2, strikeSpeed)) : 0));
+    }
     float scaleIncreasePerStrike = 0.25f;     // UProjectileLaunchParams.ScaleIncreasePerStrike
     int maxStrikes = 42;                      // MatchTuningData.MaxStrikes
     // Ball size per strike: the recovered +0.25 per strike for the first 4, then +0.05 per strike up to
@@ -322,6 +330,11 @@ struct PlayerInput {
     HandInput hand[2];   // 0 = left, 1 = right
     bool buttonA = false;   // restart / ready
     AvatarDesc avatar;   // cosmetic only; the simulation ignores it
+    // HAND TIMES (2026-11-11): online, on the host, when the player's own headset took this sample, on the host's game
+    // clock (-1: now, as for the host's own hands, bots, offline and older players). The hands' history (throw speed,
+    // a shield's or knuckle guard's swing) is timed by it, so packets arriving unevenly don't change how fast a hand
+    // seems to move. Not sent: the host sets it from the input message's clock (Net)
+    float sampleT = -1.f;
 };
 
 enum class BallState : uint8_t { Spawning, Idle, Held, Flying, Dead, Returning };
@@ -382,6 +395,9 @@ struct Ball {
     bool fouled = false, homing = false;
     float progX = 0, progT = 0;   // stuck balls: where along the court (x) it was at progT (its timer), last metre on
     float progZ = 0;              // (four players: across the room too)
+    // CATCHES ONLINE: the game time it reached its owner, a player who isn't hosting, on its way back (-1: not). The
+    // hit waits there for their round trip, in case their catch of it, as they saw it, is still on its way
+    float hitWaitAt = -1;
 };
 
 // one point of a ball's expected flight (Game::predictBall): the step (its game time) whose move brings the ball here
@@ -554,7 +570,9 @@ public:
         float mineAt = 0;
         Ball mineBall;              // ... as launched
         bool mineHost = false;      // ... the host's Throw for it has come
-        Vec3 shown[kMaxPlayers], moved[kMaxPlayers], err[kMaxPlayers];   // what was drawn, its last frame's move; the correction still gliding
+        // what was drawn; where the guess had the ball last frame and how fast it was going there; the correction
+        // still gliding (drawn = guess + err)
+        Vec3 shown[kMaxPlayers], target[kMaxPlayers], tvel[kMaxPlayers], err[kMaxPlayers];
         bool valid[kMaxPlayers] = {};
         float snapNow = -1;         // the host's game clock when it sent the latest snapshot (-1: a host before 0.3.15)
         bool held = false;          // my grab or catch, in my hand here until the snapshots show it
@@ -585,6 +603,21 @@ public:
     Vec3 recentHandVel(int p, int h, const Vec3& localPoint, float now) const;   // velocity of a grip-local point
     Pose knucklePose(int p, int h) const;
     Vec3 idlePoint(int p) const { return tun.spawner[p] + Vec3{0, tun.spawnerIdleHeight, 0}; }
+    // a ball you can take off the spawner: resting on it, or already up and rising to it (owner, 2026-11-10: a hand
+    // went through the rising ball; it used to wait for the top, 0.9 s of a ball in plain sight)
+    bool grabbable(const Ball& b) const {
+        return b.state == BallState::Idle || (b.state == BallState::Spawning && b.timer <= tun.spawnRiseTime);
+    }
+    // CATCHES ONLINE (a player's report, 2026-11-10: returns hard to catch in someone else's room, not every time). A
+    // player who isn't hosting sees the balls one round trip late (the snapshot's way here, their hand's way back), so a
+    // ball they snatch as it reaches their hand has already gone on past it here. Their catch is also judged against
+    // the ball where it was then: seenLate[p], that round trip (s, set by the host each frame; 0: the host, bots,
+    // offline), within lateCatchSlack either way and never more than lateCatchMax back. Only catches; nothing else.
+    float seenLate[kMaxPlayers] = {};
+    bool lateCatch = true;   // (tests and the lag test: off to compare)
+    static constexpr float lateCatchSlack = 0.04f, lateCatchMax = 0.25f;
+    struct BallTrack { static constexpr int kN = 40; Vec3 p[kN]; float t[kN] = {}; int n = 0, head = 0; } track[kMaxPlayers];
+    bool sawBallNear(int p, const Vec3& at, float reach) const;   // p's own ball, as p saw it, came within reach of `at`
     Vec3 chestPoint(int p) const;
     float throwSpeedFromHandSpeed(float handSpeed, int thrower) const;
     // public for tests; ball: whose ball did it; by: who earns it (four players: their ball grows)

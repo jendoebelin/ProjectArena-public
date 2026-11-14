@@ -10,6 +10,33 @@ exactly as on home Wi-Fi. Players never see each other's IP addresses; the serve
 - UDP port **47780** open to the internet.
 - Bandwidth: about 90 packets/s each way per player (~40 KB/s per player in a match).
 
+## How many players one server carries (measured 2026-11-09)
+
+`tools/relay_load_test.py` feeds the relay's own code the packets the game sends (rooms of two, rooms of four, people
+waiting, spectators in the lobby, someone talking) and measures the CPU it needs. On one ARM Neoverse-N1 core with
+Python 3.12, outbound traffic included:
+
+| Players online | Everyone in rooms: CPU, outbound | 20 % of them in the lobby: CPU, outbound |
+|---|---|---|
+| 50 | 4 %, 15 Mbit/s | 10 %, 38 Mbit/s |
+| 100 | 10 %, 33 Mbit/s | 35 %, 134 Mbit/s |
+| 150 | 18 %, 54 Mbit/s | 75 %, 288 Mbit/s |
+| 200 (the default `--max-clients`) | 27 %, 80 Mbit/s | 128 % (too much), 494 Mbit/s |
+
+- **The lobby is what grows fastest.** A spectator in the lobby watches every arena, so each one receives every
+  host's snapshots (30 a second) and room updates (15 a second): the traffic grows with players times arenas.
+- **About 50 lobby spectators are the limit today** whatever the CPU: past that, each host's sending exceeds its rate
+  limit (`HOST_RATE`, 2500 packets a second) and the relay drops some of its packets, its own players' too.
+- **Bandwidth before CPU:** check the machine's network limit and the provider's monthly allowance (Oracle's free tier:
+  10 TB a month outbound, about 31 Mbit/s if used around the clock).
+- What-if (`--lobby-state 5 --lobby-room 2`): if hosts sent lobby spectators 5 snapshots and 2 room updates a second,
+  100 players with 20 % in the lobby would need about 45 Mbit/s instead of 134, and the drops at 60 lobby spectators
+  go away.
+
+Run it on a server without copying anything, at the lowest priority:
+
+    ssh USER@SERVER "nice -n 19 python3 -I - --relay /path/to/projectarena_relay.py --udp" < tools/relay_load_test.py
+
 ## Quick start
 
     python3 server/projectarena_relay.py --port 47780 --stats player_stats.db
@@ -73,4 +100,6 @@ spectator's VS screen and in MENU > MY STATS.
   name is connected from, which only you (the operator) see.
 - **Bans:** `--bans bans.txt` (one per line: an IP address, or `name:PLAYERNAME`; `#` starts a comment). The file is
   re-read within a few seconds of a change: banned players are disconnected and see BANNED when they try again.
+- **Blocked names:** names with slurs or hate words are refused (NAME NOT ALLOWED), including a rename while online;
+  `word:WORD` lines in the bans file add words (found anywhere in a name, at least 3 letters).
 - Players can also mute one person for themselves (REPORT PLAYER > MUTE) or whole groups (SETTINGS > VOICE AND MUTES).

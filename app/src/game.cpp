@@ -25,10 +25,11 @@ Vec3 Game::recentHandVel(int p, int h, const Vec3& local, float t) const {
     const HandState& hs = pl[p].hands[h];
     if (hs.histN < 2) return {};
     int newest = (hs.histHead + 63) & 63, oldest = newest;
+    (void)t;   // (counted back from the newest sample: HAND TIMES, see handVelocity)
     for (int i = 1; i < hs.histN; ++i) {
         int k = (newest - i + 64) & 63;
         oldest = k;
-        if (t - hs.histT[k] >= tun.handVelWindow) break;
+        if (hs.histT[newest] - hs.histT[k] >= tun.handVelWindow) break;
     }
     float dt = hs.histT[newest] - hs.histT[oldest];
     if (dt <= 1e-4f) return {};
@@ -78,7 +79,7 @@ void Game::deflectMoving(Ball& b, const Vec3& n, const Vec3& vs, int deflector, 
         if (along < 0.35f) { d = d - toward * along + toward * 0.35f; d = normalize(d); }
         out = d * sp0;
     }
-    float cap = tun.projectileMaxSpeed + tun.speedIncreasePerStrike * strikesHeld(deflector);
+    float cap = tun.projectileMaxSpeed + tun.perStrike() * strikesHeld(deflector);
     float sp = clampf(length(out), tun.minSpeed, cap);
     Vec3 dir = normalize(out), tgt = assistDir(deflector, from, normalize(out));
     float ang = std::acos(clampf(dot(dir, tgt), -1.f, 1.f));
@@ -134,7 +135,7 @@ Vec3 Game::peakAngVel(int p, int h, float t) const {
     Vec3 best{};
     for (int i = 0; i < hs.histN; ++i) {
         int k = (hs.histHead - 1 - i + 128) & 63;
-        if (t - hs.histT[k] > tun.spinWindow) break;
+        if (hs.histT[(hs.histHead + 63) & 63] - hs.histT[k] > tun.spinWindow) break;   // (from the newest sample)
         if (length2(hs.angHist[k]) > length2(best)) best = hs.angHist[k];
     }
     return best;
@@ -190,7 +191,7 @@ float Game::throwSpeedFromHandSpeed(float s, int thrower) const {
     // lerp(minThrown, maxThrown + strikes * SpeedIncreasePerStrike, t)
     float t = clampf((s - tun.minInputSpeed) / std::max(1e-3f, tun.maxInputSpeed - tun.minInputSpeed), 0.f, 1.f);
     int strikes = strikesHeld(thrower);
-    return lerpf(tun.projectileMinSpeed, tun.projectileMaxSpeed + strikes * tun.speedIncreasePerStrike, t);
+    return lerpf(tun.projectileMinSpeed, tun.projectileMaxSpeed + strikes * tun.perStrike(), t);
 }
 
 Vec3 Game::handVelocity(int p, int h, float t) const {
@@ -202,7 +203,10 @@ Vec3 Game::handVelocity(int p, int h, float t) const {
     for (int i = 1; i < hs.histN; ++i) {
         int k = (newest - i + 64) & 63;
         oldest = k;
-        if (t - hs.histT[k] >= tun.throwVelocityWindow) break;
+        // (counted back from the newest sample, not from `t`: a player's samples online are timed by their headset
+        // and run a fixed delay behind the host's clock, which cut the window short and made throws faster, owner's
+        // tests 2026-11-11; the same as before wherever the newest sample is now)
+        if (hs.histT[newest] - hs.histT[k] >= tun.throwVelocityWindow) break;
     }
     float dt = hs.histT[newest] - hs.histT[oldest];
     if (dt <= 1e-4f) return {};
@@ -372,6 +376,7 @@ void Game::spawnBall(int p) {
     b.rechargePending = false;
     b.bounces = 0;
     b.fouled = b.homing = false;
+    b.hitWaitAt = -1;
     b.scale = strikeScale(strikesHeld(p));
 }
 
@@ -401,6 +406,7 @@ void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist) {
     b.bounces = 0;
     b.timer = 0;
     b.fouled = b.homing = false;
+    b.hitWaitAt = -1;
     b.progX = b.pos.x; b.progZ = b.pos.z; b.progT = 0;
     emit(EventType::Throw, p, h, b.pos, b.speedLimit);
     if (octagon()) toFire(p);
@@ -647,6 +653,18 @@ void Game::stepBall(int p, float dt) {
     case BallState::Flying: break;
     }
 
+    if (b.hitWaitAt >= 0.f) {   // CATCHES ONLINE: it reached its owner; held there until their catch could have come
+        b.vel = {};
+        const int self = b.instigator;
+        const float wait = self >= 0 && self < np ? std::min(seenLate[self], lateCatchMax) + lateCatchSlack : 0.f;
+        if (now - b.hitWaitAt < wait) return;
+        b.hitWaitAt = -1;   // no catch came: the hit, as it would have been
+        b.scored = true;
+        if (np == 2 && self >= 0 && self < 2) scorePoint(1 - self, self, b.pos, p);
+        b.state = BallState::Dead;
+        b.timer = tun.respawnDelay + tun.postSpawnDelay + 0.5f;
+        return;
+    }
     b.timer += dt;
     if (b.homing) {   // a fouled ball on its way home after its bounce off the wall
         const Vec3 d = idlePoint(p) - b.pos;
@@ -787,6 +805,12 @@ void Game::stepBall(int p, float dt) {
             Vec3 toSelf = pl[self].in.head.p - to;
             if (tun.selfHitScores && !b.scored && b.timer > tun.selfHitGrace && dot(b.vel, toSelf) > 0 &&
                 pl[self].in.headTracked && hitsBody(self, to, r)) {
+                if (lateCatch && seenLate[self] > 0.f) {   // (CATCHES ONLINE: their catch may still be coming)
+                    b.pos = to;
+                    b.vel = {};
+                    b.hitWaitAt = now;
+                    return;
+                }
                 b.scored = true;
                 if (np == 2) scorePoint(1 - self, self, to, p);   // (four players: nobody's point, the ball is spent)
                 b.state = BallState::Dead;
@@ -1225,16 +1249,20 @@ void Game::stepPlayer(int p, float dt) {
                 } else {
                     launch(p, h, normalize(v), throwSpeedFromHandSpeed(sp, p), peakAngVel(p, h, now));
                 }
-            } else if (b.state == BallState::Idle &&
+            } else if (grabbable(b) &&
                        ((pressed && length(launcherPoint(p, h) - b.pos) < 0.25f) ||
                         (hi.trigger > 0.5f && length(catcherPoint(p, h) - b.pos) < tun.catchHalfHeight + ballRadius(p)))) {
                 // off the spawner: a trigger press at the ball, or a swing through it with the trigger already held
                 b.state = BallState::Held; b.heldHand = h; b.vel = {};
                 emit(EventType::Grab, p, h, b.pos);
-            } else if (hi.trigger > 0.5f && (b.state == BallState::Flying || b.state == BallState::Returning) && b.instigator == p &&
-                       length(catcherPoint(p, h) - b.pos) < tun.catchHalfHeight + ballRadius(p)) {
+            } else if (hi.trigger > 0.5f && (b.state == BallState::Flying || b.state == BallState::Returning) &&
+                       // (your own ball, whoever touched it last: owner, 2026-11-11, a player found a ball in their
+                       // colour that the other player had blocked floating beside them, and it couldn't be caught)
+                       (length(catcherPoint(p, h) - b.pos) < tun.catchHalfHeight + ballRadius(p) ||
+                        sawBallNear(p, catcherPoint(p, h), tun.catchHalfHeight + ballRadius(p)))) {
                 // catch your own ball ("You can't catch your opponent's ball!")
                 b.state = BallState::Held; b.heldHand = h; b.vel = {}; b.spin = {};
+                b.hitWaitAt = -1;   // (CATCHES ONLINE: a catch that came while the hit waited wins)
                 emit(EventType::Caught, p, h, b.pos);
             }
         }
@@ -1352,9 +1380,9 @@ void Game::lookAhead(int L, float lead, float dt) {
             if (!hi.tracked) continue;
             const bool pressed = hi.trigger > 0.55f && ahead.prevTrig[h] <= 0.55f;
             const float reach = tun.catchHalfHeight + ballRadius(L);
-            const bool grab = mb.state == BallState::Idle &&
+            const bool grab = grabbable(mb) &&
                               ((pressed && length(launcherPoint(L, h) - mb.pos) < 0.25f) || (hi.trigger > 0.5f && length(catcherPoint(L, h) - mb.pos) < reach));
-            const bool caught = hi.trigger > 0.5f && flying(mb) && mb.instigator == L && length(catcherPoint(L, h) - drawn) < reach;
+            const bool caught = hi.trigger > 0.5f && flying(mb) && length(catcherPoint(L, h) - drawn) < reach;   // (your own ball, always)
             if (grab || caught) { ahead.held = true; ahead.heldHand = h; ahead.heldAt = now; }
         }
     }
@@ -1386,7 +1414,11 @@ void Game::lookAhead(int L, float lead, float dt) {
         if (hi.tracked && hi.trigger < 0.35f && sp >= tun.throwMinHandSpeed) {
             const Ball keep = mb;
             const size_t ne = events.size();
-            mb.pos = launcherPoint(L, h);
+            // (from where the host launches it: the ball in the fist, where the last step left it, not the
+            // launcher point 25 cm ahead: 17 cm apart, owner's tests 2026-11-11)
+            const HandState& hs = me.hands[h];
+            const Pose was = hs.histN >= 2 ? hs.gripHist[(hs.histHead + 62) & 63] : hi.grip;
+            mb.pos = was.transform(tun.holdOffset);
             launch(L, h, normalize(v), throwSpeedFromHandSpeed(sp, L), peakAngVel(L, h, now));
             events.resize(ne);   // (the host's Throw comes with a snapshot: its sound plays once)
             ahead.mineBall = mb;   // (as launched: each frame flies it on from here)
@@ -1456,33 +1488,62 @@ void Game::lookAhead(int L, float lead, float dt) {
             pl[p].ball = b;
             continue;
         }
-        // a guess the snapshots correct glides over (about a tenth of a second) from where the ball was heading as drawn;
-        // a big one snaps
+        // a guess the snapshots correct glides over (about a tenth of a second); a big one snaps. Only a jump in the
+        // guess is a correction: where last frame's guess would have the ball now, at its own speed, against where this
+        // one has it. A bounce or a block in the guess is the ball's own path, drawn as it is (owner, 2026-11-10: the
+        // ball wobbled with no lag at all: the glide had kept each ball going the way it was drawn going, so at every
+        // bounce and block it flew on into the wall or the hand and swung back and forth across its path, up to 1.15 m,
+        // for half a second; tools/run_lag_test.py, the swing after a turn)
         if (ahead.valid[p]) {
-            const Vec3 corr = ahead.shown[p] + ahead.moved[p] - b.pos;
+            Vec3 jump{};
+            const float sv = length(b.vel), st = length(ahead.tvel[p]);
+            if (sv < 0.5f || st < 0.5f || dot(b.vel, ahead.tvel[p]) > 0.9f * sv * st)   // (turned: a bounce, not a correction)
+                jump = ahead.target[p] + ahead.tvel[p] * dt - b.pos;
+            const Vec3 corr = ahead.err[p] + jump;
             // (my own throw: a softer glide, over about a fifth of a second: the host's throw, from my hand motion as it
             // arrived, differs a little from the one launched here)
             ahead.err[p] = length(corr) < 3.f ? corr * std::exp(-dt * (p == L ? 5.f : 10.f)) : Vec3{};
         } else {
             ahead.err[p] = {};
-            ahead.moved[p] = b.vel * dt;
         }
+        ahead.target[p] = b.pos;
+        ahead.tvel[p] = b.vel;
         Ball shown = b;
         shown.pos = b.pos + ahead.err[p];
-        if (ahead.valid[p]) ahead.moved[p] = shown.pos - ahead.shown[p];
         ahead.shown[p] = shown.pos;
         ahead.valid[p] = true;
         pl[p].ball = shown;
     }
 }
 
+bool Game::sawBallNear(int p, const Vec3& at, float reach) const {
+    const float late = std::min(seenLate[p], lateCatchMax);
+    if (!lateCatch || late <= 0.f) return false;
+    const BallTrack& k = track[p];
+    const float from = now - late - lateCatchSlack, to = now - late + lateCatchSlack;
+    for (int i = 0; i + 1 < k.n; ++i) {   // newest first: each stretch of the path between two steps
+        const int i1 = (k.head + BallTrack::kN - 1 - i) % BallTrack::kN, i0 = (i1 + BallTrack::kN - 1) % BallTrack::kN;
+        if (k.t[i1] < from) break;
+        if (k.t[i0] > to) continue;
+        const Vec3 a = k.p[i0], ab = k.p[i1] - a;
+        const float u = clampf(dot(at - a, ab) / std::max(1e-6f, dot(ab, ab)), 0.f, 1.f);
+        if (length(at - (a + ab * u)) < reach) return true;
+    }
+    return false;
+}
+
 void Game::recordHand(int p, int h) {
     HandState& hs = pl[p].hands[h];
     const HandInput& hi = pl[p].in.hand[h];
+    float t = now;
+    if (pl[p].in.sampleT >= 0.f) {   // HAND TIMES: the headset's own time for it; a sample already recorded isn't again
+        t = pl[p].in.sampleT;
+        if (hs.histN && t <= hs.histT[(hs.histHead + 63) & 63] + 1e-5f) return;
+    }
     hs.hist[hs.histHead] = launcherPoint(p, h);
     hs.angHist[hs.histHead] = hi.angVel;
     hs.gripHist[hs.histHead] = hi.grip;
-    hs.histT[hs.histHead] = now;
+    hs.histT[hs.histHead] = t;
     hs.histHead = (hs.histHead + 1) & 63;
     hs.histN = std::min(64, hs.histN + 1);
 }
@@ -2542,6 +2603,13 @@ void Game::step(float dt, PlayerInput* in) {
     stepMatch(dt);
     for (int p = 0; p < np; ++p) stepPlayer(p, dt);
     for (int p = 0; p < np; ++p) stepBall(p, dt);
+    for (int p = 0; p < np; ++p) {   // each flying ball's recent path (CATCHES ONLINE)
+        const Ball& b = pl[p].ball;
+        BallTrack& k = track[p];
+        if (b.state != BallState::Flying && b.state != BallState::Returning) { k.n = 0; continue; }
+        k.p[k.head] = b.pos; k.t[k.head] = now;
+        k.head = (k.head + 1) % BallTrack::kN; k.n = std::min(BallTrack::kN, k.n + 1);
+    }
     if (octagon()) {   // FIREBALL BLITZ: the fireballs; a tee waiting for room refills (RAPID FIRE: at once)
         for (int p = 0; p < np; ++p)
             for (int k = 0; k < kMaxFire; ++k) stepFire(p, k, dt);

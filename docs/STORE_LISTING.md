@@ -1,32 +1,37 @@
 # Store listing (Meta Horizon Store): every answer, in the order the dashboard asks
 
 Dashboard > App submissions > the draft (**v1**) > **App metadata**. The package name `com.projectarena.game` never
-changes. Art: `build/store_art/` (re-render with `python -I tools/gen_store_art.py`). Save each page; do not press
+changes. Art: `build/store_art/`: real footage only (owner, 2026-11-07): the covers and screenshots come from
+`python -I tools/gen_store_art_real.py` (real captures; the covers rebuild the alpha thumbnail's shot without "ALPHA"
+and without a tagline: the title and the orange rule alone, owner 2026-11-08), the icon and tiles from
+`python -I tools/gen_store_art.py`. The same covers with THROW. BLOCK. DODGE. under the rule (`--promo`,
+`build/promo/verbs/`) are for posts and ads, not the listing. Never the staged bot scenes in
+`build/store_art/staged_do_not_use/`. Save each page; do not press
 Submit for Review until the public launch (ROADMAP 4c).
 
 ## Basic details
 
 - **Name:** Project Arena
-- **Short description:**
-  > A free 1-v-1 VR sport: throw, curve and punch energy balls past your rival's shield. Play online with Quest and PC players.
-- **Description:**
-  > Project Arena is a one-on-one VR court sport. You stand at your end of a neon glass court, grab your ball and throw
-  > it at your opponent. Bank it off the walls, curve it with a flick of the wrist, punch their shots away with your
-  > gauntlets, and raise your shield while you hold a charged ball. Every strike makes your ball bigger and faster.
+- **Short description** (launch, 2026-11-08):
+  > A free VR court sport: throw, curve and punch charged balls past your rival's shield. 1-v-1 or four players, online with Quest and PC VR.
+- **Description** (launch, 2026-11-08; Meta allows 1500 characters, this is 1406; the alpha text described only the 1-v-1 court):
+  > Project Arena is a free VR court sport. Stand at your end of a neon glass court and throw your ball at your opponent: bank it off the walls, curve it with a flick of the wrist, punch their shots away with your gauntlets, and raise your shield while you hold a charged ball. It's a real workout: you'll be ducking, leaning and sidestepping from the first point.
   >
   > - Real throwing physics: your hand speed, spin and aim decide the shot.
-  > - Play online: Quest and PC VR players meet in the same rooms on the community server, or play on your home Wi-Fi.
-  > - A lobby to start from: watch two bots play from a balcony above the court, then jump in.
-  > - Arena rooms: host or join a room, wait your turn, and bump fists with your opponent to start. Spectate any live match.
-  > - Advanced or Basic rules: best of three rounds, or a three-minute match.
-  > - Voice chat: push-to-talk by default, open mic if you prefer, with mutes for spectators, players or one person.
-  > - Make it yours: two body types, outfits, hair, headgear, face shields, masks, team colours, and medieval-style
-  >   plate gauntlets.
-  > - Play for your country (over 200 to choose from): a team kit in your flag's colours, your end of the court lit in
-  >   them, flags in the arena.
-  > - Career statistics from online matches: wins, throw accuracy, blocks, top speed. See yours in MY STATS, and
-  >   delete them any time.
-  > - Free and open source: no ads, no accounts, no tracking. Report a bug or a player from any menu.
+  > - 1-v-1 on the classic court, with Advanced or Basic rules.
+  > - FIREBALL BLITZ: up to four players, bouncing fireballs, last one standing.
+  > - FOUR CORNERS: free-for-all, 2 v 2 or 3 v 1.
+  > - EXPERIMENTAL DIAMOND: the court rolled 45 degrees.
+  > - TRAINING: lessons with worldwide leaderboards.
+  > - Practice bots from ROOKIE to UNBEATABLE, even offline.
+  > - Online play: Quest and PC VR players meet in the same rooms, or play on your home Wi-Fi.
+  > - Spectate any live match with your own camera angles. Friends can cheer from their phones.
+  > - SOUND STUDIO: vote on the community's sounds or play your own.
+  > - Voice chat: push-to-talk or open mic, with mutes for spectators, players or one person.
+  > - Make it yours: body types, outfits, hair, headgear, masks, team colours and plate gauntlets.
+  > - Play for your country: a team kit in your flag's colours, over 200 to choose from.
+  > - Career statistics in MY STATS. Delete them any time.
+  > - Free and open source: no ads, no accounts, no tracking.
 
 ## Categorization
 
@@ -39,13 +44,13 @@ Submit for Review until the public launch (ROADMAP 4c).
 
 ## Specs
 
-- **Early Access:** Enabled (turn it off at the full public launch)
+- **Early Access:** Off (turned off for the launch, 2026-11-08)
 - **Player modes:** Single player, Player versus player (PvP), and the online multiplayer option (User Reporting is
   set up: Engagement > User Reporting). If multiplayer stays greyed out: Single player only.
-- **Play area:** Movement (players step and lean to dodge; about 2 x 2 m, standing)
+- **Play area:** Standing and Roomscale (players step and lean to dodge; about 2 x 2 m; Roomscale ticked 2026-11-08)
 - **Comfort:** Moderate (play is stationary; the optional spectator mode flies smoothly with the thumbsticks)
 - **Supported controllers / input:** Touch controllers (no hand tracking yet)
-- **Internet:** Required for some features (online play; practice works offline)
+- **Internet:** Not required (the dashboard offers only Required or Not required, 2026-11-08; the bots, TRAINING and home Wi-Fi play work offline, and the description says online play needs a connection)
 - **Subscription:** No
 - **Purchase-blocked devices:** Quest (Quest 1) blocked
 - **Social features / users interact:** Yes
@@ -53,7 +58,8 @@ Submit for Review until the public launch (ROADMAP 4c).
 
 ## Details (developer and links)
 
-- **Developer:** Project Arena (untick "use team name" if it would show the team's name)
+- **Developer:** CrossGenGaming (owner, 2026-11-08; untick "Use team name", which would show the dashboard team's
+  name "Project_Arena_Testers")
 - **Publisher:** Project Arena
 - **Website:** https://github.com/jendoebelin/ProjectArena-public
 - **Privacy policy:** https://github.com/jendoebelin/ProjectArena-public/blob/main/docs/PRIVACY.md
@@ -78,6 +84,30 @@ Submit for Review until the public launch (ROADMAP 4c).
 | 180 x 180 tile, trailer, 360 preview (optional) | skip |
 
 The VRC circles on the Assets page (VRC.Quest.Asset.*) are confirmations: tick each one once the art meets it.
+
+## Comfort rating (the dashboard's comfort level; written 2026-11-07 for the store launch)
+
+**Rating: Moderate.** Meta's tiers: Comfortable (no camera or player motion), Moderate (some camera and player motion),
+Intense (first-person camera motion, acceleration). Why Moderate and not the others:
+- **Playing is stationary.** Players stand in their own spot and move only with their body (step, lean, duck to
+  dodge); the game never moves or turns the view during a match. On its own this would be Comfortable.
+- **The optional spectator view moves the camera**: watching a match in the headset, the thumbsticks fly the camera
+  smoothly, the right stick turns it (snap 30 degrees by default; SMOOTH and SMOOTH FAST are choices in SETTINGS), the
+  director cameras cross-fade or cut between views, and a follow camera can glide with the ball. That is what makes it
+  Moderate; none of it is on unless the player chooses to spectate.
+- **Heights:** FOUR CORNERS puts the players on platforms with the floor 1 m below (no falling; the view never moves).
+- **Not Intense:** no artificial movement while playing, no forced acceleration, no camera shake; moving between the
+  lobby, the arena and spectating is a cut or a fade.
+
+If the dashboard asks for a short comfort note:
+
+> Play is stationary: you stand in your spot and dodge, lean and throw with your body; the game never moves your
+> view during a match. The optional spectator mode lets you fly the camera smoothly with the thumbsticks (snap turning
+> by default, smooth turning optional). Fast balls come straight at you, and you'll move a lot: clear a play area of
+> about 2 x 2 m.
+
+If it asks about movement or play area: **Standing, room-scale, about 2 x 2 m**; locomotion: **none while playing**;
+spectating: **smooth (thumbsticks) and teleport-style cuts**; turning: **snap (default), smooth optional**.
 
 ## Content rating (IARC questionnaire)
 
@@ -146,6 +176,40 @@ asks for a description of our own tool:
 > the same page MUTE silences that player's voice for the reporter at once, VOTE TO REMOVE lets the people in an
 > arena room remove someone from it (more than half of the others must agree; they can't come back to that arena
 > that session), and SETTINGS > VOICE AND MUTES mutes spectators, players or everyone. Contact: vrsportsfan@gmail.com.
+
+## Submission (the Submission tab; written 2026-11-08)
+
+- **Submit for Review stays grey** until the Build tab has the binary (0.3.18 from ALPHA) and "Are test credentials
+  required" is answered: **No** (no login, no account).
+- **Contact email:** the owner's (not public).
+- **Build tab:** 0.3.18 (versionCode 23) put on Production as Draft with "Change current build" (not uploaded
+  again); "Use Live binary" off; age group as ALPHA (teens and adults, 13+); **Does your app contain ads: No**.
+  The permission justifications (required; the button stays grey without them):
+  - `com.oculus.permission.USE_SCENE`:
+    > Optional passthrough mode only (SETTINGS > PASSTHROUGH > WINDOW, Quest 3 / 3S). The environment depth API hides
+    > real objects that are closer than the court's glass walls, so the player's room shows only beyond the court.
+    > The permission is asked only when the player chooses WINDOW. Depth is used on the headset in real time and is
+    > never stored or sent anywhere.
+  - `android.permission.RECORD_AUDIO`:
+    > Voice chat with the other players at an online arena (push-to-talk by default; open mic or off in SETTINGS >
+    > VOICE AND MUTES). Asked the first time the player enters a room. Voice goes live only to the people at the same
+    > arena and is never recorded or stored.
+- **Notes for the Reviewer:**
+
+```
+Project Arena is free and has no account or login, so no test credentials are needed.
+
+Everything can be tested on one headset:
+- Title page > PLAY PRACTICE: a match against the bot (ROOKIE to UNBEATABLE). Works offline. In the match options, the EXPERIMENTAL rooms (DIAMOND, FOUR CORNERS, FIREBALL BLITZ) can be played against bots too.
+- TRAINING: throwing, blocking and dodging lessons. Results go to the online leaderboards when connected.
+- MULTIPLAYER: our community server. Host a room alone and the bot plays you; a second headset (Quest or PC VR) can join from the games list.
+- Voice chat is push-to-talk by default; the microphone permission is asked for it.
+- Safety: in a room, the menu's REPORT PLAYER page reports a player, MUTEs them, or starts a VOTE TO REMOVE; SETTINGS > VOICE AND MUTES mutes spectators, players or everyone. Meta's User Reporting is set up too.
+- Passthrough is optional (SETTINGS > PASSTHROUGH). On Quest 3 / 3S its WINDOW mode asks for the spatial data permission; the room data stays on the headset.
+- At start the app checks the entitlement with the Platform SDK; a copy the account doesn't own shows a message and closes.
+
+Play is standing or roomscale: you dodge with your body, so clear about 2 x 2 m. Contact: vrsportsfan@gmail.com
+```
 
 ## Builds (not in the draft)
 

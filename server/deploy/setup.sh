@@ -17,7 +17,7 @@ id projectarena >/dev/null 2>&1 || useradd --system --home /opt/projectarena --s
 mkdir -p /opt/projectarena/bug_reports /opt/projectarena/sound_library/removed   # (sound_library: SOUND STUDIO, 0.3.16)
 install -m 0644 "$RELAY" /opt/projectarena/projectarena_relay.py
 # moderation: one ban per line (an IP address, or name:PLAYERNAME); the relay re-reads it when it changes
-[ -f /opt/projectarena/bans.txt ] || echo '# Project Arena bans: an IP address or name:PLAYERNAME per line' > /opt/projectarena/bans.txt
+[ -f /opt/projectarena/bans.txt ] || echo '# Project Arena bans: an IP address, name:PLAYERNAME or word:WORD (no name containing it) per line' > /opt/projectarena/bans.txt
 chown -R projectarena:projectarena /opt/projectarena
 
 cat > /etc/systemd/system/projectarena-relay.service <<EOF

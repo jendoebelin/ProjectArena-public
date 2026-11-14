@@ -20,10 +20,11 @@ public:
     void shutdown();
     void pause();
     void resume();
-    void play(const std::string& clip, float gain = 1.f, float pan = 0.f, bool loop = false);
+    // duck: a crowd sound (the ambience, The Crowd's, the round and match ends), turned down while someone talks
+    void play(const std::string& clip, float gain = 1.f, float pan = 0.f, bool loop = false, bool duck = false);
     bool cue(const std::string& key, float gain = 1.f, float pan = 0.f);   // an events.txt sound by its name (false: none)
     // one looping clip at a volume that can change every frame (The Crowd's crowd sound); 0 stops it
-    void setLoop(const std::string& clip, float gain);
+    void setLoop(const std::string& clip, float gain, bool duck = false);
     // local: the listener's player index (HitPlayer names the victim, RoundEnd / MatchEnd the winner)
     // ours: the event is on the listener's side (they were hit, their team won); right: the listener's right, flat
     void onEvent(const GameEvent& e, const Vec3& listener, bool ours, const Vec3& right = {0, 0, 1});
@@ -47,7 +48,11 @@ public:
 
 private:
     struct Clip { std::vector<float> samples; int channels = 1; };   // 48 kHz
-    struct Voice { const Clip* clip; size_t pos; float gainL, gainR; bool loop; };
+    struct Voice { const Clip* clip; size_t pos; float gainL, gainR; bool loop; bool duck = false; };
+    // CROWD UNDER VOICES (owner, 2026-11-10: the crowd drowned a conversation): while anyone else's voice plays, the
+    // crowd sounds go down to kDuck, quickly, and come back smoothly once nobody has spoken for kDuckHold
+    static constexpr float kDuck = 0.32f, kDuckHold = 0.6f, kDuckAttack = 0.08f, kDuckRelease = 0.5f;
+    float duck_ = 1.f, duckHold_ = 0.f;   // (the mixer's own: its thread only)
     const Clip* get(const std::string& name);
     void mix(float* out, int frames);                 // 48 kHz stereo float, interleaved
     void captured(const int16_t* in, int frames);     // 48 kHz mono from the microphone

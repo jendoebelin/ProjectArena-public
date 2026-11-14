@@ -6,7 +6,13 @@ analogue warmth (soft saturation) and placed in a generated arena reverb. Crowd 
 synthetic voices (jittered glottal pulse trains through vowel formants).
 
 Writes app/assets_open/audio/*.wav (48 kHz mono 16-bit) and events.txt (keys used by app/src/audio.cpp).
-Usage: python -I tools/gen_open_audio.py
+Usage: python -I tools/gen_open_audio.py   (tools/build_open_assets.py runs it only with --audio)
+
+Each sound's random detail depends on every sound made before it (one seeded generator), so a new sound goes at the
+end of SOUNDS. The committed ClockTick, LeadChange and TargetHit were made from random draws this script no longer
+reproduces (checked 2026-11-09, also with the script as it was in the commits that added them): a rebuild gives the
+same sounds with other random detail (same length and loudness; TargetHit 0.63 s instead of 0.90 s) and changes those
+three files. Every other sound and events.txt come out byte for byte as committed.
 """
 import os
 import sys
@@ -547,8 +553,9 @@ SOUNDS = [
     ('Countdown', s_countdown), ('RoundStart', s_round_start), ('RoundEndWin', lambda: s_round_end(True)),
     ('RoundEndLose', lambda: s_round_end(False)), ('MatchEndWin', lambda: s_match_end(True)),
     ('MatchEndLose', lambda: s_match_end(False)), ('Recharge', s_recharge), ('Strike', s_strike),
-    ('Overtime', s_overtime), ('FistBump', s_fist_bump), ('Ambience', s_ambience), ('ClockTick', s_clock_tick),
+    ('Overtime', s_overtime), ('FistBump', s_fist_bump), ('Ambience', s_ambience),
     ('Crowd', s_crowd), ('Cheer', s_cheer),   # (last: the sounds above keep their random draws)
+    ('ClockTick', s_clock_tick),              # (0.3.10, after them: Crowd and Cheer stay exactly as they were)
     ('LeadChange', s_lead_change),            # (0.3.12, after them: the earlier sounds stay exactly as they were)
     ('TargetHit', s_target_hit),              # (TRAINING, 0.3.12)
 ]

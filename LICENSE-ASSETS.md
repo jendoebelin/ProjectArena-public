@@ -12,4 +12,6 @@ The code (game, tools, server) is under the MIT license: see `LICENSE`.
 
 Exceptions:
 - The avatar bodies are built from MPFB2 / MakeHuman base meshes, which are CC0 (public domain).
+- The licensed music (`app/assets_music`, in the builds only, never in the public repository) was made with Suno and
+  is used by CrossGenGaming under Suno's terms: it is **not** covered by CC BY 4.0 and may not be reused apart from the game.
 - Project Arena contains no assets from any other game.

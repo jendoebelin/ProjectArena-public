@@ -1,6 +1,8 @@
 """Procedural textures for the Project Arena art set (original work, no CCP content).
 
 Writes PNGs to build/open_src/tex (used by the Blender bakes) and .tex files to app/assets_open/tex (used by the app).
+The PATTERN masks (pat_*) are only PNGs here (flat sheets): the game's tex/open_pat_*.tex, in the bodies' UV layout,
+are tools/build_body_parts.py's, and writing them here too replaced them whenever this ran without it after.
 Usage: python -I tools/gen_open_textures.py
 """
 import os
@@ -15,8 +17,8 @@ TEX = os.path.join(ROOT, 'app', 'assets_open', 'tex')
 rng = np.random.default_rng(2026)
 
 
-def save(name, rgb, alpha=None):
-    """rgb: float HxWx3 in 0..1 (display / sRGB values). alpha defaults to max(rgb)."""
+def save(name, rgb, alpha=None, tex=True):
+    """rgb: float HxWx3 in 0..1 (display / sRGB values). alpha defaults to max(rgb). tex=False: the PNG only."""
     rgb = np.clip(rgb, 0, 1)
     if alpha is None:
         alpha = rgb.max(axis=2)
@@ -26,10 +28,11 @@ def save(name, rgb, alpha=None):
     os.makedirs(TEX, exist_ok=True)
     Image.fromarray(u8, 'RGBA').save(os.path.join(PNG, name + '.png'))
     h, w = u8.shape[:2]
-    with open(os.path.join(TEX, 'open_' + name + '.tex'), 'wb') as f:
-        f.write(b'STEX' + struct.pack('<3I', w, h, 0))
-        f.write(u8.tobytes())
-    print('  %-14s %4dx%-4d' % (name, w, h))
+    if tex:
+        with open(os.path.join(TEX, 'open_' + name + '.tex'), 'wb') as f:
+            f.write(b'STEX' + struct.pack('<3I', w, h, 0))
+            f.write(u8.tobytes())
+    print('  %-14s %4dx%-4d%s' % (name, w, h, '' if tex else '  (PNG only)'))
 
 
 def grid(w, h):
@@ -254,8 +257,8 @@ def _dots(centres, r_out, r_in=0.0):
     return cov
 
 
-def _save_pattern(name, R, G):
-    save('pat_' + name, np.dstack([R, G, np.zeros_like(R)]), alpha=np.ones_like(R))
+def _save_pattern(name, R, G):   # (the game's open_pat_*.tex: tools/build_body_parts.py)
+    save('pat_' + name, np.dstack([R, G, np.zeros_like(R)]), alpha=np.ones_like(R), tex=False)
 
 
 def patterns():

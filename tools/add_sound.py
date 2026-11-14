@@ -24,7 +24,7 @@ AUDIO = os.path.join(ROOT, 'app', 'assets_open', 'audio')
 OUT = os.path.join(ROOT, 'build', 'sound_library')
 VGM = os.path.join(ROOT, 'third_party', 'vgmstream', 'vgmstream-cli.exe')
 SR = 48000
-LONG = ('Ambience', 'Crowd', 'Cheer', 'MatchEndWin', 'MatchEndLose')   # (loops and fanfares may run longer)
+LONG = ('Ambience', 'Cheer', 'MatchEndWin', 'MatchEndLose')   # (loops and fanfares may run longer)
 MAX_SHORT, MAX_LONG = 3.0, 12.0
 
 

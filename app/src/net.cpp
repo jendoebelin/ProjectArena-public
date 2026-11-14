@@ -784,6 +784,7 @@ static void writeState(Writer& w, const Game& g) {
             w.put<uint8_t>((uint8_t)((b.fouled ? 1 : 0) | (b.homing ? 2 : 0) | (std::min(b.bounces, 63) << 2)));
         }
     if (g.np == 2) w.put<float>(g.now);   // (... and the host's game clock: how far to look ahead, steady)
+    if (g.np == 2) w.put<uint8_t>((uint8_t)std::max(0, std::min(2, g.tun.strikeSpeed)));   // (0.3.19: STRIKE SPEED)
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -872,6 +873,8 @@ static bool readState(Reader& r, Game& g, int localIndex) {
         const float hn = r.get<float>();
         if (r.ok && std::isfinite(hn) && hn >= 0.f) g.ahead.snapNow = hn;
     }
+    g.tun.strikeSpeed = 0;   // (STRIKE SPEED, hosts from 0.3.19; older hosts: regulation)
+    if (np == 2 && r.ok && r.e - r.p >= 1) g.tun.strikeSpeed = std::min<int>(2, r.get<uint8_t>());
     return r.ok;
 }
 
@@ -1620,6 +1623,9 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
                 lastPingMs_ = ms;
                 // (BALL LOOK-AHEAD's lead: the round trip, smoothed; a passing stall moves it only a little)
                 pingAvg_ = pingAvg_ <= 0 ? ms : pingAvg_ + (std::min(ms, pingAvg_ * 1.5f + 20.f) - pingAvg_) * 0.25f;
+                if (fromMember)   // (host: each player's own, for CATCHES ONLINE)
+                    fromMember->rttMs = fromMember->rttMs <= 0 ? ms
+                                      : fromMember->rttMs + (std::min(ms, fromMember->rttMs * 1.5f + 20.f) - fromMember->rttMs) * 0.25f;
             }
         } else if (type == MSG_INPUT && fromMember) {
             fromMember->seen = now_;
@@ -1629,6 +1635,18 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
                 fromMember->lastSeq = seq;
                 readInput(r, fromMember->in);
                 if (inTank(fromMember->id)) countSeq(seq);
+                // HAND TIMES (0.3.19): the player's clock when they took it, after the input (older builds: none)
+                if (r.ok && r.e - r.p >= (long)sizeof(double)) {
+                    const double ct = r.get<double>();
+                    Member& m = *fromMember;
+                    if (std::isfinite(ct)) {
+                        if (m.clockSet) m.clockOff -= (now_ - m.clockAt) * 0.005;   // (clocks drift a little)
+                        const double off = ct - now_;
+                        if (!m.clockSet || off > m.clockOff || off < m.clockOff - 1.0) { m.clockOff = off; m.clockSet = true; }
+                        m.clockAt = now_;
+                        m.sampleAt = ct - m.clockOff;   // (on our clock; a fixed delay behind, the same for every sample)
+                    }
+                }
             }
         } else if (type == MSG_KICKVOTE && fromMember) {
             const uint32_t target = r.get<uint32_t>();
@@ -1969,8 +1987,16 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         // the game is stepped with the tank players' inputs; an empty place = a bot (Game fills its input)
         for (int p = 0; p < kMaxPlayers; ++p) {
             in[p] = PlayerInput();
+            g.seenLate[p] = 0.f;
             if (!slot_[p] || p >= np_) continue;
-            if (Member* m = member(slot_[p])) in[p] = m->local ? local : m->in;
+            if (Member* m = member(slot_[p])) {
+                in[p] = m->local ? local : m->in;
+                // CATCHES ONLINE: how late this player sees the balls (their round trip; Game::sawBallNear)
+                if (!m->local && m->rttMs > 0) g.seenLate[p] = m->rttMs / 1000.f;
+                // HAND TIMES: when they took this input, on the game's clock
+                if (!m->local && m->sampleAt >= 0) in[p].sampleT = (float)(g.now - (now_ - m->sampleAt));
+                else in[p].sampleT = -1.f;
+            }
         }
         if (rotateRule && g.match == MatchState::MatchSummary)   // no skipping the rotation with A (A is READY before a match)
             for (int p = 0; p < kMaxPlayers; ++p) in[p].buttonA = false;
@@ -1997,6 +2023,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             for (const LanGame& lg : games_) if (lg.ip == peerIp_ && now_ - lg.seen < 3.0) g.tun.advanced = lg.advanced;
         if (peerIp_) {   // (none while we look for where our room went)
             Writer w; header(w, MSG_INPUT, session_, ++seq_); writeInput(w, local);
+            w.put(now_);   // HAND TIMES: when this was taken, on our clock (older hosts stop reading before it)
             sendTo(w.b.data(), (int)w.b.size(), peerIp_, kPort);
         }
         const bool known = localSlot() >= 0 ||

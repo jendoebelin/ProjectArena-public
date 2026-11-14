@@ -55,13 +55,13 @@
   "channel": "get-the-game",
   "title": "Get the game: which version?",
   "color": "#1ab3ff",
-  "text": "**Project Arena is free.** Pick the version for your setup:\n\n🥽 **Meta Quest 2, 3, 3S or Pro** → the Meta Store alpha (below). Easiest, and it updates itself.\n🖥️ **PC VR** (Valve Index, Vive, Windows Mixed Reality, or a Quest on Link) → the PC version from GitHub.\n👀 **No headset?** → the PC version too: without a headset it opens as a spectator window, so you can watch live matches.\n📱 **Just want to cheer?** → The Crowd on your phone: https://crowd.aftersparc.com\n🎮 **Steam:** coming soon.\n\nQuest and PC players meet in the same rooms online."
+  "text": "**Project Arena is free.** Pick the version for your setup:\n\n🥽 **Meta Quest 2, 3, 3S or Pro** → the Meta Horizon Store (below). Easiest, and it updates itself.\n🖥️ **PC VR** (Valve Index, Vive, Windows Mixed Reality, or a Quest on Link) → the PC version from GitHub.\n👀 **No headset?** → the PC version too: without a headset it opens as a spectator window, so you can watch live matches.\n📱 **Just want to cheer?** → The Crowd on your phone: https://crowd.aftersparc.com\n🎮 **Steam:** coming soon.\n\nQuest and PC players meet in the same rooms online."
  },
  {
   "channel": "get-the-game",
-  "title": "Meta Quest: get the alpha",
+  "title": "Meta Quest: get it from the store",
   "color": "#1ab3ff",
-  "text": "1. On your phone or computer, sign in to the **Meta account your headset uses**.\n2. Open **https://www.meta.com/s/4NDP5YlGM** and accept the invite. Access is instant.\n3. In the headset, open the **Store** or your **Library**, find **Project Arena** and install it.\n\n**Updates** install by themselves. If the game says **UPDATE AVAILABLE**, open your Library and update it: the alpha needs everyone on the newest version to play online.\n\n**Already sideloading the APK from GitHub?** The store version and the GitHub APK can't be installed over each other. To switch, uninstall the old one first (this starts your statistics fresh)."
+  "text": "1. On your phone or computer, signed in to the **Meta account your headset uses**, open\n   **https://www.meta.com/experiences/1342896058915258/** and press **Get**. It's free.\n   (Or in the headset: the **Store**, **Project Arena**, **Get**.)\n2. Find it in your **Library** on the headset and start it.\n\n**Updates** install by themselves. If the game says **UPDATE AVAILABLE**, press **UPDATE NOW**: everyone needs the newest version to play online.\n\n**Already have the alpha?** It's the same app: nothing to reinstall.\n**Sideloading the APK from GitHub?** The store version and the GitHub APK can't be installed over each other. To switch, uninstall the old one first (this starts your statistics fresh)."
  },
  {
   "channel": "get-the-game",
@@ -184,5 +184,24 @@
   "color": "#5ec8ff",
   "image": "ball_marks_0317.png",
   "text": "**New: BALL MARKS.** Every bounce off the floor, a wall or the glass leaves a faint ripple in the thrower's colour that fades over a few seconds, so you can see where that angle landed and hit it again. A community idea!\n**New: CREDITS** on the HOW TO PLAY page.\n**New: The Crowd fills the stands in FOUR CORNERS and FIREBALL BLITZ.** Cheers, hearts and flags now pour out of the stands there too.\n\n**🔧 Fixed:**\n- Country flags are printed on the jersey and bend with it, no more paper flag sticking out of your back.\n- After quitting and restarting, the fireballs' glow could show a flag.\n- Quest 2 runs at 72 Hz for steady frames.\n- BALL LOOK-AHEAD now says it's for 1-v-1 online rooms.\n\n0.3.14 to 0.3.17 play together online.\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.18: UPDATE NOW",
+  "color": "#5ec8ff",
+  "text": "**New: UPDATE NOW updates the game right where you are** (Quest, store version). When a new version is out, UPDATE NOW shows DOWNLOAD UPDATE with its size, then the progress, then INSTALL AND RESTART. Your settings stay.\nCopies installed from GitHub or SideQuest now offer the store page too.\n\n0.3.14 to 0.3.18 play together online.\n\n**Quest:** update from your Library (alpha: https://www.meta.com/s/4NDP5YlGM)\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena is out now on the Meta Horizon Store",
+  "color": "#5ec8ff",
+  "image": "launch.png",
+  "text": "**🎉 Project Arena is out now on the Meta Horizon Store. It's free.**\n\nA VR disc sport on a neon court. Curve your throws, bank them off the walls, block with your shield, punch the ball back with your knuckle guards and dodge with your whole body. One match and you'll feel it.\n\n**What you can play:**\n🥏 1-v-1 online, or against practice bots from ROOKIE to UNBEATABLE\n🔥 FIREBALL BLITZ: up to 4 players, last one standing\n🟩 FOUR CORNERS: free-for-all, 2 v 2 or 3 v 1\n🎯 TRAINING: lessons with worldwide leaderboards\n👀 Watch live matches in VR or on a PC\n🎧 SOUND STUDIO: try the game's sounds and vote on new ones\n📱 The Crowd: fans cheer live from their phones (#the-crowd)\n\nQuest and PC VR players play each other online.\n\n**Already have the alpha?** It's the same app. Nothing to reinstall.\n**Like it?** A rating or review on the store page helps a lot, and it's the link to send your friends.\n\nThank you to everyone who played the alpha and sent in bugs and ideas.\n\n**Quest:** https://www.meta.com/experiences/1342896058915258/\n**PC VR:** https://github.com/jendoebelin/ProjectArena-public/releases/latest\nBugs → **#bug-reports** | Ideas → **#feedback-and-ideas**"
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.19: STRIKE SPEED and better catches",
+  "color": "#5ec8ff",
+  "text": "**New: STRIKE SPEED, names on a click, and new sounds**\n⚡ **STRIKE SPEED** in the host's MATCH OPTIONS: REGULATION, FAST or FASTER\n🏷️ **PLAYERS' NAMES:** click the left stick for everyone's name over their head\n🔄 **DEFAULTS** on every settings page (press twice)\n🔥 **Fireball echoes** in FIREBALL BLITZ\n🔊 **New sounds:** an arena crowd that cheers your wins and groans at your losses, a community-made shield break, a new wall bounce, and a quieter arena\n\n**Better catches in someone else's room.** The host now judges your catch from where the ball was when you saw it, so returns land in your hand far more often. Your own ball is always yours to catch, and you can grab it as it rises from the spawner.\n\n**Fixed:** the view keeps its centre when you take the headset off and on; ball trails no longer show as arrows while you wait or watch; TRAINING and the SOUND STUDIO no longer change your MATCH OPTIONS (if FIST BUMP FIRST went off, turn it on once more).\n\n0.3.14 to 0.3.19 play together online. The better catches need a 0.3.19 host.\n\n**Quest:** update from your Library\n**PC:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
  }
 ]

@@ -1617,6 +1617,127 @@ int main(int argc, char** argv) {
         CHECK(g.pl[0].ball.state == BallState::Held && hasEvent(log, EventType::Grab), "sweeping through it grabs it");
     }
     {
+        std::printf("[the rising ball can be taken off the spawner]\n");
+        PlayerInput in[2]; Game g = makeGame(tris, in);
+        const int h = 1;
+        g.respawnBall(0);
+        const Vec3 off = in[0].hand[h].grip.q.rotate(g.tun.catcherOffset);
+        // still under the floor (the rings): a hand where it will come up takes nothing
+        in[0].hand[h].trigger = 1;
+        run(g, in, 0.3f);
+        in[0].hand[h].grip.p = g.pl[0].ball.pos - off;
+        run(g, in, 1.f / 72);
+        CHECK(g.pl[0].ball.state == BallState::Spawning, "under the floor: not grabbable yet");
+        // up and rising: the hand on it with the trigger held takes it, before it reaches the top
+        std::vector<GameEvent> log;
+        while (g.pl[0].ball.state == BallState::Spawning && g.pl[0].ball.timer > g.tun.spawnRiseTime * 0.5f) {
+            in[0].hand[h].grip.p = g.pl[0].ball.pos - off;
+            PlayerInput tmp[2] = {in[0], in[1]};
+            g.step(1.f / 72, tmp);
+            log.insert(log.end(), g.events.begin(), g.events.end());
+        }
+        CHECK(g.pl[0].ball.state == BallState::Held && hasEvent(log, EventType::Grab), "grabbed while it rises");
+        CHECK(!hasEvent(log, EventType::Spawn), "... before it reached the top");
+        CHECK(g.pl[0].hands[h].shieldUp, "and it's charged: the shield is up");
+    }
+    {
+        std::printf("[CATCHES ONLINE: a catch is judged as the player saw the ball]\n");
+        bool held[3] = {};
+        for (int pass = 0; pass < 3; ++pass) {   // 0: seen on time, 1: seen 0.12 s late, 2: late but the rule off
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.lateCatch = pass != 2;
+            Ball& b = g.pl[0].ball;
+            const Vec3 head = in[0].head.p;
+            b.state = BallState::Returning; b.instigator = 0;
+            b.pos = head + Vec3{3.f, -0.3f, 0.f}; b.vel = {-10.f, 0.f, 0.f}; b.speedLimit = 10.f;
+            in[0].hand[0].trigger = in[0].hand[1].trigger = 0;
+            Vec3 then{};
+            for (int i = 0; i < 11; ++i) {   // 11 steps of 1/72 s: about 0.15 s
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                if (i == 2) then = b.pos;      // where it was about 0.12 s before the last step
+            }
+            const int h = 1;
+            const Vec3 off = in[0].hand[h].grip.q.rotate(g.tun.catcherOffset);
+            in[0].hand[h].grip.p = then - off;   // the hand where the ball was then, the trigger pulled
+            in[0].hand[h].trigger = 1;
+            g.seenLate[0] = pass == 0 ? 0.f : 0.12f;
+            PlayerInput tmp[2] = {in[0], in[1]};
+            g.step(1.f / 72, tmp);
+            held[pass] = b.state == BallState::Held;
+        }
+        CHECK(!held[0], "seen on time: a hand where the ball was 0.12 s ago doesn't catch it");
+        CHECK(held[1], "seen 0.12 s late (the round trip): the same hand catches it");
+        CHECK(!held[2], "... and not with the rule off");
+    }
+    {
+        std::printf("[CATCHES ONLINE: your own ball's hit waits for your catch]\n");
+        // 0: seen on time (the hit at once); 1: 0.1 s late, no catch (the hit after the wait); 2: 0.1 s late, caught
+        bool hitAtOnce[3] = {}, waited[3] = {}, hitLater[3] = {}, held[3] = {};
+        for (int pass = 0; pass < 3; ++pass) {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            Ball& b = g.pl[0].ball;
+            const Vec3 head = in[0].head.p;
+            b.state = BallState::Returning; b.instigator = 0; b.timer = 1.f;
+            b.pos = head + Vec3{1.5f, 0.f, 0.f}; b.vel = {-10.f, 0.f, 0.f}; b.speedLimit = 10.f;
+            in[0].hand[0].trigger = in[0].hand[1].trigger = 0;
+            g.seenLate[0] = pass == 0 ? 0.f : 0.1f;
+            std::vector<GameEvent> log;
+            int arrived = -1;
+            for (int i = 0; i < 72 && b.state != BallState::Dead && b.state != BallState::Held; ++i) {
+                if (pass == 2 && b.hitWaitAt >= 0.f) {   // the catch, as the player made it, arriving during the wait
+                    const Vec3 off = in[0].hand[1].grip.q.rotate(g.tun.catcherOffset);
+                    in[0].hand[1].grip.p = b.pos - off;
+                    in[0].hand[1].trigger = 1;
+                }
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+                if (arrived < 0 && (b.hitWaitAt >= 0.f || hasEvent(log, EventType::HitPlayer))) arrived = i;
+                if (b.hitWaitAt >= 0.f) waited[pass] = true;
+                if (arrived >= 0 && i == arrived && hasEvent(log, EventType::HitPlayer)) hitAtOnce[pass] = true;
+            }
+            hitLater[pass] = !hitAtOnce[pass] && hasEvent(log, EventType::HitPlayer);
+            held[pass] = b.state == BallState::Held;
+        }
+        CHECK(hitAtOnce[0] && !waited[0], "seen on time: your own ball hits you at once, as before");
+        CHECK(waited[1] && hitLater[1] && !held[1], "seen late, no catch: it waits at you, then it's the point");
+        CHECK(waited[2] && held[2] && !hitLater[2], "seen late, caught during the wait: the catch wins, no point");
+    }
+    {
+        std::printf("[your own ball is yours to catch, whoever touched it last]\n");
+        PlayerInput in[2]; Game g = makeGame(tris, in);
+        Ball& b = g.pl[0].ball;
+        b.state = BallState::Flying; b.instigator = 1;   // (the other player blocked it last)
+        b.pos = in[0].head.p + Vec3{0.6f, -0.4f, 0.2f}; b.vel = {-1.0f, 0.f, 0.f}; b.speedLimit = 1.0f;
+        const int h = 1;
+        const Vec3 off = in[0].hand[h].grip.q.rotate(g.tun.catcherOffset);
+        in[0].hand[h].grip.p = b.pos - off;
+        in[0].hand[h].trigger = 1;
+        std::vector<GameEvent> log;
+        run(g, in, 1.f / 72, &log);
+        CHECK(b.state == BallState::Held && hasEvent(log, EventType::Caught), "caught, though the other player touched it last");
+    }
+    {
+        std::printf("[STRIKE SPEED: a host's option for faster strikes]\n");
+        Tunables t;
+        CHECK(t.strikeSpeed == 0 && t.perStrike() == 0.5f, "regulation by default: 0.5 m/s a strike, the original's");
+        CHECK(t.statsMode() == 0, "... and a regulation match counts as standard");
+        t.strikeSpeed = 1; const float fast = t.perStrike();
+        t.strikeSpeed = 2; const float faster = t.perStrike();
+        CHECK(fast == 1.0f && faster == 1.5f, "FAST 1.0 m/s, FASTER 1.5 m/s a strike");
+        CHECK(t.statsMode() == 2, "a match on FASTER counts as custom, not standard");
+        t.experimental = true; t.expRoom = ROOM_BLITZ;
+        CHECK(t.perStrike() == 0.5f, "four-player rooms stay at regulation");
+        PlayerInput in[2]; Game g = makeGame(tris, in);
+        g.pl[1].strikesAgainst = 3;   // (three strikes held by player 0: strikesHeld)
+        const float reg = g.throwSpeedFromHandSpeed(99.f, 0);
+        g.tun.strikeSpeed = 2;
+        const float fs = g.throwSpeedFromHandSpeed(99.f, 0);
+        std::printf("    a full-power throw with %d strikes: %.2f m/s regulation, %.2f m/s FASTER\n", g.strikesHeld(0), reg, fs);
+        CHECK(g.strikesHeld(0) == 0 || fs > reg, "a full-power throw with strikes is faster on FASTER");
+    }
+    {
         std::printf("[a short throw comes back to the spawner]\n");
         PlayerInput in[2]; Game g = makeGame(tris, in);
         grabBall(g, in);

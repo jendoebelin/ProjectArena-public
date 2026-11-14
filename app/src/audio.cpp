@@ -69,7 +69,11 @@ const Audio::Clip* Audio::get(const std::string& name) {
     if (it != clips_.end()) return it->second.samples.empty() ? nullptr : &it->second;
     Clip& c = clips_[name];
     std::vector<uint8_t> file;
-    if (!assetRead("audio/" + name + ".wav", file)) { LOGW("audio clip missing: %s", name.c_str()); return nullptr; }
+    // (music/: the licensed music, app/assets_music; not in the public repository, so it may be missing)
+    if (!assetRead("audio/" + name + ".wav", file) && !assetRead("music/" + name + ".wav", file)) {
+        LOGW("audio clip missing: %s", name.c_str());
+        return nullptr;
+    }
     int rate = 48000;
     std::vector<float> s;
     if (parseWav(file.data(), file.size(), s, c.channels, rate)) {
@@ -91,15 +95,25 @@ void Audio::mix(float* out, int frames) {
     Audio* self = this;
     std::memset(out, 0, frames * 2 * sizeof(float));
     std::lock_guard<std::mutex> lk(self->mu_);
+    {   // CROWD UNDER VOICES: someone talking turns the crowd down (from the voices playing as this block starts)
+        bool talk = false;
+        for (const auto& kv : self->vq_) talk |= kv.second.playing;
+        const float secs = frames / 48000.f;
+        self->duckHold_ = talk ? kDuckHold : std::max(0.f, self->duckHold_ - secs);
+        const float want = self->duckHold_ > 0.f ? kDuck : 1.f;
+        const float tau = want < self->duck_ ? kDuckAttack : kDuckRelease;
+        self->duck_ += (want - self->duck_) * (1.f - std::exp(-secs / tau));
+    }
     for (auto& v : self->voices_) {
+        const float dk = v.duck ? self->duck_ : 1.f;
         for (int32_t f = 0; f < frames; ++f) {
             size_t frameCount = v.clip->samples.size() / v.clip->channels;
             if (v.pos >= frameCount) { if (v.loop) v.pos = 0; else break; }
             float l, r;
             if (v.clip->channels == 2) { l = v.clip->samples[v.pos * 2]; r = v.clip->samples[v.pos * 2 + 1]; }
             else l = r = v.clip->samples[v.pos];
-            out[f * 2] += l * v.gainL;
-            out[f * 2 + 1] += r * v.gainR;
+            out[f * 2] += l * v.gainL * dk;
+            out[f * 2 + 1] += r * v.gainR * dk;
             ++v.pos;
         }
     }
@@ -130,9 +144,11 @@ void Audio::mix(float* out, int frames) {
 }
 
 bool Audio::init() {
-    // event -> clip mapping (audio/events.txt: "<Event> <clip>")
-    std::vector<uint8_t> file;
-    if (assetRead("audio/events.txt", file)) {
+    // event -> clip mapping (audio/events.txt: "<Event> <clip>"), then the licensed sounds' own (music/events.txt,
+    // app/assets_music: in the builds only, not in the public repository) over it: those events get its clips
+    for (const char* path : {"audio/events.txt", "music/events.txt"}) {
+        std::vector<uint8_t> file;
+        if (!assetRead(path, file)) continue;
         std::string txt(file.begin(), file.end());
         size_t p = 0;
         while (p < txt.size()) {
@@ -140,7 +156,7 @@ bool Audio::init() {
             std::string line = txt.substr(p, e - p);
             if (!line.empty() && line.back() == '\r') line.pop_back();
             size_t sp = line.find(' ');
-            if (sp != std::string::npos) eventMap_[line.substr(0, sp)] = line.substr(sp + 1);
+            if (sp != std::string::npos && line[0] != '#') eventMap_[line.substr(0, sp)] = line.substr(sp + 1);
             p = e + 1;
         }
     }
@@ -162,7 +178,8 @@ bool Audio::init() {
 #endif
     outOn_ = true;
     LOGI("audio started (%zu event mappings)", eventMap_.size());
-    if (eventMap_.count("Ambience")) play(eventMap_["Ambience"], 0.35f, 0, true);
+    // the arena ambience (S27), on a loop under everything: 0.18, half its old 0.35 (owner, 2026-11-12: "even quieter")
+    if (eventMap_.count("Ambience")) play(eventMap_["Ambience"], 0.18f, 0, true, true);
     return true;
 }
 
@@ -185,7 +202,7 @@ void Audio::pause() { paused_ = true; }
 void Audio::resume() { paused_ = false; }
 #endif
 
-void Audio::play(const std::string& name, float gain, float pan, bool loop) {
+void Audio::play(const std::string& name, float gain, float pan, bool loop, bool duck) {
     const Clip* c = get(name);
     if (!c || !outOn_) return;
     float l = gain * std::sqrt(0.5f * (1 - pan)), r = gain * std::sqrt(0.5f * (1 + pan));
@@ -194,10 +211,10 @@ void Audio::play(const std::string& name, float gain, float pan, bool loop) {
         auto it = std::find_if(voices_.begin(), voices_.end(), [](const Voice& v) { return !v.loop; });
         voices_.erase(it != voices_.end() ? it : voices_.begin());
     }
-    voices_.push_back({c, 0, l, r, loop});
+    voices_.push_back({c, 0, l, r, loop, duck});
 }
 
-void Audio::setLoop(const std::string& name, float gain) {
+void Audio::setLoop(const std::string& name, float gain, bool duck) {
     const Clip* c = get(name);
     if (!c || !outOn_) return;
     const float g = std::max(0.f, gain) * 0.7071f;
@@ -208,7 +225,7 @@ void Audio::setLoop(const std::string& name, float gain) {
             else it->gainL = it->gainR = g;
             return;
         }
-    if (g > 0.0005f) voices_.push_back({c, 0, g, g, true});
+    if (g > 0.0005f) voices_.push_back({c, 0, g, g, true, duck});
 }
 
 const std::string* Audio::clipFor(const std::string& key) const {
@@ -252,12 +269,13 @@ void Audio::onEvent(const GameEvent& e, const Vec3& listener, bool ours, const V
     if (e.type == EventType::HitPlayer) key = ours ? "HitPlayerSelf" : "HitPlayerOpponent";
     if (e.type == EventType::RoundEnd || e.type == EventType::MatchEnd) key += ours ? "Win" : "Lose";
     if (e.type == EventType::Throw) key = e.value < 6 ? "ThrowSlow" : e.value < 9 ? "ThrowMed" : e.value < 12 ? "ThrowFast" : "ThrowFull";
+    const bool duck = e.type == EventType::RoundEnd || e.type == EventType::MatchEnd;   // (the crowd's roar: under voices)
     {   // (SOUND STUDIO's choice for it)
         auto o = override_.find(key);
         if (o != override_.end()) {
             const float d = length(e.pos - listener);
             const float gain = (e.pos.x == 0 && e.pos.y == 0 && e.pos.z == 0) ? 1.f : clampf(2.0f / (1.0f + d), 0.15f, 1.f);
-            play(o->second, gain, clampf(dot(e.pos - listener, right) * 0.4f, -0.8f, 0.8f));
+            play(o->second, gain, clampf(dot(e.pos - listener, right) * 0.4f, -0.8f, 0.8f), false, duck);
             return;
         }
     }
@@ -275,7 +293,7 @@ void Audio::onEvent(const GameEvent& e, const Vec3& listener, bool ours, const V
     float d = length(e.pos - listener);
     float gain = (e.pos.x == 0 && e.pos.y == 0 && e.pos.z == 0) ? 1.f : clampf(2.0f / (1.0f + d), 0.15f, 1.f);
     float pan = clampf(dot(e.pos - listener, right) * 0.4f, -0.8f, 0.8f);   // court-relative pan, toward the listener's right
-    play(it->second, gain, pan);
+    play(it->second, gain, pan, false, duck);
 }
 
 // ------------------------------------------------------------------ voice chat

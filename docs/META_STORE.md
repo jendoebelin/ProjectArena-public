@@ -12,9 +12,13 @@ release channel (ALPHA). Nobody else can see or install it. Public store release
 
   `python -I tools/check_store_apk.py <apk> --release` checks all of this. `tools/make_release.sh` runs it automatically.
 - **versionCode 3** (every upload needs a higher number than the one before).
-- **Draft store art** comes from `python -I tools/gen_store_art.py`, which renders `build/store_art/*.png`.
-  - It uses Meta's sizes: hero 3000x900, landscape 2560x1440, square 1440x1440, portrait 1008x1440, mini 1080x360, icon 512x512, and 3 screenshots.
-  - The game's own renderer draws everything, so there is no outside artwork.
+- **Store art** is real footage of real people playing (owner, 2026-11-07; no bot scenes, no staged renders, no
+  generated pictures): `python -I tools/gen_store_art_real.py` makes `build/store_art/*.png` from real captures
+  (the covers rebuild the alpha thumbnail's shot at Meta's sizes without "ALPHA" and without a tagline; five
+  2560x1440 screenshots from headset recordings and the spectator's SELFIE capture). `--promo` writes the same covers
+  with THROW. BLOCK. DODGE. to `build/promo/verbs/` for posts and ads. `python -I tools/gen_store_art.py` makes only the icon and
+  its tiles, which aren't gameplay.
+  - Meta's sizes: hero 3000x900, landscape 2560x1440, square 1440x1440, portrait 1008x1440, mini 1080x360, icon 512x512, 5 screenshots 2560x1440.
 - **Privacy policy**: `docs/PRIVACY.md`, at its public URL in the store listing. It must match what the build
   collects: from 0.3.6 that includes player statistics (`docs/DATA_AND_SECURITY.md`; the answers for the dashboard's
   data questions are in `docs/STORE_LISTING.md`). Before each upload: `docs/RELEASE_CHECKLIST.md`.

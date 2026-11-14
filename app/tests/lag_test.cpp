@@ -67,6 +67,13 @@ struct Thrower {
     std::vector<double> grab, leave;
     int missed = 0;
     long blockFrames = 0;
+    // catch mode (tools/run_catch_test.py): throws go past the other player, nobody blocks, and each of my returning
+    // balls is snatched where my own game shows it once it's within snatchAt of my head (the hand onto it, the trigger
+    // pulled), as a player grabs at a ball reaching them
+    bool catching = false;
+    float snatchAt = 0.9f;
+    int returns = 0;
+    bool inReturn = false;
     void step(const Game& v, int p, double t) {
         const Ball& b = v.pl[p].ball;
         const bool playing = v.match == MatchState::InProgress;
@@ -89,6 +96,7 @@ struct Thrower {
                 }
             }
         }
+        if (catching) { blocking = false; guard = rest.hand[0]; }
         if (blocking) ++blockFrames;
         switch (st) {
         case REST:
@@ -101,12 +109,14 @@ struct Thrower {
             if (b.state == BallState::Held && b.heldHand == 1) {
                 grab.push_back(t - t0);
                 st = SWING; frames = 0;
-                dir = normalize(v.tun.start[1 - p] + Vec3{0, 1.6f, 0} - in.hand[1].grip.p);
+                dir = normalize(v.tun.start[1 - p] + Vec3{0, 1.6f, catching ? 1.3f : 0.f} - in.hand[1].grip.p);
             } else if (t - t0 > 4.0 || !playing) { st = REST; ++missed; nextTry = t + 1.0; }
             break;
-        case SWING:   // 15 steps at 9 m/s toward the other's head, then let go
-            in.hand[1].grip.p += dir * (9.f / kHz);
-            if (++frames >= 15) { in.hand[1].trigger = 0; st = RELEASED; t0 = t; }
+        case SWING:   // 12 steps speeding up from 3 to 9 m/s toward the other's head (about 1 m, as an arm reaches;
+                      // 2026-11-11: it was 1.9 m at a steady 9 m/s, a reach no arm has, and its shield swept the
+                      // court), then let go
+            in.hand[1].grip.p += dir * ((3.f + 6.f * frames / 11.f) / kHz);
+            if (++frames >= 12) { in.hand[1].trigger = 0; st = RELEASED; t0 = t; }
             break;
         case RELEASED:   // my game shows my ball gone from my hand
             if (b.state == BallState::Flying || b.state == BallState::Returning) {
@@ -115,6 +125,18 @@ struct Thrower {
             } else if (t - t0 > 3.0) { ++missed; st = REST; nextTry = t + 1.0; }
             else { in.hand[1].grip = rest.hand[1].grip; in.hand[1].trigger = 0; }
             break;
+        }
+        if (catching && st == REST) {
+            const bool back = b.state == BallState::Returning && b.instigator == p;
+            if (!back) inReturn = false;
+            else {
+                const float d = length(b.pos - v.pl[p].in.head.p);
+                if (!inReturn && d < snatchAt) { inReturn = true; ++returns; }
+                if (inReturn) {
+                    in.hand[1].grip.p = b.pos - in.hand[1].grip.q.rotate(v.tun.catcherOffset);
+                    in.hand[1].trigger = 1;
+                }
+            }
         }
         in.hand[0] = guard;
     }
@@ -150,13 +172,24 @@ int main(int argc, char** argv) {
     const double secs = argc > 1 ? std::atof(argv[1]) : 90.0;
     const char* server = argc > 2 ? argv[2] : "127.0.0.1:47783";
     const bool ahead = argc > 3 ? std::atoi(argv[3]) != 0 : true;
+    const bool catchMode = argc > 4 && std::atoi(argv[4]) != 0;   // (tools/run_catch_test.py)
+    const char* lc = std::getenv("PA_LATE_CATCH");                  // 0: the host without CATCHES ONLINE
     const std::vector<CollisionTri> arena = loadArena();
     if (arena.empty()) { std::printf("no arena.col\n"); return 1; }
     Node H("HOST", arena), C("FAR AWAY", arena);
     C.net.setLookAhead(ahead);
+    H.th.catching = C.th.catching = catchMode;
+    if (const char* sa = std::getenv("PA_SNATCH_AT")) H.th.snatchAt = C.th.snatchAt = (float)std::atof(sa);   // (m from the head)
+    H.game.lateCatch = !(lc && lc[0] == '0');
     Node* ns[2] = {&H, &C};
+    std::vector<GameEvent> hostLog;   // (the host's events, every step: the player's blocks and catches, as the host counted them)
     double exUs = 0;   // the player's game: time spent in each frame's network exchange (the look-ahead with it)
     long exN = 0;
+    // the player's throws, launched twice: at once in their own game (BALL LOOK-AHEAD) and by the host when the let-go
+    // arrives. Each pair compared: where it starts, how fast, which way, and when
+    struct Launch { double t; Vec3 p, v; };
+    std::vector<Launch> localThrows, hostThrows;
+    bool wasMine = false;
     auto pump = [&](double seconds, bool play) {
         const double end = clockNow() + seconds;
         while (clockNow() < end) {
@@ -169,7 +202,18 @@ int main(int argc, char** argv) {
                 // (each game steps by the real time since its last frame, as the game does: a host's clock keeps time)
                 const float fdt = n.lastFrame > 0 ? (float)std::min(0.05, e0 - n.lastFrame) : 1.f / kHz;
                 n.lastFrame = e0;
-                if (n.net.exchange(n.th.in, in, n.game, fdt)) { n.game.step(fdt, in); n.net.sendState(n.game); }
+                if (n.net.exchange(n.th.in, in, n.game, fdt)) {
+                    n.game.step(fdt, in); n.net.sendState(n.game);
+                    if (i == 0 && play) hostLog.insert(hostLog.end(), n.game.events.begin(), n.game.events.end());
+                    if (i == 0 && play)
+                        for (const GameEvent& e : n.game.events)
+                            if (e.type == EventType::Throw && e.player == 1)
+                                hostThrows.push_back({e0, e.pos, n.game.pl[1].ball.vel});   // (where it was launched: the step has moved it on since)
+                }
+                if (i == 1 && play) {
+                    if (n.game.ahead.mine && !wasMine) localThrows.push_back({e0, n.game.ahead.mineBall.pos, n.game.ahead.mineBall.vel});
+                    wasMine = n.game.ahead.mine;
+                }
                 if (i == 1 && play) { exUs += (clockNow() - e0) * 1e6; ++exN; }
             }
             std::this_thread::sleep_for(std::chrono::microseconds((int)(1e6 / kHz)));
@@ -194,8 +238,11 @@ int main(int argc, char** argv) {
     // each shown position is matched to the moment the host had the ball there (BALL LOOK-AHEAD shows it ahead)
     struct Seen { double t; Vec3 p; };
     std::vector<Seen> truth, shown;
+    // each ball's real flight (the host's game) and where the player's game draws it, flying: how far off that path it
+    // is drawn (owner, 2026-11-10: BALL LOOK-AHEAD wobbled with no lag; the drawn ball swung across its path after each
+    // bounce and block)
+    std::vector<Seen> real[2], drawnAt[2];
     std::vector<double> speeds, pings, ownErr, wobble[2];
-    std::vector<GameEvent> hostLog;   // (the host's events: the player's blocks, as the host counted them)
     Vec3 drawn[2][2];
     int drawnN[2] = {0, 0};
     float flightErr = -1;
@@ -204,7 +251,6 @@ int main(int argc, char** argv) {
     while (clockNow() - t0 < secs) {
         pump(1.0 / kHz, true);
         const double t = clockNow();
-        for (const GameEvent& e : H.game.events) hostLog.push_back(e);
         const Ball& hb = H.game.pl[0].ball;
         if (hb.state == BallState::Flying) {
             truth.push_back({t, hb.pos});
@@ -213,7 +259,13 @@ int main(int argc, char** argv) {
         for (int q = 0; q < 2; ++q) {   // smoothness as drawn: off the path the last two frames set (cm), each ball
             const Ball& d = C.game.pl[q].ball;
             const bool fl = d.state == BallState::Flying || d.state == BallState::Returning;
-            if (fl && drawnN[q] >= 2) wobble[q].push_back(length(d.pos - (drawn[q][1] + (drawn[q][1] - drawn[q][0]))) * 100.0);
+            const Ball& hq = H.game.pl[q].ball;
+            if (hq.state == BallState::Flying || hq.state == BallState::Returning) real[q].push_back({t, hq.pos});
+            if (fl) drawnAt[q].push_back({t, d.pos});
+            // (a frame where the drawn ball turned, a bounce or a block, is the ball's own path: not counted)
+            const Vec3 m0 = drawn[q][1] - drawn[q][0], m1 = d.pos - drawn[q][1];
+            const bool turned = drawnN[q] >= 2 && dot(m0, m1) < 0.9f * length(m0) * length(m1);
+            if (fl && drawnN[q] >= 2 && !turned) wobble[q].push_back(length(d.pos - (drawn[q][1] + (drawn[q][1] - drawn[q][0]))) * 100.0);
             if (fl) { drawn[q][0] = drawn[q][1]; drawn[q][1] = d.pos; ++drawnN[q]; } else drawnN[q] = 0;
         }
         const Ball& cb = C.game.pl[0].ball;   // the host's ball, as the far-away player's game shows it now
@@ -270,6 +322,58 @@ int main(int argc, char** argv) {
     std::printf("RESULT own_glide_cm %.0f\n", median(ownErr));
     std::printf("RESULT own_glide_p90_cm %.0f\n", pct(ownErr, 0.9));
     std::printf("RESULT exchange_us %.0f\n", exN ? exUs / exN : -1.0);
+    if (catchMode) {   // the snatches each side made at its own returning ball, and what the host made of them
+        int caught[2] = {0, 0}, selfHit[2] = {0, 0};
+        for (const GameEvent& e : hostLog) {
+            if (e.type == EventType::Caught && e.player >= 0 && e.player < 2) ++caught[e.player];
+            if (e.type == EventType::HitPlayer && e.player >= 0 && e.player < 2) ++selfHit[e.player];
+        }
+        std::printf("RESULT catch_host %d/%d\n", caught[0], H.th.returns);
+        std::printf("RESULT catch_player %d/%d\n", caught[1], C.th.returns);
+        std::printf("RESULT selfhit_player %d\n", selfHit[1]);
+        std::printf("RESULT late_catch %s\n", H.game.lateCatch ? "on" : "off");
+    }
+    {   // each local throw with the host's next throw for the player (within 1 s)
+        std::vector<double> dPos, dSpeed, dDeg, dT, dAt;
+        size_t k = 0;
+        for (const Launch& l : localThrows) {
+            while (k < hostThrows.size() && hostThrows[k].t < l.t - 0.05) ++k;
+            if (k >= hostThrows.size() || hostThrows[k].t > l.t + 1.0) continue;
+            const Launch& h = hostThrows[k++];
+            const double dt = h.t - l.t;
+            dT.push_back(dt * 1000.0);
+            dSpeed.push_back(length(h.v) - length(l.v));
+            dDeg.push_back(rad2deg(std::acos(clampf(dot(normalize(h.v), normalize(l.v)), -1.f, 1.f))));
+            dPos.push_back(length(h.p - l.p) * 100.0);
+            // where each has the ball 0.5 s into its own flight (straight on, no gravity: the start, the speed and
+            // the aim; the host's launch comes a round trip later, which BALL LOOK-AHEAD's lead already allows for)
+            const Vec3 a = l.p + l.v * 0.5f, b = h.p + h.v * 0.5f;
+            dAt.push_back(length(a - b) * 100.0);
+        }
+        std::printf("RESULT own_pairs %zu\n", dT.size());
+        std::printf("RESULT own_host_later_ms %.0f\n", median(dT));
+        std::printf("RESULT own_start_cm %.0f\n", median(dPos));
+        std::printf("RESULT own_speed_ms %.2f\n", median(dSpeed));
+        std::printf("RESULT own_dir_deg %.1f\n", median(dDeg));
+        std::printf("RESULT own_apart_cm %.0f\n", median(dAt));
+    }
+    for (int q = 0; q < 2; ++q) {   // off the ball's real path (cm): the nearest point of the host's flight within 0.8 s
+        std::vector<double> off;
+        size_t lo = 0;
+        for (const Seen& s : drawnAt[q]) {
+            while (lo < real[q].size() && real[q][lo].t < s.t - 0.8) ++lo;
+            float best = 1e9f;
+            for (size_t i = lo; i + 1 < real[q].size() && real[q][i].t < s.t + 0.8; ++i) {
+                const Vec3 a = real[q][i].p, b = real[q][i + 1].p, ab = b - a;
+                if (real[q][i + 1].t - real[q][i].t > 0.1 || length(ab) > 1.f) continue;   // (not the same flight)
+                const float u = clampf(dot(s.p - a, ab) / std::max(1e-6f, dot(ab, ab)), 0.f, 1.f);
+                best = std::min(best, length(s.p - (a + ab * u)));
+            }
+            if (best < 1e8f) off.push_back(best * 100.0);
+        }
+        std::printf("RESULT offpath%d_p99_cm %.0f\n", q, pct(off, 0.99));
+        std::printf("RESULT offpath%d_max_cm %.0f\n", q, off.empty() ? -1.0 : *std::max_element(off.begin(), off.end()));
+    }
     for (int q = 0; q < 2; ++q) {
         int big = 0;
         for (double w : wobble[q]) big += w > 25.0;

@@ -1,4 +1,4 @@
-"""Long-distance play, measured: builds app/tests/lag_test.cpp and runs it through a private relay on 127.0.0.1:47783
+"""Long-distance play, measured (and BALL LOOK-AHEAD near and far): builds app/tests/lag_test.cpp and runs it through a private relay on 127.0.0.1:47783
 (always stopped afterwards; never the community server), once without delay and once like a far-away connection.
 Usage: python -I tools/run_lag_test.py [seconds] [one-way lag ms] [jitter ms]
 (default: 90 s; 105 ms each way + 0..15 ms, with this PC's own ~30 ms: the 245-260 ms round trip a headset
@@ -50,8 +50,8 @@ def run(label, lag_ms, jitter_ms, ahead):
     return out
 
 
-runs = [('no delay', run('nolag', 0, 0, False)), ('far, as today', run('far_off', lag, jitter, False)),
-        ('far, look-ahead', run('far_on', lag, jitter, True))]
+runs = [('no delay', run('nolag', 0, 0, False)), ('no delay, ahead', run('nolag_on', 0, 0, True)),
+        ('far, as today', run('far_off', lag, jitter, False)), ('far, look-ahead', run('far_on', lag, jitter, True))]
 rows = [('round trip (ping), ms', 'ping_ms'),
         ('host: trigger -> ball in my hand, ms', 'host_grab_ms'),
         ('host: let go -> my ball flies, ms', 'host_leave_ms'),
@@ -63,7 +63,16 @@ rows = [('round trip (ping), ms', 'ping_ms'),
         ('player: a block (at your end) lands off by, ms', 'block_error_ms'),
         ('player: own throw, biggest glide, cm', 'own_glide_cm'),
         ('player: ... 90th percentile, cm', 'own_glide_p90_cm'),
+        ('own throw: the host launches it later, ms', 'own_host_later_ms'),
+        ('own throw: host' + chr(39) + 's start off by, cm', 'own_start_cm'),
+        ('own throw: host' + chr(39) + 's speed minus mine, m/s', 'own_speed_ms'),
+        ('own throw: host' + chr(39) + 's way off by, deg', 'own_dir_deg'),
+        ('own throw: the two apart, 0.5 s into each flight, cm', 'own_apart_cm'),
         ('player: network + look-ahead per frame, us', 'exchange_us'),
+        ('player sees host\'s ball: off its real path, 99%, cm', 'offpath0_p99_cm'),
+        ('... the most, cm', 'offpath0_max_cm'),
+        ('player sees own ball: off its real path, 99%, cm', 'offpath1_p99_cm'),
+        ('... the most, cm', 'offpath1_max_cm'),
         ('player sees host\'s ball: off its path, 99%, cm', 'wobble0_p99_cm'),
         ('... jumps over 25 cm', 'jumps0'),
         ('player sees own ball: off its path, 99%, cm', 'wobble1_p99_cm'),

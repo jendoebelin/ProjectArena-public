@@ -83,6 +83,8 @@ public:
     void drawSprite(const Vec3& c, float size, const float rgba[4], const Vec3& viewer, int tex = 0, float roll = 0.f);
     // flat sprite lying in the plane with normal `n` (e.g. a glow on the floor)
     void drawSpriteFlat(const Vec3& c, float size, const float rgba[4], const Vec3& n, int tex = 0);
+    // a soft dark blob lying in the plane with normal `n`, darkening what's under it by up to `alpha` (contact shadows)
+    void drawShadowFlat(const Vec3& c, float size, float alpha, const Vec3& n);
     GLuint softTexture(int kind);   // the sprites' soft blob (0) or soft ring (1), for blended marks
     // camera-facing additive light ribbon through pts[0..n) (oldest first); width/alpha taper toward the tail
     void drawRibbon(const Vec3* pts, int n, float width, const float rgba[4], bool taper = true);   // taper: a trail (thin, faint tail)

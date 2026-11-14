@@ -26,6 +26,11 @@ cl /nologo /std:c++17 /O2 /EHsc /W3 /MT /D_CRT_SECURE_NO_WARNINGS /D_WINSOCK_DEP
    /link /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup opengl32.lib user32.lib gdi32.lib ws2_32.lib ole32.lib shell32.lib advapi32.lib hid.lib setupapi.lib mfplat.lib mf.lib mfreadwrite.lib mfuuid.lib comctl32.lib winhttp.lib bcrypt.lib || exit /b 1
 robocopy "%ROOT%\app\assets_open" "%OUT%\assets" /MIR /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 exit /b 1
+rem the licensed music (app\assets_music: Suno, used under its terms, not CC BY), when there is any
+if exist "%ROOT%\app\assets_music\assets\music\*.wav" (
+  robocopy "%ROOT%\app\assets_music\assets\music" "%OUT%\assets\music" *.wav events.txt /NFL /NDL /NJH /NJS /NP >nul
+  if errorlevel 8 exit /b 1
+)
 copy /y "%ROOT%\LICENSE" "%OUT%\LICENSE.txt" >nul
 copy /y "%ROOT%\NOTICE.txt" "%OUT%\NOTICE.txt" >nul
 copy /y "%ROOT%\docs\PC_README.txt" "%OUT%\README.txt" >nul
