@@ -1,4 +1,4 @@
-// Desktop tests for the Sparc gameplay simulation, run against the real baked arena collision.
+// Desktop tests for the Project Arena gameplay simulation, run against the real baked arena collision.
 // Build/run: tools/run_tests.bat
 #define _CRT_SECURE_NO_WARNINGS
 #include "../src/game.h"
@@ -1738,6 +1738,68 @@ int main(int argc, char** argv) {
         CHECK(g.strikesHeld(0) == 0 || fs > reg, "a full-power throw with strikes is faster on FASTER");
     }
     {
+        std::printf("[FOUL LINE: a host's option to move the line, 0.5 m a step]\n");
+        Tunables t;
+        CHECK(t.foulShift == 0 && t.foulMove() == 0.f && t.statsMode() == 0, "where the arena has it by default, and standard");
+        t.foulShift = 2;
+        CHECK(t.foulMove() == 1.0f && t.statsMode() == 2, "LONGER 2: 1 m toward the centre; the match counts as custom");
+        t.foulShift = -9;
+        CHECK(t.foulMove() == -1.0f, "at most 2 steps either way");
+        t.experimental = true; t.expRoom = ROOM_CORNERS;
+        CHECK(t.foulMove() == 0.f, "the four-player rooms keep their own");
+        t.expRoom = ROOM_DIAMOND;
+        CHECK(t.foulMove() == 0.f, "DIAMOND too (its foul zone is the platform)");
+        {   // FAIR MATCHES: an option plays only when every player's game has it
+            Tunables f;
+            f.foulShift = 2; f.strikeSpeed = 2;
+            f.matchVersion = 3020;
+            CHECK(f.foulMove() == 1.0f && f.perStrike() == 1.5f, "FAIR MATCHES: every player on 0.3.20: both options play");
+            f.matchVersion = 3019;
+            CHECK(f.foulMove() == 0.f && f.perStrike() == 1.5f, "... a player on 0.3.19: the foul line at regulation, faster strikes still");
+            f.matchVersion = 0;
+            CHECK(f.foulMove() == 0.f && f.perStrike() == 0.5f && f.statsMode() == 0,
+                  "... a game that doesn't say its version: both at regulation, and the match counts as standard");
+            CHECK(f.foulShift == 2 && f.strikeSpeed == 2, "... the host's choice itself kept");
+        }
+        // your own ball landing on your own end's floor at x = -4.3 (just short of the arena's line at 4.75)
+        auto landsAt = [&](int shift, float x, bool& fouled, bool& bounced) {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.tun.foulShift = shift;
+            Ball& b = g.pl[0].ball;
+            b.state = BallState::Flying; b.instigator = 0; b.rechargePending = false; b.scored = false; b.spin = {};
+            b.pos = {x + 1.2f, 1.0f, 0.5f}; b.speedLimit = 7.f; b.vel = normalize(Vec3{x, 0.f, 0.5f} - b.pos) * 7.f;
+            b.progX = b.pos.x; b.progT = 0; b.timer = 0;
+            std::vector<GameEvent> log;
+            fouled = bounced = false;
+            for (int i = 0; i < 72 && !fouled && !bounced; ++i) {
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                log.insert(log.end(), g.events.begin(), g.events.end());
+                fouled = hasEvent(log, EventType::Foul, 0);
+                bounced = hasEvent(log, EventType::Bounce, 0);
+            }
+        };
+        bool f, bo;
+        landsAt(0, -4.3f, f, bo);
+        CHECK(!f && bo, "regulation: landing 4.3 m from the centre, short of the line, just bounces");
+        landsAt(2, -4.3f, f, bo);
+        CHECK(f, "LONGER 2 (the line at 3.73 m): the same throw is a foul");
+        landsAt(1, -4.6f, f, bo);   // (the ball meets the floor ~0.15 m before where it is aimed)
+        CHECK(f, "LONGER 1 (4.23 m): landing 4.6 m from the centre is a foul");
+        landsAt(0, -5.3f, f, bo);
+        CHECK(f, "regulation: landing 5.3 m from the centre is a foul");
+        landsAt(-2, -5.3f, f, bo);
+        CHECK(!f && bo, "SHORTER 2 (the line at 5.73 m): the same throw just bounces");
+        landsAt(-2, -6.2f, f, bo);
+        CHECK(f, "SHORTER 2: past the moved line it is still a foul");
+        // the recharge: a throw crossing 4.3 m recharges on regulation, not on LONGER 2 until it crosses 3.73 m
+        PlayerInput in[2]; Game g = makeGame(tris, in);
+        g.tun.foulShift = 2;
+        CHECK(std::fabs(g.foulLine() - 3.73f) < 1e-4f, "the game's line follows the option");
+        g.tun.foulShift = -1;
+        CHECK(std::fabs(g.foulLine() - 5.23f) < 1e-4f, "... either way");
+    }
+    {
         std::printf("[a short throw comes back to the spawner]\n");
         PlayerInput in[2]; Game g = makeGame(tris, in);
         grabBall(g, in);
@@ -1827,6 +1889,112 @@ int main(int argc, char** argv) {
         swingAndRelease(g, in, normalize(Vec3{1, 0.05f, 0.5f}), 5.0f, log);
         run(g, in, 0.8f, &log);
         CHECK(hasEvent(log, EventType::Recharge, 0), "throwing past your foul line recharges the ball");
+    }
+    {   // a player's report (11-11: "a shield held low in front didn't deflect the ball; always got hit"): the right hand
+        // holding its charged ball low in front (fist at 1.0 m, 0.30 m ahead), the forearm from level to pointing well
+        // down, the wrist rolled every 30 degrees; a ball at the plate's middle along the court. Offline every one
+        // blocks; online a late block failed for the player who isn't hosting (tools/run_shield_test.py)
+        std::printf("[a shield held low in front blocks]\n");
+        int blocks = 0, hits = 0, misses = 0;
+        for (int pitch = 0; pitch <= 60; pitch += 30)
+        for (int roll = -90; roll <= 90; roll += 30) {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            grabBall(g, in, 1);
+            const Quat q = kFaceP0 * Quat::axisAngle({1, 0, 0}, deg2rad(-float(pitch))) * Quat::axisAngle({0, 0, 1}, deg2rad(float(roll)));
+            in[0].hand[1].grip = {q, g.tun.start[0] + Vec3{0.30f, 1.0f, 0.08f}};
+            run(g, in, 0.05f);
+            const Pose s = g.shieldPose(0, 1);
+            const Vec3 n = s.q.rotate({0, 1, 0});
+            Vec3 aim = s.p;
+            fireOpponentBall(g, aim);
+            std::vector<GameEvent> log;
+            run(g, in, 2.0f, &log);
+            const bool blocked = hasEvent(log, EventType::ShieldBlock, 0), hit = g.pl[1].score > 0;
+            blocks += blocked; hits += !blocked && hit; misses += !blocked && !hit;
+            const Vec3 ax = g.pl[0].in.head.p - Vec3{0, g.tun.torsoTop, 0};
+            if (!blocked)
+                std::printf("  pitch %2d roll %4d: plate at %.2f m (%.2f m in front of the body's axis), face-on %.2f -> %s\n",
+                            pitch, roll, s.p.y, s.p.x - ax.x, std::fabs(n.x), hit ? "HIT" : "missed");
+        }
+        CHECK(blocks == 21 && hits == 0 && misses == 0, "held low, the forearm level to well down, the wrist rolled every way: it blocks");
+    }
+    {   // BLOCKS ONLINE: player 0 as a player who isn't hosting (a 200 ms round trip): the ball reaches them with their
+        // shield out to the side; their block, as they made it then, arrives during the wait
+        std::printf("[BLOCKS ONLINE: a block that was in time on the player's screen counts]\n");
+        for (int mode = 0; mode < 4; ++mode) {   // 0 the block arrives, 1 none, 2 the rule off, 3 a 400 ms round trip (past the cap)
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            grabBall(g, in, 1);
+            g.tun.knuckleMode = 0;   // (the shield alone)
+            g.lateBlock = mode != 2;
+            const Pose sl = g.shieldLocal(1);
+            const Quat gq = fromTo({0, 1, 0}, {1, 0, 0}) * sl.q.conj();   // the plate facing the ball
+            const Vec3 chest = g.pl[0].in.head.p - Vec3{0, 0.45f, 0};
+            in[0].hand[1].grip = {gq, chest + Vec3{0.45f, 0, 0.9f} - gq.rotate(sl.p)};   // out to the side
+            run(g, in, 0.05f);
+            g.seenLate[0] = mode == 3 ? 0.4f : 0.2f;
+            fireOpponentBall(g, chest);
+            std::vector<GameEvent> log;
+            float t = 0;
+            for (; t < 2.f && g.pl[1].ball.blockWaitAt < 0.f && !hasEvent(log, EventType::HitPlayer, 0); t += 1.f / 72) {
+                stepCopy(g, in); log.insert(log.end(), g.events.begin(), g.events.end());
+                g.seenLate[0] = mode == 3 ? 0.4f : 0.2f;   // (the host sets it each frame)
+            }
+            const bool waited = g.pl[1].ball.blockWaitAt >= 0.f;
+            const Vec3 dir = normalize(g.pl[1].ball.blockWaitVel), at = g.pl[1].ball.pos;
+            const float rtt = mode == 3 ? 0.4f : 0.2f, before = 0.45f / length(g.pl[1].ball.blockWaitVel);
+            for (float u = 0; u < 0.6f; u += 1.f / 72) {
+                // their shield onto the ball's path 0.45 m before it reached them, as they did then: it arrives here
+                // their round trip after the ball was there
+                if ((mode == 0 || mode == 3) && u >= rtt - before) in[0].hand[1].grip = {gq, at - dir * 0.45f - gq.rotate(sl.p)};
+                stepCopy(g, in); log.insert(log.end(), g.events.begin(), g.events.end());
+                g.seenLate[0] = mode == 3 ? 0.4f : 0.2f;
+            }
+            const bool blocked = hasEvent(log, EventType::ShieldBlock, 0), hit = hasEvent(log, EventType::HitPlayer, 0);
+            if (mode == 0) CHECK(waited && blocked && !hit && g.pl[1].ball.vel.x > 0.f, "a block arriving within the round trip counts; the ball goes back");
+            if (mode == 1) CHECK(waited && !blocked && hit, "no block: the hit counts after the wait");
+            if (mode == 2) CHECK(!waited && hit, "the rule off: the hit at once, as before");
+            if (mode == 3) CHECK(waited && !blocked && hit, "a round trip past lateBlockMax (0.25 s): a block that late does not count");
+        }
+    }
+    {   // a player's report (11-11: "slap shots work from the side but hardly on a ball coming straight on"): a ball
+        // straight at the chest; the right fist sweeps across its path 0.5 m in front, through the ball's middle at the
+        // moment it gets there (every one a real touch), at several hand speeds and wrist turns. Offline every one is
+        // punched back; online a late one failed for the player who isn't hosting until BLOCKS ONLINE
+        // (PA_GUARD=knuckle tools/run_shield_test.py)
+        std::printf("[slap shots at a ball coming straight on]\n");
+        int punchedBack = 0, total = 0;
+        const char* turns[] = {"fist forward", "knuckles up", "fist sideways", "backhand"};
+        for (int turn = 0; turn < 4; ++turn)
+        for (float hs : {1.f, 3.f, 5.f, 8.f})
+        for (float bs : {10.f, 14.f}) {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.tun.knuckleMode = 1;
+            Quat q = kFaceP0;
+            if (turn == 1) q = q * Quat::axisAngle({0, 0, 1}, deg2rad(90.f));
+            if (turn == 2) q = q * Quat::axisAngle({0, 1, 0}, deg2rad(90.f));    // the fist pointing across, along the sweep
+            if (turn == 3) q = q * Quat::axisAngle({0, 1, 0}, deg2rad(-90.f));   // the back of the hand leading
+            const Vec3 chest = g.pl[0].in.head.p - Vec3{0, 0.45f, 0};
+            fireOpponentBall(g, chest, bs);
+            const Vec3 kOff = q.rotate(g.tun.knuckleOffset);
+            const float planeX = g.tun.start[0].x + 0.5f;
+            std::vector<GameEvent> log;
+            for (float t = 0; t < 2.f; t += 1.f / 72) {
+                const Ball& b = g.pl[1].ball;
+                const float tt = b.vel.x < -1e-3f ? (planeX - b.pos.x) / b.vel.x : 0.f;   // s until it reaches the plane
+                const Vec3 meet = b.pos + b.vel * tt;
+                // the guard's middle sweeps along +Z through the meeting point, at hs m/s
+                const Vec3 at = Vec3{planeX, meet.y, meet.z} + Vec3{0, 0, -hs * tt};
+                in[0].hand[1].grip = {q, at - kOff};
+                stepCopy(g, in); log.insert(log.end(), g.events.begin(), g.events.end());
+                if (hasEvent(log, EventType::KnuckleBlock, 0) || hasEvent(log, EventType::HitPlayer, 0)) break;
+            }
+            const bool punched = hasEvent(log, EventType::KnuckleBlock, 0);
+            ++total;
+            if (punched && g.pl[1].ball.vel.x > 0) ++punchedBack;
+            else std::printf("  %-13s hand %.0f m/s, ball %2.0f m/s: %s\n", turns[turn], hs, bs,
+                             punched ? "punched, not back" : hasEvent(log, EventType::HitPlayer, 0) ? "went through: hit" : "went through: missed");
+        }
+        CHECK(punchedBack == total, "every wrist turn, hands at 1 to 8 m/s, balls at 10 and 14 m/s: punched back");
     }
     {
         std::printf("[knuckle guards (Basic)]\n");

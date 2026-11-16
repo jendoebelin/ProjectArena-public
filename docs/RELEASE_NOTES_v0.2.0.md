@@ -1,6 +1,6 @@
 # Project Arena 0.2.0 (draft)
 
-A standalone 1-v-1 VR ball sport for Meta Quest 3 (Quest 2 / Pro / 3S listed, not yet tested), inspired by Sparc.
+A standalone 1-v-1 VR ball sport for Meta Quest 3 (Quest 2 / Pro / 3S listed, not yet tested).
 Original art and sound; not affiliated with CCP Games.
 
 ## Install

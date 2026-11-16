@@ -1,4 +1,4 @@
-"""Generate an original (CCP-asset-free) art set for the Quest port, styled after Sparc's look:
+"""Generate an original (CCP-asset-free) art set for Project Arena, in its own look:
 dark glass court, team-coloured end zones, light-strip stands. Every mesh is built procedurally here.
 
 Writes app/assets_clean/{arena,environment,projectile,projectile_shell,spawner,shield,lancer,knuckleguard,

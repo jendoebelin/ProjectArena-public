@@ -8,5 +8,6 @@ cl /nologo /std:c++17 /O2 /EHsc /W3 /Fe"%ROOT%\build\tests\test_game.exe" /Fo"%R
 "%ROOT%\build\tests\test_game.exe" "%ROOT%\app\assets_open\arena.col" || exit /b 1
 rem the match the tests recorded (RECORD MY MATCHES): whole, and readable by the analyzer
 python -I "%ROOT%\tools\analyze_play.py" --check "%TEMP%\projectarena_sample_match.par" || exit /b 1
-cl /nologo /std:c++17 /O2 /EHsc /W3 /D_CRT_SECURE_NO_WARNINGS /Fe"%ROOT%\build\tests\test_xcompat.exe" /Fo"%ROOT%\build\tests\\" "%ROOT%\app\tests\test_xcompat.cpp" "%ROOT%\app\src\xcompat.cpp" "%ROOT%\app\src\log.cpp" ws2_32.lib || exit /b 1
-if exist "%ROOT%\build\xc_capture.bin" ("%ROOT%\build\tests\test_xcompat.exe" "%ROOT%\build\xc_capture.bin") else ("%ROOT%\build\tests\test_xcompat.exe")
+rem AUTO ROTATION's list (the PC spectator)
+cl /nologo /std:c++17 /O2 /EHsc /W3 /D_CRT_SECURE_NO_WARNINGS /Fe"%ROOT%\build\tests\test_autorot.exe" /Fo"%ROOT%\build\tests\\" "%ROOT%\app\tests\test_autorot.cpp" || exit /b 1
+"%ROOT%\build\tests\test_autorot.exe" || exit /b 1

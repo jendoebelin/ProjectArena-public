@@ -1,4 +1,4 @@
-# --- Never commit CCP / Sparc material (extracted from the player's own install) ---
+# --- Never commit third-party game material (extracted from a developer's own install) ---
 # umodel / UAssetAPI exports and Wwise audio
 /assets_src/
 # baked original assets (models, textures, audio)

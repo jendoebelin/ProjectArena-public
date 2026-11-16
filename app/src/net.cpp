@@ -44,6 +44,7 @@ enum : uint8_t { MSG_BEACON = 1, MSG_JOIN = 2, MSG_INPUT = 3, MSG_STATE = 4, MSG
 // (16-18, 0.3.13, HOST HANDOFF and IDLE ROOMS, host -> room. HEIRS: flags, the room's name, then who hosts next in
 //  order (id, address, name); HANDOFF: the new host's id and whether the old one stays; CLOSING: seconds left, 0 closed)
 static const double kHostQuiet = 5.0;             // a host silent this long: the next one takes over
+static const double kWakeKnock = 30.0;            // woken up: how long we keep asking a host that still announces its room
 static const double kHeirWait = 8.0;              // ... and this long for each heir to answer before the one after
 static const double kResumeWait = 9.0;            // a room taken over waits this long for its players to come back
 // community relay (server/projectarena_relay.py)
@@ -583,6 +584,27 @@ void Net::setAppVersion(const char* v) {
     std::snprintf(app_, sizeof app_, "%s", v ? v : "");
 }
 
+int Net::versionNumber(const char* v) {
+    int part[3] = {0, 0, 0}, k = 0;
+    for (const char* c = v ? v : ""; *c && k < 3; ++c) {
+        if (*c >= '0' && *c <= '9') part[k] = std::min(999, part[k] * 10 + (*c - '0'));
+        else if (*c == '.') ++k;
+        else break;
+    }
+    return part[0] * 1000000 + part[1] * 1000 + part[2];
+}
+
+int Net::matchVersion() const {
+    if (mode_ != Mode::Host) return Tunables::kVerAll;
+    int v = Tunables::kVerAll;
+    for (int p = 0; p < np_ && p < kMaxPlayers; ++p) {
+        if (!slot_[p]) continue;   // (empty, or a bot: ours)
+        for (const Member& m : members_)
+            if (m.id == slot_[p] && !m.local) v = std::min(v, m.ver);
+    }
+    return v;
+}
+
 std::vector<LanGame> Net::games() const {
     std::vector<LanGame> out;
     for (const LanGame& g : games_) if (now_ - g.seen < 2.0) out.push_back(g);
@@ -784,7 +806,9 @@ static void writeState(Writer& w, const Game& g) {
             w.put<uint8_t>((uint8_t)((b.fouled ? 1 : 0) | (b.homing ? 2 : 0) | (std::min(b.bounces, 63) << 2)));
         }
     if (g.np == 2) w.put<float>(g.now);   // (... and the host's game clock: how far to look ahead, steady)
-    if (g.np == 2) w.put<uint8_t>((uint8_t)std::max(0, std::min(2, g.tun.strikeSpeed)));   // (0.3.19: STRIKE SPEED)
+    // (the rules this match plays: an option an older player's game lacks goes out at regulation, FAIR MATCHES)
+    if (g.np == 2) w.put<uint8_t>((uint8_t)g.tun.strikeSpeedNow());   // (0.3.19: STRIKE SPEED)
+    if (g.np == 2) w.put<int8_t>((int8_t)g.tun.foulShiftNow());       // (0.3.20: FOUL LINE)
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -875,6 +899,8 @@ static bool readState(Reader& r, Game& g, int localIndex) {
     }
     g.tun.strikeSpeed = 0;   // (STRIKE SPEED, hosts from 0.3.19; older hosts: regulation)
     if (np == 2 && r.ok && r.e - r.p >= 1) g.tun.strikeSpeed = std::min<int>(2, r.get<uint8_t>());
+    g.tun.foulShift = 0;     // (FOUL LINE, hosts from 0.3.20; older hosts: where the arena has it)
+    if (np == 2 && r.ok && r.e - r.p >= 1) g.tun.foulShift = std::max(-2, std::min<int>(2, r.get<int8_t>()));
     return r.ok;
 }
 
@@ -1129,6 +1155,10 @@ void Net::sendJoin(bool play) {
     pingAvg_ = -1;   // (a new host: its round trip and its clock measured afresh)
     hostOffSet_ = false;
     Writer j; header(j, MSG_JOIN, session_, ++seq_); j.put<uint8_t>(play ? 1 : 0); writeName(j, name_);
+    // (0.3.20: our version after the name, FAIR MATCHES; older hosts stop reading at the name)
+    const uint8_t n = (uint8_t)std::strlen(app_);
+    j.put<uint8_t>(n);
+    for (uint8_t i = 0; i < n; ++i) j.put<uint8_t>((uint8_t)app_[i]);
     sendTo(j.b.data(), (int)j.b.size(), peerIp_, kPort);
 }
 
@@ -1394,6 +1424,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         LOGW("net: no frames for %.0f s: asking the host to let us back in", gap);
         peerSeen_ = now_; lastJoin_ = 0;
         room_ = RoomInfo();
+        wokeAt_ = now_;
     }
     bool gotState = false;
     uint8_t buf[2048];
@@ -1592,12 +1623,25 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             LOGI("net: host refused: %s", why);
             dropRoom(why[0] ? why : "ARENA FULL");
         } else if (type == MSG_JOIN && mode_ == Mode::Host) {
-            if (Member* m = member(session)) { if (m->ip == fromIp) { m->seen = now_; m->back = true; } continue; }
+            r.get<uint8_t>();   // "play now" from older builds: everyone now starts in the room's waiting area
+            char jname[17] = {};
+            if (r.e - r.p >= 16) readName(r, jname);   // 0.3.1+
+            int jver = 0;   // (0.3.20+: their version, FAIR MATCHES; older: 0)
+            if (r.ok && r.e - r.p >= 1) {
+                char v[16] = {};
+                const uint8_t n = r.get<uint8_t>();
+                for (uint8_t i = 0; i < n && r.ok && r.e - r.p >= 1; ++i) { const char c = (char)r.get<uint8_t>(); if (i < 15) v[i] = c; }
+                if (r.ok) jver = versionNumber(v);
+            }
+            if (Member* m = member(session)) {   // (again: woken up, or following a new host; their version as they say now)
+                if (m->ip == fromIp) { m->seen = now_; m->back = true; m->ver = jver; }
+                continue;
+            }
             if ((int)members_.size() >= np_ + kMaxWaiting) { reject(fromIp, "ARENA FULL"); continue; }
             Member m;
             m.ip = fromIp; m.id = session; m.seen = now_; m.active = now_;
-            r.get<uint8_t>();   // "play now" from older builds: everyone now starts in the room's waiting area
-            if (r.e - r.p >= 16) readName(r, m.name);   // 0.3.1+
+            std::memcpy(m.name, jname, sizeof m.name);
+            m.ver = jver;
             bool out = false;   // voted out of this arena for this session: by session, address or name
             for (const Removed& x : removed_) out |= x.id == session || x.ip == fromIp || (x.name[0] && !std::strcmp(x.name, m.name));
             if (out) { reject(fromIp, "REMOVED FROM THIS ARENA"); continue; }
@@ -2068,7 +2112,15 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
                 if (now_ - lastJoin_ > 0.5) sendJoin(false);
                 if (now_ > migrateUntil_) nextHeir(g);
             }
+        } else if (!peerConnected() && now_ - peerSeen_ > kHostQuiet && wokeAndHostThere()) {
+            // WOKEN UP (the owner's session, 2026-11-14: four times a headset back from sleep took over a room whose host
+            // was still there, for a second, and went back): the host still announces its room, so it is there and only
+            // we were away. Keep asking it to let us back in (at most kWakeKnock), rather than take the room over
+            if (now_ - lastJoin_ > 1.0) sendJoin(joinPlay_);
+            if (now_ - peerSeen_ > kHostQuiet + 1.0 && !noticeText()) notice("REJOINING THE ROOM");
         } else if (!peerConnected() && now_ - peerSeen_ > kHostQuiet) {
+            if (wokeAt_ > 0) LOGW("net: back from sleep, the host stopped announcing its room");
+            wokeAt_ = 0;
             if (!heirs_.empty()) {   // the host is gone: the room goes on with the next in line
                 LOGW("net: host lost: handing the room over");
                 notice("THE HOST LEFT - HANDING THE ROOM OVER");
@@ -2085,6 +2137,21 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
     }
     }
     return true;
+}
+
+// woken up: the host still announces its room (a beacon in the last 3 s), or our new session on the relay has not had
+// time to hear one yet; within kWakeKnock of waking. Back in touch with the host: no longer woken
+bool Net::wokeAndHostThere() {
+    if (wokeAt_ <= 0) return false;
+    if (peerConnected() || now_ - wokeAt_ > kWakeKnock) {
+        if (!peerConnected()) LOGW("net: back from sleep, the host did not let us back in for %.0f s", now_ - wokeAt_);
+        wokeAt_ = 0;
+        return false;
+    }
+    if (now_ - wokeAt_ < kHostQuiet + 4.0) return true;   // (a new relay session: its first beacons take a moment)
+    for (const LanGame& lg : games_)
+        if (lg.ip == peerIp_ && lg.session == peerSession_ && now_ - lg.seen < 3.0) return true;
+    return false;
 }
 
 size_t Net::snapshotBytes(const Game& g) {

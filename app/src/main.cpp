@@ -48,6 +48,7 @@ bool xrLoaderInit();   // pc/xr_loader.cpp
 #include <openxr/openxr_platform.h>
 #include "platform.h"
 
+#include "auto_rotation.h"
 #include "avatar.h"
 #include "game.h"
 #include "reach_log.h"
@@ -59,7 +60,6 @@ bool xrLoaderInit();   // pc/xr_loader.cpp
 #include "training.h"
 #include "sound_studio.h"
 #include "entitlement.h"   // the Meta store's ownership check (store builds only)
-#include "xcompat.h"
 #ifdef _WIN32
 #include "pc/discord_rpc.h"   // Discord status (PC only)
 #include "pc/webcam.h"        // the selfie overlay's webcam (PC only)
@@ -70,7 +70,6 @@ bool xrLoaderInit();   // pc/xr_loader.cpp
 #endif
 #ifndef PA_DEFAULT_SERVER
 #define PA_DEFAULT_SERVER ""
-#define PA_SPARC_SERVER ""
 #endif
 #include "voice_codec.h"
 
@@ -92,7 +91,15 @@ struct Swap {
     GLuint depth = 0, fbo = 0;
 };
 
+static constexpr int kCtlStep = 5, kCtlMax = 30;   // CONTROLLER ANGLE: degrees a step, and how far each way
+
 struct App {
+    // ARENA GLASS (owner, 2026-11-14: players hard to see through the walls from the stream's cameras): the court's glass,
+    // its glowing lines and the strike-zone rings this strong in the PC spectator's picture (1 NORMAL); nothing else changes
+    // (the headsets draw the arena as always; nothing is sent). shotGlass: a --glass picture uses it too
+    float dcGlass = 1.f;
+    bool shotGlass = false;
+    int shotQueue = -1;   // --scene queue: the waiting spot whose kiosk and queue screen a picture shows (-1: none)
     std::string dataPath;          // per-player files: settings, avatar, name, cameras, log
     int lanTriggerPoll = 0;
     bool resumed = false;
@@ -125,6 +132,13 @@ struct App {
     int dcCmd = 0;                  // a button pressed in the Spectator Controls window (handled next frame)
     double dcHintUntil = 0;         // "F1: CONTROLS" in the picture for a few seconds after start
     double dcAutoAt = 0, dcWatchAt = 0;
+    // AUTO ROTATION (owner, 2026-11-12): the presets and my cameras AUTO plays, ticked, in order (app/src/auto_rotation.h;
+    // autocams.cfg once the streamer has changed it), the row it played last, its list in the controls window
+    std::vector<autorot::Item> dcAutoList;
+    bool dcAutoCustom = false, dcAutoLoaded = false;
+    int dcAutoRow = -1, dcAutoTick = -1, dcAutoTickOn = 0;
+    HWND dcAutoView = nullptr;
+    std::wstring dcAutoShown;
     Vec3 dcPos{0, 2.4f, 7.5f};
     float dcYaw = 0, dcPitch = -0.15f, dcFov = 66.f;
     float dcWheel = 0;
@@ -292,6 +306,13 @@ struct App {
     // day: +21 deg, yaw -14, 9 cm forward; before: +35 deg, 9 cm forward, 2 cm up; 0 and -25 before that)
     float tunePitchDeg = 27.f, tuneFwd = 0.004f, tuneUp = -0.014f;   // the owner's TUNING export, 2026-10-19
     float tuneX = -0.006f, tuneYawDeg = -16.f, tuneRollDeg = -1.f;
+    // CONTROLLER ANGLE (0.3.20; a player through the owner, 2026-11-15: going from one headset's controllers to
+    // another's, throws that felt natural had to be learned again; "options to set it to exactly what feels most
+    // comfortable"): your own TILT, TWIST and TURN in degrees on top of the standard angle above, saved on this headset.
+    // Your hands as the game sees them follow it (the gauntlet, the throw, the shield, the knuckle guard), and a guest
+    // sends its hands turned already, so the host judges them the same; the laser keeps the controller's own pointing
+    int ctlTilt = 0, ctlTwist = 0, ctlTurn = 0;
+    bool ctlPage = false;          // settings: CONTROLLERS (POINTER and CONTROLLER ANGLE)
     // developer tuning tool (SETTINGS > TUNING in developer mode): a mirror like the avatar builder's and a panel of
     // values for the gauntlet parts and the skeleton; the thumbsticks change the picked value (files/tuning.cfg)
     bool tuneOpen = false, prevTuneTrig = true;
@@ -476,9 +497,8 @@ struct App {
     bool helpOpen = false;         // the menu shows HOW TO PLAY (first launch, or MENU > HOW TO PLAY)
     bool creditsOpen = false;      // HOW TO PLAY > CREDITS (shown while helpOpen)
     bool nameEdit = false;
-    int editTarget = 0;            // keyboard edits: 0 the lobby name, 1 the community server address, 2 team, 3 Sparc server,
+    int editTarget = 0;            // keyboard edits: 0 the lobby name, 1 the community server address, 2 team,
                                    // 4 bug note, 5 player report note
-    // EXPERIMENTAL SOFTWARE (title menu): cross-play test with the Sparc Reviver server (app/src/xcompat.h)
     bool xpOpen = false;
     GLuint emblemTex = 0;           // the logo above the main menu (open_emblem)
     // REPORT A BUG page: a category, an optional note; the report is saved and sent to the community server
@@ -542,6 +562,8 @@ struct App {
     uint32_t selfieSeen = 0;
     int optHealth = 5, optBalls = 1, optOctPlayers = 4;   // FIREBALL BLITZ: HEALTH, BALLS (4 = RAPID FIRE), PLAYERS (practice)
     int optStrikeSpeed = 0;        // STRIKE SPEED (0.3.19): 0 REGULATION, 1 FAST, 2 FASTER
+    int optFoulShift = 0;          // FOUL LINE (0.3.20): -2 .. +2 steps of 0.5 m, + LONGER (toward the centre)
+    bool fairTold = false;         // FAIR MATCHES: this match's countdown has told the host what plays at regulation
     // FIREBALL BLITZ on screen: the last knockout or "THE ROOM CLOSES IN" (and how long it shows), the fireballs' puffs as they
     // fizzle out, and the ring as last seen (it closing in: a blink to your new place)
     std::string octMsg;
@@ -576,9 +598,6 @@ struct App {
     std::string reportNote;
     std::vector<uint32_t> mutedIds;
     std::vector<Net::Person> reportFake;   // self-test pictures only (--menu report)
-    xc::SparcLink sparc;
-    std::string sparcAddr = PA_SPARC_SERVER;       // settings.cfg sparcserver= (default from the build)
-    std::string sparcId;                           // anonymous install id (files/xc_id), never a device name
     std::string serverOverride, serverSaved;   // PC --server host:port for this session; the saved choice stays
     std::string serverAddr;        // community relay "host[:port]" (settings.cfg server=...)         // the menu shows a keyboard for the lobby name
     std::string nameBuf;
@@ -623,6 +642,9 @@ struct App {
     Pose fadeTarget;
     float fadeT = 0;               // > 0 while the captured view fades out over the new one
     GLuint capTex[2] = {}, capFbo[2] = {};
+    bool fadeDark = false;         // the move pending is a blink through dark (startBlink), not a cross-fade
+    float darkOut = 0, darkIn = 0; // the blink: darkening before the move, lightening after it
+    GLuint blackTex = 0;
     // director tools (spectators): the toolbar, the info panel with its rendered preview, team sharing
     bool dirOpen = false, prevDirTrig = true, rttPass = false;
     Pose dirPose;
@@ -1680,45 +1702,6 @@ static void playerReportSubmit(App& a) {
     submitReport(a, bugReportText(a, "Project Arena player report", w), "player report");
 }
 
-// EXPERIMENTAL cross-play: the player's own name with the Project Arena tag, so the Sparc server (and its
-// leaderboard) can tell where a player comes from: "mojo" -> "mojo_PA". The Reviver server takes letters, digits
-// and underscores only (Blakey, 2026-10-15), so anything else becomes an underscore.
-static std::string sparcName(App& a) {
-    std::string n;
-    for (const char* c = a.net.name(); *c && n.size() < 16; ++c) {
-        char ch = *c;
-        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_') n += ch;
-        else if (ch == ' ' || ch == '.' || ch == '-' || ch == ':') n += '_';
-    }
-    if (n.empty()) n = "PLAYER";
-    return n + "_PA";
-}
-
-// a random id kept with the app's data (the stock client sends "<PC name>-<id>"; we never send a device name)
-static std::string sparcId(App& a) {
-    if (!a.sparcId.empty()) return a.sparcId;
-    std::string f = dataDir(a) ? std::string(dataDir(a)) + "/xc_id" : std::string();
-    if (!f.empty())
-        if (FILE* fp = fopen(f.c_str(), "r")) {
-            char b[80] = {};
-            if (fgets(b, sizeof b, fp)) a.sparcId = b;
-            fclose(fp);
-            while (!a.sparcId.empty() && (a.sparcId.back() == '\n' || a.sparcId.back() == '\r')) a.sparcId.pop_back();
-        }
-    if (a.sparcId.size() < 16) {
-        uint32_t x = (uint32_t)(nowSeconds() * 1e6) ^ 0x9e3779b9u ^ (uint32_t)(uintptr_t)&a;
-        char hex[33];
-        for (int i = 0; i < 32; ++i) {
-            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-            hex[i] = "0123456789ABCDEF"[x & 15];
-        }
-        hex[32] = 0;
-        a.sparcId = std::string("ProjectArena-") + hex;
-        if (!f.empty())
-            if (FILE* fp = fopen(f.c_str(), "w")) { fprintf(fp, "%s\n", a.sparcId.c_str()); fclose(fp); }
-    }
-    return a.sparcId;
-}
 
 static void haptic(App& a, int hand, float amp, float seconds) {
     if (a.session == XR_NULL_HANDLE || hand < 0 || hand > 1) return;   // no headset (desktop self-tests)
@@ -1945,6 +1928,19 @@ static void startWarp(App& a, const Pose& target) {
     a.fadeTarget = target;
     a.fadeCapture = true;   // this frame is captured; the move and the cross-fade start on the next one
 }
+// A player's move through dark (FIREBALL BLITZ: to the dugout, back, and the room closing in): the view darkens, you are
+// moved, it lightens. Not the cross-fade above: its old picture is held on the screen, so for half a second the room
+// turned with your head (a player in the dugout, 2026-11-14: "the room moved with his head")
+static const float kBlinkOut = 0.12f, kBlinkIn = 0.30f;
+static void startBlink(App& a, const Pose& target) {
+    a.fadeTarget = target;
+    a.fadeDark = true;
+    a.fadeCapture = false;
+    a.fadePending = false;
+    a.fadeT = 0;
+    a.darkOut = kBlinkOut;
+    a.darkIn = 0;
+}
 
 static const float kHoldSecs[4] = {2, 4, 8, 15};
 
@@ -2105,7 +2101,7 @@ static void ownershipFailed(App& a, const PlayerInput& in) {
     if (a.net.inRoom()) a.net.leave();
     if (a.builderOpen) closeBuilder(a);
     if (a.tuneOpen) closeTuning(a);
-    a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen =
+    a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.ctlPage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen =
         a.helpOpen = a.movePlayersOpen = a.updateOpen = a.statsOpen = a.statsNoticeOpen = a.nameEdit = a.startTitle = false;
     a.ownFail = true;
     a.ownFailAt = nowSeconds();
@@ -2157,7 +2153,9 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
         const bool nc = getBool(a, a.thumbClick, a.handPath[0]);
         if (nc && !a.prevNamesClick) {
             a.showNames = !a.showNames;
-            a.net.noticeLocal(a.showNames ? "PLAYERS' NAMES ON" : "PLAYERS' NAMES OFF");
+            if (a.net.localWaiting())   // (waiting in a room: the queue screen comes and goes with them)
+                a.net.noticeLocal(a.showNames ? "NAMES AND QUEUE SCREEN ON" : "NAMES AND QUEUE SCREEN OFF");
+            else a.net.noticeLocal(a.showNames ? "PLAYERS' NAMES ON" : "PLAYERS' NAMES OFF");
         }
         a.prevNamesClick = nc;
     }
@@ -2199,7 +2197,8 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
     if (a.fadePending && headOk) {   // the previous frame was captured: move now, fade the old view out
         a.fadePending = false;
         placeHead(a, headTrack, a.fadeTarget);
-        a.fadeT = 0.5f;
+        if (a.fadeDark) { a.fadeDark = false; a.darkIn = kBlinkIn; }
+        else a.fadeT = 0.5f;
     }
     if (headOk && (!a.recentered || (rc && !a.prevRecenter))) {
         LOGI("recenter cause: %s", !a.recentered ? "initial/reference-space change" : "button (B / thumbstick click)");
@@ -2275,7 +2274,8 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
             }
             if (a.toolFrame == 1) in.hand[h].grip.q = aim.q;
             a.rawGrip[h] = in.hand[h].grip;
-            Quat tq = in.hand[h].grip.q * gripEuler({a.tunePitchDeg, a.tuneYawDeg, a.tuneRollDeg}, h == 0);
+            // (CONTROLLER ANGLE: your own tilt, turn and twist on top of the standard angle; mirrored on the left hand)
+            Quat tq = in.hand[h].grip.q * gripEuler({a.tunePitchDeg + a.ctlTilt, a.tuneYawDeg + a.ctlTurn, a.tuneRollDeg + a.ctlTwist}, h == 0);
             in.hand[h].grip = {tq, in.hand[h].grip.p + tq.rotate({(h == 0 ? -1.f : 1.f) * a.tuneX, a.tuneUp, -a.tuneFwd})};
         }
         if (vel.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT)
@@ -2333,12 +2333,12 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 
 // ------------------------------------------------------------------ lobby menu
 enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute, ReportKick, StatsNoticeOk,
-                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, OptStrike, ReportHostKick, OptBot, Record, OptMeet, GfxPage, FovDown, FovUp, OptRoom, OptTeams,
+                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, OptStrike, OptFoul, ReportHostKick, OptBot, Record, OptMeet, GfxPage, FovDown, FovUp, OptRoom, OptTeams,
                      Train, TrainPick, TrainStart, TrainRetry, TrainNext, TrainList, TrainLeave, TrainBoard, TrainKind, TrainBoardBack, TrainShow, TrainVideo,
                      MovePlayers, MoveCorner, MoveOne, MoveBack, OptHealth, OptBalls, OptPlayers, Discord,
                      UpdateOpen, UpdateGo, UpdateRestart, UpdatePage, UpdateStore, UpdateBack, HeadSelfie, PrivateTalk, HandOff, HandOffTo,
                      LookAhead, Studio, StudioSection, StudioPrev, StudioNext, StudioPlay, StudioVote, StudioMoment, StudioLeave, StudioDelete,
-                     Credits, CreditsBack, UpdateStoreGet, UpdateStoreInstall, Defaults };
+                     Credits, CreditsBack, UpdateStoreGet, UpdateStoreInstall, Defaults, CtlPage, CtlAdj };
 // HOW TO PLAY > CREDITS: one page, film-credit style (small grey headings, the names under them)
 enum { CR_HEAD, CR_NAME, CR_SMALL };
 struct CreditRow { int kind; const char* text; };
@@ -2376,7 +2376,7 @@ static void haptic(App& a, int hand, float amp, float seconds);
 // DEFAULTS (0.3.19): each settings page back as a fresh install has it, that page only. Never: a person muted by
 // name, the name, the avatar, the stats, the server (its own USE DEFAULT); MATCH OPTIONS keeps the bot's level, MATCH MY
 // LEVEL and FIST BUMP FIRST (yours, not the rules') and which rules and room you picked
-enum { DEF_SETTINGS, DEF_GRAPHICS, DEF_VOICE, DEF_PASSTHROUGH, DEF_MATCH };
+enum { DEF_SETTINGS, DEF_GRAPHICS, DEF_VOICE, DEF_PASSTHROUGH, DEF_MATCH, DEF_CONTROLLERS };
 static const char* defaultsLabel(const App& a, int page) {
     const bool armed = a.defaultsArmed == page && nowSeconds() < a.defaultsArmedUntil;
     return armed ? (page == DEF_MATCH ? "PRESS AGAIN" : "RESET? PRESS AGAIN") : "DEFAULTS";
@@ -2386,11 +2386,14 @@ static void applyDefaults(App& a, int page) {
     switch (page) {
     case DEF_SETTINGS:
         a.volume = 8; a.audio.setVolume(a.volume / 10.f);
-        a.pointerHand = 1;
         a.hideOutside = false;
         a.crowdMode = 0;
         a.turnMode = 0;
         if (!a.net.inherited()) { a.net.setBotFill(true); a.botFill = true; }   // (a room taken over keeps its own)
+        break;
+    case DEF_CONTROLLERS:   // (POINTER, and the standard angle)
+        a.pointerHand = 1;
+        a.ctlTilt = a.ctlTwist = a.ctlTurn = 0;
         break;
     case DEF_GRAPHICS:
         a.roomFeel = 0;
@@ -2416,6 +2419,7 @@ static void applyDefaults(App& a, int page) {
         a.optHealth = t.health; a.optBalls = t.fireBalls; a.optOctPlayers = t.octPlayers;
         a.optTeams = t.teamMode; a.optOneTurns = t.oneTurns;
         a.optStrikeSpeed = t.strikeSpeed;
+        a.optFoulShift = t.foulShift;
         if (a.optExperimental && a.optExpRoom == ROOM_BLITZ) { a.optShields = false; a.optKnuckle = 1; }
         break;
     }
@@ -2427,11 +2431,18 @@ static const char* strikeLabel(const Tunables& t) {
     return k[std::max(0, std::min(2, t.strikeSpeed))];
 }
 
+// FOUL LINE: REGULATION, LONGER 1 / 2 (toward the centre: a longer way to throw), SHORTER 1 / 2
+static std::string foulLabel(const Tunables& t) {
+    const int s = std::max(-2, std::min(2, t.foulShift));
+    return s == 0 ? std::string("FOUL LINE: REGULATION") : std::string("FOUL LINE: ") + (s > 0 ? "LONGER " : "SHORTER ") + std::to_string(s > 0 ? s : -s);
+}
+
 static void optionsFrom(App& a, const Tunables& t) {
     a.optAdvanced = t.advanced; a.optShields = t.shields; a.optKnuckle = t.knuckleMode; a.optExperimental = t.experimental; a.optExpRoom = t.expRoom; a.optTeams = t.teamMode; a.optOneTurns = t.oneTurns;
     a.optHealth = t.health; a.optBalls = t.fireBalls; a.optOctPlayers = t.octPlayers;
     a.optMatchTime = t.basicMatchTime; a.optRoundTime = t.advancedRoundTime;
     a.optStrikeSpeed = t.strikeSpeed;
+    a.optFoulShift = t.foulShift;
     a.optBotLevel = t.botLevel; a.optBotAdapt = t.botAdapt; a.optBotMeet = t.botMeet;
 }
 // EXPERIMENTAL's rooms (0.3.12): DIAMOND (two players) and FOUR CORNERS (four: the CORNERS room as the owner asked,
@@ -2448,6 +2459,7 @@ static void optionsInto(const App& a, Tunables& t) {
     if (!a.rulesForHost && !a.net.inRoom()) t.theOne = 0;   // (practice 3 v 1: you are THE ONE; hosting, the room decides)
     t.basicMatchTime = a.optMatchTime; t.advancedRoundTime = a.optRoundTime;
     t.strikeSpeed = std::max(0, std::min(2, a.optStrikeSpeed));
+    t.foulShift = std::max(-2, std::min(2, a.optFoulShift));
     t.botLevel = a.optBotLevel; t.botAdapt = a.optBotAdapt; t.botMeet = a.optBotMeet;
 }
 static std::string timeLabel(float secs, bool rounds) {
@@ -2469,6 +2481,7 @@ static std::string rulesLine(const Tunables& t) {
     else if (!t.advanced && t.basicMatchTime != 180.f) s += " - " + std::to_string((int)t.basicMatchTime / 60) + " MIN";
     if (t.knuckleMode >= 0 && (t.knuckleMode != 0) != !t.advanced) s += t.knuckleMode ? " - KNUCKLE GUARDS" : " - NO KNUCKLE GUARDS";
     if (t.perStrike() != t.speedIncreasePerStrike) s += t.strikeSpeed >= 2 ? " - FASTER STRIKES" : " - FAST STRIKES";
+    if (t.foulMove() != 0.f) s += " - " + foulLabel(t).substr(0, 9) + foulLabel(t).substr(10);   // (" - FOUL LINE LONGER 2")
     return s;
 }
 // the clock as the boards show it: 2:41, FREE PLAY, SUDDEN DEATH (empty: an untimed Advanced round)
@@ -2728,8 +2741,9 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
             if (t.experimental) {   // (DIAMOND: STRIKE SPEED beside it; ROOM is beside SHIELDS)
                 v.push_back({t.knuckleGuards() ? "KNUCKLES: ON" : "KNUCKLES: OFF", -0.19f, y[1], 0.36f, 0.075f, MenuAct::OptKnuckle, 0, true});
                 v.push_back({strikeLabel(t), 0.19f, y[1], 0.36f, 0.075f, MenuAct::OptStrike, 0, true});
-            } else {
-                v.push_back({t.knuckleGuards() ? "KNUCKLE GUARDS: ON" : "KNUCKLE GUARDS: OFF", 0, y[1], 0.74f, 0.075f, MenuAct::OptKnuckle, 0, true});
+            } else {   // (the classic room: FOUL LINE beside it)
+                v.push_back({t.knuckleGuards() ? "KNUCKLES: ON" : "KNUCKLES: OFF", -0.19f, y[1], 0.36f, 0.075f, MenuAct::OptKnuckle, 0, true});
+                v.push_back({foulLabel(t), 0.19f, y[1], 0.36f, 0.075f, MenuAct::OptFoul, 0, true});
             }
         }
         const std::string tl = std::string(t.advanced ? "ROUND TIME: " : "MATCH TIME: ") + timeLabel(t.advanced ? t.advancedRoundTime : t.basicMatchTime, t.advanced);
@@ -2871,6 +2885,23 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({defaultsLabel(a, DEF_GRAPHICS), 0.19f, -0.39f, 0.36f, 0.055f, MenuAct::Defaults, DEF_GRAPHICS, true});
         return v;
     }
+    if (a.settingsOpen && a.ctlPage) {   // CONTROLLERS: POINTER, and CONTROLLER ANGLE (your hands follow it as you set it)
+        v.push_back({a.pointerHand == 1 ? "POINTER: RIGHT" : "POINTER: LEFT", 0, 0.15f, 0.50f, 0.07f, MenuAct::Hand, 0, true});
+        const char* name[3] = {"TILT", "TWIST", "TURN"};
+        const int val[3] = {a.ctlTilt, a.ctlTwist, a.ctlTurn};
+        for (int k = 0; k < 3; ++k) {
+            char b[32];
+            if (val[k] == 0) snprintf(b, sizeof b, "%s: STANDARD", name[k]);
+            else snprintf(b, sizeof b, "%s: %+d", name[k], val[k]);
+            const float y = -0.005f - 0.085f * k;
+            v.push_back({b, 0, y, 0.40f, 0.07f, MenuAct::None, 0, true});
+            v.push_back({"-", -0.27f, y, 0.09f, 0.07f, MenuAct::CtlAdj, (uint32_t)(k * 2), val[k] > -kCtlMax});
+            v.push_back({"+", 0.27f, y, 0.09f, 0.07f, MenuAct::CtlAdj, (uint32_t)(k * 2 + 1), val[k] < kCtlMax});
+        }
+        v.push_back({"BACK", -0.19f, -0.385f, 0.36f, 0.055f, MenuAct::Back, 0, true});
+        v.push_back({defaultsLabel(a, DEF_CONTROLLERS), 0.19f, -0.385f, 0.36f, 0.055f, MenuAct::Defaults, DEF_CONTROLLERS, true});
+        return v;
+    }
     if (a.settingsOpen && a.voicePage) {
         static const char* modes[3] = {"VOICE: PUSH TO TALK (LEFT GRIP)", "VOICE: OPEN MIC", "VOICE: OFF"};
         v.push_back({modes[a.voiceMode % 3], 0, 0.12f, 0.80f, 0.08f, MenuAct::VoiceMode, 0, true});
@@ -2892,7 +2923,7 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"+", -0.045f, 0.13f, 0.07f, 0.075f, MenuAct::VolUp, 0, a.volume < 10});
         v.push_back({!a.hasPassthrough || a.ptFailed ? "PASSTHROUGH: N/A" : std::string("PASSTHROUGH: ") + kPtModeName[a.ptMode % PT_COUNT],
                      0.19f, 0.13f, 0.36f, 0.075f, MenuAct::Passthrough, 0, a.hasPassthrough && !a.ptFailed});
-        v.push_back({a.pointerHand == 1 ? "POINTER: RIGHT" : "POINTER: LEFT", -0.19f, 0.04f, 0.36f, 0.075f, MenuAct::Hand, 0, true});
+        v.push_back({"CONTROLLERS", -0.19f, 0.04f, 0.36f, 0.075f, MenuAct::CtlPage, 0, true});   // (POINTER and the angle)
         v.push_back({a.net.botFill() ? "BOT FILLS IN: ON" : "BOT FILLS IN: OFF", 0.19f, 0.04f, 0.36f, 0.075f, MenuAct::BotFill, 0, true});
         v.push_back({"GRAPHICS AND VIEW", -0.19f, -0.05f, 0.36f, 0.075f, MenuAct::GfxPage, 0, true});
         v.push_back({a.hideOutside ? "OUTSIDE: HIDDEN" : "OUTSIDE: SHOWN", 0.19f, -0.05f, 0.36f, 0.075f, MenuAct::HideOutside, 0, true});
@@ -2914,15 +2945,6 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         if (a.devMode) v.push_back({"TUNING (DEVELOPER)", 0, -0.455f, 0.36f, 0.05f, MenuAct::Tuning, 0, true});
         return v;
     }
-    if (a.xpOpen) {
-        std::string sv = "SERVER: " + a.sparcAddr;
-        if (sv.size() > 34) sv = sv.substr(0, 33) + ".";
-        const bool live = a.sparc.state() != xc::SparcLink::State::Off && a.sparc.state() != xc::SparcLink::State::Failed;
-        v.push_back({sv, 0, 0.075f, 0.74f, 0.07f, MenuAct::XpServer, 0, !live});
-        v.push_back({live ? "DISCONNECT" : "CONNECT (SPECTATE ONLY)", 0, -0.025f, 0.56f, 0.08f, MenuAct::XpConnect, 0, true});
-        v.push_back({"BACK", 0, -0.37f, 0.36f, 0.06f, MenuAct::XpBack, 0, true});
-        return v;
-    }
     if (a.titleOpen) {
         v.push_back({"PLAY PRACTICE", -0.145f, 0.08f, 0.27f, 0.085f, MenuAct::Play, 0, true});
         v.push_back({"TRAINING", 0.145f, 0.08f, 0.27f, 0.085f, MenuAct::Train, 0, a.net.mode() == Net::Mode::Offline});
@@ -2932,14 +2954,7 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"SETTINGS", -0.145f, -0.22f, 0.27f, 0.07f, MenuAct::Settings, 0, true});
         v.push_back({"HOW TO PLAY", 0.145f, -0.22f, 0.27f, 0.07f, MenuAct::Help, 0, true});
         v.push_back({"CHANGE NAME", 0, -0.31f, 0.56f, 0.07f, MenuAct::Name, 0, true});
-        // (the cross-play test with the original game's community server, EXPERIMENTAL, doesn't work and is hidden from
-        // players: owner, 2026-11-06, for the store release; it stays in developer mode)
-        if (a.devMode) {
-            v.push_back({"EXPERIMENTAL", -0.145f, -0.385f, 0.27f, 0.045f, MenuAct::Experimental, 0, true});
-            v.push_back({"REPORT A BUG", 0.145f, -0.385f, 0.27f, 0.045f, MenuAct::Bug, 0, true});
-        } else {
-            v.push_back({"REPORT A BUG", 0, -0.385f, 0.56f, 0.045f, MenuAct::Bug, 0, true});
-        }
+        v.push_back({"REPORT A BUG", 0, -0.385f, 0.56f, 0.045f, MenuAct::Bug, 0, true});
         if (updateAvailable(a)) v.push_back({"UPDATE NOW", 0.215f, 0.145f, 0.16f, 0.04f, MenuAct::UpdateOpen, 0, true});
         return v;
     }
@@ -3188,7 +3203,6 @@ static void menuActivate(App& a, const MenuItem& it) {
     LOGI("menu: %s", it.label.c_str());
     if (it.act != MenuAct::Quit) a.quitArmed = false;
     switch (it.act) {
-    case MenuAct::Experimental: a.xpOpen = true; break;
     case MenuAct::Train: a.titleOpen = false; a.trainOpen = true; break;
     case MenuAct::Studio: studioOpen(a); break;
     case MenuAct::StudioSection: studioOpenSection(a, (int)it.ip); break;
@@ -3234,7 +3248,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         if (a.session != XR_NULL_HANDLE) xrRequestExitSession(a.session); else a.quit = true;
         break;
     case MenuAct::Nav: {
-        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen = a.helpOpen = a.movePlayersOpen = a.updateOpen = false;
+        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.ctlPage = a.xpOpen = a.bugOpen = a.reportOpen = a.rulesOpen = a.helpOpen = a.movePlayersOpen = a.updateOpen = false;
         a.statsOpen = false;
         a.trainOpen = false;
         a.trainBoard = -2;
@@ -3303,7 +3317,7 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::BugSend: bugSubmit(a); a.bugOpen = false; a.titleOpen = a.bugReturnTitle; break;
     case MenuAct::BugCancel: a.bugOpen = false; a.titleOpen = a.bugReturnTitle; break;
     case MenuAct::Report:
-        a.settingsOpen = false; a.voicePage = false; a.ptPage = false; a.gfxPage = false; a.reportOpen = true;
+        a.settingsOpen = false; a.voicePage = false; a.ptPage = false; a.gfxPage = false; a.ctlPage = false; a.reportOpen = true;
         a.reportWho = 0; a.reportName[0] = 0; a.reportWhy = -1; a.reportNote.clear();
         break;
     case MenuAct::ReportWho:
@@ -3332,12 +3346,6 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::ReportSend: playerReportSubmit(a); a.reportOpen = false; break;
     case MenuAct::ReportBack: a.reportOpen = false; break;
     case MenuAct::Forfeit: a.net.forfeit(); a.menuOpen = false; break;
-    case MenuAct::XpBack: a.xpOpen = false; break;
-    case MenuAct::XpServer: a.nameEdit = true; a.editTarget = 3; a.nameBuf = a.sparcAddr; break;
-    case MenuAct::XpConnect:
-        if (a.sparc.state() != xc::SparcLink::State::Off && a.sparc.state() != xc::SparcLink::State::Failed) a.sparc.disconnect("LEFT");
-        else a.sparc.connect(a.sparcAddr.c_str(), sparcName(a), sparcId(a));
-        break;
     case MenuAct::Host: a.rulesOpen = true; a.rulesForHost = true; a.rulesEdit = false; a.rulesStep = 0; optionsFrom(a, a.game.tun); break;   // CHOOSE THE RULES, then the room opens
     case MenuAct::RulesPick:   // then MATCH OPTIONS (nothing changes until START / APPLY)
         a.optAdvanced = it.ip == 1;
@@ -3346,6 +3354,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         break;
     case MenuAct::OptShields: a.optShields = !a.optShields; break;
     case MenuAct::OptStrike: a.optStrikeSpeed = (a.optStrikeSpeed + 1) % 3; break;   // REGULATION, FAST, FASTER
+    case MenuAct::OptFoul: a.optFoulShift = a.optFoulShift >= 2 ? -2 : a.optFoulShift + 1; break;   // 0, LONGER 1, 2, SHORTER 2, 1
     case MenuAct::OptRoom:   // DIAMOND, FOUR CORNERS, FIREBALL BLITZ (its own defaults: knuckle guards on, no shields)
         a.optExpRoom = (a.optExpRoom + 1) % kRooms;
         if (a.optExpRoom == ROOM_BLITZ) { a.optShields = false; a.optKnuckle = 1; }
@@ -3465,8 +3474,16 @@ static void menuActivate(App& a, const MenuItem& it) {
         break;
     case MenuAct::Multi: a.titleOpen = false; break;
     case MenuAct::Settings: a.settingsOpen = true; break;
-    case MenuAct::Back: if (a.voicePage) a.voicePage = false; else if (a.ptPage) a.ptPage = false; else if (a.gfxPage) a.gfxPage = false; else a.settingsOpen = false; saveSettings(a); break;
+    case MenuAct::Back: if (a.ctlPage) a.ctlPage = false; else if (a.voicePage) a.voicePage = false; else if (a.ptPage) a.ptPage = false; else if (a.gfxPage) a.gfxPage = false; else a.settingsOpen = false; saveSettings(a); break;
     case MenuAct::GfxPage: a.gfxPage = true; break;
+    case MenuAct::CtlPage: a.ctlPage = true; break;
+    case MenuAct::CtlAdj: {   // (k * 2 + up): a step of kCtlStep degrees, live on your hands
+        int* val[3] = {&a.ctlTilt, &a.ctlTwist, &a.ctlTurn};
+        int& x = *val[std::min(2u, it.ip / 2)];
+        x = std::max(-kCtlMax, std::min(kCtlMax, x + (it.ip & 1 ? kCtlStep : -kCtlStep)));
+        saveSettings(a);
+        break;
+    }
     case MenuAct::FovDown: a.roomFeel = std::max(-5, a.roomFeel - 1); saveSettings(a); break;
     case MenuAct::FovUp: a.roomFeel = std::min(5, a.roomFeel + 1); saveSettings(a); break;
     case MenuAct::VoicePage: a.voicePage = true; break;
@@ -3542,7 +3559,6 @@ static void menuActivate(App& a, const MenuItem& it) {
         while (!a.nameBuf.empty() && a.nameBuf.back() == ' ') a.nameBuf.pop_back();
         if (a.editTarget == 5) { a.reportNote = a.nameBuf; }
         else if (a.editTarget == 4) { a.bugNote = a.nameBuf; }
-        else if (a.editTarget == 3) { if (!a.nameBuf.empty()) a.sparcAddr = a.nameBuf; saveSettings(a); }
         else if (a.editTarget == 2) { a.team = a.nameBuf.substr(0, 16); saveSettings(a); a.menuOpen = false; }
         else if (a.editTarget == 1) {
             a.serverAddr = a.nameBuf;
@@ -3975,46 +3991,6 @@ static void drawMenu(App& a) {
         }
         text("SENT TO THE PROJECT ARENA TEAM WITH THE NAMES HERE AND THE RECENT LOG", 0, -0.50f, 0.017f, grey);
         text("MUTE SILENCES THEIR VOICE FOR YOU UNTIL YOU QUIT THE GAME", 0, -0.53f, 0.017f, grey);
-    } else if (a.xpOpen && !a.nameEdit) {
-        const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
-        text("EXPERIMENTAL SOFTWARE", 0, 0.29f, 0.050f, cyan);
-        text("UNFINISHED FEATURES FOR TEST BUILDS - THINGS WILL BREAK", 0, 0.225f, 0.020f, amber);
-        text("CROSS-PLAY TEST: JOIN THE SPARC REVIVER SERVER", 0, 0.155f, 0.028f, white);
-        const double now = nowSeconds();
-        snprintf(buf, sizeof buf, "STATUS: %s", a.sparc.stateText());
-        if (a.sparc.state() == xc::SparcLink::State::Joined) {
-            int s = (int)a.sparc.connectedFor(now);
-            snprintf(buf, sizeof buf, "STATUS: CONNECTED %d:%02d AS %s", s / 60, s % 60, a.sparc.nameSent().c_str());
-        } else if (a.sparc.state() == xc::SparcLink::State::Off && !a.sparc.error().empty()) {
-            snprintf(buf, sizeof buf, "STATUS: OFF (%s)", a.sparc.error().c_str());
-        } else if (a.sparc.state() == xc::SparcLink::State::Failed) {
-            snprintf(buf, sizeof buf, "FAILED: %s", a.sparc.error().c_str());
-        }
-        text(buf, 0, -0.105f, 0.026f, a.sparc.state() == xc::SparcLink::State::Failed ? amber : white);
-        if (a.sparc.state() == xc::SparcLink::State::Joined || a.sparc.state() == xc::SparcLink::State::Loading) {
-            std::string m = a.sparc.map();
-            size_t sl = m.rfind('/');
-            if (sl != std::string::npos) m = m.substr(sl + 1);
-            snprintf(buf, sizeof buf, "MAP %s   OBJECTS %d   PLAYERS %d", m.c_str(), a.sparc.channelCount(),
-                     a.sparc.countOf("PlaygroundPlayerState"));
-            text(buf, 0, -0.15f, 0.022f, grey);
-            std::string who;
-            for (const std::string& n : a.sparc.playerNames()) {
-                if (n.rfind("vmi", 0) == 0) continue;   // the dedicated server's own player state
-                if (!who.empty()) who += ", ";
-                who += n;
-            }
-            if (who.size() > 60) who = who.substr(0, 57) + "...";
-            text("ON THE SERVER: " + (who.empty() ? std::string("-") : who), 0, -0.225f, 0.020f, white);
-            snprintf(buf, sizeof buf, "PACKETS IN %llu  OUT %llu  ERRORS %u", (unsigned long long)a.sparc.packetsIn(),
-                     (unsigned long long)a.sparc.packetsOut(), a.sparc.decodeErrors());
-            text(buf, 0, -0.19f, 0.022f, grey);
-        } else {
-            snprintf(buf, sizeof buf, "YOU WILL APPEAR AS %s", sparcName(a).c_str());
-            text(buf, 0, -0.15f, 0.022f, grey);
-        }
-        text("THIS TEST ONLY CONNECTS AND STAYS IN AS A SPECTATOR.", 0, -0.25f, 0.020f, grey);
-        text("SEEING THE MATCH AND PLAYING ARE NOT BUILT YET.", 0, -0.285f, 0.020f, grey);
     } else if (a.titleOpen && !a.helpOpen && !a.nameEdit && !a.settingsOpen) {
         if (!a.emblemTex) a.emblemTex = a.gfx.texture("open_emblem", true);
         if (a.emblemTex) {   // the emblem floats above the panel, a soft glow behind it
@@ -4033,7 +4009,12 @@ static void drawMenu(App& a) {
             text(buf, -0.10f, 0.145f, 0.022f, amber);
         }
     } else if (a.settingsOpen && !a.nameEdit) {
-        text(a.voicePage ? "VOICE CHAT" : a.ptPage ? "PASSTHROUGH" : a.gfxPage ? "GRAPHICS AND VIEW" : "SETTINGS", 0, 0.29f, 0.055f, cyan);
+        text(a.ctlPage ? "CONTROLLERS" : a.voicePage ? "VOICE CHAT" : a.ptPage ? "PASSTHROUGH" : a.gfxPage ? "GRAPHICS AND VIEW" : "SETTINGS", 0, 0.29f, 0.055f, cyan);
+        if (a.ctlPage) {
+            text("CONTROLLER ANGLE", 0, 0.065f, 0.032f, white);
+            text("HOW YOUR HANDS SIT ON THE CONTROLLERS: WATCH THEM AS YOU SET IT", 0, -0.27f, 0.018f, grey);
+            text("TILT: UP / DOWN - TWIST: ROLL - TURN: LEFT / RIGHT - THIS HEADSET ONLY", 0, -0.305f, 0.016f, grey);
+        }
         if (a.gfxPage) {
             const float strip[4] = {0.004f, 0.007f, 0.016f, 0.985f};
             quad(0, -0.01f, 0.88f, 0.25f, -0.001f, strip);   // a strip behind the slider only: the arena shows around it
@@ -4076,7 +4057,7 @@ static void drawMenu(App& a) {
             "B / RIGHT STICK CLICK: RECENTER   MENU: GAMES"};
         for (int i = 0; i < 9; ++i) text(lines[i], 0, 0.20f - 0.055f * i, 0.024f, i >= 7 ? grey : white);
     } else if (a.nameEdit) {
-        text(a.editTarget == 5 ? "REPORT NOTE" : a.editTarget == 4 ? "BUG NOTE" : a.editTarget == 3 ? "SPARC SERVER" : a.editTarget == 2 ? "TEAM NAME" : a.editTarget ? "COMMUNITY SERVER" : "YOUR NAME", 0, 0.29f, 0.055f, cyan);
+        text(a.editTarget == 5 ? "REPORT NOTE" : a.editTarget == 4 ? "BUG NOTE" : a.editTarget == 2 ? "TEAM NAME" : a.editTarget ? "COMMUNITY SERVER" : "YOUR NAME", 0, 0.29f, 0.055f, cyan);
         {
             std::string shown = a.nameBuf + "_";
             if (shown.size() > 34) shown = "..." + shown.substr(shown.size() - 31);   // the end of a long note
@@ -4911,7 +4892,8 @@ static void openBuilder(App& a, const PlayerInput& in) {
     f = length(f) > 1e-3f ? normalize(f) : Vec3{1, 0, 0};
     const Vec3 right = cross(f, Vec3{0, 1, 0});
     a.mirrorNormal = -f;
-    a.mirrorPoint = Vec3{in.head.p.x, 0, in.head.p.z} + f * 0.85f;
+    // (on the floor you stand on: on the balcony its glass and ring were drawn on the court, 2.5 m below; owner, 2026-11-14)
+    a.mirrorPoint = Vec3{in.head.p.x, floorHere(a), in.head.p.z} + f * 0.85f;
     Vec3 pp = in.head.p + f * 0.95f + right * 0.66f + Vec3{0, -0.30f, 0};
     Vec3 to = in.head.p - pp;
     to.y = 0;
@@ -5078,10 +5060,10 @@ static AvatarLook drawMirror(App& a, int pass) {
     a.gfx.drawBox(Mat4::fromPose({mq, mc + side * 0.6f}, {0.004f, 1.05f, 0.004f}), edge, true);
     a.gfx.drawBox(Mat4::fromPose({mq, mc - side * 0.6f}, {0.004f, 1.05f, 0.004f}), edge, true);
     a.gfx.drawBox(Mat4::fromPose({mq, mc + Vec3{0, 1.05f, 0}}, {0.6f, 0.004f, 0.004f}), edge, true);
-    Vec3 foot{in.head.p.x, 0.004f, in.head.p.z};
+    Vec3 foot{in.head.p.x, a.mirrorPoint.y + 0.004f, in.head.p.z};
     Vec3 rf = foot - n * (2.f * dot(foot - a.mirrorPoint, n));
     const float ring[4] = {look.rim[0] * 0.5f, look.rim[1] * 0.5f, look.rim[2] * 0.5f, 1};
-    a.gfx.drawSpriteFlat({rf.x, 0.006f, rf.z}, 1.1f, ring, {0, 1, 0}, 1);
+    a.gfx.drawSpriteFlat({rf.x, a.mirrorPoint.y + 0.006f, rf.z}, 1.1f, ring, {0, 1, 0}, 1);
     return look;
 }
 
@@ -5585,7 +5567,7 @@ static void updateTuning(App& a, PlayerInput& in) {
     for (int h = 0; h < 2; ++h) { in.hand[h].trigger = 0; in.hand[h].squeeze = 0; }
 }
 
-// the knuckle glass follows the bumper: the knuckleguard model is authored round Sparc's bumper centre
+// the knuckle glass follows the bumper: the knuckleguard model is authored round the original bumper centre
 // (make_props.py knuckleguard), the bumper is wherever Tunables::knuckleOffset puts it
 static Mat4 knuckleShift(const Game& g) {
     static const Vec3 kGlassCentre{-0.022f, 0.010f, -0.137f};
@@ -6300,7 +6282,7 @@ static const RoomInfo* currentRoom(const App& a) {
 
 // kiosk in front of the local waiting player's spot: JOIN QUEUE / LEAVE QUEUE
 static Pose queueKioskPose(const App& a) {
-    const int sp = a.net.localSpot();
+    const int sp = a.shotQueue >= 0 ? a.shotQueue : a.net.localSpot();
     const Vec3 s = holdingPose(a, sp).p, f = holdingFwd(a, sp);
     return {yawToward(f), Vec3{s.x, 0.95f, s.z} + f * 0.55f};   // (-Z along f: the quad's +Z faces the player)
 }
@@ -6399,7 +6381,7 @@ static void lobbyAction(App& a, int which, const PlayerInput& in) {
     LOGI("lobby: %s", which == kPosterCount ? "the court" : kPosters[which].title);
     auto menuPage = [&]() {
         openMenu(a, in);
-        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.bugOpen = a.reportOpen = a.movePlayersOpen = false;
+        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.ctlPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.bugOpen = a.reportOpen = a.movePlayersOpen = false;
     };
     switch (which) {
     case 0: case kPosterCount: menuPage(); a.rulesOpen = true; a.rulesForHost = false; break;   // PLAY THE BOT / the court
@@ -6463,8 +6445,9 @@ static void drawLobby(App& a, int pass) {
     a.gfx.drawPanel(Mat4::fromPose(sign, {2.3f, 0.2f, 1}), deck);
     a.gfx.drawText("LEFT MENU BUTTON: MAIN MENU    -    HOLD THE META BUTTON: RECENTER", sign * Pose{Quat{}, {0, 0.03f, 0.004f}}, 0.035f, white);
     a.gfx.drawText("POINT AT A POSTER OR THE COURT AND PULL THE TRIGGER", sign * Pose{Quat{}, {0, -0.04f, 0.004f}}, 0.026f, grey);
-    // posters on stands
-    for (int i = 0; i < kPosterCount; ++i) {
+    // posters on stands (none while the builder is open: from CUSTOMIZE your reflection stood behind its poster; owner,
+    // 2026-11-14)
+    for (int i = 0; i < kPosterCount && !a.builderOpen; ++i) {
         const Pose k = posterPose(i);
         const bool hov = a.lobbyHover == i;
         const float frame[4] = {hov ? 0.4f : 0.08f, hov ? 0.9f : 0.42f, hov ? 1.0f : 0.62f, 1};
@@ -6501,6 +6484,143 @@ static void drawNameTag(App& a, const std::string& name, const Vec3& at) {
     const float plate[4] = {0.01f, 0.02f, 0.04f, 0.78f}, white[4] = {1, 1, 1, 1};
     a.gfx.drawPanel(Mat4::fromPose(p * Pose{Quat{}, {0, 0, -0.003f}}, {w, h * 1.5f, 1}), plate);
     a.gfx.drawText(name, p, h, white);
+}
+
+// The JOIN QUEUE kiosk in front of a waiting player, and the QUEUE SCREEN on it (a player's report, 2026-11-11: "in
+// the queue, the score and the players are hard to see over the arena"; the owner's pick, 2026-11-14: on the kiosk):
+// the match's players in their colours, the score and strikes (FOUR CORNERS: the corners or teams; FIREBALL BLITZ:
+// health and how many are still in), the clock or the round, the queue's next two, and the round's end. Tilted up
+// toward the eyes, below the view of the court. myPos: our place in the queue (-1 none); next: the first two's names.
+// The owner, 2026-11-15: "have it appear to your right offcenter so it doesn't block play of the arena and maybe only
+// when you press in the left thumbstick like when you display the player name": the screen stands to the right of the
+// spot, turned toward the player, and shows with PLAYERS' NAMES (the left stick's click); the JOIN QUEUE button is
+// always there
+static void drawQueueStation(App& a, int myPos, int queued, const std::string next[2]) {
+    const Game& g = a.game;
+    const Pose k = queueKioskPose(a);
+    const float bg[4] = {0.02f, 0.02f, 0.03f, 0.9f}, btn[4] = {0.10f, 0.03f, 0.03f, 0.95f}, hov[4] = {0.75f, 0.15f, 0.10f, 0.98f};
+    const float white[4] = {1, 1, 1, 1}, grey[4] = {0.55f, 0.6f, 0.68f, 1}, gold[4] = {1.0f, 0.85f, 0.3f, 1};
+    a.gfx.drawPanel(Mat4::fromPose(k * Pose{Quat{}, {0, 0.03f, -0.002f}}, {0.46f, 0.20f, 1}), bg);
+    a.gfx.drawPanel(Mat4::fromPose(k, {0.40f, 0.09f, 1}), a.queueHover == 0 ? hov : btn);
+    a.gfx.drawText(myPos < 0 ? "JOIN QUEUE" : "LEAVE QUEUE", k * Pose{Quat{}, {0, 0, 0.004f}}, 0.04f, white);
+    char buf[64];
+    if (myPos >= 0) snprintf(buf, sizeof buf, "YOU ARE %s IN LINE", myPos == 0 ? "NEXT" : "SECOND");
+    else snprintf(buf, sizeof buf, "%d OF 2 IN THE QUEUE", queued);
+    a.gfx.drawText(buf, k * Pose{Quat{}, {0, 0.085f, 0.004f}}, 0.022f, grey);
+    a.gfx.drawText(g.tun.advanced ? "ADVANCED RULES" : "BASIC RULES", k * Pose{Quat{}, {0, -0.055f, 0.004f}}, 0.020f, grey);
+    if (!a.showNames && a.shotQueue < 0) return;   // (the screen: only with the left stick's click)
+    // the screen: to the player's right (the kiosk's +X) and a little nearer, at about eye height, turned toward
+    // them (68 degrees) with its top tilted back, clear of the court ahead
+    const float W = 0.62f, H = 0.27f;
+    const Pose sc = k * Pose{Quat::axisAngle({0, 1, 0}, deg2rad(-68.f)) * Quat::axisAngle({1, 0, 0}, deg2rad(-15.f)),
+                             {0.68f, 0.36f, 0.34f}};
+    auto at = [&](float u, float v) { return sc * Pose{Quat{}, {u, v, 0.004f}}; };
+    const float frame[4] = {0.25f, 0.30f, 0.38f, 0.9f};
+    a.gfx.drawPanel(Mat4::fromPose(sc * Pose{Quat{}, {0, 0, -0.003f}}, {W + 0.015f, H + 0.015f, 1}), frame);
+    a.gfx.drawPanel(Mat4::fromPose(sc, {W, H, 1}), bg);
+    auto col = [&](int p, float c[4]) { const float* t = g.np == 4 ? teamRGB(a, p) : a.sideRGB[p & 1]; c[0] = t[0] * 0.6f + 0.4f; c[1] = t[1] * 0.6f + 0.4f; c[2] = t[2] * 0.6f + 0.4f; c[3] = 1; };
+    float c0[4], c1[4];
+    if (g.np == 2) {
+        col(0, c0); col(1, c1);
+        std::string n0 = playerLabel(a, 0), n1 = playerLabel(a, 1);
+        if (n0.size() > 12) n0.resize(12);
+        if (n1.size() > 12) n1.resize(12);
+        a.gfx.drawText(n0, at(-0.20f, 0.085f), 0.030f, c0);
+        a.gfx.drawText(n1, at(0.20f, 0.085f), 0.030f, c1);
+        snprintf(buf, sizeof buf, "%d", g.pl[0].score); a.gfx.drawText(buf, at(-0.075f, 0.03f), 0.075f, c0);
+        snprintf(buf, sizeof buf, "%d", g.pl[1].score); a.gfx.drawText(buf, at(0.075f, 0.03f), 0.075f, c1);
+        a.gfx.drawText("-", at(0, 0.03f), 0.05f, grey);
+        snprintf(buf, sizeof buf, "STRIKES %d", g.pl[0].strikesAgainst); a.gfx.drawText(buf, at(-0.20f, 0.03f), 0.020f, grey);
+        snprintf(buf, sizeof buf, "STRIKES %d", g.pl[1].strikesAgainst); a.gfx.drawText(buf, at(0.20f, 0.03f), 0.020f, grey);
+        if (g.tun.advanced) snprintf(buf, sizeof buf, "ROUND %d  -  ROUNDS %d - %d  %s", std::max(1, g.round), g.pl[0].roundWins, g.pl[1].roundWins, clockLine(g).c_str());
+        else snprintf(buf, sizeof buf, "%s%s", clockLine(g).c_str(), g.tun.shields ? "" : "  -  HOTDOG");
+        a.gfx.drawText(buf, at(0, -0.035f), 0.024f, g.overtime ? gold : white);
+    } else {   // four: each corner or team, its score (FIREBALL BLITZ: its health); how many are still in
+        const bool teams = !g.octagon() && g.tun.teamMode != TEAMS_FFA;
+        const int n = teams ? 2 : 4;
+        for (int t = 0; t < n; ++t) {
+            float c[4]; col(t, c);
+            const float u = (t - 0.5f * (n - 1)) * (W / n);
+            if (g.octagon()) {   // its health: a square for each point left (as over their heads), OUT when gone
+                if (!g.alive(t)) a.gfx.drawText("OUT", at(u, 0.04f), 0.04f, grey);
+                else {
+                    const int hp = std::max(1, g.tun.health);
+                    const float pip = std::min(0.024f, (W / n - 0.02f) / (hp * 1.35f)), gap = pip * 1.35f;
+                    for (int i = 0; i < hp; ++i) {
+                        const bool full = i < g.pl[t].health;
+                        const float pc[4] = {full ? c[0] : 0.14f, full ? c[1] : 0.14f, full ? c[2] : 0.16f, full ? 1.f : 0.7f};
+                        a.gfx.drawPanel(Mat4::fromPose(at((u - 0.5f * gap * (hp - 1)) + i * gap, 0.04f), {pip, pip, 1}), pc);
+                    }
+                }
+            } else {
+                snprintf(buf, sizeof buf, "%d", g.teamScore(t));
+                a.gfx.drawText(buf, at(u, 0.04f), 0.07f, c);
+            }
+            std::string nm = teams ? (t == 0 ? "BLUE TEAM" : "ORANGE TEAM") : playerLabel(a, t);
+            if (nm.size() > (n == 2 ? 14u : 9u)) nm.resize(n == 2 ? 14 : 9);
+            a.gfx.drawText(nm, at(u, 0.095f), 0.022f, c);
+        }
+        if (g.octagon()) snprintf(buf, sizeof buf, "%d STILL IN", g.aliveCount());
+        else snprintf(buf, sizeof buf, "%s", clockLine(g).c_str());
+        a.gfx.drawText(buf, at(0, -0.035f), 0.024f, white);
+    }
+    // the queue's next two (YOU when it is us), or the round's end
+    const char* end = g.match == MatchState::RoundSummary ? "ROUND OVER" : g.match == MatchState::MatchSummary ? "MATCH OVER" : nullptr;
+    if (end) a.gfx.drawText(end, at(0, -0.09f), 0.028f, gold);
+    else if (!next[0].empty()) {
+        std::string t = "NEXT: " + next[0] + (next[1].empty() ? "" : "   THEN: " + next[1]);
+        a.gfx.drawText(t, at(0, -0.09f), t.size() > 34 ? 0.018f : 0.022f, next[0] == "YOU" ? gold : grey);
+    } else a.gfx.drawText("NOBODY IN THE QUEUE", at(0, -0.09f), 0.020f, grey);
+}
+
+// FOUL LINE moved (0.3.20): the court drawn with its line where the line is now. The court is built as a middle (out
+// to the line, 4.75 m) and two ends in their players' colours (the line to the back wall, 9.5 m): glass, frames,
+// hexagons, floor strips and floor. So the line itself moves, each end stretches or shrinks to start at the new line
+// (its back wall where it is) and the middle with them; the rest (the centre line and emblem, the back walls) as it is.
+// The pieces are told apart by their bounds, so any asset set's court follows. Only the drawing: the walls are where
+// they were. (Collision: Game's foul zone follows the line on its own)
+static void drawCourtModel(App& a, const Model& m, const Mat4& M, DrawParams dp, int pass) {
+    const float mv = a.game.arenaKind <= ARENA_CLASSIC && a.game.np == 2 ? a.game.tun.foulMove() : 0.f;
+    if (mv == 0.f || m.secMin.empty()) { a.gfx.draw(m, M, dp, pass); return; }
+    const float L0 = 4.75f, L = L0 - mv, back = 9.5f;
+    const float kEnd = (back - L) / (back - L0), kMid = L / L0;
+    Mat4 each[64];
+    uint64_t moved = 0;
+    for (size_t s = 0; s < m.secMin.size() && s < 64; ++s) {
+        const float lo = m.secMin[s].x, hi = m.secMax[s].x, c = 0.5f * (lo + hi), sg = c < 0 ? -1.f : 1.f;
+        const float in = std::min(std::fabs(lo), std::fabs(hi)), out = std::max(std::fabs(lo), std::fabs(hi));
+        if (hi - lo < 0.4f && std::fabs(std::fabs(c) - L0) < 0.15f)   // the line: moved
+            each[s] = Mat4::fromPose({Quat{}, {sg * mv * -1.f, 0, 0}});
+        else if (lo * hi > 0 && std::fabs(in - L0) < 0.35f && std::fabs(out - back) < 0.25f)   // an end: x' = k x + c (1 - k)
+            each[s] = Mat4::fromPose({Quat{}, {sg * back * (1.f - kEnd), 0, 0}}, {kEnd, 1, 1});
+        else if (lo < 0 && hi > 0 && std::fabs(-lo - L0) < 0.15f && std::fabs(hi - L0) < 0.15f)   // the middle
+            each[s] = Mat4::fromPose({Quat{}, {0, 0, 0}}, {kMid, 1, 1});
+        else continue;
+        moved |= 1ull << s;
+    }
+    if (!moved || m.sections.size() > 64) { a.gfx.draw(m, M, dp, pass); return; }
+    // each piece in the model's own order (the floor is see-through: its dark underlay drawn after the ends' floor is
+    // what makes them dark; another order changes the colours)
+    for (int s = 0; s < (int)m.sections.size(); ++s) {
+        dp.only = s;
+        a.gfx.draw(m, (moved >> s) & 1 ? M * each[s] : M, dp, pass);
+    }
+}
+
+// FAIR MATCHES: at a match's countdown, the host is told when an option it chose plays at regulation because a
+// player's game doesn't have it (their own rules stay chosen for the next match)
+static void fairMatchNotice(App& a) {
+    const Tunables& t = a.game.tun;
+    if (a.net.mode() != Net::Mode::Host || a.game.match != MatchState::Countdown) { a.fairTold = false; return; }
+    if (a.fairTold) return;
+    a.fairTold = true;
+    const char* what = nullptr;
+    if (a.game.np == 2 && !t.experimental && t.foulShift != 0 && t.foulShiftNow() == 0) what = "FOUL LINE: REGULATION (A PLAYER NEEDS 0.3.20)";
+    else if (a.game.np == 2 && t.strikeSpeed != 0 && t.strikeSpeedNow() == 0) what = "STRIKES: REGULATION (A PLAYER NEEDS 0.3.19)";
+    if (what) {
+        a.net.noticeLocal(what);
+        LOGI("fair match: %s (the oldest player's game: %d)", what, t.matchVersion);
+    }
 }
 
 static void drawRoomPeople(App& a, int pass) {
@@ -6561,22 +6681,16 @@ static void drawRoomPeople(App& a, int pass) {
     if (!inTank)
         for (const RoomInfo::Watcher& w : rm->watchers)
             if (w.where == 1 && w.id != me) a.gfx.drawSprite(w.pos, 0.09f, kBlue, a.viewHead.p, 0);
-    // our own JOIN QUEUE kiosk
+    // our own JOIN QUEUE kiosk, and the queue screen on it
     if (a.net.localWaiting()) {
-        const Pose k = queueKioskPose(a);
-        const int q = a.net.localQueuePos();
-        const float bg[4] = {0.02f, 0.02f, 0.03f, 0.9f}, btn[4] = {0.10f, 0.03f, 0.03f, 0.95f}, hov[4] = {0.75f, 0.15f, 0.10f, 0.98f};
-        const float white[4] = {1, 1, 1, 1}, grey[4] = {0.55f, 0.6f, 0.68f, 1};
-        a.gfx.drawPanel(Mat4::fromPose(k * Pose{Quat{}, {0, 0.03f, -0.002f}}, {0.46f, 0.20f, 1}), bg);
-        a.gfx.drawPanel(Mat4::fromPose(k, {0.40f, 0.09f, 1}), a.queueHover == 0 ? hov : btn);
-        a.gfx.drawText(q < 0 ? "JOIN QUEUE" : "LEAVE QUEUE", k * Pose{Quat{}, {0, 0, 0.004f}}, 0.04f, white);
         int queued = 0;
-        for (const RoomInfo::Member& m : rm->members) queued += m.queuePos >= 0;
-        char buf[48];
-        if (q >= 0) snprintf(buf, sizeof buf, "YOU ARE %s IN LINE", q == 0 ? "NEXT" : "SECOND");
-        else snprintf(buf, sizeof buf, "%d OF 2 IN THE QUEUE", queued);
-        a.gfx.drawText(buf, k * Pose{Quat{}, {0, 0.085f, 0.004f}}, 0.022f, grey);
-        a.gfx.drawText(a.game.tun.advanced ? "ADVANCED RULES" : "BASIC RULES", k * Pose{Quat{}, {0, -0.055f, 0.004f}}, 0.020f, grey);
+        std::string line[2];   // who is next and after them (the queue's first two)
+        for (const RoomInfo::Member& m : rm->members) {
+            queued += m.queuePos >= 0;
+            if (m.queuePos == 0 || m.queuePos == 1)
+                if (const char* n = rm->nameOf(m.id)) line[m.queuePos] = m.id == a.net.session() ? "YOU" : n;
+        }
+        drawQueueStation(a, a.net.localQueuePos(), queued, line);
     }
 }
 
@@ -6594,8 +6708,8 @@ static void drawMiniMatch(App& a, const Game& g, const Vec3& at0, const Quat& q,
     const float teamCol[2][4] = {{0.1f, 0.7f, 1.0f, 1}, {1.0f, 0.4f, 0.1f, 1}};
     DrawParams dp;
     if (room < 0) {
-        a.gfx.draw(a.floor.valid() ? a.floor : a.arena, M(Mat4::identity()), dp, pass);
-        a.gfx.draw(a.arena, M(Mat4::identity()), dp, pass);
+        drawCourtModel(a, a.floor.valid() ? a.floor : a.arena, M(Mat4::identity()), dp, pass);
+        drawCourtModel(a, a.arena, M(Mat4::identity()), dp, pass);
     } else if (pass == 1) {   // its edges in light, and each player's platform
         const float edge[4] = {hover ? 0.45f : 0.25f, hover ? 1.0f : 0.8f, 1.0f, 1}, plat[4] = {0.10f, 0.35f, 0.55f, 1};
         auto line = [&](const Vec3& p0, const Vec3& p1) { const Vec3 l[2] = {W(p0), W(p1)}; a.gfx.drawRibbon(l, 2, 0.006f, edge, false); };
@@ -6639,7 +6753,7 @@ static void drawMiniMatch(App& a, const Game& g, const Vec3& at0, const Quat& q,
     if (pass == 1 && room < 0) {
         DrawParams cp;
         if (hover) for (int k = 0; k < 3; ++k) cp.tintMul[k] = 1.6f;
-        a.gfx.draw(a.courtFx, M(Mat4::identity()), cp, 1);
+        drawCourtModel(a, a.courtFx, M(Mat4::identity()), cp, 1);
         DrawParams pp;
         pp.uvOff[1] = wrapUV(-(nowSeconds() - a.startTime) * 0.9);
         a.gfx.draw(a.courtPulse, M(Mat4::identity()), pp, 1);
@@ -7174,6 +7288,20 @@ static void drawPlatforms(App& a, int pass, float now, float belowY) {
         a.gfx.drawSpriteFlat(c + Vec3{0, -kPlatformThick - 0.02f, 0}, 3.4f, under, {0, -1, 0}, 0);
         a.gfx.drawSpriteFlat({c.x, belowY + 0.02f, c.z}, 2.6f, under, {0, 1, 0}, 0);   // its light on what is below
     }
+}
+
+// A centre-court announcement (ROUND WON, YOU WIN, who leads, who is out; a player's report, 2026-11-11: "the
+// between-rounds and match-end text gets lost against the see-through arena"): the text on a dark plate with a thin
+// edge in its colour, the plate faded with it. (drawText: each character 0.75 of the height wide)
+static void drawAnnouncement(App& a, const std::string& t, const Pose& at, float h, const float col[4]) {
+    const float w = 0.75f * h * (float)t.size() + h * 0.9f, ph = h * 1.75f;
+    const float plate[4] = {0.01f, 0.02f, 0.045f, 0.82f * col[3]};
+    const float edge[4] = {col[0] * 0.8f, col[1] * 0.8f, col[2] * 0.8f, 0.9f * col[3]};
+    const Vec3 back = at.q.rotate({0, 0, -0.012f});
+    a.gfx.drawPanel(Mat4::fromPose({at.q, at.p + back}, {w, ph, 1}), plate);
+    for (int s = -1; s <= 1; s += 2)
+        a.gfx.drawPanel(Mat4::fromPose({at.q, at.p + back * 0.5f + at.q.rotate({0, s * ph * 0.5f, 0})}, {w, h * 0.06f, 1}), edge);
+    a.gfx.drawText(t, at, h, col);
 }
 
 // The EXPERIMENTAL arena DIAMOND (exparena, the owner's drawing 2026-10-29): the court as a glass tube rolled 45 degrees,
@@ -7772,7 +7900,7 @@ static void drawWorld(App& a, int pass) {
     if (pass == 1 && a.floor.valid() && !exp && !(a.mrView && a.ptFloor <= 0.01f) && !keyBg) {
         // glossy floor: mirrored light sources (and the balls) seen through the semi-transparent floor
         DrawParams rp;
-        if (!minimal) a.gfx.draw(a.floorReflect, Mat4::identity(), rp, 1);   // (MINIMAL: no stadium in the floor either)
+        if (!minimal) drawCourtModel(a, a.floorReflect, Mat4::identity(), rp, 1);   // (MINIMAL: no stadium in the floor either)
         if (!a.mrView && !minimal && a.floorReflectEnv.valid()) a.gfx.draw(a.floorReflectEnv, Mat4::identity(), rp, 1);
         const Vec3 eye = a.viewHead.p;
         const float (*tcol)[3] = pcol;
@@ -7806,7 +7934,7 @@ static void drawWorld(App& a, int pass) {
         }
         DrawParams fp;
         fp.alphaMul = a.mrView ? std::min(0.998f, a.ptFloor) : 0.80f;   // PASSTHROUGH: COURT FLOOR
-        a.gfx.draw(a.floor, Mat4::identity(), fp, 1);
+        drawCourtModel(a, a.floor, Mat4::identity(), fp, 1);
     }
     if (!a.mrView && !minimal) a.gfx.draw(a.environment, outside, dp, pass);   // PASSTHROUGH: your room instead
     if (keyBg) {
@@ -7814,11 +7942,12 @@ static void drawWorld(App& a, int pass) {
     } else if (exp) {
         if (g.arenaKind == ARENA_DIAMOND) drawDiamondArena(a, pass, now); else if (oct) drawOctArena(a, pass, now); else drawExpArena(a, pass, now);
     } else if (outline) {
-        a.gfx.draw(a.courtOutline, Mat4::identity(), dp, pass);
+        drawCourtModel(a, a.courtOutline, Mat4::identity(), dp, pass);
     } else {
         DrawParams ap;
         ap.glassMul = a.mrView ? a.ptGlass : 1.f;   // PASSTHROUGH: GLASS WALLS
-        a.gfx.draw(a.arena, Mat4::identity(), ap, pass);
+        if (isDesktop(a) || a.shotGlass) ap.glowMul = a.dcGlass;   // (the PC spectator's ARENA GLASS)
+        drawCourtModel(a, a.arena, Mat4::identity(), ap, pass);
     }
     if (pass == 1 && ptm == PT_WINDOW && !exp) {   // WINDOW: a night sky over the court, so only the glass walls look out
         const float sky[4] = {0.006f, 0.010f, 0.022f, 0.998f};
@@ -7863,7 +7992,9 @@ static void drawWorld(App& a, int pass) {
         xp.uvOff[0] = wrapUV(now * 0.035);   // crowd lights twinkle (env_fx = crowd lights only; they sample a scrolling twinkle strip)
         if (!a.mrView && !minimal) a.gfx.draw(a.envFx, outside, xp, 1);
         DrawParams cp;   // static glow layers: light halos, holographic rings, end-zone energy, light beams
-        if (!outline && !minimal && !exp) a.gfx.draw(a.courtFx, Mat4::identity(), cp, 1);
+        DrawParams cg = cp;   // (the court's: the PC spectator's ARENA GLASS fades its hexagons and end-zone rings)
+        if (isDesktop(a) || a.shotGlass) cg.glowMul = a.dcGlass;
+        if (!outline && !minimal && !exp) drawCourtModel(a, a.courtFx, Mat4::identity(), cg, 1);
         if (!a.mrView && !minimal && a.stadiumFx.valid()) a.gfx.draw(a.stadiumFx, outside, cp, 1);
         DrawParams pp;   // energy pulses racing along the neon outline
         pp.uvOff[1] = wrapUV(-now * 0.9);
@@ -8089,12 +8220,17 @@ static void drawWorld(App& a, int pass) {
         DrawParams zp;
         float f = 0.35f + 1.5f * a.trail[p].strikeFlash;
         zp.forceShader = SH_ADDITIVE;
+        if (isDesktop(a) || a.shotGlass) f *= a.dcGlass;   // (the PC spectator's ARENA GLASS)
         zp.tintMul[0] = teamCol[p][0] * f; zp.tintMul[1] = teamCol[p][1] * f; zp.tintMul[2] = teamCol[p][2] * f;
         // (the ring faces along its player's facing: corners 2 and 3 a quarter turn round)
         const Quat rq = p < 2 ? Quat{} : Quat::axisAngle({0, 1, 0}, kPi * 0.5f);
         a.gfx.draw(a.strikezone, Mat4::fromPose({rq, g.strikeZoneCenter(p)}), zp, pass);
     }
     if (!minimal) drawRoomPeople(a, pass);
+    if (pass == 1 && a.shotQueue >= 0) {   // (--scene queue: a waiting spot's kiosk and queue screen, sample names)
+        const std::string next[2] = {"YOU", "SPARKY"};
+        drawQueueStation(a, 0, 2, next);
+    }
     if (!minimal) drawLobby(a, pass);
     if (!minimal) drawTraining(a, pass);
     if (pass == 1 && !a.rttPass) drawVoiceHud(a);
@@ -8225,7 +8361,7 @@ static void drawWorld(App& a, int pass) {
             break;
         default: break;
         }
-        if (banner) a.gfx.drawText(banner, {faceP0, g.np == 4 ? Vec3{0, 2.2f, 0} - g.facing(L) * 1.5f : Vec3{-1.5f * sx, 2.2f, 0}}, 0.15f, white);
+        if (banner) drawAnnouncement(a, banner, {faceP0, g.np == 4 ? Vec3{0, 2.2f, 0} - g.facing(L) * 1.5f : Vec3{-1.5f * sx, 2.2f, 0}}, 0.22f, white);
         if (!banner && g.np == 4 && a.leadFlash > 0 && g.leader() >= 0) {   // FOUR CORNERS: who leads now, in their colour
             static const char* kLeads[4] = {"BLUE LEADS", "ORANGE LEADS", "GREEN LEADS", "VIOLET LEADS"};
             const int lt = g.leader();
@@ -8236,14 +8372,14 @@ static void drawWorld(App& a, int pass) {
                           : (lt == 0 ? "BLUE TEAM LEADS" : "ORANGE TEAM LEADS");
             const float* lc = teamRGB(a, lt);
             const float col[4] = {lc[0] * 0.6f + 0.4f, lc[1] * 0.6f + 0.4f, lc[2] * 0.6f + 0.4f, std::min(1.f, a.leadFlash)};
-            a.gfx.drawText(t, {faceP0, Vec3{0, 2.2f, 0} - g.facing(L) * 1.5f}, 0.12f, col);
+            drawAnnouncement(a, t, {faceP0, Vec3{0, 2.2f, 0} - g.facing(L) * 1.5f}, 0.18f, col);
         }
         if (!banner && oct && a.octMsgT > 0) {   // FIREBALL BLITZ: who is out, or the room closing in (with its countdown)
             const float* mc = a.octMsgP >= 0 ? teamCol[a.octMsgP & 3] : nullptr;
             const float col[4] = {mc ? mc[0] * 0.6f + 0.4f : 1.f, mc ? mc[1] * 0.6f + 0.4f : 0.62f, mc ? mc[2] * 0.6f + 0.4f : 0.2f, std::min(1.f, a.octMsgT)};
             std::string m = a.octMsg;
             if (a.octMsgP < 0 && g.ringCloseAt >= 0) m += "   " + std::to_string((int)std::ceil(std::max(0.f, g.ringCloseAt - g.now)));
-            a.gfx.drawText(m, {faceP0, Vec3{0, 2.2f, 0} - g.facing(L) * 1.5f}, 0.13f, col);
+            drawAnnouncement(a, m, {faceP0, Vec3{0, 2.2f, 0} - g.facing(L) * 1.5f}, 0.19f, col);
         }
         if (a.bumpFlash > 0 && !a.spectating && !a.net.localWaiting()) {
             const float gold[4] = {1.0f, 0.85f, 0.3f, std::min(1.f, a.bumpFlash * 2.f)};
@@ -8475,7 +8611,6 @@ static void reachLog(App& a, float dt) {
 }
 
 static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
-    a.sparc.update(t);   // EXPERIMENTAL cross-play link (does nothing unless connected)
     // the EXPERIMENTAL rooms: by the rules in play (practice, rooms, spectating; 0.3.12); the lobby stays classic, two
     // bots. Our own rules (practice, hosting) take their players from the room chosen (FOUR CORNERS: four); a guest's
     // and a spectator's come with the host's snapshots
@@ -8509,7 +8644,7 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
             a.wasOut = out;
             Vec3 pos, fwd;
             viewTarget(a, L, pos, fwd);
-            startWarp(a, {yawToward(fwd), pos + Vec3{0, a.viewHead.p.y, 0}});
+            startBlink(a, {yawToward(fwd), pos + Vec3{0, a.viewHead.p.y, 0}});
         }
     }
     if (a.game.octagon() && !a.spectating && !a.viewing && a.game.alive(L) && a.game.match == MatchState::InProgress)
@@ -8532,13 +8667,25 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
                 auto yaw = [](const Vec3& v) { return std::atan2(v.x, v.z); };
                 const Quat turn = Quat::axisAngle({0, 1, 0}, yaw(Vec3{-n.x, 0, -n.z}) - yaw(Vec3{-o.x, 0, -o.z}));
                 const Pose h = a.viewHead;
-                startWarp(a, {turn * h.q, n + turn.rotate(h.p - o)});
+                startBlink(a, {turn * h.q, n + turn.rotate(h.p - o)});
             }
             a.ringSeen = g.ringMask;
         }
         for (int p = 0; p < kMaxPlayers; ++p) a.ringStartSeen[p] = g.tun.start[p];
     } else {
         a.ringSeen = 0;
+    }
+    {   // BLOCKS ONLINE in the session log: each late block counted, each wait that ended in a hit (the host's game)
+        static int seenBlocks = 0, seenHits = 0;
+        const Game& g = a.game;
+        if (g.lateBlocks > seenBlocks || g.lateWaitHits > seenHits) {
+            static const char* kKind[3] = {"a late shield block counted", "a late knuckle-guard punch counted", "no block came: the hit"};
+            const int k = g.lateLastKind >= 0 && g.lateLastKind <= 2 ? g.lateLastKind : 2;
+            LOGI("blocks online: %s (player %d, round trip %.0f ms; %d late blocks, %d waits ended in a hit so far)", kKind[k],
+                 g.lateLastPlayer, g.lateLastRtt * 1000.f, g.lateBlocks, g.lateWaitHits);
+        }
+        seenBlocks = g.lateBlocks;
+        seenHits = g.lateWaitHits;
     }
     updateCrowd(a, dt);
     {   // a guest plays by the host's rules; ours come back when we leave (and are never saved over). Hosting a room
@@ -8578,7 +8725,7 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
         if (a.stateKey != 0xFFFFFFFFu && key != a.stateKey) {
             if (a.dirOpen) { a.dirOpen = false; a.infoKind = -1; }
             if (a.menuOpen && !a.nameEdit && !a.bugOpen && !a.reportOpen) {
-                a.menuOpen = false; a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.movePlayersOpen = false;
+                a.menuOpen = false; a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.ctlPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.movePlayersOpen = false;
                 LOGI("menu: closed (moved to %s)", a.net.status());
             }
         }
@@ -8663,6 +8810,10 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
             }
         }
         const PlayerInput mine = in[L];
+        // FAIR MATCHES: hosting, an option an older player's game lacks plays at regulation this match (offline and
+        // as a guest: everything; a guest gets the host's rules as they play)
+        a.game.tun.matchVersion = a.net.matchVersion();
+        fairMatchNotice(a);
         if (a.trainer.active()) {   // TRAINING: the lesson steps the game (and the coach's), paused while its menu is up mid-lesson
             using training::Phase;
             in[0] = mine;
@@ -8718,6 +8869,8 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
     }
     smoothPlayers(a, dt);
     a.fadeT = std::max(0.f, a.fadeT - dt);
+    if (a.darkOut > 0 && (a.darkOut -= dt) <= 0) { a.darkOut = 0; a.fadePending = true; }   // dark: move now
+    a.darkIn = std::max(0.f, a.darkIn - dt);
     updateFx(a, dt);
     for (float& f : a.hitFlash) f = std::max(0.f, f - dt);
     for (int p = 0; p < a.game.np; ++p) {
@@ -8891,6 +9044,20 @@ static bool renderFrame(App& a) {
             drawWorld(a, 0);
             drawWorld(a, 1);
             if (a.fadeT > 0 && a.capTex[i]) a.gfx.drawScreenTexture(a.capTex[i], std::min(1.f, a.fadeT / 0.5f));
+            {   // a blink (startBlink): plain dark over the whole view, nothing in it to follow the head
+                const float dark = a.darkOut > 0 ? 1.f - a.darkOut / kBlinkOut : (a.fadeDark && a.fadePending) ? 1.f : a.darkIn / kBlinkIn;
+                if (dark > 0) {
+                    if (!a.blackTex) {
+                        const uint8_t px[4] = {0, 0, 0, 255};
+                        glGenTextures(1, &a.blackTex);
+                        glBindTexture(GL_TEXTURE_2D, a.blackTex);
+                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                    }
+                    a.gfx.drawScreenTexture(a.blackTex, std::min(1.f, dark));
+                }
+            }
             if (a.fadeCapture) {   // keep this view to cross-fade from after the warp
                 if (!a.capTex[i]) {
                     glGenTextures(1, &a.capTex[i]);
@@ -9111,12 +9278,12 @@ static void saveSettings(App& a) {
     const Tunables& R = a.guestRules ? a.ownRules : a.trainer.active() ? a.trainer.savedRules() : a.game.tun;
     if (FILE* fp = fopen(f.c_str(), "w")) {
         fprintf(fp, "cfgver=8\n");
-        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nsparcserver=%s\nstatsnotice=%d\ncrowd=%d\nshields=%d\nknuckles=%d\nmatchtime=%.0f\nroundtime=%.0f\nturn=%d\nbotlevel=%d\nbotadapt=%d\nbotmatch=%.2f\nrecord=%d\nbotmeet=%d\nroomfeel=%d\nexperimental=%d\nexproom=%d\nteams=%d\noneturns=%d\nhealth=%d\nfireballs=%d\noctplayers=%d\ndiscord=%d\nprivatetalk=%d\nheadselfie=%d\nselfie=%d\nselfiecorner=%d\nselfiesize=%d\nselfieround=%d\nselfiecam=%d\n",
+        fprintf(fp, "advanced=%d\nshield=%d\npitch=%.1f\nfwd=%.3f\nup=%.3f\nvolume=%d\nhand=%d\nfx=%d\nhideoutside=%d\nvoice=%d\nmutespec=%d\nmuteplayers=%d\nmuteall=%d\nonline=%d\nbotfill=%d\npassthrough=%d\nptfloor=%.2f\nptglass=%.2f\nptroom=%.2f\nptmono=%d\nptedges=%d\nptreveal=%d\nptpeek=%d\nteam=%s\nserver=%s\nstatsnotice=%d\ncrowd=%d\nshields=%d\nknuckles=%d\nmatchtime=%.0f\nroundtime=%.0f\nturn=%d\nbotlevel=%d\nbotadapt=%d\nbotmatch=%.2f\nrecord=%d\nbotmeet=%d\nroomfeel=%d\nexperimental=%d\nexproom=%d\nteams=%d\noneturns=%d\nhealth=%d\nfireballs=%d\noctplayers=%d\ndiscord=%d\nprivatetalk=%d\nheadselfie=%d\nselfie=%d\nselfiecorner=%d\nselfiesize=%d\nselfieround=%d\nselfiecam=%d\n",
                 R.advanced ? 1 : 0, a.game.tun.shieldPlacement, a.tunePitchDeg, a.tuneFwd, a.tuneUp, a.volume,
                 a.pointerHand, a.fxLevel, a.hideOutside ? 1 : 0, a.voiceMode, a.muteSpectators ? 1 : 0, a.mutePlayers ? 1 : 0,
                 a.muteAll ? 1 : 0, a.onlinePref ? 1 : 0, a.botFill ? 1 : 0, a.ptMode, a.ptFloor, a.ptGlass, a.ptRoom, a.ptMono ? 1 : 0, a.ptEdges ? 1 : 0, a.ptEdgeReveal ? 1 : 0, a.ptPeekOn ? 1 : 0, a.team.c_str(),
                 (a.serverOverride.empty() ? a.serverAddr : a.serverSaved).c_str(),
-                a.sparcAddr.c_str(), a.statsNoticeSeen ? 1 : 0, a.crowdMode, R.shields ? 1 : 0,
+                a.statsNoticeSeen ? 1 : 0, a.crowdMode, R.shields ? 1 : 0,
                 R.knuckleMode, R.basicMatchTime,
                 R.advancedRoundTime, a.turnMode, R.botLevel,
                 R.botAdapt ? 1 : 0, R.botMatch, a.recordOn ? 1 : 0,
@@ -9126,6 +9293,9 @@ static void saveSettings(App& a) {
                 a.net.privateTalk() ? 1 : 0, a.headSelfie ? 1 : 0, a.selfieOn ? 1 : 0, a.selfieCorner, a.selfieSize, a.selfieRound ? 1 : 0, a.selfieCam);
         fprintf(fp, "lookahead=%d\n", a.net.lookAhead() ? 1 : 0);
         fprintf(fp, "strikespeed=%d\n", R.strikeSpeed);
+        fprintf(fp, "foulline=%d\n", R.foulShift);
+        fprintf(fp, "ctltilt=%d\nctltwist=%d\nctlturn=%d\n", a.ctlTilt, a.ctlTwist, a.ctlTurn);   // (CONTROLLER ANGLE)
+        fprintf(fp, "dcglass=%.2f\n", a.dcGlass);   // (the PC spectator's ARENA GLASS)
         fclose(fp);
     }
 }
@@ -9140,12 +9310,6 @@ static void loadSettings(App& a) {
         if (std::strncmp(line, "team=", 5) == 0) {
             a.team = line + 5;
             while (!a.team.empty() && (a.team.back() == '\n' || a.team.back() == '\r' || a.team.back() == ' ')) a.team.pop_back();
-            continue;
-        }
-        if (std::strncmp(line, "sparcserver=", 12) == 0) {
-            std::string v = line + 12;
-            while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' ')) v.pop_back();
-            if (!v.empty()) a.sparcAddr = v;
             continue;
         }
         if (std::strncmp(line, "server=", 7) == 0) {
@@ -9174,6 +9338,7 @@ static void loadSettings(App& a) {
         else if (k == "fireballs") a.game.tun.fireBalls = std::max(1, std::min(4, (int)v));
         else if (k == "octplayers") a.game.tun.octPlayers = std::max(2, std::min(4, (int)v));
         else if (k == "discord") a.discordOn = v != 0;
+        else if (k == "dcglass") a.dcGlass = clampf(v, 0.1f, 1.f);
         else if (k == "selfie") a.selfieOn = v != 0;
         else if (k == "headselfie") a.headSelfie = v != 0;
         else if (k == "privatetalk") a.net.setPrivateTalk(v != 0);
@@ -9196,6 +9361,10 @@ static void loadSettings(App& a) {
         else if (k == "matchtime") a.game.tun.basicMatchTime = clampf(v, 0.f, 3600.f);
         else if (k == "roundtime") a.game.tun.advancedRoundTime = clampf(v, 0.f, 3600.f);
         else if (k == "strikespeed") a.game.tun.strikeSpeed = std::max(0, std::min(2, (int)v));
+        else if (k == "foulline") a.game.tun.foulShift = std::max(-2, std::min(2, (int)v));
+        else if (k == "ctltilt") a.ctlTilt = std::max(-kCtlMax, std::min(kCtlMax, (int)v));
+        else if (k == "ctltwist") a.ctlTwist = std::max(-kCtlMax, std::min(kCtlMax, (int)v));
+        else if (k == "ctlturn") a.ctlTurn = std::max(-kCtlMax, std::min(kCtlMax, (int)v));
         else if (k == "hideoutside") a.hideOutside = v != 0;
         else if (k == "passthrough") {}   // always OFF when the game starts (owner, 2026-10-18); the page keeps the rest
         else if (k == "ptfloor") a.ptFloor = clampf(v, 0.f, 1.f);
@@ -9324,11 +9493,6 @@ static void startUp(App& a) {
         LOGI("settings: online on (new default)");
         saveSettings(a);
     }
-    if (a.cfgVersion < 2 && a.sparcAddr != PA_SPARC_SERVER) {   // EXPERIMENTAL cross-play: test addresses from older builds
-        LOGI("settings: cross-play server %s -> %s", a.sparcAddr.c_str(), PA_SPARC_SERVER[0] ? PA_SPARC_SERVER : "(none)");
-        a.sparcAddr = PA_SPARC_SERVER;
-        saveSettings(a);
-    }
     a.net.setBotFill(a.botFill);
     if (!a.serverOverride.empty()) { a.serverSaved = a.serverAddr; a.serverAddr = a.serverOverride; a.onlinePref = true; }
     // (pictures and probes stay off the community server: --selftest renders once showed up there as players)
@@ -9414,6 +9578,9 @@ struct ShotView {
     int face = -1;      // --face B F: blue's body type (0 / 1) and face (0..3)
     std::string look;   // --look "visor=1,mask=3,headgear=2": avatar.cfg keys for blue (accessory checks)
     std::string dcshot;       // --dcshot meet|bump|win|play: the desktop spectator's broadcast moment (its camera and overlay)
+    float glass = -1;         // --glass 0.35: the PC spectator's ARENA GLASS in the picture
+    int queue = -1;           // --queue SPOT: that waiting spot's kiosk and queue screen (sample queue)
+    int foul = 0;             // --foul N: the FOUL LINE option (-2 .. 2) in the picture
     int selfie = -1;          // --selfie N: the SELFIE overlay with a test card (N: corner 0-3, + 4 square, + 8 small, + 16 large)
     bool headSelfie = false;  // --headselfie: a spectator in the headset with SELFIE on, seen through their eyes
     int layer = 0, keyCol = 3;  // --layer 0-3: its VIEW LAYERS; --keycol 0-2 (pictures only): an old colour key
@@ -9498,6 +9665,9 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     Pose eye{Quat::axisAngle({0, 1, 0}, -1.5707963f), a.game.tun.start[0] + Vec3{-0.6f, 1.7f, 0}};   // facing the opponent (+X)
     if (v.custom) eye = {Quat::axisAngle({0, 1, 0}, deg2rad(v.yaw)) * Quat::axisAngle({1, 0, 0}, deg2rad(v.pitch)), v.p};
+    if (v.glass >= 0) { a.dcGlass = v.glass; a.shotGlass = true; }   // (--glass: ARENA GLASS)
+    a.game.tun.foulShift = std::max(-2, std::min(2, v.foul));         // (--foul: the FOUL LINE moved)
+    if (v.queue >= 0) a.shotQueue = v.queue & 7;   // (--queue: the queue screen)
     const float ty = std::tan(deg2rad(v.fovY) * 0.5f), tx = ty * W / H;
     a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(tx), std::atan(tx), std::atan(ty), -std::atan(ty), 0.05f, 2000.f), eye.p);
     if (v.scene == "four" || v.scene == "four2v2" || v.scene == "four3v1" || v.scene == "fourlead") {   // FOUR CORNERS: four bots a few seconds in
@@ -9945,6 +10115,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             a.winAt = nowSeconds() - 1.2;
         }
         if (v.dcshot == "bump") a.bumpFlash = 0.9f;
+        if (v.dcshot == "round") { g.match = MatchState::RoundSummary; g.lastRoundWinner = 0; g.stateTimer = 3.f; }   // (ROUND WON)
 #ifdef _WIN32
         if (v.selfie >= 0) {   // SELFIE with its test card
             a.selfieOn = a.selfieTest = true; a.selfieCorner = v.selfie & 3; a.selfieRound = !(v.selfie & 4);
@@ -9976,7 +10147,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         a.viewLayer = v.layer & 3;
         a.dcKeyCol = v.keyCol % 4;
         a.dcWinStyle = v.winStyle % 3;
-        if (v.custom && v.dcshot == "play") a.dcView = 0;   // (the given camera, no broadcast moment)
+        if (v.custom && (v.dcshot == "play" || v.dcshot == "round")) a.dcView = 0;   // (the given camera, no broadcast moment)
         else for (int f = 0; f <= 90; ++f) eye = eventCamera(a, desktopPreset(a, a.dcView), 1000.0 + f / 60.0, 1.f / 60.f, false);
         a.viewHead = eye;
         a.dcFov = v.fovY;
@@ -10005,7 +10176,8 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         a.menuOpen = true;
         a.titleOpen = v.menu == "title";
         a.xpOpen = v.menu == "xp";
-        a.settingsOpen = v.menu == "settings" || v.menu == "voice" || v.menu == "graphics";
+        a.settingsOpen = v.menu == "settings" || v.menu == "voice" || v.menu == "graphics" || v.menu == "controllers";
+        if (v.menu == "controllers") { a.ctlPage = true; a.ctlTilt = 10; a.ctlTwist = -5; }
         a.voicePage = v.menu == "voice";
         a.gfxPage = v.menu == "graphics";
         if (a.gfxPage) a.roomFeel = 2;
@@ -10307,8 +10479,10 @@ static Pose desktopPreset(const App& a, int v) {
     }
     switch (v) {
     case 2: return lookFrom({0, 5.2f, 6.6f}, {0, 0.6f, 0});   // above the near glass (further back is in the stands)
-    case 3: return lookFrom({-12.0f, 2.8f, 0}, {0, 1.3f, 0});
-    case 4: return lookFrom({12.0f, 2.8f, 0}, {0, 1.3f, 0});
+    // (the ends from above their glass, looking down the court: at head height behind it the near player stood inside
+    // the end's rings and the far one was small through two walls; owner, 2026-11-14)
+    case 3: return lookFrom({-12.5f, 7.0f, 0}, {0, 0.6f, 0});
+    case 4: return lookFrom({12.5f, 7.0f, 0}, {0, 0.6f, 0});
     case 5: return lookFrom({0, 11.f, 5.5f}, {0, 0, 0});   // steep, off-centre (the scoreboard hangs over the middle)
     default: return lookFrom({0, 2.7f, 7.3f}, {0, 1.0f, 0});   // (the hall wall is just behind)
     }
@@ -10494,13 +10668,14 @@ static void desktopFullscreen(App& a, bool on) {
 // keyboard / mouse: which match, which camera; returns the eye pose
 enum { DC_VIEW = 100, DC_AUTO = 110, DC_FREE, DC_NEXT, DC_HUB, DC_FULL, DC_HELP, DC_PANEL, DC_LAYER, DC_LAYERBACK, DC_KEYCOL, DC_WINSTYLE, DC_MATCHUP,
        DC_MYSAVE, DC_MYHOLD, DC_MYTRANS, DC_MYTRIG, DC_MYCLEAR, DC_DISCORD, DC_SELFIE, DC_SELFIECORNER, DC_SELFIESIZE,
-       DC_SELFIESHAPE, DC_SELFIECAM, DC_UPDATE, DC_MYGO = 140, DC_MYSET = 150 };   // (DC_MYGO / DC_MYSET + n: camera n)
+       DC_SELFIESHAPE, DC_SELFIECAM, DC_UPDATE, DC_GLASS, DC_AUTOLIST, DC_AUTOHOLD, DC_AUTOUP, DC_AUTODOWN, DC_MYGO = 140, DC_MYSET = 150 };   // (DC_MYGO / DC_MYSET + n: camera n)
 
-// the Spectator Controls window's two tabbed pages (SETUP, HELP), each its controls, shown one at a time
-static std::vector<HWND> g_dcPage[2];
+// the Spectator Controls window's tabbed pages (SETUP, AUTO, HELP), each its controls, shown one at a time
+static std::vector<HWND> g_dcPage[3];
 static HWND g_dcTabs = nullptr;
+static bool g_dcAutoFilling = false;   // (the AUTO ROTATION list being filled: its ticks changing are not the streamer's)
 static void dcShowPage(int k) {
-    for (int i = 0; i < 2; ++i)
+    for (int i = 0; i < 3; ++i)
         for (HWND c : g_dcPage[i]) ShowWindow(c, i == k ? SW_SHOW : SW_HIDE);
 }
 
@@ -10511,13 +10686,21 @@ static LRESULT CALLBACK dcPanelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         dcShowPage((int)SendMessageW(g_dcTabs, TCM_GETCURSEL, 0, 0));
         return 0;
     }
+    if (m == WM_NOTIFY && a && ((NMHDR*)l)->hwndFrom == a->dcAutoView && ((NMHDR*)l)->code == LVN_ITEMCHANGED && !g_dcAutoFilling) {
+        const NMLISTVIEW* nm = (const NMLISTVIEW*)l;   // an IN AUTO tick clicked (handled next frame)
+        if ((nm->uChanged & LVIF_STATE) && ((nm->uNewState ^ nm->uOldState) & LVIS_STATEIMAGEMASK) && (nm->uOldState & LVIS_STATEIMAGEMASK)) {
+            a->dcAutoTick = nm->iItem;
+            a->dcAutoTickOn = ((nm->uNewState & LVIS_STATEIMAGEMASK) >> 12) == 2;
+        }
+        return 0;
+    }
     if (m == WM_CTLCOLORSTATIC) return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);   // (labels on the window's own colour)
     if (m == WM_CLOSE) { ShowWindow(h, SW_HIDE); return 0; }   // F1 brings it back
     return DefWindowProcW(h, m, w, l);
 }
 
 // a small window beside the spectator, never part of the captured picture (owner, 2026-11-02: one long list was too busy;
-// what a streamer needs mid-stream always in view): LIVE at the top, then two tabs (SETUP, HELP), then what is on screen
+// what a streamer needs mid-stream always in view): LIVE at the top, then the tabs (SETUP, AUTO, HELP), then what is on screen
 static void desktopPanel(App& a) {
     INITCOMMONCONTROLSEX icc{sizeof icc, ICC_TAB_CLASSES};
     InitCommonControlsEx(&icc);
@@ -10576,8 +10759,8 @@ static void desktopPanel(App& a) {
     // ---- the tabs: set up before going live, and the keys
     g_dcTabs = CreateWindowW(WC_TABCONTROLW, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 6, y, W - 12, 26, a.dcPanel, nullptr, wc.hInstance, nullptr);
     SendMessageW(g_dcTabs, WM_SETFONT, (WPARAM)bold, TRUE);
-    const wchar_t* tabs[2] = {L"Setup", L"Help"};
-    for (int i = 0; i < 2; ++i) {
+    const wchar_t* tabs[3] = {L"Setup", L"Auto", L"Help"};
+    for (int i = 0; i < 3; ++i) {
         TCITEMW it{};
         it.mask = TCIF_TEXT;
         it.pszText = (LPWSTR)tabs[i];
@@ -10595,12 +10778,31 @@ static void desktopPanel(App& a) {
     button(L"Next webcam", 0, 2, y, DC_SELFIECAM); y += B + 10;
     heading(L"Screens", y); y += 22;
     button(L"R  Win screen", 0, 2, y, DC_WINSTYLE); button(L"M  VS screen", 1, 2, y, DC_MATCHUP); y += B + 6;
-    button(L"F2  Help in picture", 0, 2, y, DC_HELP); button(L"Discord status on / off", 1, 2, y, DC_DISCORD); y += B + 10;
+    button(L"F2  Help in picture", 0, 2, y, DC_HELP); button(L"Discord status on / off", 1, 2, y, DC_DISCORD); y += B + 6;
+    button(L"Arena glass: normal / faint / fainter", 0, 1, y, DC_GLASS); y += B + 10;
     heading(L"Updates", y); y += 22;
     button(L"Update now / restart to update", 0, 1, y, DC_UPDATE); y += B + 6;
-    const int pageEnd = y;
-    // ---- HELP
+    int pageEnd = y;
+    // ---- AUTO: AUTO ROTATION (owner, 2026-11-12; its own page: on SETUP the window grew taller than a 1080 screen)
     page = 1;
+    y = top;
+    heading(L"Auto rotation", y); y += 22;
+    note(L"AUTO plays the ticked cameras in this order, each for\nits hold time. Action cameras aren't listed: they still\ncut in on hits near them.", y, 3); y += 56;
+    a.dcAutoView = add(WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER, L, y, full, 222, DC_AUTOLIST);
+    SendMessageW(a.dcAutoView, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT);
+    {
+        LVCOLUMNW c{};
+        c.mask = LVCF_TEXT | LVCF_WIDTH;
+        c.cx = full - 92; c.pszText = (LPWSTR)L"In auto  Camera";
+        SendMessageW(a.dcAutoView, LVM_INSERTCOLUMNW, 0, (LPARAM)&c);
+        c.cx = 68; c.pszText = (LPWSTR)L"Hold";
+        SendMessageW(a.dcAutoView, LVM_INSERTCOLUMNW, 1, (LPARAM)&c);
+    }
+    y += 226;
+    button(L"Hold time", 0, 3, y, DC_AUTOHOLD); button(L"Move up", 1, 3, y, DC_AUTOUP); button(L"Move down", 2, 3, y, DC_AUTODOWN); y += B + 6;
+    pageEnd = std::max(pageEnd, y);
+    // ---- HELP
+    page = 2;
     y = top;
     heading(L"Keyboard", y); y += 22;
     note(L"1-7 views (6, 7 the players' eyes), F free (right mouse looks, W A S D\nmoves, Q / E down and up, Shift faster), A auto, Tab\nnext match, H hub, V view layer, R win screen, M VS,\nC selfie, F11 full screen, F2 help. Ctrl + 1-8 saves\nmy camera, Shift + 1-8 shows it. Wheel zooms.", y, 5); y += 92;
@@ -10611,13 +10813,82 @@ static void desktopPanel(App& a) {
     page = -1;
     y = pageEnd + 4;
     heading(L"Now", y); y += 20;
-    a.dcStatus = add(L"STATIC", L"", SS_LEFT, L, y, full, 17 * 9, 0);
-    y += 17 * 9 + 8;
+    a.dcStatus = add(L"STATIC", L"", SS_LEFT, L, y, full, 17 * 10, 0);
+    y += 17 * 10 + 8;
     RECT fit{0, 0, W, y};   // (the window as tall as what is in it)
     AdjustWindowRectEx(&fit, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_TOOLWINDOW);
     SetWindowPos(a.dcPanel, nullptr, 0, 0, fit.right - fit.left, fit.bottom - fit.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     dcShowPage(0);
     ShowWindow(a.dcPanel, SW_SHOWNOACTIVATE);
+}
+
+// AUTO ROTATION's list on this PC (autocams.cfg; only once the streamer has changed it: until then it follows the cameras)
+static void saveAutoList(App& a) {
+    const char* ext = dataDir(a);
+    if (!ext || !a.dcAutoCustom) return;
+    if (FILE* fp = fopen((std::string(ext) + "/autocams.cfg").c_str(), "w")) {
+        fputs(autorot::save(a.dcAutoList).c_str(), fp);
+        fclose(fp);
+    }
+}
+
+static void loadAutoList(App& a) {
+    a.dcAutoLoaded = true;
+    const char* ext = dataDir(a);
+    if (!ext) return;
+    FILE* fp = fopen((std::string(ext) + "/autocams.cfg").c_str(), "r");
+    if (!fp) return;
+    std::string s;
+    char b[256];
+    size_t n;
+    while ((n = fread(b, 1, sizeof b, fp)) > 0 && s.size() < 4096) s.append(b, n);
+    fclose(fp);
+    a.dcAutoList = autorot::load(s);
+    a.dcAutoCustom = !a.dcAutoList.empty();
+    LOGI("desktop: auto rotation, the streamer's list (%d rows)", (int)a.dcAutoList.size());
+}
+
+// the list in the controls window, filled again only when what it shows has changed (the row picked stays picked)
+static void dcAutoRefresh(App& a, int select = -1) {
+    if (!a.dcAutoView) return;
+    static const wchar_t* kName[8] = {L"", L"Side", L"High side", L"Blue end", L"Orange end", L"Top", L"Blue's eyes", L"Orange's eyes"};
+    std::vector<std::wstring> name, hold;
+    std::wstring sig;
+    for (const autorot::Item& it : a.dcAutoList) {
+        wchar_t n[48], h[24];
+        if (it.mine) {
+            const App::WarpCam& w = a.warps[it.id];
+            swprintf(n, 48, L"My camera %d%s", it.id + 1, w.trig == 2 ? L" (follow)" : L"");
+            swprintf(h, 24, L"%.0f s", kHoldSecs[w.hold & 3]);
+        } else {
+            swprintf(n, 48, L"%s", kName[it.id & 7]);
+            swprintf(h, 24, L"%.0f s", it.hold);
+        }
+        name.push_back(n); hold.push_back(h);
+        sig += n; sig += L'|'; sig += h; sig += it.on ? L"+" : L"-";
+    }
+    if (sig == a.dcAutoShown && select < 0) return;
+    a.dcAutoShown = sig;
+    const int sel = select >= 0 ? select : (int)SendMessageW(a.dcAutoView, LVM_GETNEXTITEM, (WPARAM)-1, LVNI_SELECTED);
+    g_dcAutoFilling = true;
+    SendMessageW(a.dcAutoView, LVM_DELETEALLITEMS, 0, 0);
+    for (int i = 0; i < (int)name.size(); ++i) {
+        LVITEMW it{};
+        it.mask = LVIF_TEXT; it.iItem = i; it.pszText = (LPWSTR)name[i].c_str();
+        SendMessageW(a.dcAutoView, LVM_INSERTITEMW, 0, (LPARAM)&it);
+        it.iSubItem = 1; it.pszText = (LPWSTR)hold[i].c_str();
+        SendMessageW(a.dcAutoView, LVM_SETITEMTEXTW, i, (LPARAM)&it);
+        LVITEMW st{};
+        st.stateMask = LVIS_STATEIMAGEMASK; st.state = INDEXTOSTATEIMAGEMASK(a.dcAutoList[i].on ? 2 : 1);
+        SendMessageW(a.dcAutoView, LVM_SETITEMSTATE, i, (LPARAM)&st);
+    }
+    if (sel >= 0 && sel < (int)name.size()) {
+        LVITEMW st{};
+        st.stateMask = LVIS_SELECTED | LVIS_FOCUSED; st.state = LVIS_SELECTED | LVIS_FOCUSED;
+        SendMessageW(a.dcAutoView, LVM_SETITEMSTATE, sel, (LPARAM)&st);
+        SendMessageW(a.dcAutoView, LVM_ENSUREVISIBLE, sel, FALSE);
+    }
+    g_dcAutoFilling = false;
 }
 
 static Pose desktopControls(App& a, double t, float dt) {
@@ -10760,6 +11031,11 @@ static Pose desktopControls(App& a, double t, float dt) {
         }
     }
     if (cmd == DC_DISCORD) { a.discordOn = !a.discordOn; saveSettings(a); LOGI("desktop: Discord status %s", a.discordOn ? "on" : "off"); }
+    if (cmd == DC_GLASS) {   // ARENA GLASS: NORMAL, FAINT (35%), FAINTER (20%), round again; saved on this PC
+        a.dcGlass = a.dcGlass > 0.9f ? 0.35f : a.dcGlass > 0.3f ? 0.2f : 1.f;
+        saveSettings(a);
+        LOGI("desktop: arena glass %.0f%%", a.dcGlass * 100.f);
+    }
     if (cmd == DC_LAYER || cmd == DC_LAYERBACK) {
         a.viewLayer = (a.viewLayer + (cmd == DC_LAYER ? 1 : 3)) % 4;
         LOGI("desktop: view layers %s", kDcLayerName[a.viewLayer]);
@@ -10780,8 +11056,38 @@ static Pose desktopControls(App& a, double t, float dt) {
         if (a.dcWatchAt == 0) a.dcWatchAt = t + 2.0;
         if (t > a.dcWatchAt) { a.watchIp = ms[0].ip; a.dcWatchAt = 0; LOGI("desktop: watching %s", ms[0].name); }
     }
-    bool mineInTurn = false;
-    for (const App::WarpCam& w : a.warps) mineInTurn |= w.trig != 1;
+    // AUTO ROTATION: the list made whole for the cameras there are; the streamer's ticks, hold times and order
+    if (!a.dcAutoLoaded) loadAutoList(a);
+    {
+        std::vector<uint8_t> trig;
+        for (const App::WarpCam& w : a.warps) trig.push_back(w.trig);
+        if (autorot::sync(a.dcAutoList, a.dcAutoCustom, trig)) saveAutoList(a);
+        const int sel = a.dcAutoView ? (int)SendMessageW(a.dcAutoView, LVM_GETNEXTITEM, (WPARAM)-1, LVNI_SELECTED) : -1;
+        const int n = (int)a.dcAutoList.size();
+        int moved = -1;
+        if (a.dcAutoTick >= 0 && a.dcAutoTick < n) {   // (the first change: the list is the streamer's from now on)
+            a.dcAutoCustom = true;
+            a.dcAutoList[a.dcAutoTick].on = a.dcAutoTickOn != 0;
+            saveAutoList(a);
+            LOGI("desktop: auto rotation, row %d %s", a.dcAutoTick + 1, a.dcAutoTickOn ? "ticked" : "unticked");
+        }
+        a.dcAutoTick = -1;
+        if (cmd == DC_AUTOHOLD && sel >= 0 && sel < n) {   // yours: its own hold (the headset's too); a preset's: 2, 4, 9, 15 s
+            autorot::Item& it = a.dcAutoList[sel];
+            if (it.mine) { a.warps[it.id].hold = (uint8_t)((a.warps[it.id].hold + 1) & 3); saveWarps(a); }
+            else { it.hold = autorot::nextHold(it.hold); a.dcAutoCustom = true; saveAutoList(a); }
+        }
+        if ((cmd == DC_AUTOUP || cmd == DC_AUTODOWN) && sel >= 0 && sel < n) {
+            const int to = sel + (cmd == DC_AUTOUP ? -1 : 1);
+            if (to >= 0 && to < n) {
+                std::swap(a.dcAutoList[sel], a.dcAutoList[to]);
+                a.dcAutoCustom = true;
+                saveAutoList(a);
+                moved = to;
+            }
+        }
+        dcAutoRefresh(a, moved);
+    }
     if (a.dcAuto && a.watchIp && !a.warps.empty()) {   // AUTO with your cameras: an action camera near a hit takes over
         for (const GameEvent& e : a.game.events) {
             if (e.type != EventType::HitPlayer && e.type != EventType::Strike && e.type != EventType::MatchEnd) continue;
@@ -10792,19 +11098,17 @@ static Pose desktopControls(App& a, double t, float dt) {
             if (best >= 0) showMine(best, false);
         }
     }
-    if (a.dcAuto && a.watchIp && t > a.dcAutoAt && mineInTurn) {   // ... and goes round the others in turn, each its hold
-        const int n = (int)a.warps.size();
-        const int from = a.dcView == kDcMine ? a.dcMy : -1;
-        for (int k = 1; k <= n; ++k) {
-            const int i = (from + k + n) % n;
-            if (a.warps[i].trig != 1) { showMine(i, false); break; }
+    if (a.dcAuto && a.watchIp && t > a.dcAutoAt) {   // ... and goes round the AUTO ROTATION list's ticked ones, each its hold
+        const std::vector<autorot::Item>& L = a.dcAutoList;
+        int cur = a.dcView == kDcMine ? autorot::rowOf(L, true, a.dcMy) : autorot::rowOf(L, false, a.dcView);
+        if (cur < 0) cur = a.dcAutoRow;   // (an action camera, or the free camera: on from the row played last)
+        const int r = autorot::next(L, cur);
+        if (r < 0) a.dcAutoAt = t + 1.0;   // (nothing ticked: the camera stays)
+        else {
+            a.dcAutoRow = r;
+            if (L[r].mine) showMine(L[r].id, false);
+            else { a.dcView = L[r].id; a.dcAutoAt = t + L[r].hold; }
         }
-    } else if (a.dcAuto && a.watchIp && t > a.dcAutoAt) {   // auto director: side, blue end, high, orange end
-        static const int order[6] = {1, 6, 3, 2, 7, 4};   // (each player's eyes in turn too)
-        int k = 0;
-        for (int i = 0; i < 6; ++i) if (order[i] == a.dcView) k = (i + 1) % 6;
-        a.dcView = order[k];
-        a.dcAutoAt = t + 9.0;
     }
     a.dcFov = clampf(a.dcFov - a.dcWheel * 4.f, 25.f, 100.f);
     a.dcWheel = 0;
@@ -11280,7 +11584,7 @@ static void desktopFrame(App& a) {
         statusAt = t + 0.5;
         const SpecMatch* w = nullptr;
         for (const SpecMatch& m : a.net.matches()) if (m.ip == a.watchIp) w = &m;
-        char b[400];
+        char b[512];
         static const char* kHoldName[4] = {"2 s", "4 s", "8 s", "15 s"};
         static const char* kTrigName[3] = {"in turn", "action", "follow"};
         char mine[96] = "none saved yet";
@@ -11297,9 +11601,10 @@ static void desktopFrame(App& a) {
         if (!a.selfieOn) snprintf(selfie, sizeof selfie, "off (C)");
         else snprintf(selfie, sizeof selfie, "%s, %s, %s%s%s", kCorner[a.selfieCorner & 3], kSize[a.selfieSize % 3], a.selfieRound ? "round" : "square",
                       ws.empty() ? "" : " - ", ws.c_str());
-        snprintf(b, sizeof b, "Now: %s\nCamera: %s%s, layers: %s%s\nMy cameras: %s\nWin screen: %s\nDiscord status: %s\nSelfie: %s\nVersion: %s", w ? (w->name[0] ? w->name : "live match") : "the spectator hub",
+        const char* glass = a.dcGlass > 0.9f ? "normal" : a.dcGlass > 0.3f ? "faint (35%)" : "fainter (20%)";
+        snprintf(b, sizeof b, "Now: %s\nCamera: %s%s, layers: %s%s\nMy cameras: %s\nWin screen: %s\nArena glass: %s\nDiscord status: %s\nSelfie: %s\nVersion: %s", w ? (w->name[0] ? w->name : "live match") : "the spectator hub",
                  w ? dcViewName(a).c_str() : "the hub's", a.dcAuto ? " (auto)" : "", kDcLayerName[a.viewLayer & 3],
-                 a.viewLayer == 3 ? " (transparent)" : "", mine, kDcWinName[a.dcWinStyle % 3], a.discordOn ? "on" : "off", selfie, kAppVersion);
+                 a.viewLayer == 3 ? " (transparent)" : "", mine, kDcWinName[a.dcWinStyle % 3], glass, a.discordOn ? "on" : "off", selfie, kAppVersion);
         SetWindowTextA(a.dcStatus, b);
         for (int i = 0; i < 8; ++i)   // (my cameras' buttons: only the saved ones can be clicked)
             if (HWND c = GetDlgItem(a.dcPanel, DC_MYGO + i)) EnableWindow(c, i < (int)a.warps.size());
@@ -11410,6 +11715,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--swingtest")) view.swingTest = true;
         else if (!strcmp(argv[i], "--armsup") && i + 1 < argc) view.armsUp = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--dcshot") && i + 1 < argc) view.dcshot = argv[++i];
+        else if (!strcmp(argv[i], "--glass") && i + 1 < argc) view.glass = (float)atof(argv[++i]);   // ARENA GLASS in the picture
+        else if (!strcmp(argv[i], "--queue") && i + 1 < argc) view.queue = atoi(argv[++i]);   // a waiting spot's queue screen
+        else if (!strcmp(argv[i], "--foul") && i + 1 < argc) view.foul = atoi(argv[++i]);     // the FOUL LINE option
         else if (!strcmp(argv[i], "--selfie") && i + 1 < argc) view.selfie = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--headselfie")) view.headSelfie = true;
         else if (!strcmp(argv[i], "--layer") && i + 1 < argc) view.layer = atoi(argv[++i]);
@@ -11450,7 +11758,6 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--ptroom") && i + 1 < argc) view.ptRoom = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--bug-report") && i + 2 < argc) { bugServer = argv[i + 1]; bugNoteArg = argv[i + 2]; i += 2; }
         else if (!strcmp(argv[i], "--player-report") && i + 2 < argc) { bugServer = argv[i + 1]; bugNoteArg = argv[i + 2]; i += 2; playerReport = true; }
-        else if (!strcmp(argv[i], "--xc-probe") && i + 2 < argc) { probeAddr = argv[i + 1]; probeName = argv[i + 2]; i += 2; }
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) probeSeconds = atof(argv[++i]);
         else if (!strcmp(argv[i], "--no-dialog")) noDialog = true;
         else if (!strcmp(argv[i], "--spectate")) spectateArg = true;
@@ -11494,37 +11801,6 @@ int main(int argc, char** argv) {
         for (int k = 0; k < 200 && a.bugDone == 0; ++k) Sleep(50);
         std::printf("%s\n", a.bugStatus.c_str());
         return a.bugDone == 1 ? 0 : 5;
-    }
-    if (probeAddr) {   // EXPERIMENTAL: --xc-probe host:port NAME [--seconds N]: the cross-play connection test, no VR
-        xc::socketsInit();
-        a.net.setName(probeName);
-        const std::string name = sparcName(a);
-        const double t0 = nowSeconds();
-        a.sparc.connect(probeAddr, name, sparcId(a));
-        xc::SparcLink::State last = xc::SparcLink::State::Off;
-        double report = 0;
-        while (true) {
-            const double now = nowSeconds();
-            a.sparc.update(now);
-            const xc::SparcLink::State st = a.sparc.state();
-            if (st != last || now - report > 5) {
-                std::printf("%7.2f  %-10s  map %s  objects %d  players %d  packets in %llu out %llu  errors %u  %s\n", now - t0,
-                            a.sparc.stateText(), a.sparc.map().c_str(), a.sparc.channelCount(), a.sparc.countOf("PlaygroundPlayerState"),
-                            (unsigned long long)a.sparc.packetsIn(), (unsigned long long)a.sparc.packetsOut(), a.sparc.decodeErrors(),
-                            a.sparc.error().c_str());
-                std::fflush(stdout);
-                last = st;
-                report = now;
-            }
-            if (st == xc::SparcLink::State::Failed) return 2;
-            if (now - t0 > probeSeconds) break;
-            Sleep(5);
-        }
-        for (auto& kv : a.sparc.actors()) std::printf("  ch %4u  %s\n", kv.first, kv.second.path.c_str());
-        for (const std::string& n : a.sparc.playerNames()) std::printf("  player: %s\n", n.c_str());
-        const bool joined = a.sparc.state() == xc::SparcLink::State::Joined;
-        a.sparc.disconnect("PROBE DONE");
-        return joined ? 0 : 3;
     }
     // no headset (or --spectate): the desktop spectator window instead of an error
     if (!initGraphics(a)) {

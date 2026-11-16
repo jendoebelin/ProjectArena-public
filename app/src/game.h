@@ -1,4 +1,4 @@
-// Sparc gameplay simulation (platform independent; unit-tested on desktop by tests/test_game.cpp).
+// Project Arena gameplay simulation (platform independent; unit-tested on desktop by tests/test_game.cpp).
 #pragma once
 #include <cstdint>
 #include <memory>
@@ -32,10 +32,10 @@ struct ArenaData {
 // Empty when the data isn't one (wrong magic, cut short).
 std::vector<CollisionTri> parseCollision(const uint8_t* data, size_t size);
 // The EXPERIMENTAL arenas (owner, 2026-10-29), Basic's rules in both:
-// DIAMOND (the owner's drawing, the default): the classic court rolled 45 degrees along its length, as Sparc's 2017
-// reviews describe a mode ("turns the long rectangular arena 45 degrees, making it more of a diamond shape"; Sparc's
+// DIAMOND (the owner's drawing, the default): the classic court rolled 45 degrees along its length, as 2017
+// reviews of an earlier VR court game describe a mode ("turns the long rectangular arena 45 degrees, making it more of a diamond shape"; the
 // files we have hold no such room). 19 m long; its end a square as wide as the court (4.96 m, from arena.col), turned
-// so its corners are straight up, down and to each side, 3.5 m from its centre (owner, 2026-10-29: Sparc's was squared
+// so its corners are straight up, down and to each side, 3.5 m from its centre (owner, 2026-10-29: the one she played was squared
 // off, every side as far as the court is wide; the court's own 4.96 x 3.88 m end, rolled, left one side 0.8 m short).
 // The end's centre 1.2 m over the platforms' tops (y = 0): no flat floor, the two lower walls meet in a V under your
 // feet. The players on round floating platforms at their usual start, which the ball goes through (it comes up at you
@@ -95,7 +95,8 @@ struct Tunables {
         if (!shields) return 1;
         // (knuckle guards count by what is in play: "off" chosen in Basic and then Advanced picked is Advanced's own rule)
         const bool std_ = knuckleGuards() == !advanced && (advanced ? advancedRoundTime <= 0.f : basicMatchTime == 180.0f) &&
-                          perStrike() == speedIncreasePerStrike;   // (STRIKE SPEED other than REGULATION: custom)
+                          perStrike() == speedIncreasePerStrike &&   // (STRIKE SPEED other than REGULATION: custom)
+                          foulMove() == 0.f;                         // (and the FOUL LINE moved)
         return std_ ? 0 : 2;
     }
 
@@ -143,9 +144,24 @@ struct Tunables {
     // STRIKE SPEED (0.3.19, a host's MATCH OPTION; owner 2026-11-11: regulation stays the default): 0 REGULATION (the
     // original's 0.5 m/s a strike), 1 FAST (1.0), 2 FASTER (1.5). Two-player rooms (classic, DIAMOND) only
     int strikeSpeed = 0;
+    // FAIR MATCHES (owner, 2026-11-15: "if your opponent is playing with a smaller foul line than you can have or see
+    // then we have broken a fairness rule"): a rule-changing option plays only when every player's game has it. Each
+    // records the first version with it (0.3.20 = 3020); the host sets matchVersion to the oldest game among the
+    // match's players (games before 0.3.20 don't say theirs: 0) and an option newer than that plays at regulation for
+    // the match. The host's choice is kept for the next match. A new option that changes play gets its version here
+    // and goes through *Now() (docs/BUILD_REVIEW_CHECKLIST.md)
+    static constexpr int kVerStrikeSpeed = 3019, kVerFoulLine = 3020, kVerAll = 1 << 30;
+    int matchVersion = kVerAll;   // (offline, and every guest: all; guests get the host's rules as they play)
+    int strikeSpeedNow() const { return matchVersion >= kVerStrikeSpeed ? std::max(0, std::min(2, strikeSpeed)) : 0; }
+    int foulShiftNow() const { return matchVersion >= kVerFoulLine ? std::max(-2, std::min(2, foulShift)) : 0; }
+    // FOUL LINE (0.3.20, a host's MATCH OPTION; owner 2026-11-15): the line moved in steps of 0.5 m, +1 / +2 LONGER (toward
+    // the centre: a longer way to throw to clear it), -1 / -2 SHORTER; the foul zone moves with it. The classic room only
+    // (Basic, Advanced): not the four-player rooms, nor DIAMOND (its foul zone is the platform)
+    int foulShift = 0;
+    float foulMove() const { return experimental ? 0.f : 0.5f * foulShiftNow(); }
     float perStrike() const {
         const bool twoPlayer = !experimental || expRoom == ROOM_DIAMOND;
-        return speedIncreasePerStrike * (1 + (twoPlayer ? std::max(0, std::min(2, strikeSpeed)) : 0));
+        return speedIncreasePerStrike * (1 + (twoPlayer ? strikeSpeedNow() : 0));
     }
     float scaleIncreasePerStrike = 0.25f;     // UProjectileLaunchParams.ScaleIncreasePerStrike
     int maxStrikes = 42;                      // MatchTuningData.MaxStrikes
@@ -181,11 +197,11 @@ struct Tunables {
     // wall, where it dissolves and respawns rising from the floor spawner.
     float returnSpeed = 10.0f;
     float foulReturnSpeed = 16.0f;   // a fouled ball: to the wall and home again (owner, 2026-10-21: faster)
-    // Short throws (owner request, matches Sparc): a throw that has not crossed the owner's foul line and is slow
+    // Short throws (owner request, as veteran players expect): a throw that has not crossed the owner's foul line and is slow
     // (below recallSpeed), heading back toward the owner, or still short after recallTime goes back to the spawner
     // (the idle spring pulls it home) instead of rattling round the owner's end.
     float recallSpeed = 2.0f, recallTime = 2.5f;
-    // Stuck balls (players and owner, 2026-10-28; kept narrow, so play feels as in Sparc): a flying ball that goes
+    // Stuck balls (players and owner, 2026-10-28; kept narrow, so play feels as veteran players know it): a flying ball that goes
     // less than stuckDistance along the court in stuckTime (looping in a corner, between floor and ceiling), or that
     // its bounces have slowed under recallSpeed anywhere (after slowGrace, so a soft block still drops nearby), goes
     // home, harmless, as a short throw does. A fouled ball keeps its own speed (at least foulMinSpeed) to its wall.
@@ -209,7 +225,7 @@ struct Tunables {
     Vec3 shieldHalfExtents = {0.20f, 0.02f, 0.32f};        // BrawlShieldBP.SweepCollisionBoxDimensions (32,20,2) cm
     // Knuckle bumper = box fitted to the KnuckleShield_01 mesh as placed by KnuckleGuardTransform (10.5,0,0) +
     // BrawlKnuckleGuardVisual_BP.TempMesh (-9,0,0) right-hand grip-space centre / half extents below
-    // (x is mirrored for the left hand). The face normal is grip -Z (the front of the fist). Sparc's centre was
+    // (x is mirrored for the left hand). The face normal is grip -Z (the front of the fist). The original centre was
     // (-0.022, 0.010, -0.137); the owner moved the glass onto the fist with the TUNING tool (2026-10-18), and the
     // bumper goes with it (what you see is what hits).
     Vec3 knuckleOffset = {0.0f, -0.026f, -0.057f};
@@ -239,14 +255,14 @@ struct Tunables {
 
     // ---- match flow
     float countdown = 3.0f;
-    // Match start between two people (owner, 2026-10-16, as in Sparc): both join in the centre of the court; a fist
+    // Match start between two people (owner, 2026-10-16, as veteran players know it): both join in the centre of the court; a fist
     // bump with the triggers pulled sends them to their ends at once, or the countdown does it after meetTime.
     // 0 = no meeting (the practice bot never meets).
     float meetTime = 10.0f;
     float meetSpot = 0.45f;          // each player stands this far from the centre line (heads ~0.9 m apart)
     // a fist = the segment from the back of the hand to the knuckles you see (grip frame; the visible fist front is 6-7
     // cm in front of the grip). Two closed fists whose segments come closer than fistBumpGap = a bump. (Measuring the
-    // grips, then Sparc's knuckle-glass point 13.7 cm out, both missed real bumps on 2026-10-17.)
+    // grips, then the original knuckle-glass point 13.7 cm out, both missed real bumps on 2026-10-17.)
     Vec3 fistBack = {0.0f, 0.0f, 0.03f}, fistFront = {0.0f, 0.0f, -0.065f};
     float fistBumpGap = 0.11f;
     // The meeting point (owner, 2026-10-28): a ring for each player over the centre line, at chest height between the
@@ -398,6 +414,12 @@ struct Ball {
     // CATCHES ONLINE: the game time it reached its owner, a player who isn't hosting, on its way back (-1: not). The
     // hit waits there for their round trip, in case their catch of it, as they saw it, is still on its way
     float hitWaitAt = -1;
+    // BLOCKS ONLINE: the game time it reached a player who isn't hosting and could still block it (a shield or knuckle
+    // guard up), blockWaitBy; held there for their round trip in case their block, as they saw it, is on its way.
+    // blockWaitVel: how it was flying (a late block deflects it from where it met it)
+    float blockWaitAt = -1;
+    int blockWaitBy = -1;
+    Vec3 blockWaitVel;
 };
 
 // one point of a ball's expected flight (Game::predictBall): the step (its game time) whose move brings the ball here
@@ -539,6 +561,8 @@ public:
     int leader() const;          // the team ahead on its own (-1: level at the top)
     bool rivals(int a, int b) const { return a >= 0 && b >= 0 && a != b && team(a) != team(b) && alive(a) && alive(b); }
     Vec3 facing(int p) const;    // flat, from the player's start toward the centre
+    // each end's foul line, from the centre (the arena's, moved by the FOUL LINE option in the classic room)
+    float foulLine() const { return tun.foulLineX - (arenaKind <= ARENA_CLASSIC && np == 2 ? tun.foulMove() : 0.f); }
     int strikesHeld(int p) const { return np == 2 ? pl[1 - p].strikesAgainst : pl[p].strikesFor; }
     // the rival a ball leaving `from` along `dir` is aimed at most nearly (two players: the other one)
     int aimTarget(int p, const Vec3& from, const Vec3& dir) const;
@@ -618,6 +642,19 @@ public:
     static constexpr float lateCatchSlack = 0.04f, lateCatchMax = 0.25f;
     struct BallTrack { static constexpr int kN = 40; Vec3 p[kN]; float t[kN] = {}; int n = 0, head = 0; } track[kMaxPlayers];
     bool sawBallNear(int p, const Vec3& at, float reach) const;   // p's own ball, as p saw it, came within reach of `at`
+    // BLOCKS ONLINE (a player's report, 2026-11-11: "a shield held low didn't deflect; always got hit"; measured 11-14,
+    // tools/run_shield_test.py: a block made 0.15 s before the ball arrived failed past a ~230 ms round trip, 0.08 s
+    // before past ~110 ms). A ball that would hit a player who isn't hosting, while they have a shield or knuckle guard
+    // up, waits where it touched them for their round trip (seenLate, at most lateBlockMax): their hands as they arrive
+    // meanwhile are judged against the ball where it was when they saw it. A block there deflects it from that point;
+    // none, and the hit counts as before. The host, bots and offline play are as they were.
+    bool lateBlock = true;   // (tests and the lag test: off to compare)
+    static constexpr float lateBlockMax = 0.25f;
+    // what it decided, for the session log (main.cpp): late blocks counted, waits that ended in a hit, and the last
+    // one's player, kind (0 shield, 1 knuckle guard, 2 a hit) and round trip (s)
+    int lateBlocks = 0, lateWaitHits = 0, lateLastPlayer = -1, lateLastKind = -1;
+    float lateLastRtt = 0;   // (as catches: the ball pauses where it touched them for at most this long)
+    bool tryBlock(Ball& b, int ball, int q, int hh, int pass, const Vec3& from, const Vec3& to, float r);   // q's hand hh: shield (pass 0) or knuckle guard (pass 1)
     Vec3 chestPoint(int p) const;
     float throwSpeedFromHandSpeed(float handSpeed, int thrower) const;
     // public for tests; ball: whose ball did it; by: who earns it (four players: their ball grows)

@@ -117,6 +117,10 @@ public:
     void setName(const char* name);
     const char* name() const { return name_; }
     void setAppVersion(const char* v);   // this build ("0.3.11"): told to the relay in HELLO, for its log
+    static int versionNumber(const char* v);   // "0.3.20" -> 3020 (major * 1000000 + minor * 1000 + patch; "" -> 0)
+    // host: the oldest game among the match's players (FAIR MATCHES, Tunables::matchVersion); our own build and bots
+    // have everything; not hosting: Tunables::kVerAll
+    int matchVersion() const;
     uint32_t session() const { return session_; }
     std::vector<LanGame> games() const;   // hosts seen in the last 2 s
     const char* noticeText() const;       // short-lived banner ("PLAYER JOINED", "HOST LOST", ...) or null
@@ -270,6 +274,7 @@ private:
         // their latest input was taken, on our clock (-1: they don't send their clock: older builds)
         double clockOff = 0, clockAt = 0, sampleAt = -1;
         bool clockSet = false;
+        int ver = 0;                  // their game's version (0.3.20 = 3020; 0: before 0.3.20, which don't say)
     };
     struct Heir { uint32_t id = 0, ip = 0; char name[17] = {}; };
     void sendHeirs(uint32_t first = 0);
@@ -291,6 +296,8 @@ private:
     double migrateUntil_ = 0, resumeWait_ = 0, lastHeirs_ = 0, lastExchange_ = 0, lastClosingWarn_ = 0, lastIdleLog_ = 0;
     double promotedAt_ = 0;               // host: when we took the room over (0: we opened it)
     double scoutUntil_ = 0;               // client, woken up: looking for where our room went (its new host's beacon)
+    double wokeAt_ = 0;                   // client: when we woke from sleep and asked our host to let us back in
+    bool wokeAndHostThere();              // (woken up: keep asking a host that still announces its room)
     double migrateFrom_ = 0;              // client: when the handover began (beacons heard since then count)
     std::vector<Heir> heirRemoved_;       // client: the people the host removed (they stay out under the next host)
     uint32_t prevHost_ = 0;               // host: the room's previous host (beacons); client: the host we left

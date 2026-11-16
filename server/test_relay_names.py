@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Tests the relay's name filter (2026-11-13): names with slurs or hate words are refused online, ordinary names are
-not, a rename to one while online disconnects, and the bans file's word: lines add words while the relay runs.
+"""Tests the relay's name filter (2026-11-13): names with slurs or hate words are found and never shown to other
+players, ordinary names are not touched, and the bans file's word: lines add words while the relay runs.
 The first part checks name_blocked itself; the second a local relay on 127.0.0.1:47792.
 Run: python -I server/test_relay_names.py"""
 import os
@@ -37,10 +37,10 @@ BLOCKED = ['NIGGER BITCH', 'N I G G E R', 'N1GG3R', 'NIIIGGGA', 'XXNIGGAXX', 'BI
            'HITLER 88', 'H1TLER', 'SIEG HEIL', 'WHITE POWER', 'COON', 'COONS', 'COON88', 'FAG69', 'SPICS', 'THE KIKE',
            'K K K', 'KKK', 'NAZI', 'NAZI GAMER', '1488', 'TOWEL HEAD', 'RETARD', 'CHINK', 'PAKI 1', 'TRANNY']
 # Must be fine: ordinary names, including ones with a blocked word's letters inside a longer word.
-FINE = ['PLAYER', 'PLAYER 123', 'MOJO', 'QUEST', 'SAM VR', 'THE-MANIAC', 'B00B00CAT', 'HOST010', 'RICK 05',
+FINE = ['PLAYER', 'PLAYER 259', 'MOJO', 'QUEST', 'LARRY VR', 'THE-INSANIAC', 'D00D00BUTT3R', 'HOST050', 'RICK 05',
         'RACCOON', 'TYCOON', 'SPICY', 'SPICE GIRL', 'KNIGHT', 'NIGHTHAWK', 'NIGEL', 'NIGERIA', 'NIGER', 'PAKISTAN',
-        'SNAKE', 'MIKE', 'BIG GAMER', 'KING GARY', 'TRES', 'GOOKIE', 'COONHOUND', 'FAGAN', 'NAZIR', 'WOPPER',
-        'BEANERY', 'HIT LIST', 'SKATER', 'JEEP MAN', 'A.B-C D', '88', '14', 'AGENT 47']
+        'SNAKE', 'MIKE', 'BIG GAMER', 'KING GARY', 'DOS', 'GOOKIE', 'COONHOUND', 'FAGAN', 'NAZIR', 'WOPPER',
+        'BEANERY', 'HIT LIST', 'SKANDI', 'JEEPMAN', 'A.B-C D', '88', '14', 'AGENT 47']
 
 
 def unit():
@@ -96,7 +96,7 @@ def live():
         check(hello(a, 'MOJO') == 'WELCOME', 'an ordinary name connects')
         check(hello(b, 'N1GG3R') == R.NAME_REFUSED, 'a blocked name is refused: ' + R.NAME_REFUSED)
         check(hello(b, 'N1GG3R') == R.NAME_REFUSED, '... every time it tries')
-        check(hello(b, 'PLAYER 123') == 'WELCOME', '... and connects once the name is changed')
+        check(hello(b, 'PLAYER 259') == 'WELCOME', '... and connects once the name is changed')
         check(hello(b, 'COON88') == R.NAME_REFUSED, 'a rename to a blocked name while online is refused')
         b.sendto(struct.pack('<IB', MAGIC, 4) + bytes(16), ('127.0.0.1', PORT))   # (a ping: no session any more)
         check(answer(b) == 'NO ANSWER', '... and that player is disconnected')

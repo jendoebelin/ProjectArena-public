@@ -1,4 +1,4 @@
-// Sparc gameplay simulation. See game.h for provenance conventions; rules quoted from the original's
+// Project Arena gameplay simulation. See game.h for provenance conventions; rules quoted from the original's
 // English text are in docs/game_text_en.txt.
 #include "game.h"
 #include <algorithm>
@@ -376,7 +376,7 @@ void Game::spawnBall(int p) {
     b.rechargePending = false;
     b.bounces = 0;
     b.fouled = b.homing = false;
-    b.hitWaitAt = -1;
+    b.hitWaitAt = b.blockWaitAt = -1;
     b.scale = strikeScale(strikesHeld(p));
 }
 
@@ -406,7 +406,7 @@ void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist) {
     b.bounces = 0;
     b.timer = 0;
     b.fouled = b.homing = false;
-    b.hitWaitAt = -1;
+    b.hitWaitAt = b.blockWaitAt = -1;
     b.progX = b.pos.x; b.progZ = b.pos.z; b.progT = 0;
     emit(EventType::Throw, p, h, b.pos, b.speedLimit);
     if (octagon()) toFire(p);
@@ -653,6 +653,40 @@ void Game::stepBall(int p, float dt) {
     case BallState::Flying: break;
     }
 
+    if (b.blockWaitAt >= 0.f) {   // BLOCKS ONLINE: it reached a player who isn't hosting; held there until their block could have come
+        const int v = b.blockWaitBy;
+        const float late = v >= 0 && v < np ? std::min(seenLate[v], lateBlockMax) : 0.f;
+        const Vec3 held = b.pos;
+        const float r = ballRadius(p);
+        // their hands as they arrive now, against the ball's path as they saw it (about their round trip ago), up to
+        // where it reached them
+        const BallTrack& k = track[p];
+        const float t0 = now - late - lateCatchSlack, t1 = now - late + lateCatchSlack;
+        for (int pass = 0; pass < 2; ++pass)
+            for (int hh = 0; hh < 2; ++hh)
+                for (int i = 0; i + 1 < k.n; ++i) {   // newest first: each stretch of the path between two steps
+                    const int i1 = (k.head + BallTrack::kN - 1 - i) % BallTrack::kN, i0 = (i1 + BallTrack::kN - 1) % BallTrack::kN;
+                    if (k.t[i1] < t0) break;
+                    if (k.t[i0] > t1 || k.t[i1] > b.blockWaitAt + 1e-4f) continue;
+                    b.pos = k.p[i0];
+                    b.vel = b.blockWaitVel;
+                    if (tryBlock(b, p, v, hh, pass, k.p[i0], k.p[i1], r)) {   // blocked in time, as they saw it
+                        b.blockWaitAt = -1;
+                        ++lateBlocks; lateLastPlayer = v; lateLastKind = pass; lateLastRtt = seenLate[v];
+                        return;
+                    }
+                }
+        b.pos = held;
+        b.vel = {};
+        if (now - b.blockWaitAt < late + lateCatchSlack) return;
+        b.blockWaitAt = -1;   // no block came: the hit, as it would have been
+        ++lateWaitHits; lateLastPlayer = v; lateLastKind = 2; lateLastRtt = v >= 0 && v < np ? seenLate[v] : 0.f;
+        b.scored = true;
+        scorePoint(b.instigator, v, b.pos, p);
+        b.state = BallState::Dead;
+        b.timer = tun.respawnDelay + tun.postSpawnDelay + 0.5f;
+        return;
+    }
     if (b.hitWaitAt >= 0.f) {   // CATCHES ONLINE: it reached its owner; held there until their catch could have come
         b.vel = {};
         const int self = b.instigator;
@@ -695,7 +729,7 @@ void Game::stepBall(int p, float dt) {
     // a short throw goes home: not yet past the owner's foul line, and slow, heading back, or taking too long
     if (b.state == BallState::Flying && b.instigator == p && b.rechargePending) {
         // (along the player's facing: two players, +X or -X exactly as it always was)
-        const bool behind = dot(b.pos, facing(p)) < -tun.foulLineX;
+        const bool behind = dot(b.pos, facing(p)) < -foulLine();
         const float forward = dot(b.vel, facing(p));   // toward the opponent
         if (behind && (b.speedLimit < tun.recallSpeed || forward < 0 || b.timer > tun.recallTime)) { goHome(); return; }
     }
@@ -725,7 +759,7 @@ void Game::stepBall(int p, float dt) {
         }
         Vec3 from = b.pos, to = b.pos + b.vel * h;
         // recharge once the owner's throw crosses the owner's foul line
-        if (b.rechargePending && b.instigator == p && dot(to, facing(p)) > -tun.foulLineX) {
+        if (b.rechargePending && b.instigator == p && dot(to, facing(p)) > -foulLine()) {
             b.rechargePending = false;
             if (!b.charged) emit(EventType::Recharge, p, -1, to);
             b.charged = true;
@@ -742,28 +776,7 @@ void Game::stepBall(int p, float dt) {
         const int q = np == 2 ? 1 - by0 : qi;
         if (np == 2 ? qi > 0 : !rivals(by0, q)) continue;
         for (int hh = 0; hh < 2 && !handled; ++hh) {
-            Vec3 n;
-            if (pass == 0 && hitsShield(q, hh, from, to, r, n)) {
-                Vec3 vs = recentHandVel(q, hh, shieldLocal(hh).p, now);
-                deflectMoving(b, n, vs, q, tun.advanced ? tun.shieldAimAssistAdvancedDeg : tun.shieldAimAssistBasicDeg, from);
-                if (!(np == 4 && tun.teamMode == TEAMS_3V1 && q == tun.theOne)) {   // (THE ONE's shield never breaks)
-                    pl[q].ball.charged = false;        // "Shield breaks on hit": the held ball loses its charge
-                    pl[q].hands[hh].shieldUp = false;
-                }
-                emit(EventType::ShieldBlock, q, hh, from, 0, p);
-                emit(EventType::ShieldBreak, q, hh, from);
-                to = from + b.vel * h;
-                handled = true;
-            } else if (pass == 1 && pl[q].hands[hh].knuckleUp && hitsBox(knucklePose(q, hh), tun.knuckleHalf, from, to, r, n)) {
-                Vec3 lo = tun.knuckleOffset;
-                if (hh == 0) lo.x = -lo.x;
-                Vec3 vs = recentHandVel(q, hh, lo, now);
-                // bounce off the guard's front face (fist forward), not whichever box face was entered first
-                Vec3 face = knucklePose(q, hh).q.rotate({0, 0, -1});
-                if (dot(face, b.vel - vs) > 0) face = -face;
-                n = normalize(face * 0.75f + n * 0.25f);
-                deflectMoving(b, n, vs, q, tun.knuckleAimAssistDeg, from, true);
-                emit(EventType::KnuckleBlock, q, hh, from, length(b.vel), p);
+            if (tryBlock(b, p, q, hh, pass, from, to, r)) {
                 to = from + b.vel * h;
                 handled = true;
             }
@@ -792,6 +805,16 @@ void Game::stepBall(int p, float dt) {
             }
         }
         if (!handled && !b.scored && hitsBody(victim, to, r)) {
+            if (lateBlock && seenLate[victim] > 0.f &&
+                (pl[victim].hands[0].shieldUp || pl[victim].hands[1].shieldUp || pl[victim].hands[0].knuckleUp ||
+                 pl[victim].hands[1].knuckleUp)) {   // (BLOCKS ONLINE: their block may still be coming)
+                b.blockWaitVel = b.vel;
+                b.pos = to;
+                b.vel = {};
+                b.blockWaitAt = now;
+                b.blockWaitBy = victim;
+                return;
+            }
             b.scored = true;
             scorePoint(b.instigator, victim, to, p);
             b.state = BallState::Dead;
@@ -821,6 +844,13 @@ void Game::stepBall(int p, float dt) {
         {
             Vec3 hp, hn; uint32_t tags = 0;
             if (sweepArena(from, to, r, hp, hn, tags)) {
+                if (arenaKind <= ARENA_CLASSIC && np == 2 && tun.foulMove() != 0.f && !(tags & TAG_RETURN)) {
+                    // FOUL LINE moved: each end's floor, ceiling and side walls past its line are its player's foul zone (the
+                    // arena's own zone starts at 4.75 m; the back walls stay as they are)
+                    tags &= ~uint32_t(TAG_FOUL | TAG_TEAM0 | TAG_TEAM1);
+                    const int end = hp.x < 0.f ? 0 : 1;
+                    if (dot(hp, facing(end)) < -foulLine()) tags |= TAG_FOUL | (end ? TAG_TEAM1 : TAG_TEAM0);
+                }
                 int zoneTeam = (tags & TAG_TEAM0) ? 0 : (tags & TAG_TEAM1) ? 1 : (tags & TAG_TEAM2) ? 2 : (tags & TAG_TEAM3) ? 3 : -1;
                 bool own = (zoneTeam >= 0 && zoneTeam == b.instigator);   // team gating
                 bool returning = b.state == BallState::Returning;
@@ -1221,7 +1251,7 @@ void Game::stepPlayer(int p, float dt) {
     Ball& b = s.ball;
     // shot clock runs while my ball is in my end of the court
     if (match == MatchState::InProgress && tun.useShotClock && np == 2) {
-        bool inMyEnd = (b.state != BallState::Flying) || dot(b.pos, facing(p)) < -tun.foulLineX;
+        bool inMyEnd = (b.state != BallState::Flying) || dot(b.pos, facing(p)) < -foulLine();
         if (inMyEnd) s.shotClock = std::max(0.f, s.shotClock - dt);
     } else {
         s.shotClock = tun.shotClockSeconds;
@@ -1514,6 +1544,36 @@ void Game::lookAhead(int L, float lead, float dt) {
         ahead.valid[p] = true;
         pl[p].ball = shown;
     }
+}
+
+// player q's hand hh blocks ball `ball` moving from -> to: its shield (pass 0) or its knuckle guard (pass 1); the ball
+// deflected off it, the events emitted. (The step's own check and BLOCKS ONLINE's late one)
+bool Game::tryBlock(Ball& b, int ball, int q, int hh, int pass, const Vec3& from, const Vec3& to, float r) {
+    Vec3 n;
+    if (pass == 0 && hitsShield(q, hh, from, to, r, n)) {
+        Vec3 vs = recentHandVel(q, hh, shieldLocal(hh).p, now);
+        deflectMoving(b, n, vs, q, tun.advanced ? tun.shieldAimAssistAdvancedDeg : tun.shieldAimAssistBasicDeg, from);
+        if (!(np == 4 && tun.teamMode == TEAMS_3V1 && q == tun.theOne)) {   // (THE ONE's shield never breaks)
+            pl[q].ball.charged = false;        // "Shield breaks on hit": the held ball loses its charge
+            pl[q].hands[hh].shieldUp = false;
+        }
+        emit(EventType::ShieldBlock, q, hh, from, 0, ball);
+        emit(EventType::ShieldBreak, q, hh, from);
+        return true;
+    }
+    if (pass == 1 && pl[q].hands[hh].knuckleUp && hitsBox(knucklePose(q, hh), tun.knuckleHalf, from, to, r, n)) {
+        Vec3 lo = tun.knuckleOffset;
+        if (hh == 0) lo.x = -lo.x;
+        Vec3 vs = recentHandVel(q, hh, lo, now);
+        // bounce off the guard's front face (fist forward), not whichever box face was entered first
+        Vec3 face = knucklePose(q, hh).q.rotate({0, 0, -1});
+        if (dot(face, b.vel - vs) > 0) face = -face;
+        n = normalize(face * 0.75f + n * 0.25f);
+        deflectMoving(b, n, vs, q, tun.knuckleAimAssistDeg, from, true);
+        emit(EventType::KnuckleBlock, q, hh, from, length(b.vel), ball);
+        return true;
+    }
+    return false;
 }
 
 bool Game::sawBallNear(int p, const Vec3& at, float reach) const {

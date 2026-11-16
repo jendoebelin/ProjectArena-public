@@ -100,6 +100,6 @@ spectator's VS screen and in MENU > MY STATS.
   name is connected from, which only you (the operator) see.
 - **Bans:** `--bans bans.txt` (one per line: an IP address, or `name:PLAYERNAME`; `#` starts a comment). The file is
   re-read within a few seconds of a change: banned players are disconnected and see BANNED when they try again.
-- **Blocked names:** names with slurs or hate words are refused (NAME NOT ALLOWED), including a rename while online;
-  `word:WORD` lines in the bans file add words (found anywhere in a name, at least 3 letters).
+- **Blocked names:** names with slurs or hate words are never shown to other players (they see PLAYER), including a
+  rename while online; `word:WORD` lines in the bans file add words (found anywhere in a name, at least 3 letters).
 - Players can also mute one person for themselves (REPORT PLAYER > MUTE) or whole groups (SETTINGS > VOICE AND MUTES).

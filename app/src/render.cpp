@@ -314,6 +314,19 @@ bool Renderer::loadModel(const char* name, Model& m) {
         m.bmin = {std::min(m.bmin.x, pos[0]), std::min(m.bmin.y, pos[1]), std::min(m.bmin.z, pos[2])};
         m.bmax = {std::max(m.bmax.x, pos[0]), std::max(m.bmax.y, pos[1]), std::max(m.bmax.z, pos[2])};
     }
+    m.secMin.assign(ns, Vec3{1e9f, 1e9f, 1e9f});
+    m.secMax.assign(ns, Vec3{-1e9f, -1e9f, -1e9f});
+    for (uint32_t s = 0; s < ns; ++s) {
+        const Section& sec = m.sections[s];
+        for (uint32_t k = sec.first; k < sec.first + sec.count && k < ni; ++k) {
+            uint32_t vi; std::memcpy(&vi, idx + size_t(k) * 4, 4);
+            if (vi >= nv) continue;
+            float pos[3]; std::memcpy(pos, verts + size_t(vi) * vsz, 12);
+            Vec3& lo = m.secMin[s]; Vec3& hi = m.secMax[s];
+            lo = {std::min(lo.x, pos[0]), std::min(lo.y, pos[1]), std::min(lo.z, pos[2])};
+            hi = {std::max(hi.x, pos[0]), std::max(hi.y, pos[1]), std::max(hi.z, pos[2])};
+        }
+    }
     glGenVertexArrays(1, &m.vao);
     glBindVertexArray(m.vao);
     glGenBuffers(1, &m.vbo);
@@ -591,7 +604,9 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
     }
     glBindVertexArray(m.vao);
     glFrontFace(dp.mirrored ? GL_CW : GL_CCW);
-    for (const Section& s : m.sections) {
+    for (size_t si = 0; si < m.sections.size(); ++si) {
+        const Section& s = m.sections[si];
+        if ((si < 64 && ((dp.skip >> si) & 1u)) || (dp.only >= 0 && (int)si != dp.only)) continue;
         const Material& mt = m.mats[s.material];
         uint32_t sh = dp.forceShader >= 0 ? uint32_t(dp.forceShader) : mt.shader;
         bool blended = (sh == SH_ADDITIVE || sh == SH_TRANSLUCENT || dp.alphaMul < 0.999f);
@@ -608,6 +623,10 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
         if (sidesOn_ && (ch == 8 || ch == 9)) {   // a team end in a country's colour, as bright as it was built
             const float k0 = std::max(mt.tint[0], std::max(mt.tint[1], mt.tint[2]));
             for (int k = 0; k < 3; ++k) tint[k] = k0 * side_[ch - 8][k] * dp.tintMul[k];
+        }
+        if (dp.glowMul != 1.f && sh != SH_LIT && sh != SH_LIGHTMAP) {   // (the PC spectator's ARENA GLASS: lines, glow, glass)
+            for (int k = 0; k < 3; ++k) tint[k] *= dp.glowMul;
+            if (sh == SH_TRANSLUCENT) tint[3] *= dp.glowMul;
         }
         const bool pat = dp.channels && dp.pattern && (mt.flags & MAT_PATTERN) && sh == SH_LIT;
         glUniform1i(uPattern_, pat ? 1 : 0);

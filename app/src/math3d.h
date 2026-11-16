@@ -1,4 +1,4 @@
-// Minimal vector / quaternion / matrix math for the Sparc Quest port.
+// Minimal vector / quaternion / matrix math for Project Arena.
 // App space: meters, right-handed, +Y up (see tools/build_open_assets.py).
 #pragma once
 #include <cmath>

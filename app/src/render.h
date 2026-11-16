@@ -1,4 +1,4 @@
-// GLES 3.0 renderer for baked Sparc assets (.mdl / .tex, see tools/build_open_assets.py).
+// GLES 3.0 renderer for Project Arena's baked assets (.mdl / .tex, see tools/build_open_assets.py).
 #pragma once
 #include "gl.h"
 #include <string>
@@ -32,6 +32,7 @@ struct Model {
     std::vector<Section> sections;
     std::vector<Material> mats;
     Vec3 bmin, bmax;
+    std::vector<Vec3> secMin, secMax;   // each section's bounds (model space; the court's foul lines are found by them)
     bool skinned = false;   // v3 model: per-vertex bone indices / weights (avatar bodies)
     bool valid() const { return vao != 0; }
 };
@@ -43,8 +44,11 @@ struct DrawParams {
     int forceShader = -1;
     bool mirrored = false;   // negative-determinant model matrix: flip front-face winding
     float glassMul = 1.f;    // translucent (glass) sections' opacity times this (PASSTHROUGH > GLASS WALLS)
+    float glowMul = 1.f;     // additive (glowing) sections' brightness times this (the PC spectator's ARENA GLASS)
     float uvOff[2] = {0, 0};   // additive: UV scroll
     float erode = 0.f;         // additive: dissolve threshold 0..1
+    uint64_t skip = 0;         // sections (the first 64, by index) not drawn
+    int only = -1;             // >= 0: only this section is drawn
     // avatars: per-channel colours (index = material channel, 8 entries; rgb multiply the material tint),
     // a fresnel rim light (rgb * a) and the suit pattern mask (R -> channel 2 colour, G -> channel 3 glow)
     const float (*channels)[4] = nullptr;

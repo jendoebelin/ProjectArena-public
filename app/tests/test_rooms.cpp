@@ -646,6 +646,24 @@ int main() {
         const float clock = H.game.roundClock;
         CHECK(H.game.match == MatchState::InProgress && H.net.room().slot[0] == A.net.session() && H.net.room().slot[1] == B.net.session(),
               "two players in a match, the host waiting outside");
+        H.game.tun.foulShift = 2;   // FOUL LINE (0.3.20): the host's choice reaches the players with its rules
+        pump(hs, 0.5);
+        CHECK(B.game.tun.foulShift == 2 && std::fabs(B.game.foulLine() - H.game.foulLine()) < 1e-4f && B.game.foulLine() < 4.0f,
+              "FOUL LINE: the host's line, moved, is the players' too");
+        H.game.tun.foulShift = 0;
+        pump(hs, 0.5);
+        CHECK(B.game.tun.foulShift == 0, "... and back where the arena has it");
+        // FAIR MATCHES (0.3.20): the host knows its players' games (these say 0.3.11) and an option one of them lacks
+        // plays at regulation for the match
+        CHECK(H.net.matchVersion() == Net::versionNumber("0.3.11"), "FAIR MATCHES: the host knows the oldest player's game");
+        H.game.tun.matchVersion = H.net.matchVersion();
+        H.game.tun.foulShift = 2; H.game.tun.strikeSpeed = 2;
+        pump(hs, 0.5);
+        CHECK(B.game.tun.foulShift == 0 && B.game.tun.strikeSpeed == 0 && H.game.tun.foulMove() == 0.f && H.game.tun.perStrike() == 0.5f,
+              "... an older player in the match: FOUL LINE and STRIKE SPEED play at regulation, for the host too");
+        CHECK(H.game.tun.foulShift == 2 && H.game.tun.strikeSpeed == 2, "... the host's choice kept for the next match");
+        H.game.tun.foulShift = 0; H.game.tun.strikeSpeed = 0; H.game.tun.matchVersion = Tunables::kVerAll;
+        pump(hs, 0.5);
         pump(hs, 2.0);   // (the shot clock has been running a while)
         CHECK(H.game.pl[0].shotClock < H.game.tun.shotClockSeconds - 1.5f && std::fabs(B.game.pl[0].shotClock - H.game.pl[0].shotClock) < 0.5f,
               "the shot clock runs, and every player sees it as the host does (the ring round the launchpad, 0.3.14)");
@@ -709,6 +727,19 @@ int main() {
         pump(hs, 5.0);
         CHECK(split && H.net.mode() == Net::Mode::Client && H.net.hostSession() == A.net.session() && !H.net.handingOver() && A.net.mode() == Net::Mode::Host,
               "a player whose own connection dropped takes the room over, finds the host still there, and goes back to it");
+        {   // a player's headset sleeps 15 s while the host plays on (the owner's session, 2026-11-14: four times one back
+            // from sleep took the room over for a second): on waking it asks the host to let it back in, and never hosts
+            std::vector<std::unique_ptr<Node>> awake;
+            awake.push_back(std::move(hs[1])); awake.push_back(std::move(hs[2]));
+            pump(awake, 15.0);
+            hs[1] = std::move(awake[0]); hs[2] = std::move(awake[1]);
+            bool tookOver = false;
+            for (int i = 0; i < 60; ++i) { pump(hs, 0.2); tookOver |= H.net.mode() == Net::Mode::Host; }
+            CHECK(!tookOver && H.net.mode() == Net::Mode::Client && H.net.hostSession() == A.net.session() && A.net.mode() == Net::Mode::Host,
+                  "a player back from 15 s asleep asks the host to let them back in, and never takes the room over");
+            if (tookOver || H.net.mode() != Net::Mode::Client)
+                std::printf("       (took over %d, mode %d, its host %08X, the host %08X)\n", tookOver, (int)H.net.mode(), H.net.hostSession(), A.net.session());
+        }
         // IDLE ROOMS (shortened): nobody moves (these headsets never do), so the player leaves the tank, then the room closes
         g_still = true;
         A.local.head.p.x += 0.3f; H.local.head.p.x += 0.3f;   // (one last step each: the clocks start here)

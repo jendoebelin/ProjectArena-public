@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ASSETS = os.environ.get('SPARC_ASSETS', os.path.join(ROOT, 'app', 'assets'))
+ASSETS = os.environ.get('PA_ASSETS', os.path.join(ROOT, 'app', 'assets'))
 W, H = 960, 540
 TEAM = [np.array([0.1, 0.7, 1.0]), np.array([1.0, 0.4, 0.1])]
 _tex = {}

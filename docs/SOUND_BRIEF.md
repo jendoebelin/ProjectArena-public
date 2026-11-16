@@ -45,7 +45,7 @@ brief (quieter, shorter, softer than before, plus the new FistBump sound). The f
 What this means: the open sound set stays **original** (made by `tools/gen_open_audio.py`, or recorded / synthesized
 by people who can license it CC BY). This brief is the target for that set. Generated audio is only an option with
 written permission (or a licence that allows CC BY), and then it is credited and kept apart from the CC BY assets.
-Never ask any tool for a sound "like Sparc" or any other game.
+Never ask any tool for a sound like another game's.
 
 ## The style (put in mind for every prompt)
 

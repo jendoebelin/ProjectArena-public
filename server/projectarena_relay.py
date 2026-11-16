@@ -17,6 +17,11 @@ server -> client: magic, type, body
              "0.3.4"; --latest file, empty when there is none). Builds before 0.3.4 read only the first 20 bytes.
   DELIVER 6  body: source virtual address (u32), game packet
   ERROR   7  body: message (48 bytes, upper-case ASCII)
+A minimum version (2026-11-15, --minimum FILE: one line, e.g. 0.3.20; none when the file is missing or empty): a game
+  older than it (games before 0.3.11 don't say theirs: older than any) is answered at HELLO with ERROR UPDATE TO 0.3.20
+  OR NEWER TO PLAY ONLINE, which every game version shows as a notice, and is not let on. The file is re-read while
+  running; games already online and older than a new minimum get the same message and are disconnected. Raised only
+  after players were told ahead of time (docs/BUILD_REVIEW_CHECKLIST.md, section 4).
 Player statistics (2026-10-20; relays and games from 0.3.6 on, older ones never send these):
   KEY      8  client -> server  body: the player's private key (16 random bytes, kept by the game; the stats' owner)
   TANK     9  host -> server    body: virtual addresses in tank slot 0 and 1 (u32 each, 0 = empty or the bot)
@@ -86,7 +91,7 @@ to the saved file, for the moderators only (players never see addresses). Files 
 Moderation: --bans FILE (default ./bans.txt, optional) lists one ban per line, an IP address or name:PLAYERNAME;
 "#" starts a comment. The file is re-read when it changes; banned players are disconnected and refused (BANNED).
 Blocked names (2026-11-13): a name with a slur or hate word (NAME_WORDS_*, and the bans file's word:WORD lines) is
-refused at HELLO (ERROR NAME NOT ALLOWED...), a rename to one while online disconnects; the log never has the name.
+never shown to other players (they see PLAYER), a rename while online included; the log never has the name.
 SOUND STUDIO (0.3.16): --sounds FOLDER (default ./sound_library) holds sounds players can try in the game and vote on,
 named Event__name.wav (Event: one of SOUND_EVENTS; name: a-z, 0-9 and _; WAV mono 48 kHz 16-bit; at most SOUND_MAX
 sounds, SOUND_PER_EVENT per event, the oldest first). Over TCP on the same port: b"PASND1\n", then u8 1 (the catalog;
@@ -210,6 +215,25 @@ def app_version(body):
         return ''
     raw = body[18:18 + min(body[17], 15)]
     return ''.join(chr(b) for b in raw if chr(b).isdigit() or b == ord('.'))
+
+
+def version_tuple(v):
+    """'0.3.20' -> (0, 3, 20), compared part by part (0.3.9 < 0.3.20); '' (before 0.3.11) -> (), older than any."""
+    if isinstance(v, bytes):
+        v = v.decode('ascii', 'ignore')
+    return tuple(int(p) for p in v.split('.') if p.isdigit()) if v else ()
+
+
+def too_old(app, minimum):
+    """whether a game on version app (HELLO's, '' before 0.3.11) is older than the minimum (b'' or '': none)"""
+    m = version_tuple(minimum)
+    return bool(m) and version_tuple(app) < m
+
+
+def update_message(minimum):
+    m = minimum.decode('ascii', 'ignore') if isinstance(minimum, bytes) else minimum
+    msg = 'UPDATE TO %s OR NEWER TO PLAY ONLINE' % m
+    return msg if len(msg) <= 48 else 'UPDATE TO %s TO PLAY ONLINE' % m   # (ERROR: at most 48; versions at most 15)
 
 
 def ip_text(v):
@@ -438,8 +462,12 @@ class Bans:
 
 
 class Relay(asyncio.DatagramProtocol):
-    def __init__(self, max_clients, log=print, lag=0.0, jitter=0.0, loss=0.0, bans=None, latest=None, stats=None):
+    def __init__(self, max_clients, log=print, lag=0.0, jitter=0.0, loss=0.0, bans=None, latest=None, stats=None,
+                 minimum=None):
         self.latest = latest
+        self.minimum = minimum                  # (a Latest on --minimum: games older than it are told to update)
+        self.min_seen = b''
+        self.too_old = {}                       # address -> when its refusal was last logged (it says hello every second)
         self.player_stats = stats
         self.max_clients = max_clients
         self.bans = bans
@@ -531,6 +559,16 @@ class Relay(asyncio.DatagramProtocol):
                 return
             c = self.by_addr.get(addr)
             if c is None:
+                minimum = self.minimum.get() if self.minimum else b''
+                if too_old(app_version(body), minimum):
+                    self.error(addr, update_message(minimum))
+                    if now - self.too_old.get(addr, -1e9) > 600:
+                        if len(self.too_old) > 4096:
+                            self.too_old.clear()
+                        self.too_old[addr] = now
+                        self.log('refused %s: older than the minimum %s' % (app_version(body) or 'pre-0.3.11',
+                                                                          minimum.decode()))
+                    return
                 if len(self.by_addr) >= self.max_clients:
                     self.error(addr, 'SERVER FULL')
                     return
@@ -708,6 +746,13 @@ class Relay(asyncio.DatagramProtocol):
         now = time.monotonic()
         for c in [c for c in self.by_addr.values() if now - c.seen > TIMEOUT]:
             self.drop(c, 'timeout')
+        minimum = self.minimum.get() if self.minimum else b''
+        if minimum != self.min_seen:   # (a new minimum: games already online and older than it are told, then let go)
+            self.min_seen = minimum
+            self.log('minimum version: %s' % (minimum.decode() or 'none'))
+            for c in [c for c in self.by_addr.values() if too_old(c.app, minimum)]:
+                self.error(c.addr, update_message(minimum))
+                self.drop(c, 'older than the minimum %s' % minimum.decode())
         if self.bans is not None and self.bans.reload():
             for c in [c for c in self.by_addr.values() if self.bans.banned(c.addr[0], c.name)]:
                 self.error(c.addr, 'BANNED')
@@ -1222,6 +1267,8 @@ async def main():
     ap.add_argument('--reports', default='bug_reports', help='folder for bug reports sent from the game')
     ap.add_argument('--bans', default='bans.txt', help='moderation: banned IP addresses and name:PLAYERNAME lines')
     ap.add_argument('--latest', default='latest_version.txt', help='the current release (e.g. 0.3.4): older games say UPDATE AVAILABLE')
+    ap.add_argument('--minimum', default='minimum_version.txt', help='the oldest version allowed online (e.g. 0.3.20): '
+                    'older games are told to update; none when the file is missing or empty')
     ap.add_argument('--stats', default='player_stats.db', help='player statistics (SQLite), keyed by each game\'s private key')
     ap.add_argument('--crowd', default='', help='The Crowd: local WebSocket address for the phone web app '
                     '(e.g. 127.0.0.1:47781, behind an HTTPS web server); off when empty')
@@ -1241,7 +1288,7 @@ async def main():
     if args.sound_totals or args.sound_remove:
         raise SystemExit(sound_admin(args, stamp))
     relay = Relay(args.max_clients, stamp, args.lag, args.jitter, args.loss, Bans(args.bans, stamp), Latest(args.latest),
-                  Stats(args.stats, stamp))
+                  Stats(args.stats, stamp), Latest(args.minimum))
     relay.sounds = Sounds(args.sounds, relay.player_stats, stamp)
     await loop.create_datagram_endpoint(lambda: relay, local_addr=(args.bind, args.port))
     stamp('Project Arena relay listening on UDP %s:%d' % (args.bind, args.port))

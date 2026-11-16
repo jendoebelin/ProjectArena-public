@@ -59,7 +59,7 @@ static PlayerInput standing(const Game& g, int p) {
 
 // one player's scripted throws, judged from what that player's own game shows
 struct Thrower {
-    enum { REST, REACH, SWING, RELEASED } st = REST;
+    enum { REST, REACH, SWING, RELEASED, HOLD } st = REST;
     double t0 = 0, nextTry = 0;
     int frames = 0;
     Vec3 dir;
@@ -72,6 +72,14 @@ struct Thrower {
     // pulled), as a player grabs at a ball reaching them
     bool catching = false;
     float snatchAt = 0.9f;
+    // shield mode (tools/run_shield_test.py; a player's report, 11-11: "a shield held low didn't deflect"): the player
+    // holds their charged ball low, the shield out to the side, and swings it into the other's ball where their own
+    // game shows it, `react` seconds before it arrives (a late block); the other throws low, at the belly
+    bool shielding = false, throwLow = false;
+    bool slapping = false;   // (PA_GUARD=knuckle: no ball held; the right fist's knuckle guard swung in late instead)
+    float react = 0.15f;
+    int incoming = 0;
+    bool inIncoming = false;
     int returns = 0;
     bool inReturn = false;
     void step(const Game& v, int p, double t) {
@@ -97,6 +105,24 @@ struct Thrower {
             }
         }
         if (catching) { blocking = false; guard = rest.hand[0]; }
+        if (slapping) {   // the right fist out to the side, swung into the other's ball, late, as my game shows it
+            in = rest;
+            const float myX = v.tun.start[p].x, toward = myX < 0 ? -1.f : 1.f;
+            const Ball& o = v.pl[1 - p].ball;
+            const Vec3 kOff = v.knucklePoint(p, 1) - v.pl[p].in.hand[1].grip.p;
+            Vec3 at = v.tun.start[p] + Vec3{-toward * 0.5f, 1.0f, 0.55f};
+            bool coming = false;
+            if (o.state == BallState::Flying && o.instigator == 1 - p && o.vel.x * toward > 1.f) {
+                const float tt = (myX - toward * 0.5f - o.pos.x) / o.vel.x;
+                if (tt > 0 && tt < 1.5f) coming = true;
+                if (tt > 0 && tt < react) at = o.pos + o.vel * tt;
+            }
+            if (coming && !inIncoming) { inIncoming = true; ++incoming; }
+            if (!coming) inIncoming = false;
+            in.hand[1].grip.p = at - kOff;
+            in.hand[0] = rest.hand[0];
+            return;
+        }
         if (blocking) ++blockFrames;
         switch (st) {
         case REST:
@@ -109,9 +135,30 @@ struct Thrower {
             if (b.state == BallState::Held && b.heldHand == 1) {
                 grab.push_back(t - t0);
                 st = SWING; frames = 0;
-                dir = normalize(v.tun.start[1 - p] + Vec3{0, 1.6f, catching ? 1.3f : 0.f} - in.hand[1].grip.p);
+                dir = normalize(v.tun.start[1 - p] + Vec3{0, throwLow ? 1.0f : 1.6f, catching ? 1.3f : 0.f} - in.hand[1].grip.p);
+                if (shielding) st = HOLD;   // (keep it: the shield is up while a charged ball is held)
             } else if (t - t0 > 4.0 || !playing) { st = REST; ++missed; nextTry = t + 1.0; }
             break;
+        case HOLD: {   // the charged ball held low; the shield swung into the other's ball, late
+            const float myX = v.tun.start[p].x, toward = myX < 0 ? -1.f : 1.f;
+            const Pose sl = v.shieldLocal(1);
+            const Quat gq = fromTo({0, 1, 0}, {-toward, 0, 0}) * sl.q.conj();   // the plate facing the ball
+            Vec3 at = v.tun.start[p] + Vec3{-toward * 0.45f, 0.95f, 0.55f};    // low, out to the side
+            const Ball& o = v.pl[1 - p].ball;
+            bool coming = false;
+            if (o.state == BallState::Flying && o.instigator == 1 - p && o.vel.x * toward > 1.f) {
+                const float tt = (myX - toward * 0.45f - o.pos.x) / o.vel.x;
+                if (tt > 0 && tt < 1.5f) coming = true;
+                if (tt > 0 && tt < react) at = o.pos + o.vel * tt;   // the plate's middle onto the ball's path
+            }
+            if (coming && !inIncoming) { inIncoming = true; ++incoming; }
+            if (!coming) inIncoming = false;
+            in.hand[1].grip = {gq, at - gq.rotate(sl.p)};
+            in.hand[1].trigger = 1;
+            if (b.state != BallState::Held) { st = REST; nextTry = t + 0.5; }
+            else if (!b.charged && !coming) { st = SWING; frames = 0; }   // (blocked: throw it to charge it again)
+            break;
+        }
         case SWING:   // 12 steps speeding up from 3 to 9 m/s toward the other's head (about 1 m, as an arm reaches;
                       // 2026-11-11: it was 1.9 m at a steady 9 m/s, a reach no arm has, and its shield swept the
                       // court), then let go
@@ -172,15 +219,23 @@ int main(int argc, char** argv) {
     const double secs = argc > 1 ? std::atof(argv[1]) : 90.0;
     const char* server = argc > 2 ? argv[2] : "127.0.0.1:47783";
     const bool ahead = argc > 3 ? std::atoi(argv[3]) != 0 : true;
-    const bool catchMode = argc > 4 && std::atoi(argv[4]) != 0;   // (tools/run_catch_test.py)
+    const bool catchMode = argc > 4 && std::atoi(argv[4]) == 1;   // (tools/run_catch_test.py)
+    const bool shieldMode = argc > 4 && std::atoi(argv[4]) == 2;  // (tools/run_shield_test.py)
     const char* lc = std::getenv("PA_LATE_CATCH");                  // 0: the host without CATCHES ONLINE
     const std::vector<CollisionTri> arena = loadArena();
     if (arena.empty()) { std::printf("no arena.col\n"); return 1; }
     Node H("HOST", arena), C("FAR AWAY", arena);
     C.net.setLookAhead(ahead);
     H.th.catching = C.th.catching = catchMode;
+    C.th.shielding = H.th.throwLow = shieldMode;   // (the player shields, the host throws low at them)
+    if (const char* rt = std::getenv("PA_REACT")) C.th.react = (float)std::atof(rt);   // (s before the ball arrives)
+    const char* pg = std::getenv("PA_GUARD");
+    const bool slapMode = shieldMode && pg && std::strcmp(pg, "knuckle") == 0;
+    C.th.slapping = slapMode;
+    if (shieldMode) H.game.tun.knuckleMode = C.game.tun.knuckleMode = slapMode ? 1 : 0;   // (the shield alone; or the guard alone)
     if (const char* sa = std::getenv("PA_SNATCH_AT")) H.th.snatchAt = C.th.snatchAt = (float)std::atof(sa);   // (m from the head)
     H.game.lateCatch = !(lc && lc[0] == '0');
+    if (const char* lb = std::getenv("PA_LATE_BLOCK")) H.game.lateBlock = lb[0] != '0';   // 0: the host without BLOCKS ONLINE
     Node* ns[2] = {&H, &C};
     std::vector<GameEvent> hostLog;   // (the host's events, every step: the player's blocks and catches, as the host counted them)
     double exUs = 0;   // the player's game: time spent in each frame's network exchange (the look-ahead with it)
@@ -322,6 +377,16 @@ int main(int argc, char** argv) {
     std::printf("RESULT own_glide_cm %.0f\n", median(ownErr));
     std::printf("RESULT own_glide_p90_cm %.0f\n", pct(ownErr, 0.9));
     std::printf("RESULT exchange_us %.0f\n", exN ? exUs / exN : -1.0);
+    if (shieldMode) {   // the host's balls at the player, and what the host counted: blocked by the shield, or a hit
+        int blocks = 0, hits = 0;
+        for (const GameEvent& e : hostLog) {
+            if ((e.type == EventType::ShieldBlock || e.type == EventType::KnuckleBlock) && e.player == 1) ++blocks;
+            if (e.type == EventType::HitPlayer && e.player == 1) ++hits;
+        }
+        std::printf("RESULT shield_incoming %d\n", C.th.incoming);
+        std::printf("RESULT shield_blocks %d\n", blocks);
+        std::printf("RESULT shield_hits %d\n", hits);
+    }
     if (catchMode) {   // the snatches each side made at its own returning ball, and what the host made of them
         int caught[2] = {0, 0}, selfHit[2] = {0, 0};
         for (const GameEvent& e : hostLog) {

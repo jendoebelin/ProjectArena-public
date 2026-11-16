@@ -348,6 +348,7 @@ void Trainer::setRules(Game& g, bool atFar) const {
     t.players = 2;
     t.basicMatchTime = 0;   // (no clock: the lesson keeps its own)
     t.useShotClock = false;
+    t.foulShift = 0;        // (the lessons' line where the arena has it)
     t.meetTime = 0;
     t.botMeet = false;
     t.botAdapt = false;

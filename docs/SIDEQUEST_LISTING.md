@@ -15,7 +15,8 @@ SideQuest installs the GitHub build, so its release doesn't depend on Meta's rev
 - **Banner field** asks for 16:9, at least 1280 px wide; it isn't shown on the web app page (the SideQuest apps use
   it). The owner's empty court is 1278x510, so a 16:9 render of the same view (2560x1440) would fit it exactly.
 - **Screenshots:** `build/store_art/screenshot_1..5.png`, in that order (done 2026-11-08).
-- **Trailer:** the alpha video until the launch trailer is public (noon 2026-11-13), then the launch video.
+- **Trailer:** the launch trailer, https://www.youtube.com/watch?v=YuG306OO5O0 (public; the alpha video is private
+  now, so the old link shows "Video unavailable").
 - **Summary** (unchanged): Project Arena is an open-source VR court sport for Meta Quest and PC VR where players
   throw, curve, and punch energy balls in fast-paced competitive matches.
 - **Search tags** (unchanged): multiplayer, fitness, vr_sports, cross_platform.
