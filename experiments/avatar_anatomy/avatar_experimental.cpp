@@ -1,0 +1,747 @@
+#include "torso_follow.h"
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+namespace avatar {
+
+
+namespace {
+
+struct Swatch { const char* name; uint8_t r, g, b; };   // sRGB
+
+const char* kSuit[] = {"GRID RUNNER", "ARENA JERSEY", "VANGUARD", "STREET JACKET", "HOODIE", "ECHO SUIT", "TANK TOP", "PILOT",
+                       "CIRCUIT VEST", "TRAINING TEE", "CIRCUIT RUNNER",   // 10: modelled traces with moving pulses
+                       "GRID RUNNER LIVE", "ECHO SUIT LIVE", "CIRCUIT VEST LIVE"};   // 11-13: their glow lines raised, pulsing
+const char* kLower[] = {"NONE", "ATHLETIC SHORTS", "CIRCUIT SHORTS", "BIKE SHORTS"};
+const char* kBody[] = {"MASCULINE", "FEMININE"};
+const char* kGauntlet[] = {"STRIKER", "TITAN", "PHANTOM", "CONTROLLER"};
+const char* kFace[] = {"FACE 1", "FACE 2", "FACE 3", "FACE 4"};   // tools/blender/make_body.py FACES (FACE 1 = the base)
+const char* kBuild[] = {"SLIM", "STANDARD", "BROAD", "ATHLETIC"};
+const char* kPattern[] = {"NONE", "CIRCUIT", "STRIPES", "CHEVRON", "HEX", "SPLIT", "PIXEL", "BANDS"};
+const char* kPatternTex[] = {nullptr, "open_pat_circuit", "open_pat_stripes", "open_pat_chevron", "open_pat_hex",
+                             "open_pat_split", "open_pat_pixel", "open_pat_bands"};
+const char* kHair[] = {"NONE", "BUZZ CUT", "SWEPT", "PONYTAIL", "MOHAWK", "SPIKES", "BOB", "TOP KNOT", "TOUSLED"};
+const char* kHeadgear[] = {"NONE", "GRID HELMET", "RACER HELMET", "HOOD", "CREST HELMET", "HEADPHONES", "CAP"};
+const char* kVisor[] = {"NONE", "BAND VISOR", "FULL SHIELD", "SHADES", "GOGGLES", "HEADSET", "HALO", "SLIT VISOR"};
+const char* kMask[] = {"NONE", "MOUTH GUARD", "CYBER JAW", "BREATHER", "BANDANA", "FACEPLATE"};
+
+const Swatch kSuitCol[] = {{"GRAPHITE", 52, 56, 64},  {"SILVER", 168, 174, 184}, {"WHITE", 226, 230, 236},
+                           {"MIDNIGHT", 22, 30, 62},  {"COBALT", 30, 82, 196},   {"TEAL", 18, 150, 156},
+                           {"EMERALD", 22, 150, 84},  {"LIME", 150, 210, 40},    {"GOLD", 214, 168, 52},
+                           {"ORANGE", 232, 112, 24},  {"CRIMSON", 176, 22, 44},  {"MAGENTA", 196, 30, 150},
+                           {"VIOLET", 104, 52, 190},  {"BLACK", 16, 16, 19},     {"BROWN", 92, 56, 36},
+                           {"GREY", 92, 95, 104}};
+const Swatch kGlowCol[] = {{"TEAM", 0, 0, 0},         {"WHITE", 235, 245, 255},  {"CYAN", 40, 230, 255},
+                           {"BLUE", 50, 110, 255},    {"VIOLET", 150, 70, 255},  {"MAGENTA", 255, 40, 200},
+                           {"RED", 255, 40, 50},      {"ORANGE", 255, 120, 20},  {"GOLD", 255, 200, 40},
+                           {"LIME", 170, 255, 40},    {"GREEN", 40, 255, 120},   {"PINK", 255, 120, 190}};
+const Swatch kHairCol[] = {{"BLACK", 22, 20, 20},     {"DARK BROWN", 54, 36, 26}, {"BROWN", 98, 64, 40},
+                           {"AUBURN", 128, 52, 30},   {"COPPER", 184, 94, 44},    {"BLONDE", 214, 180, 110},
+                           {"PLATINUM", 232, 224, 200}, {"SILVER", 170, 176, 184}, {"CRIMSON", 170, 20, 36},
+                           {"COBALT", 34, 74, 200},   {"VIOLET", 110, 50, 190},  {"PINK", 240, 110, 170},
+                           {"NEON", 0, 0, 0}};
+const Swatch kTint[] = {{"SMOKE", 30, 34, 42},   {"MIRROR", 150, 160, 175}, {"GOLD", 200, 150, 50},
+                        {"ICE", 90, 170, 230},   {"MAGENTA", 190, 40, 150}, {"AMBER", 230, 130, 30},
+                        {"EMERALD", 40, 170, 100}, {"TEAM", 0, 0, 0}};
+const Swatch kSkin[] = {{"PORCELAIN", 246, 222, 206}, {"FAIR", 238, 200, 176}, {"LIGHT", 226, 180, 150},
+                        {"TAN", 204, 150, 112},       {"OLIVE", 176, 134, 92}, {"BROWN", 140, 94, 62},
+                        {"DEEP", 100, 64, 42},        {"EBONY", 62, 40, 28},   {"CHROME", 180, 186, 196},
+                        {"ICE", 150, 200, 240},       {"GHOST", 230, 236, 245}, {"OBSIDIAN", 26, 26, 32}};
+
+template <class T, size_t N> constexpr int count(T (&)[N]) { return (int)N; }
+
+const char* kFieldName[F_COUNT] = {"SUIT", "BUILD", "PATTERN", "MAIN COLOR", "TRIM COLOR", "GLOW", "HAIR", "HAIR COLOR",
+                                   "HEADGEAR", "FACE SHIELD", "SHIELD TINT", "MASK", "SKIN", "LOWER BODY", "BODY TYPE", "GAUNTLET", "FACE",
+                                   "COUNTRY"};
+const char* kKey[F_COUNT] = {"suit", "build", "pattern", "primary", "secondary", "glow", "hair", "haircolor",
+                             "headgear", "visor", "visortint", "mask", "skin", "lower", "body", "gauntlet", "face", "nation"};
+
+const Nation kNations[] = {
+#include "nations.inc"
+};
+
+float lin(uint8_t c) { return std::pow(c / 255.f, 2.2f); }
+void swatchLin(const Swatch& s, float out[3]) { out[0] = lin(s.r); out[1] = lin(s.g); out[2] = lin(s.b); }
+
+uint8_t* ref(AvatarDesc& d, Field f) {
+    switch (f) {
+    case F_SUIT: return &d.suit;           case F_BUILD: return &d.build;       case F_PATTERN: return &d.pattern;
+    case F_PRIMARY: return &d.primary;     case F_SECONDARY: return &d.secondary; case F_GLOW: return &d.glow;
+    case F_HAIR: return &d.hair;           case F_HAIRCOLOR: return &d.hairColor; case F_HEADGEAR: return &d.headgear;
+    case F_VISOR: return &d.visor;         case F_VISORTINT: return &d.visorTint; case F_MASK: return &d.mask;
+    case F_SKIN: return &d.skin;           case F_LOWER: return &d.lower;       case F_BODY: return &d.body;
+    case F_GAUNTLET: return &d.gauntlet;
+    default: return &d.gauntlet;   // (F_FACE and F_NATION live in spare bits: get / set handle them)
+    }
+}
+
+uint32_t rng(uint32_t& s) { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s; }
+int pick(uint32_t& s, int n) { return (int)(rng(s) % (uint32_t)n); }
+
+AvatarDesc make(int suit, int build, int pattern, int primary, int secondary, int glow, int hair, int hairColor,
+                int headgear, int visor, int visorTint, int mask, int skin) {
+    AvatarDesc d;
+    const int v[F_COUNT] = {suit, build, pattern, primary, secondary, glow, hair, hairColor, headgear, visor, visorTint, mask, skin};
+    for (int f = 0; f < F_COUNT; ++f) *ref(d, (Field)f) = (uint8_t)v[f];
+    return d;
+}
+
+AvatarDesc withLower(AvatarDesc d, int lower, int body = 0) { d.lower = (uint8_t)lower; d.body = (uint8_t)body; return d; }
+
+struct Preset { const char* name; AvatarDesc d; };
+const Preset kPresets[] = {
+    {"GRID RUNNER", make(0, 1, 1, 13, 0, 0, 0, 0, 1, 2, 0, 0, 2)},
+    {"ROOKIE", make(1, 1, 2, 4, 2, 0, 2, 2, 5, 0, 0, 1, 3)},
+    {"VANGUARD", make(2, 2, 4, 1, 3, 2, 1, 0, 4, 7, 0, 2, 5)},
+    {"NIGHT RIDER", make(3, 1, 0, 13, 10, 6, 3, 5, 0, 3, 2, 4, 1)},
+    {"ECHO", make(5, 0, 7, 2, 13, 1, 4, 12, 0, 6, 0, 0, 6)},
+    {"SKY PILOT", make(7, 1, 0, 6, 8, 8, 1, 1, 0, 4, 5, 3, 4)},
+    {"GHOST", make(4, 1, 6, 0, 12, 5, 0, 0, 3, 5, 4, 0, 10)},
+    {"STRIKER", make(6, 2, 3, 9, 13, 7, 5, 11, 0, 1, 3, 0, 7)},
+    {"CHROME", make(0, 1, 1, 1, 13, 2, 0, 0, 0, 1, 1, 5, 8)},
+    {"RACER", make(5, 1, 5, 10, 2, 0, 0, 0, 2, 2, 2, 0, 2)},
+    {"CIRCUIT", withLower(make(8, 2, 0, 13, 13, 2, 8, 2, 0, 0, 0, 0, 2), 2)},
+    {"TRAINER", withLower(make(9, 3, 0, 14, 4, 3, 3, 2, 0, 0, 0, 0, 3), 1, 1)},
+    {"TANK AND SHORTS", withLower(make(6, 1, 0, 14, 4, 0, 0, 0, 0, 0, 0, 0, 3), 1)},
+    {"TRAINING KIT", withLower(make(9, 1, 0, 13, 15, 0, 0, 0, 0, 0, 0, 0, 3), 3, 1)},
+};
+
+}  // namespace
+
+Field rowField(int row) {
+    static const Field k[kRowCount] = {F_BODY, F_FACE, F_SUIT, F_BUILD, F_LOWER, F_GAUNTLET, F_PATTERN, F_PRIMARY,
+                                       F_SECONDARY, F_GLOW, F_HAIR, F_HAIRCOLOR, F_HEADGEAR, F_VISOR, F_VISORTINT, F_MASK, F_SKIN};
+    return row >= 0 && row < kRowCount ? k[row] : F_SUIT;
+}
+
+int fieldCount(Field f) {
+    switch (f) {
+    case F_SUIT: return count(kSuit);          case F_BUILD: return count(kBuild);     case F_PATTERN: return count(kPattern);
+    case F_PRIMARY: case F_SECONDARY: return count(kSuitCol);
+    case F_GLOW: return count(kGlowCol);       case F_HAIR: return count(kHair);       case F_HAIRCOLOR: return count(kHairCol);
+    case F_HEADGEAR: return count(kHeadgear);  case F_VISOR: return count(kVisor);     case F_VISORTINT: return count(kTint);
+    case F_MASK: return count(kMask);          case F_SKIN: return count(kSkin);       case F_LOWER: return count(kLower);    case F_BODY: return count(kBody);
+    case F_GAUNTLET: return count(kGauntlet);
+    case F_FACE: return kFaces;
+    case F_NATION: return nationCount() + 1;
+    default: return 1;
+    }
+}
+
+const char* fieldName(Field f) { return f >= 0 && f < F_COUNT ? kFieldName[f] : ""; }
+
+const char* optionName(Field f, int i) {
+    if (i < 0 || i >= fieldCount(f)) return "?";
+    switch (f) {
+    case F_SUIT: return kSuit[i];            case F_BUILD: return kBuild[i];        case F_PATTERN: return kPattern[i];
+    case F_PRIMARY: case F_SECONDARY: return kSuitCol[i].name;
+    case F_GLOW: return kGlowCol[i].name;    case F_HAIR: return kHair[i];          case F_HAIRCOLOR: return kHairCol[i].name;
+    case F_HEADGEAR: return kHeadgear[i];    case F_VISOR: return kVisor[i];        case F_VISORTINT: return kTint[i].name;
+    case F_MASK: return kMask[i];            case F_SKIN: return kSkin[i].name;     case F_LOWER: return kLower[i];        case F_BODY: return kBody[i];
+    case F_GAUNTLET: return kGauntlet[i];
+    case F_FACE: return kFace[i];
+    case F_NATION: return i == 0 ? "NONE" : kNations[i - 1].name;
+    default: return "?";
+    }
+}
+
+uint8_t get(const AvatarDesc& d, Field f) {
+    if (f == F_BODY) return (uint8_t)bodyType(d);
+    if (f == F_FACE) return (uint8_t)faceOf(d);
+    if (f == F_NATION) return (uint8_t)nationOf(d);
+    if (f == F_GAUNTLET) return (uint8_t)gauntletOf(d);
+    return *ref(const_cast<AvatarDesc&>(d), f);
+}
+
+void set(AvatarDesc& d, Field f, int v) {
+    int n = fieldCount(f);
+    v = ((v % n) + n) % n;
+    if (f == F_BODY) d.body = (uint8_t)((d.body & ~1) | v);
+    else if (f == F_FACE) d.body = (uint8_t)((d.body & ~6) | (v << 1));
+    else if (f == F_NATION) setNation(d, v);
+    else if (f == F_GAUNTLET) d.gauntlet = (uint8_t)((d.gauntlet & ~31) | v);
+    else *ref(d, f) = (uint8_t)v;
+}
+
+bool isColor(Field f) {
+    return f == F_PRIMARY || f == F_SECONDARY || f == F_GLOW || f == F_HAIRCOLOR || f == F_VISORTINT || f == F_SKIN;
+}
+
+void optionColor(Field f, int i, const float team[3], float out[3]) {
+    out[0] = out[1] = out[2] = 0.5f;
+    if (i < 0 || i >= fieldCount(f)) return;
+    const Swatch* s = nullptr;
+    switch (f) {
+    case F_PRIMARY: case F_SECONDARY: s = &kSuitCol[i]; break;
+    case F_GLOW: s = &kGlowCol[i]; break;
+    case F_HAIRCOLOR: s = &kHairCol[i]; break;
+    case F_VISORTINT: s = &kTint[i]; break;
+    case F_SKIN: s = &kSkin[i]; break;
+    default: return;
+    }
+    if ((f == F_GLOW && i == 0) || (f == F_VISORTINT && i == count(kTint) - 1)) { out[0] = team[0]; out[1] = team[1]; out[2] = team[2]; return; }
+    if (f == F_HAIRCOLOR && i == count(kHairCol) - 1) { out[0] = team[0]; out[1] = team[1]; out[2] = team[2]; return; }   // NEON: shown in team colour
+    swatchLin(*s, out);
+}
+
+void sanitize(AvatarDesc& d) {
+    for (int f = 0; f < F_COUNT; ++f) {
+        if (f == F_BODY || f == F_FACE || f == F_NATION || f == F_GAUNTLET) continue;
+        uint8_t* v = ref(d, (Field)f);
+        if (*v >= fieldCount((Field)f)) *v = 0;
+    }
+    int n = nationOf(d), face = (d.body >> 1) & 3;
+    if (n > nationCount()) n = 0;
+    if (face >= kFaces) face = 0;   // a face out of range: FACE 1
+    if (gauntletOf(d) >= fieldCount(F_GAUNTLET)) d.gauntlet = 0;
+    d.body = (uint8_t)(bodyType(d) | (face << 1));
+    d.gauntlet = (uint8_t)gauntletOf(d);
+    setNation(d, n);
+}
+
+int nationCount() { return count(kNations); }
+const Nation* nation(int n) { return n >= 1 && n <= count(kNations) ? &kNations[n - 1] : nullptr; }
+
+void setNation(AvatarDesc& d, int n) {
+    if (n < 0 || n > 255) n = 0;
+    d.body = (uint8_t)((d.body & 7) | ((n & 31) << 3));
+    d.gauntlet = (uint8_t)((d.gauntlet & 31) | ((n >> 5) << 5));
+}
+
+namespace {
+int nearest(const Swatch* s, int n, int from, const uint8_t c[3]) {
+    int best = from;
+    float bd = 1e9f;
+    for (int i = from; i < n; ++i) {
+        const float dr = lin(s[i].r) - lin(c[0]), dg = lin(s[i].g) - lin(c[1]), db = lin(s[i].b) - lin(c[2]);
+        const float dd = dr * dr * 0.3f + dg * dg * 0.59f + db * db * 0.11f;
+        if (dd < bd) { bd = dd; best = i; }
+    }
+    return best;
+}
+// the kit's trim (ribbed collar, sleeve bands, side stripes, number panel, gloves): the flag's accent colour, or its
+// second colour when the accent is the jersey's own (CANADA: red, white, red)
+int kitTrim(const Nation* N) {
+    int d = 0;
+    for (int k = 0; k < 3; ++k) d += std::abs(int(N->kit[2][k]) - int(N->kit[0][k]));
+    return d > 90 ? 2 : 1;
+}
+void glowOf(const uint8_t c[3], const float fallback[3], float out[3]) {   // a kit colour as a glow (brightest 1)
+    float v[3] = {lin(c[0]), lin(c[1]), lin(c[2])};
+    const float m = std::max(v[0], std::max(v[1], v[2]));
+    for (int k = 0; k < 3; ++k) out[k] = m < 0.02f ? fallback[k] : v[k] / m;
+}
+}  // namespace
+
+AvatarDesc uniform(const AvatarDesc& in) {
+    AvatarDesc d = in;
+    sanitize(d);
+    const Nation* N = nation(nationOf(d));
+    if (!N) return d;
+    d.suit = 1;      // ARENA JERSEY
+    d.pattern = 0;
+    if (d.lower != 3) d.lower = 1;   // ATHLETIC SHORTS (BIKE SHORTS stay)
+    d.primary = (uint8_t)nearest(kSuitCol, count(kSuitCol), 0, N->kit[0]);
+    d.secondary = (uint8_t)nearest(kSuitCol, count(kSuitCol), 0, N->kit[kitTrim(N)]);
+    d.glow = (uint8_t)nearest(kGlowCol, count(kGlowCol), 1, N->kit[2]);
+    return d;
+}
+
+void sideColors(int n0, int n1, float out[2][3]) {
+    static const float def[2][3] = {{0.10f, 0.70f, 1.00f}, {1.00f, 0.40f, 0.10f}};
+    const int ns[2] = {n0, n1};
+    float cand[2][2][3];   // each end's first and second choice
+    for (int p = 0; p < 2; ++p) {
+        const Nation* N = nation(ns[p]);
+        for (int k = 0; k < 3; ++k) {
+            cand[p][0][k] = N ? N->team[0][k] : def[p][k];
+            cand[p][1][k] = N ? N->team[1][k] : def[1 - p][k];
+        }
+    }
+    auto dist = [](const float* a, const float* b) {
+        float s = 0;
+        for (int k = 0; k < 3; ++k) s += (a[k] - b[k]) * (a[k] - b[k]);
+        return std::sqrt(s);
+    };
+    for (int k = 0; k < 3; ++k) out[0][k] = cand[0][0][k];
+    const int pick = dist(cand[1][0], out[0]) >= 0.55f ? 0 : dist(cand[1][1], out[0]) > dist(cand[1][0], out[0]) ? 1 : 0;
+    for (int k = 0; k < 3; ++k) out[1][k] = cand[1][pick][k];
+    if (dist(out[0], out[1]) < 0.55f && dist(cand[0][1], out[1]) > dist(out[0], out[1]))   // still close: the first end moves
+        for (int k = 0; k < 3; ++k) out[0][k] = cand[0][1][k];
+}
+
+int presetCount() { return count(kPresets); }
+const char* presetName(int i) { return kPresets[((i % presetCount()) + presetCount()) % presetCount()].name; }
+AvatarDesc preset(int i) { return kPresets[((i % presetCount()) + presetCount()) % presetCount()].d; }
+
+AvatarDesc randomLook(uint32_t seed) {
+    uint32_t s = seed * 2654435761u + 0x9E3779B9u;
+    if (!s) s = 1;
+    for (int i = 0; i < 4; ++i) rng(s);
+    AvatarDesc d;
+    d.suit = (uint8_t)pick(s, count(kSuit));
+    d.build = (uint8_t)(pick(s, 5) == 0 ? 0 : pick(s, 4) == 0 ? 2 : 1);
+    d.pattern = (uint8_t)(pick(s, 3) == 0 ? 0 : pick(s, count(kPattern)));
+    d.primary = (uint8_t)pick(s, count(kSuitCol));
+    // a trim colour that reads against the main colour (luminance apart)
+    float p3[3], s3[3];
+    swatchLin(kSuitCol[d.primary], p3);
+    for (int tries = 0; tries < 12; ++tries) {
+        d.secondary = (uint8_t)pick(s, count(kSuitCol));
+        swatchLin(kSuitCol[d.secondary], s3);
+        float lp = 0.2126f * p3[0] + 0.7152f * p3[1] + 0.0722f * p3[2], ls = 0.2126f * s3[0] + 0.7152f * s3[1] + 0.0722f * s3[2];
+        if (d.secondary != d.primary && std::fabs(std::sqrt(lp) - std::sqrt(ls)) > 0.18f) break;
+    }
+    d.glow = (uint8_t)(pick(s, 5) < 2 ? 0 : pick(s, count(kGlowCol)));
+    d.headgear = (uint8_t)(pick(s, 2) == 0 ? 0 : pick(s, count(kHeadgear)));
+    d.hair = (uint8_t)pick(s, count(kHair));
+    d.hairColor = (uint8_t)(pick(s, 5) == 0 ? 7 + pick(s, count(kHairCol) - 7) : pick(s, 7));
+    d.visor = (uint8_t)(pick(s, 10) < 3 ? 0 : pick(s, count(kVisor)));
+    d.visorTint = (uint8_t)pick(s, count(kTint));
+    d.mask = (uint8_t)(pick(s, 10) < 6 ? 0 : pick(s, count(kMask)));
+    d.skin = (uint8_t)(pick(s, 10) == 0 ? 8 + pick(s, 4) : pick(s, 8));
+    d.lower = (uint8_t)(pick(s, 2) == 0 ? 0 : 1 + pick(s, count(kLower) - 1));
+    d.body = (uint8_t)(pick(s, 2) | (pick(s, kFaces) << 1));
+    d.gauntlet = (uint8_t)pick(s, 3);
+    return d;
+}
+
+void channelColors(const AvatarDesc& in, const float team[3], float out[CH_COUNT][4]) {
+    AvatarDesc d = in;
+    sanitize(d);
+    for (int c = 0; c < CH_COUNT; ++c) { out[c][0] = out[c][1] = out[c][2] = out[c][3] = 1; }
+    optionColor(F_PRIMARY, d.primary, team, out[CH_PRIMARY]);
+    optionColor(F_SECONDARY, d.secondary, team, out[CH_SECONDARY]);
+    optionColor(F_GLOW, d.glow, team, out[CH_GLOW]);
+    if (const Nation* N = nation(nationOf(d))) {   // the team kit in the flag's own colours
+        const int t = kitTrim(N);
+        for (int k = 0; k < 3; ++k) { out[CH_PRIMARY][k] = lin(N->kit[0][k]); out[CH_SECONDARY][k] = lin(N->kit[t][k]); }
+        glowOf(N->kit[2], N->team[0], out[CH_GLOW]);
+    }
+    optionColor(F_SKIN, d.skin, team, out[CH_SKIN]);
+    optionColor(F_VISORTINT, d.visorTint, team, out[CH_VISOR]);
+    if (neonHair(d)) for (int k = 0; k < 3; ++k) out[CH_HAIR][k] = out[CH_GLOW][k];
+    else optionColor(F_HAIRCOLOR, d.hairColor, team, out[CH_HAIR]);
+    if (d.visorTint == count(kTint) - 1) for (int k = 0; k < 3; ++k) out[CH_VISOR][k] *= 0.45f;   // TEAM tint: dark glass
+    // trim: brushed metal leaning toward the trim colour
+    const float metal[3] = {0.50f, 0.52f, 0.56f};
+    for (int k = 0; k < 3; ++k) out[CH_TRIM][k] = metal[k] * 0.7f + out[CH_SECONDARY][k] * 0.3f;
+    for (int k = 0; k < 3; ++k) out[CH_GLOW][k] *= 1.15f;   // glow lines are unlit: a little over white for punch
+}
+
+bool neonHair(const AvatarDesc& d) { return d.hairColor == count(kHairCol) - 1; }
+const char* patternTexture(int pattern) { return pattern > 0 && pattern < count(kPattern) ? kPatternTex[pattern] : nullptr; }
+
+std::string toText(const AvatarDesc& d) {
+    std::string s;
+    char buf[48];
+    for (int f = 0; f < F_COUNT; ++f) {
+        std::snprintf(buf, sizeof buf, "%s=%d\n", kKey[f], (int)get(d, (Field)f));
+        s += buf;
+    }
+    return s;
+}
+
+bool fromText(const std::string& s, AvatarDesc& d) {
+    bool any = false;
+    size_t i = 0;
+    while (i < s.size()) {
+        size_t e = s.find('\n', i);
+        if (e == std::string::npos) e = s.size();
+        std::string line = s.substr(i, e - i);
+        i = e + 1;
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq);
+        int v = std::atoi(line.c_str() + eq + 1);
+        for (int f = 0; f < F_COUNT; ++f)
+            if (k == kKey[f] && v >= 0 && v < fieldCount((Field)f)) { set(d, (Field)f, v); any = true; }
+    }
+    sanitize(d);
+    return any;
+}
+
+// ---------------------------------------------------------------- rig
+Build buildOf(int b) {
+    // CURVED uses the curved torso meshes (bust, waist) at a slightly slimmer scale
+    static const Build k[4] = {{0.94f, 0.96f, 0.92f, false}, {1.f, 1.f, 1.f, false}, {1.07f, 1.05f, 1.10f, false},
+                               {1.03f, 1.02f, 1.05f, false}};
+    return k[b < 0 ? 0 : b > 3 ? 3 : b];
+}
+
+static Vec3 flat(Vec3 v) {
+    v.y = 0;
+    return length(v) > 1e-4f ? normalize(v) : Vec3{0, 0, -1};
+}
+
+Vec3 elbowIK(const Vec3& s, const Vec3& w, float l1, float l2, const Vec3& pole) {
+    Vec3 d = w - s;
+    float dist = length(d);
+    if (dist < 1e-4f) return s + normalize(pole - s) * l1;
+    Vec3 u = d / dist;
+    if (dist >= l1 + l2 - 1e-4f) return s + u * (dist * l1 / (l1 + l2));   // out of reach: straight, both bones stretch
+    dist = std::max(dist, std::fabs(l1 - l2) + 1e-3f);
+    float a = (l1 * l1 - l2 * l2 + dist * dist) / (2 * dist);
+    float h = std::sqrt(std::max(0.f, l1 * l1 - a * a));
+    Vec3 c = s + u * a;
+    Vec3 p = pole - c;
+    p = p - u * dot(p, u);
+    if (length2(p) < 1e-10f) p = std::fabs(u.y) < 0.9f ? cross(u, Vec3{0, 1, 0}) : cross(u, Vec3{1, 0, 0});
+    return c + normalize(p) * h;
+}
+
+#include "avatar_bodies.inc"
+
+const BodyBind& bodyBind(int body) { return kBodyBind[body < 0 ? 0 : body > 1 ? 1 : body]; }
+
+static Mat4 affineInverse(const Mat4& m) {
+    const float* a = m.m;   // column-major 3x3 + translation
+    const float c00 = a[5] * a[10] - a[9] * a[6], c01 = a[8] * a[6] - a[4] * a[10], c02 = a[4] * a[9] - a[8] * a[5];
+    const float det = a[0] * c00 + a[1] * c01 + a[2] * c02;
+    const float id = std::fabs(det) > 1e-12f ? 1.f / det : 0.f;
+    Mat4 r = Mat4::identity();
+    r.m[0] = c00 * id;                               r.m[4] = c01 * id;                               r.m[8] = c02 * id;
+    r.m[1] = (a[9] * a[2] - a[1] * a[10]) * id;      r.m[5] = (a[0] * a[10] - a[8] * a[2]) * id;      r.m[9] = (a[8] * a[1] - a[0] * a[9]) * id;
+    r.m[2] = (a[1] * a[6] - a[5] * a[2]) * id;       r.m[6] = (a[4] * a[2] - a[0] * a[6]) * id;       r.m[10] = (a[0] * a[5] - a[4] * a[1]) * id;
+    for (int i = 0; i < 3; ++i) r.m[12 + i] = -(r.m[i] * a[12] + r.m[4 + i] * a[13] + r.m[8 + i] * a[14]);
+    return r;
+}
+
+RigTuning& rigTuning() { static RigTuning t; return t; }
+
+Pose cuffPose(bool left) {
+    const RigTuning& T = rigTuning();
+    const float s = left ? -1.f : 1.f;
+    const Quat q = gripEuler(T.cuffRot, left);
+    const Vec3 piv{s * kCuffPivot.x, kCuffPivot.y, kCuffPivot.z};
+    return {q, piv + Vec3{s * T.cuffPos.x, T.cuffPos.y, T.cuffPos.z} - q.rotate(piv)};
+}
+
+// Actual glTF clavicle bone heads, neck-relative in game coordinates.
+// Isolated candidate constants because public BodyBind has no clavicle roots.
+static Vec3 authoredClavRoot(int body,int side) {
+    static const Vec3 roots[2][2] = {{{-0.031399995f,-0.025199771f,-0.074900020f},{0.031399995f,-0.025199771f,-0.074900020f}},{{-0.029299997f,-0.054400086f,-0.056600053f},{0.029299997f,-0.054400086f,-0.056600034f}}};
+    return roots[body==1?1:0][side];
+}
+
+// Experimental articulation: a shortest-arc rotation about the medial root,
+// never prismatic clavicle travel. Thirty degrees is a prototype limit, not a
+// measured user's range of motion.
+static Quat anchoredClavicleRotation(const Vec3& pivot,const Vec3& shoulder,const Vec3& wanted) {
+    const Vec3 a=normalize(shoulder-pivot), b=normalize(wanted-pivot);
+    if(length2(a)<.5f || length2(b)<.5f)return Quat{};
+    const float angle=std::acos(clampf(dot(a,b),-1.f,1.f));
+    if(angle<1e-6f)return Quat{};
+    Vec3 axis=cross(a,b);
+    if(length2(axis)<1e-10f)axis=cross(a,Vec3{0,1,0});
+    return Quat::axisAngle(axis,std::min(angle,deg2rad(30.f)));
+}
+
+static Rig solveRigImpl(const PlayerInput& in, const AvatarDesc& d, TorsoFollowState* state, float dt) {
+    Rig r;
+    const RigTuning& T = rigTuning();
+    const Pose& h = in.head;
+    const Build B = buildOf(d.build);
+    const BodyBind& K = bodyBind(bodyType(d));
+    // the head carries the neck top as in the bind pose; the torso hangs upright below it, so nodding or tilting the
+    // head never swings the body
+    const Vec3 neckTop = h.transform(K.neckTop - K.eye + T.neck);
+    // facing: the head's heading pulled toward the hands (looking aside while throwing keeps the chest on the
+    // throw), never more than 50 degrees from where the head looks (RigTuning torsoFollow / torsoLimitDeg)
+    const Vec3 hf = flat(h.q.rotate({0, 0, -1}));
+    const Vec3 base0 = neckTop + Vec3{0, -K.neckTop.y, 0};
+    Vec3 f = hf;
+    Vec3 mid{0, 0, 0};
+    int nt = 0;
+    for (int k = 0; k < 2; ++k)
+        if (in.hand[k].tracked) { mid += in.hand[k].grip.p; ++nt; }
+    if (nt) {
+        Vec3 th = mid / float(nt) - base0;
+        th.y = 0;
+        if (length(th) > 0.12f) f = normalize(hf + normalize(th) * T.torsoFollow);
+        const float c50 = std::cos(deg2rad(T.torsoLimitDeg)), s50 = std::sin(deg2rad(T.torsoLimitDeg));
+        if (dot(f, hf) < c50) {
+            Vec3 perp = f - hf * dot(f, hf);
+            perp = length(perp) > 1e-5f ? normalize(perp) : Vec3{-hf.z, 0, hf.x};
+            f = normalize(hf * c50 + perp * s50);
+        }
+    }
+    // Experimental reach-responsive torso. The HMD and neck-top stay fixed;
+    // the torso rotates around that anchor, preserving neck length. Both hands
+    // participate; an unreachable target is never permission to stretch a limb.
+    const float headHeading = std::atan2(-hf.x, -hf.z);
+    const float restHeading = std::atan2(-f.x, -f.z);
+    auto wrapAngle = [](float a) { while(a > kPi) a -= 2*kPi; while(a < -kPi) a += 2*kPi; return a; };
+    const float restOffset = wrapAngle(restHeading-headHeading);
+    auto rotation = [&](Vec3 a) {
+        return Quat::axisAngle({0,1,0},headHeading+a.x) *
+               Quat::axisAngle({0,0,1},a.z) * Quat::axisAngle({1,0,0},a.y);
+    };
+    auto constrain = [&](Vec3 a) {
+        a.x=clampf(a.x,-deg2rad(T.torsoLimitDeg),deg2rad(T.torsoLimitDeg));
+        const float tilt=std::sqrt(a.y*a.y+a.z*a.z), limit=deg2rad(30.f);
+        if(tilt>limit) { a.y*=limit/tilt; a.z*=limit/tilt; }
+        return a;
+    };
+    auto residual = [&](Vec3 a,int k) {
+        if(!in.hand[k].tracked) return 0.f;
+        const float side=k==1?1.f:-1.f;
+        const Quat q=rotation(a); const Pose torso{q,neckTop-q.rotate(K.neckTop)};
+        const Vec3 fe{side*T.forearmEnd.x,T.forearmEnd.y,T.forearmEnd.z};
+        const Vec3 W=in.hand[k].grip.transform(gauntletOf(in.avatar)<3 ? cuffPose(k==0).transform(fe) : Vec3{side*.004f,-.042f,.105f});
+        Vec3 S=torso.transform({K.shoulder[k].x*B.width+side*T.shoulder.x,K.shoulder[k].y+T.shoulder.y,K.shoulder[k].z*B.depth+T.shoulder.z});
+        const float e=clampf(dot(normalize(W-S),q.rotate({0,1,0}))*1.4f,0.f,1.f);
+        const Vec3 piv=authoredClavRoot(bodyType(d),k);
+        const Quat cq=Quat::axisAngle({0,0,1},side*std::asin(clampf(T.shrug*e/length(K.shoulder[k]-piv),0.f,.8f)));
+        const Vec3 Kr=piv+cq.rotate(K.shoulder[k]-piv);
+        S=torso.transform({Kr.x*B.width+side*T.shoulder.x,Kr.y+T.shoulder.y,Kr.z*B.depth+T.shoulder.z});
+        const float total=length(K.elbow[k]-K.shoulder[k])*T.upperLen+length(K.wrist[k]-K.elbow[k])*T.foreLen;
+        const float distance=length(W-S);
+        const float slide=std::min(std::max(0.f,distance-total*T.reachStart),T.reach);
+        const Vec3 root=torso.transform({piv.x*B.width,piv.y,piv.z*B.depth});
+        const Vec3 desired=S+normalize(W-S)*slide;
+        const Quat protract=anchoredClavicleRotation(root,S,desired);
+        S=root+protract.rotate(S-root);
+        return std::max(0.f,length(W-S)-total+2e-4f);
+    };
+    Vec3 posture{restOffset,0,0};
+    const float baseline[2]={residual(posture,0),residual(posture,1)};
+    auto cost = [&](Vec3 a) {
+        float c=0.f;
+        for(int k=0;k<2;k++) {
+            const float r=residual(a,k);
+            c+=r*r;
+            // Strongly protect an arm that could already meet its target.
+            if(baseline[k]<.001f && r>.001f) return 1000.f+r*r;
+        }
+        const Vec3 change=a-Vec3{restOffset,0,0};
+        return c+.00001f*length2(change);
+    };
+    if(baseline[0]>.001f || baseline[1]>.001f) {
+        float best=cost(posture);
+        // Deterministic minimum-motion descent; no discrete angular grid.
+        for(int iteration=0;iteration<100;iteration++) {
+            Vec3 gradient{};
+            const float epsilon=.0002f;
+            for(int axis=0;axis<3;axis++) {
+                Vec3 plus=posture,minus=posture;
+                if(axis==0){plus.x+=epsilon;minus.x-=epsilon;}
+                else if(axis==1){plus.y+=epsilon;minus.y-=epsilon;}
+                else{plus.z+=epsilon;minus.z-=epsilon;}
+                const float g=(cost(constrain(plus))-cost(constrain(minus)))/(2*epsilon);
+                if(axis==0)gradient.x=g;else if(axis==1)gradient.y=g;else gradient.z=g;
+            }
+            const float g2=length2(gradient);
+            if(g2<1e-14f)break;
+            Vec3 step=gradient*(-std::min(best/g2, .05f/std::sqrt(g2)));
+            bool improved=false;
+            for(int backtrack=0;backtrack<14;backtrack++) {
+                const Vec3 trial=constrain(posture+step); const float value=cost(trial);
+                if(value<best-1e-12f){posture=trial;best=value;improved=true;break;}
+                step*=.5f;
+            }
+            if(!improved)break;
+        }
+    }
+    const Vec3 contactPosture=posture;
+    if(state) {
+        if(!state->initialized) { state->worldAngles={headHeading+restOffset,0,0};state->initialized=true; }
+        Vec3 previous{wrapAngle(state->worldAngles.x-headHeading),state->worldAngles.y,state->worldAngles.z};
+        previous=constrain(previous);
+        // Frame-rate independent exponential response with explicit angular speed bound.
+        const float seconds=std::isfinite(dt)?clampf(dt,0.f,.1f):0.f;
+        Vec3 delta=(posture-previous)*(1.f-std::exp(-seconds/.12f));
+        const float distance=length(delta),maxStep=deg2rad(120.f)*seconds;
+        if(distance>maxStep && distance>0)delta*=maxStep/distance;
+        posture=constrain(previous+delta);
+        // Experimental contact priority: project smoothing back toward the solved
+        // feasible posture, then enforce the total motion bound below.
+        const auto worst=[&](Vec3 a){return std::max(residual(a,0),residual(a,1));};
+        if(worst(posture)>.001f && worst(contactPosture)<=.001f) {
+            Vec3 smooth=posture;float lo=0,hi=1;
+            for(int i=0;i<16;i++){float mid=(lo+hi)*.5f;if(worst(lerp(smooth,contactPosture,mid))<=.001f)hi=mid;else lo=mid;}
+            posture=lerp(smooth,contactPosture,hi);
+        }
+        // Contact correction never licenses a torso snap. Bound the complete
+        // final motion in quaternion space, not only the earlier smoothing step.
+        const Quat oldQ=rotation(previous);
+        auto angularDistance=[&](Vec3 a){Quat q=rotation(a);float d=std::fabs(oldQ.x*q.x+oldQ.y*q.y+oldQ.z*q.z+oldQ.w*q.w);return 2.f*std::acos(clampf(d,0.f,1.f));};
+        const float angularBudget=deg2rad(120.f)*seconds;
+        if(angularDistance(posture)>angularBudget){
+            Vec3 desired=posture;float lo=0,hi=1;
+            for(int i=0;i<18;i++){float mid=(lo+hi)*.5f;if(angularDistance(lerp(previous,desired,mid))<=angularBudget)lo=mid;else hi=mid;}
+            posture=lerp(previous,desired,lo);
+        }
+        state->worldAngles={headHeading+posture.x,posture.y,posture.z};
+    }
+    const Quat yaw = rotation(posture);
+    const Vec3 base = neckTop - yaw.rotate(K.neckTop);
+    r.torso = {yaw, base};
+    const Vec3 fwd = yaw.rotate({0, 0, -1});
+    const float neckLen = length(K.neckTop);
+    r.neck = {neckTop, base, fwd, neckLen};
+    const Bone bindNeck = {K.neckTop, {0, 0, 0}, {0, 0, -1}, neckLen};
+    const Vec3 scale{B.width, 1.f, B.depth};
+    r.skin[BONE_TORSO] = Mat4::fromPose(r.torso, scale);
+    r.skin[BONE_HEAD] = Mat4::fromPose(h) * Mat4::fromPose({Quat{}, Vec3{0, 0, 0} - K.eye});
+    r.skin[BONE_NECK] = boneMatrix(r.neck, false, 1.f) * affineInverse(boneMatrix(bindNeck, false, 1.f));
+    for (int k = 0; k < 2; ++k) {
+        const float side = k == 1 ? 1.f : -1.f;
+        // natural (bind) lengths for the meshes; the IK uses the tuned ones (the meshes stretch to match)
+        const float L1 = length(K.elbow[k] - K.shoulder[k]), L2 = length(K.wrist[k] - K.elbow[k]);
+        const float L1t = L1 * T.upperLen, L2t = L2 * T.foreLen;
+        Vec3 S = r.torso.transform({K.shoulder[k].x * scale.x + side * T.shoulder.x, K.shoulder[k].y + T.shoulder.y,
+                                    K.shoulder[k].z * scale.z + T.shoulder.z});
+        const Bone bu = {K.shoulder[k], K.elbow[k], (K.wrist[k] - K.elbow[k]) + Vec3{0, 0, -0.3f}, L1};
+        const Bone bf = {K.elbow[k], K.wrist[k], K.thumb[k] - K.wrist[k], L2};
+        const HandInput& hi = in.hand[k];
+        r.skin[BONE_CLAV_L + k] = r.skin[BONE_TORSO];   // (the collarbone as bound, unless an arm raises it, below)
+        if (!hi.tracked) {   // arms at rest: the bind pose, rotated with the torso
+            r.upper[k] = {S, r.torso.transform(K.elbow[k]), yaw.rotate(bu.front), L1};
+            r.fore[k] = {r.upper[k].b, r.torso.transform(K.wrist[k]), yaw.rotate(bf.front), L2};
+        } else {
+            r.arm[k] = true;
+            // the forearm ends inside the gauntlet's bracer (tools/blender/make_props.py lancer: wrist ring at grip
+            // (0.004, -0.040, 0.050), bracer to z = 0.135). The plate gauntlets' cuffs turn up 30 deg and swing 32 deg
+            // about that wrist ring (WRIST_TILT / WRIST_SWING there): the forearm ends inside the new cuff, but the
+            // elbow is still placed the natural way (straight back from the controller, below the hand): placing it
+            // along the cuff lifted the elbows out whenever the hands were held low.
+            const bool plate = gauntletOf(in.avatar) < 3;
+            // (RigTuning forearmEnd, carried with the cuff when the tuning tool moves it)
+            const Vec3 fe{side * T.forearmEnd.x, T.forearmEnd.y, T.forearmEnd.z};
+            Vec3 W = hi.grip.transform(plate ? cuffPose(k == 0).transform(fe) : Vec3{side * 0.004f, -0.042f, 0.105f});
+            const Vec3 back = hi.grip.q.rotate(normalize(Vec3{0, -0.047f, 1.f}));
+            // elbow: where a straight wrist would put it, nudged down / out / back so the IK stays stable
+            // a hand raised above the shoulder (e: 0 level or below, 1 straight up): the shoulder lifts with it (a real
+            // one shrugs as the arm goes overhead) and the elbow turns out to the side instead of hanging down
+            // (owner's report 2026-10-27: arms raised to the ceiling folded the shoulders in)
+            const float e = clampf(dot(normalize(W - S), yaw.rotate({0, 1, 0})) * 1.4f, 0.f, 1.f);
+            // the collarbone (BONE_CLAV_*, bind space): turned up about a point near the neck so the shoulder rises
+            // T.shrug with the arm straight up; the skin around the shoulder goes with it (build_body_parts.py)
+            const Vec3 piv=authoredClavRoot(bodyType(d),k);
+            const float ang = side * std::asin(clampf(T.shrug * e / length(K.shoulder[k]-piv), 0.f, 0.8f));
+            const Quat cq = Quat::axisAngle({0, 0, 1}, ang);
+            r.skin[BONE_CLAV_L + k] = r.skin[BONE_TORSO] * Mat4::fromPose({cq, piv - cq.rotate(piv)});
+            const Vec3 Kr = piv + cq.rotate(K.shoulder[k] - piv);
+            S = r.torso.transform({Kr.x * scale.x + side * T.shoulder.x, Kr.y + T.shoulder.y, Kr.z * scale.z + T.shoulder.z});
+            const Vec3 hang = yaw.rotate({side * T.elbowPole.x, T.elbowPole.y, T.elbowPole.z});
+            const Vec3 out = yaw.rotate({side * 1.0f, 0.15f, 0.35f});
+            const Vec3 pole = W + back * (L2t * (1.f - 0.6f * e)) + normalize(lerp(hang, out, e)) * (T.elbowPull + 0.25f * e);
+            // a hand beyond the arm's reach draws the shoulder after it (up to 7 cm, as a real shoulder blade
+            // slides) before the arm has to stretch
+            const Vec3 SW = W - S;
+            const float over = length(SW) - (L1t + L2t) * T.reachStart;
+            Vec3 shoulderSlide=over>0 ? normalize(SW)*std::min(over,T.reach) : Vec3{};
+            const Vec3 contactSlide=shoulderSlide;
+            if(state) {
+                const float seconds=std::isfinite(dt)?clampf(dt,0.f,.1f):0.f;
+                Vec3 delta=(shoulderSlide-state->clavicleAimOffset[k])*(1.f-std::exp(-seconds/.12f));
+                const float distance=length(delta),maxStep=.4f*seconds;
+                if(distance>maxStep && distance>0)delta*=maxStep/distance;
+                shoulderSlide=state->clavicleAimOffset[k]+delta;
+                if(length(shoulderSlide)>T.reach)shoulderSlide=normalize(shoulderSlide)*T.reach;
+                const Vec3 rootTest=r.torso.transform({piv.x*scale.x,piv.y,piv.z*scale.z});
+                const auto gap=[&](Vec3 slide){Quat pr=anchoredClavicleRotation(rootTest,S,S+slide);return std::max(0.f,length(W-(rootTest+pr.rotate(S-rootTest)))-(L1t+L2t-2e-4f));};
+                if(gap(shoulderSlide)>.001f && gap(contactSlide)<=.001f){
+                    Vec3 smooth=shoulderSlide;float lo=0,hi=1;
+                    for(int i=0;i<16;i++){float mid=(lo+hi)*.5f;if(gap(lerp(smooth,contactSlide,mid))<=.001f)hi=mid;else lo=mid;}
+                    shoulderSlide=lerp(smooth,contactSlide,hi);
+                }
+                // Bound total offset motion after the feasibility correction.
+                Vec3 totalDelta=shoulderSlide-state->clavicleAimOffset[k];
+                const float totalDistance=length(totalDelta);
+                if(totalDistance>maxStep && totalDistance>0)shoulderSlide=state->clavicleAimOffset[k]+totalDelta*(maxStep/totalDistance);
+                state->clavicleAimOffset[k]=shoulderSlide;
+            }
+            const Vec3 root=r.torso.transform({piv.x*scale.x,piv.y,piv.z*scale.z});
+            const Quat protract=anchoredClavicleRotation(root,S,S+shoulderSlide);
+            S=root+protract.rotate(S-root);
+            r.skin[BONE_CLAV_L+k]=Mat4::fromPose({protract,root-protract.rotate(root)})*r.skin[BONE_CLAV_L+k];
+            // Experimental no-stretch policy: unreachable controllers remain raw input.
+            // Only the displayed body wrist is projected onto its anatomical reach shell.
+            // A caller must expose/resolve the controller-to-wrist gap, not hide it.
+            const Vec3 targetDelta = W - S;
+            const float targetDistance = length(targetDelta);
+            const float minDistance = std::fabs(L1t - L2t) + 1e-3f;
+            const float maxDistance = L1t + L2t - 2e-4f;
+            const Vec3 targetDirection = targetDistance > 1e-5f ? targetDelta / targetDistance : yaw.rotate({side, 0, 0});
+            W = S + targetDirection * clampf(targetDistance, minDistance, maxDistance);
+            const Vec3 E = elbowIK(S, W, L1t, L2t, pole);
+            r.upper[k] = {S, E, (W - E) + fwd * 0.3f, L1};   // the inner elbow faces the forearm
+            r.fore[k] = {E, W, hi.grip.q.rotate({0, 1, 0}), L2};   // thumb side (controller top) is the front
+        }
+        const bool mir = k == 0;
+        r.skin[BONE_UPPER_L + k] = boneMatrix(r.upper[k], mir, B.arm * T.armThick) * affineInverse(boneMatrix(bu, mir, 1.f));
+        r.skin[BONE_FORE_L + k] = boneMatrix(r.fore[k], mir, B.arm * T.armThick) * affineInverse(boneMatrix(bf, mir, 1.f));
+    }
+    return r;
+}
+
+Rig solveRig(const PlayerInput& in,const AvatarDesc& d) { return solveRigImpl(in,d,nullptr,0); }
+Rig solveRigFollow(const PlayerInput& in,const AvatarDesc& d,TorsoFollowState& state,float dt) { return solveRigImpl(in,d,&state,dt); }
+
+Mat4 boneMatrix(const Bone& b, bool mirrorX, float thick) {
+    Vec3 axis = b.a - b.b;
+    float len = length(axis);
+    Vec3 y = len > 1e-5f ? axis / len : Vec3{0, 1, 0};
+    Vec3 fr = b.front - y * dot(b.front, y);
+    if (length2(fr) < 1e-8f) {
+        fr = Vec3{0, 0, -1} - y * (-y.z);
+        if (length2(fr) < 1e-8f) fr = Vec3{1, 0, 0} - y * y.x;
+    }
+    Vec3 z = -normalize(fr);
+    Vec3 x = cross(y, z);
+    if (mirrorX) x = -x;
+    float s = len / b.natural;
+    return Mat4::fromBasis(x * thick, y * s, z * thick, b.a);
+}
+
+void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& din, std::vector<PartDraw>& out, bool lod) {
+    AvatarDesc d = uniform(din);   // (sanitized; with a country, the team kit)
+    const char bk = bodyType(d) ? 'f' : 'm';
+    const int face = faceOf(d);
+    char fk[4] = {bk, 0, 0, 0};   // the face's own parts (head, face shields, masks): m / m1 / m2 / m3
+    if (face) fk[1] = char('0' + face);
+    char name[32];
+    auto add = [&](const char* model, const Mat4& m, bool mirrored, uint8_t flags = 0) {
+        PartDraw p;
+        std::snprintf(p.model, sizeof p.model, "%s", model);
+        p.m = m;
+        p.mirrored = mirrored;
+        p.flags = flags;
+        out.push_back(p);
+    };
+    const Mat4 head = Mat4::fromPose(in.head, {kHeadScale, kHeadScale, kHeadScale});
+    const Mat4 I = Mat4::identity();
+    std::snprintf(name, sizeof name, "av_top_%d_%c", d.suit, bk);
+    add(name, I, false, PART_SKINNED);
+    std::snprintf(name, sizeof name, "av_bhead_%s", fk);
+    add(name, I, false, PART_SKINNED);
+    if (d.lower) { std::snprintf(name, sizeof name, "av_bottom_%d_%c", d.lower, bk); add(name, I, false, PART_SKINNED); }
+    else { std::snprintf(name, sizeof name, "av_wfade_%c", bk); add(name, I, false, PART_SKINNED); }
+    if (d.headgear) { std::snprintf(name, sizeof name, "av_gear_%d_%c", d.headgear, bk); add(name, head, false); }
+    else if (lod && d.hair) { std::snprintf(name, sizeof name, "av_hair_%d_%c", d.hair, bk); add(name, head, false, neonHair(d) ? PART_NEON : 0); }
+    if (lod) return;   // miniatures: the silhouette is enough
+    if (d.suit >= 10) {   // CIRCUIT RUNNER and the LIVE suits: the pulses along their raised traces (scrolled by the game)
+        std::snprintf(name, sizeof name, "av_tpulse_%d_%c", d.suit, bk);
+        add(name, I, false, PART_SKINNED | PART_PULSE);
+    }
+    // hair under every headgear: the game keeps it inside the helmet, hood or cap, so what shows is what would (a
+    // ponytail from under a helmet's rim, a fringe in a hood)
+    if (d.hair) {
+        const uint8_t hf = uint8_t(PART_HAIR | (neonHair(d) ? PART_NEON : 0));
+        std::snprintf(name, sizeof name, "av_hair_%d_%c", d.hair, bk);
+        add(name, head, false, hf);
+        if (d.hair == 3 || d.hair == 7) {   // PONYTAIL's tail, TOP KNOT's loose ends: parts of their own (they swing)
+            std::snprintf(name, sizeof name, "av_hair_%dt_%c", d.hair, bk);
+            add(name, head, false, hf);
+        }
+    }
+    // face shields and masks are fitted to each face (the game falls back to the base head's if one is missing)
+    if (d.visor) { std::snprintf(name, sizeof name, "av_visor_%d_%s", d.visor, fk); add(name, head, false); }
+    if (d.mask) { std::snprintf(name, sizeof name, "av_mask_%d_%s", d.mask, fk); add(name, head, false); }
+}
+
+}  // namespace avatar
