@@ -5,7 +5,7 @@ HERE=Path(__file__).resolve().parent
 REPO=HERE.parents[1]
 from PIL import Image
 sys.path.insert(0,str(REPO/'tools/blender'))
-source=open(str(REPO/'tools/build_body_parts.py')).read()
+source=open(str(REPO/'tools/build_body_parts.py')).read().replace("np.maximum(0.5 - Wd[:, NECK], style['collar'] - y)", "np.maximum(0.5 - Wd[:, NECK] - Wd[:, HEAD], style['collar'] - y)")
 for old,new in [('np.zeros((F, 7))','np.zeros((F, 9))'),('np.zeros((len(self.P), 7))','np.zeros((len(self.P), 9))'),('np.zeros((0, 7))','np.zeros((0, 9))'),('reshape(-1, 3, 7)','reshape(-1, 3, 9)'),('np.zeros((len(P), 7))','np.zeros((len(P), 9))'),('hw = np.zeros(7)','hw = np.zeros(9)')]:source=source.replace(old,new)
 b=types.ModuleType('qparts');b.__file__=os.path.abspath(str(REPO/'tools/build_body_parts.py'));exec(compile(source,b.__file__,'exec'),b.__dict__)
 ROOT=str(HERE);b.SRC=ROOT+'/base';b.OUT=ROOT+'/assets'

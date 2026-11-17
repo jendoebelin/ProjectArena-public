@@ -21,3 +21,10 @@ Exceptions:
   They have been retargeted, clipped and depth-adjusted for this experimental comparison. The generated
   Project Arena garment patterns remain CC BY 4.0, with credit to Project Arena. Experiment code remains MIT.
   These assets are not installed as the game's default avatar assets.
+
+- The additional experimental Vector/Nightforge clothing, helmets, fitted existing headwear,
+  opaque shorts, skirts and kilts are Project Arena contributions under CC BY 4.0.
+  Fits derived from Quaternius bodies retain their CC0 geometry origin; source game assets
+  retain their existing licenses. The bundled inspector's Three.js r169 code is MIT, with
+  its copyright notice and full license in `experiments/avatar_anatomy/inspector/THREE-LICENSE.txt`.
+  Inspector replay datasets are experimental review fixtures, not a production runtime.
