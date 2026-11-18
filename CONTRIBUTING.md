@@ -17,12 +17,17 @@ Questions, or not sure where something fits? Open an issue, or email vrsportsfan
 
 ## 2. Make art: outfits, hair, headgear, masks, gauntlets, props
 
-1. Open the **asset catalog** (linked from the README). Every model has a **Download** button (.glb, opens in
-   Blender 4+ and most 3D tools), and the **template pack** has the bodies, heads and hand frame to build on.
+1. Open the **asset viewer** (https://jendoebelin.github.io/ProjectArena-public/, linked from the README).
+   Find the part you want to change or add to: each has an **ID** (V12, P04, ...) and a **Download** (its models as
+   .glb, for Blender 4+ and most 3D tools, with their textures). Its **template pack** has the game's bodies, heads and
+   the hand frame to build on.
 2. Read `README.md` inside the template pack: units, the space each kind of part lives in, triangle budgets, and the
-   **material names** the game understands (`av_primary`, `av_glow`, `gaunt_shell`, ...). Keep those names.
+   **material names** the game understands (`av_primary`, `av_glow`, `gaunt_shell`, ...). Keep those names (and, when
+   you export from Blender, tick **Include > Custom Properties**: a downloaded model's materials carry the game's exact
+   settings there).
 3. Export as glTF Binary (.glb) and put it in `contrib/<kind>/<asset-name>/` with a `README.md` saying what it is,
-   which bodies or heads it fits, and how you want to be credited (see `contrib/README.md`).
+   the ID it replaces or the kind it adds to, which bodies or heads it fits, and how you want to be credited (see
+   `contrib/README.md`).
 4. Open a pull request using the **asset** checklist. We try it in the headset (`tools/import_glb.py` turns it into a
    game model) and reply with screenshots or fixes.
 
