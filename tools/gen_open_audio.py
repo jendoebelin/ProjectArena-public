@@ -383,6 +383,13 @@ def s_knuckle_block():
     return room(lp(mix(thump(160, 85, 0.1, 1.0), knock * 0.55), 4000), 0.1)
 
 
+def s_knuckle_punch():
+    """a hard punch landing (THE PUNCH LANDS, 0.3.20): the knock with a crack on its front and a deeper, shorter body"""
+    crack = hp(noise(0.012), 2500) * env(0.012, 0.0005, 0.004) * 0.9
+    knock = modal([680, 1560, 2750, 4100], [0.045, 0.03, 0.02, 0.012], [0.65, 0.35, 0.16, 0.08], 0.22)
+    return room(lp(mix(thump(150, 62, 0.085, 1.15), knock * 0.6, crack), 7000), 0.08)
+
+
 def s_hit_opponent():
     """your point: a soft deep thud, a gentle discharge, then a small rising two-note chime"""
     sec = 1.2
@@ -558,6 +565,7 @@ SOUNDS = [
     ('ClockTick', s_clock_tick),              # (0.3.10, after them: Crowd and Cheer stay exactly as they were)
     ('LeadChange', s_lead_change),            # (0.3.12, after them: the earlier sounds stay exactly as they were)
     ('TargetHit', s_target_hit),              # (TRAINING, 0.3.12)
+    ('KnucklePunch', s_knuckle_punch),        # (0.3.20, a hard punch: after them, the others stay as they were)
 ]
 
 

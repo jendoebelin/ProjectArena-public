@@ -39,6 +39,7 @@ SLOTS = {
     'Crowd': (0.9, -32, False), 'Cheer': (3.5, -22, False),
     'LeadChange': (1.1, -27, False),   # FOUR CORNERS: a new leader (0.3.12)
     'TargetHit': (0.9, -22, False),    # TRAINING: a target taken (0.3.12)
+    'KnucklePunch': (0.7, -22, False),   # a hard punch (0.3.20: THE PUNCH LANDS)
 }
 
 

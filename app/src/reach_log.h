@@ -79,7 +79,7 @@ struct ReachLog {
         for (int h = 0; h < 2; ++h) {
             const HandInput& hi = me.in.hand[h];
             const Pose g0 = prevGrip[h], g1 = hi.grip;
-            Vec3 ko = g.tun.knuckleOffset;
+            Vec3 ko = g.tun.knuckleOffsetNow();
             if (h == 0) ko.x = -ko.x;
             const Vec3 handV = g1.q.conj().rotate(g1.transform(ko) - g0.transform(ko)) / dt;
             for (int q = 0; q < g.np; ++q) {

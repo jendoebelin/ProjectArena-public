@@ -44,6 +44,7 @@ python -I "$ROOT/server/test_relay_sounds.py" | tail -1   # (SOUND STUDIO's libr
 if [ "$WHAT" != --github-only ]; then
   "$ROOT/build.sh" release open store
   python -I "$ROOT/tools/check_store_apk.py" "$STOREAPK" --release --store
+  python -I "$ROOT/tools/check_release_binary.py" "$ROOT/build/release-open-store/apk/lib/arm64-v8a/libprojectarena.so"
 fi
 
 if [ "$WHAT" = --store-only ]; then
@@ -56,6 +57,7 @@ fi
 
 "$ROOT/build.sh" release open
 python -I "$ROOT/tools/check_store_apk.py" "$APK" --release --github
+python -I "$ROOT/tools/check_release_binary.py" "$ROOT/build/release-open/apk/lib/arm64-v8a/libprojectarena.so"
 mkdir -p "$OUT"   # start the GitHub files afresh, but keep a store APK already built (and maybe uploaded)
 find "$OUT" -mindepth 1 -maxdepth 1 ! -name "ProjectArena-$VER-store.apk" -exec rm -rf {} +
 if [ "$WHAT" = --github-only ]; then
@@ -71,7 +73,10 @@ cp "$ROOT/docs/INSTALL.md" "$OUT/INSTALL.md"
 cp "$ROOT/docs/PC_README.txt" "$OUT/README-PC.txt"
 sed "s/<version>/$VER/g" "$ROOT/docs/QUEST_README.txt" > "$OUT/README-Quest.txt"
 # PC VR build (Windows): ProjectArena-<ver>-PC.zip
-cmd.exe //c "$(cygpath -w "$ROOT/tools/build_pc.bat")" | tail -1
+# (from the public form of the source, as the APKs: tools/public_source.py; the owner, 2026-11-18)
+python -I "$ROOT/tools/public_source.py" "$ROOT/build/pc_src"
+PA_SRC="$(cygpath -w "$ROOT/build/pc_src")" cmd.exe //c "$(cygpath -w "$ROOT/tools/build_pc.bat")" | tail -1
+python -I "$ROOT/tools/check_release_binary.py" "$ROOT/build/pc/ProjectArena/ProjectArena.exe"
 python -I "$ROOT/tools/check_pc_icon.py" "$(cygpath -w "$ROOT/build/pc/ProjectArena/ProjectArena.exe")" || exit 1   # every release has its icon
 rm -rf "$ROOT/build/pc/ProjectArena/streaming" && cp -r "$ROOT/streaming" "$ROOT/build/pc/ProjectArena/streaming"   # backgrounds + OBS guide
 (cd "$ROOT/build/pc" && rm -f "$OUT/ProjectArena-$VER-PC.zip" && powershell.exe -NoProfile -Command \

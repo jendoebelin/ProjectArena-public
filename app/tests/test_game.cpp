@@ -5,6 +5,7 @@
 #include "../src/avatar.h"
 #include "../src/record.h"
 #include "../src/training.h"
+#include "../src/controls.h"
 #include <functional>
 #include <string>
 #include <cstdio>
@@ -549,6 +550,325 @@ static void botTests(const std::vector<CollisionTri>& tris) {
             std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: none of its own blocks comes back into it", m.name);
             CHECK(rebounds == 0, msg);
         }
+    }
+    {   // (a player's report, 2026-11-17: "on unbeatable ... it can really only be hit by its own ball, so I just
+        // switched to only hitting its ball back and it was an ez win") Each time the bot's ball comes, the player's right
+        // fist meets it half a metre in front, punching it back at the bot; and (or not) they throw their own ball at its
+        // chest with the left hand whenever they have it
+        std::printf("[practice bot: UNBEATABLE, its own ball punched back at it]\n");
+        int allOwn = 0, allPunched = 0, allCaught = 0, allSlapped = 0, allCaughtBack = 0;
+        for (int adv = 0; adv < 2; ++adv)
+        for (int throws = 0; throws < 2; ++throws)
+        for (int style = 0; style < 3; style += 2)   // straight back, or the fist turned 35 degrees (off a wall)
+        for (float hs : {4.f, 8.f}) {
+            Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.knuckleMode = 1; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
+            g.tun.botLevel = kBotLevels - 1; g.reset(true);
+            PlayerInput in[2] = {standing(g, 0), {}};
+            const Quat q = style == 2 ? kFaceP0 * Quat::axisAngle({0, 1, 0}, deg2rad(35.f)) : kFaceP0;
+            const Vec3 kOff = q.rotate(g.tun.knuckleOffset);
+            const float planeX = g.tun.start[0].x + 0.5f;
+            int comes = 0, punched = 0, hitBot = 0, hitMe = 0, ownHits = 0, thrown = 0;
+            bool coming = false;
+            int f = -1;
+            Vec3 dir{1, 0, 0};
+            HandInput h0 = standing(g, 0).hand[0];
+            for (float t = 0; t < 300.f; t += 1.f / 72) {
+                const Ball& b = g.pl[1].ball;
+                const bool now = b.state == BallState::Flying && b.instigator == 1 && b.vel.x < -1.f;
+                if (now && !coming) ++comes;
+                coming = now;
+                in[0] = standing(g, 0);
+                in[0].buttonA = g.match == MatchState::MatchSummary;
+                if (now) {
+                    const float tt = (planeX - b.pos.x) / b.vel.x;   // s until it reaches the plane in front
+                    const Vec3 meet = b.pos + b.vel * tt;
+                    // the fist waits where it will come, then punches into it over the last 0.1 s
+                    const Vec3 at = Vec3{planeX - hs * std::max(0.f, tt < 0.1f ? 0.1f - tt : 0.f), meet.y, meet.z};
+                    if (tt < 0.6f && std::fabs(meet.z) < 2.f && meet.y > 0.3f && meet.y < 2.4f) in[0].hand[1].grip = {q, at - kOff};
+                }
+                if (throws) {   // the left hand: takes its ball, swings at 6.5 m/s toward the bot's chest, lets go
+                    const Ball& mine = g.pl[0].ball;
+                    if (f < 0 && g.match == MatchState::InProgress && mine.state == BallState::Idle) {
+                        f = 0;
+                        h0 = standing(g, 0).hand[0];
+                        h0.grip.p = mine.pos - h0.grip.q.rotate(g.tun.launcherOffset);
+                        h0.trigger = 1;
+                    } else if (f >= 0) {
+                        if (f == 1) { dir = normalize(g.chestPoint(1) - g.launcherPoint(0, 0)); ++thrown; }
+                        if (f >= 1 && f < 16) h0.grip.p += dir * (6.5f / 72);
+                        if (f == 16) h0.trigger = 0;
+                        if (++f > 60) { f = -1; h0 = standing(g, 0).hand[0]; }
+                    }
+                    in[0].hand[0] = h0;
+                }
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                for (const GameEvent& e : g.events) {
+                    if (e.type == EventType::KnuckleBlock && e.player == 0) ++punched;
+                    if (e.type == EventType::Caught && e.player == 1) {   // (the ball you punched back: you touched it last)
+                        ++allCaught; allSlapped += g.pl[1].botSlap; allCaughtBack += g.pl[1].ball.instigator == 0;
+                    }
+                    if (e.type == EventType::HitPlayer && e.player == 1) { ++hitBot; ownHits += e.ball == 1; }
+                    if (e.type == EventType::HitPlayer && e.player == 0) ++hitMe;
+                }
+            }
+            const char* styles[] = {"straight", "", "off a wall"};
+            allOwn += ownHits;
+            allPunched += punched;
+            std::printf("       %s, %s, %s %.0f m/s punches: its ball came %d times, punched back %d; the bot hit %d (%d by its own ball), the player hit %d\n",
+                        adv ? "Advanced (knuckle guards on)" : "Basic", throws ? "throwing too" : "never throwing", styles[style], hs, comes,
+                        punched, hitBot, ownHits, hitMe);
+        }
+        // (not reproduced, 2026-11-17: 3 in about 400 got it, all with the player throwing too; asked for a recording of
+        // the match it happened in)
+        std::printf("       (its own ball got it %d times in %d punched back; it caught %d of the punched-back balls; %d catches in all, %d slapped straight back)\n",
+                    allOwn, allPunched, allCaughtBack, allCaught, allSlapped);
+        // (before 11-17 it caught none of them: it only blocked or dodged; many punches send it off a wall or wide of it)
+        CHECK(allCaughtBack * 8 >= allPunched && allSlapped * 2 >= allCaught,
+              "UNBEATABLE catches its own ball sent back at it (not only a dodge: the owner, 11-17), and slaps most straight back");
+        CHECK(allPunched > 300 && allOwn * 33 <= allPunched, "UNBEATABLE: its own ball punched back at it (straight, off a wall, hard or soft, throwing too or not) seldom gets it");
+    }
+    {   // its own ball at its back (the owner's practice, 2026-11-17: punched back past it, low or high, its ball came back
+        // off the floor or the ceiling behind it into its back 2-3 s later, the player's curving throw in the air too)
+        std::printf("[practice bot: UNBEATABLE, its own ball from behind]\n");
+        int tries = 0, hits = 0, caught = 0, otherHits = 0;
+        for (int busy = 0; busy < 2; ++busy) {
+            int bh = 0, bc = 0, bt = 0;
+            for (float y : {0.9f, 1.5f})                   // (where the punch sends it from, 4 m in front of it)
+            for (float ty : {-0.8f, 2.9f})                 // (past it low, through its platform to the floor below; or high)
+            for (float z : {-0.45f, -0.3f, 0.3f, 0.45f})   // (beside its body)
+            for (float sp : {11.f, 15.f}) {
+                Game g; g.setArena(tris); g.tun.knuckleMode = 1; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
+                g.tun.botLevel = kBotLevels - 1; g.reset(true);
+                PlayerInput in[2] = {standing(g, 0), {}};
+                bool set = false;
+                for (int i = 0; i < 72 * 40; ++i) {
+                    Ball& mine = g.pl[1].ball;
+                    if (!set && g.match == MatchState::InProgress && mine.state == BallState::Flying && mine.instigator == 1 &&
+                        mine.pos.x < 3.f) {   // (it threw: its ball, as if punched back past it, comes back at its back)
+                        const Vec3 head = g.pl[1].in.head.p;
+                        mine.pos = Vec3{head.x - 4.f, y, z};
+                        mine.vel = normalize(Vec3{head.x + 2.f, ty, z} - mine.pos) * sp;
+                        mine.speedLimit = sp; mine.spin = {0, 3.f, 0}; mine.instigator = 0; mine.scored = false;
+                        mine.bounces = 0; mine.timer = 1.f;
+                        if (busy) {   // and the player's curving throw coming at it from the front at the same time
+                            Ball& th = g.pl[0].ball;
+                            th.state = BallState::Flying; th.heldHand = -1; th.instigator = 0; th.scored = false;
+                            th.pos = g.launcherPoint(0, 1);
+                            th.vel = normalize(g.chestPoint(1) - th.pos) * 14.5f; th.speedLimit = 14.5f;
+                            th.spin = {0, 22.f, 0}; th.bounces = 0; th.timer = 0.2f;
+                        }
+                        set = true;
+                        ++tries; ++bt;
+                        for (int k = 0; k < 72 * 5; ++k) {
+                            PlayerInput tmp[2] = {in[0], in[1]};
+                            g.step(1.f / 72, tmp);
+                            for (const GameEvent& e : g.events) {
+                                if (e.type == EventType::HitPlayer && e.player == 1 && e.ball == 1) { ++hits; ++bh; std::printf("         (hit after %.2f s: from y %.1f to %.1f, z %+.2f, %.0f m/s; at %.2f %.2f %.2f, plan %d, mode %d, catch %d)\n", k / 72.f, y, ty, z, sp, e.pos.x, e.pos.y, e.pos.z, g.pl[1].botRead[1].plan, g.pl[1].botRead[1].mode, (int)g.pl[1].botRead[1].catchIt); }
+                                if (e.type == EventType::HitPlayer && e.player == 1 && e.ball == 0) ++otherHits;
+                                if (e.type == EventType::Caught && e.player == 1) { ++caught; ++bc; }
+                            }
+                        }
+                        break;
+                    }
+                    PlayerInput tmp[2] = {in[0], in[1]};
+                    g.step(1.f / 72, tmp);
+                }
+            }
+            std::printf("       %s: its ball punched back past it %d times (low through its platform, or high): it got hit %d, caught it %d\n",
+                        busy ? "the player's curving throw coming too" : "alone", bt, bh, bc);
+        }
+        std::printf("       (its own ball got it %d of %d; the player's throw got it %d)\n", hits, tries, otherHits);
+        // (not reproduced, 2026-11-17: the game log now writes each hit's trail of bounces and the bot's read of it)
+        CHECK(tries == 64 && hits * 16 <= tries, "UNBEATABLE: its own ball punched back past it, low or high, seldom comes back into it");
+    }
+    {   // two UNBEATABLE bots (the owner, 2026-11-17: "pit two unbeatable bots in the same arena and watch them throw their
+        // own ball while punching opponent's ball back at them and similarly dodge opponent's ball while receiving their own
+        // ball back from a shield deflection and slapshot it back from either hand"); shields and knuckle guards on
+        std::printf("[two UNBEATABLE bots]\n");
+        for (int adv = 0; adv < 2; ++adv) {
+            Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.knuckleMode = 1; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
+            g.tun.advancedRoundTime = 0; g.tun.botLevel = kBotLevels - 1; g.resetWithBots(0x3);
+            PlayerInput in[2] = {};
+            int throws[2] = {}, punches[2] = {}, blocks[2] = {}, back[2] = {}, slaps[2][2] = {}, both[2] = {}, hits[2] = {}, own[2] = {};
+            bool wasBoth[2] = {false, false};
+            for (int i = 0; i < 72 * 600; ++i) {
+                in[0].buttonA = in[1].buttonA = g.match == MatchState::MatchSummary || g.match == MatchState::RoundSummary;
+                PlayerInput tmp[2] = {in[0], in[1]};
+                g.step(1.f / 72, tmp);
+                for (int p = 0; p < 2; ++p) {   // dodging the other's ball while its own comes back to its hand
+                    const bool now = g.pl[p].botRead[0].plan == BOT_DODGE && g.pl[p].botRead[1].plan == BOT_CATCH;
+                    both[p] += now && !wasBoth[p];
+                    wasBoth[p] = now;
+                }
+                for (const GameEvent& e : g.events) {
+                    if (e.player < 0 || e.player > 1) continue;
+                    if (e.type == EventType::Throw) ++throws[e.player];
+                    if (e.type == EventType::KnuckleBlock) ++punches[e.player];
+                    if (e.type == EventType::ShieldBlock) ++blocks[e.player];
+                    if (e.type == EventType::Caught && g.pl[e.player].ball.instigator != e.player) {   // (its own, sent back)
+                        ++back[e.player];
+                        if (g.pl[e.player].botSlap && e.hand >= 0 && e.hand < 2) ++slaps[e.player][e.hand];
+                    }
+                    if (e.type == EventType::HitPlayer) { ++hits[e.player]; own[e.player] += e.ball == e.player; }
+                }
+            }
+            for (int p = 0; p < 2; ++p)
+                std::printf("       %s, bot %d: %d throws, %d punches and %d shield blocks of the other's ball; its own ball sent back and caught %d"
+                            " (slapped straight back: %d left hand, %d right); %d times dodging while its own ball came to its hand; hit %d (%d by its own)\n",
+                            adv ? "rounds" : "timed", p, throws[p], punches[p], blocks[p], back[p], slaps[p][0], slaps[p][1], both[p], hits[p], own[p]);
+            char msg[160];
+            std::snprintf(msg, sizeof msg, "two UNBEATABLE bots (%s): each throws, punches and blocks the other's ball back, catches its own sent back and slaps it from either hand",
+                          adv ? "rounds" : "timed");
+            bool ok = true;
+            for (int p = 0; p < 2; ++p)
+                ok &= throws[p] > 50 && punches[p] + blocks[p] > 20 && back[p] > 5 && slaps[p][0] + slaps[p][1] > 3;
+            ok &= slaps[0][0] + slaps[1][0] > 0 && slaps[0][1] + slaps[1][1] > 0;
+            CHECK(ok, msg);
+            std::snprintf(msg, sizeof msg, "two UNBEATABLE bots (%s): they dodge the other's ball while their own comes back to their hand", adv ? "rounds" : "timed");
+            CHECK(both[0] + both[1] > 0, msg);
+        }
+    }
+    {   // BUTTONS (controls.h; a player's report, 2026-11-17: let us change the push-to-talk button and the controls)
+        std::printf("[buttons]\n");
+        using namespace controls;
+        const Map st = standard(), lh = leftHanded();
+        CHECK(save(st) == "104542350",
+              "STANDARD is the controls as they were: the left grip talks, A and X ready, B and the right stick recenter, Y peeks, "
+              "the left stick shows the names");
+        CHECK(save(lh) == "014245531" && sameMap(mirrored(lh), st),
+              "LEFT-HANDED is STANDARD mirrored: the right grip talks, Y and the left stick recenter, B peeks, the left stick turns");
+        // a grip takes only jobs that do no harm squeezed by accident, and may do nothing
+        Map g = st;
+        std::string gripJobs;
+        for (int i = 0; i < 4; ++i) { g.job[S_RGRIP] = (uint8_t)nextJob(g, S_RGRIP, K_TOUCH); gripJobs += jobName(g.job[S_RGRIP]); gripJobs += ' '; }
+        CHECK(gripJobs == "TALK PEEK NAMES NOTHING ", "a grip goes TALK, PEEK, NAMES, NOTHING (never READY or RECENTER)");
+        CHECK(!canLeave(st, S_LGRIP, K_TOUCH) && nextJob(st, S_LGRIP, K_TOUCH) == J_TALK,
+              "TALK's last button keeps it (give it another one first)");
+        // the owner's case: TALK on Y, the left grip left empty
+        Map y = st;
+        for (int i = 0; i < J_COUNT && y.job[S_Y] != J_TALK; ++i) y.job[S_Y] = (uint8_t)nextJob(y, S_Y, K_TOUCH);
+        for (int i = 0; i < J_COUNT && y.job[S_LGRIP] != J_NONE; ++i) y.job[S_LGRIP] = (uint8_t)nextJob(y, S_LGRIP, K_TOUCH);
+        bool down[S_COUNT] = {};
+        down[S_Y] = true;
+        const bool yTalks = held(y, J_TALK, K_TOUCH, down);
+        down[S_Y] = false; down[S_LGRIP] = true;
+        CHECK(y.job[S_Y] == J_TALK && y.job[S_LGRIP] == J_NONE && yTalks && !held(y, J_TALK, K_TOUCH, down) &&
+              !held(y, J_PEEK, K_TOUCH, down),
+              "TALK can move to Y and the left grip do nothing (its squeeze does no job)");
+        // what each job's buttons do, and the controllers that lack a button (Vive: no Y, no sticks; WMR: no Y)
+        bool none[S_COUNT] = {}, x[S_COUNT] = {}, rs[S_COUNT] = {};
+        x[S_X] = true; rs[S_RSTICK] = true;
+        CHECK(held(st, J_READY, K_TOUCH, x) && held(st, J_RECENTER, K_TOUCH, rs) && !held(st, J_READY, K_TOUCH, none),
+              "X readies up and the right stick's click recenters, as before");
+        Map talkY = st;
+        talkY.job[S_LGRIP] = J_NONE; talkY.job[S_Y] = J_TALK;
+        Map odd{};   // TALK on the left stick, READY on Y, RECENTER on A and B
+        odd.job[S_A] = J_RECENTER; odd.job[S_B] = J_RECENTER; odd.job[S_Y] = J_READY; odd.job[S_LSTICK] = J_TALK;
+        const Map v1 = effective(talkY, K_VIVE), v2 = effective(odd, K_VIVE), w = effective(talkY, K_WMR);
+        CHECK(v1.job[S_LGRIP] == J_TALK && w.job[S_LGRIP] == J_TALK && effective(talkY, K_TOUCH).job[S_LGRIP] == J_NONE,
+              "TALK on Y with a Vive or Windows Mixed Reality controller: the left grip talks (with Touch: Y)");
+        CHECK(v2.job[S_LGRIP] == J_TALK && v2.job[S_A] == J_READY && v2.job[S_B] == J_RECENTER,
+              "on a Vive: READY and TALK without a button there take their usual ones, RECENTER keeps one");
+        // settings.cfg: read back as saved; a map this game can't read is refused (STANDARD kept)
+        Map r = st, bad = st;
+        const bool round = load(r, save(lh)) && sameMap(r, lh);
+        const bool refused = !load(bad, "554542350") && !load(bad, "000000000") && !load(bad, "10454235") &&
+                             !load(bad, "10454235x") && !load(bad, "1045423a0") && sameMap(bad, st);
+        CHECK(round && refused, "buttons= reads back as saved; READY on a grip, no TALK / READY / RECENTER, or garbage: refused");
+        // pressed at random on every kind of controller: TALK, READY and RECENTER always keep a button there, a grip
+        // never readies or recenters, and every map saves and reads back
+        int bad1 = 0, bad2 = 0, bad3 = 0, presses = 0;
+        uint32_t seed = 12345u;
+        auto rnd = [&](int n) { seed = seed * 1664525u + 1013904223u; return (int)((seed >> 8) % (uint32_t)n); };
+        for (int kind = K_UNKNOWN; kind <= K_WMR; ++kind) {
+            Map m = st;
+            for (int i = 0; i < 3000; ++i) {
+                m = effective(m, kind);
+                const int what = rnd(40);
+                if (what == 0) m = standard();
+                else if (what == 1) m = leftHanded();
+                else if (what == 2) m.leftSticks = !m.leftSticks;
+                else {
+                    const int s = rnd(S_COUNT);
+                    if (!onController(kind, s)) continue;
+                    m.job[s] = (uint8_t)nextJob(m, s, kind);
+                    ++presses;
+                }
+                const Map e = effective(m, kind);
+                for (int j = 0; j < J_COUNT; ++j) bad1 += required(j) && count(e, j, kind) == 0;
+                bad2 += e.job[S_LGRIP] == J_READY || e.job[S_LGRIP] == J_RECENTER || e.job[S_RGRIP] == J_READY ||
+                        e.job[S_RGRIP] == J_RECENTER;
+                Map back = standard();
+                bad3 += !(load(back, save(m)) && sameMap(back, m));
+            }
+        }
+        std::printf("       (%d presses on the page, five kinds of controller)\n", presses);
+        CHECK(bad1 == 0 && bad2 == 0 && bad3 == 0,
+              "any presses: TALK, READY and RECENTER keep a button on these controllers, no grip readies or recenters, it saves");
+    }
+
+    {   // BOT STYLES PER ROOM (a player's report, 2026-11-17: "probably need different logic for basic and advanced bots")
+        std::printf("[bot styles per room]\n");
+        // BASIC's brawler punches through: balls served at UNBEATABLE at 8 m/s (no shields, knuckle guards on), how fast
+        // its knuckle guard sends them back; in Advanced with knuckle guards on (the duellist, no brawler) for comparison
+        float meanOut[2] = {0, 0};
+        int punches[2] = {0, 0};
+        for (int adv = 0; adv < 2; ++adv) {
+            Game g; g.setArena(tris); g.tun.advanced = true; g.tun.botPlay = adv; g.tun.shields = false; g.tun.knuckleMode = 1;   // (rounds, each style)
+            g.tun.basicMatchTime = 0; g.tun.meetTime = 0; g.tun.botLevel = kBotLevels - 1; g.reset(true);
+            PlayerInput in[2] = {standing(g, 0), {}};
+            for (int i = 0; i < 72 * 4 && g.match != MatchState::InProgress; ++i) stepCopy(g, in);
+            float sum = 0;
+            for (int k = 0; k < 24; ++k) {
+                for (int i = 0; i < 72 * 3 && g.pl[0].ball.state != BallState::Idle; ++i) { in[0] = standing(g, 0); stepCopy(g, in); }
+                Vec3 target = g.chestPoint(1);
+                const float sgn = (k / 4) % 2 ? -1.f : 1.f;
+                switch (k % 4) {
+                case 0: break;
+                case 1: target.y += 0.30f; break;
+                case 2: target.y -= 0.30f; break;
+                default: target.z += 0.25f * sgn; break;
+                }
+                const Vec3 from = g.tun.start[0] + Vec3{0.6f, 1.3f, 0};
+                g.serve(0, from, normalize(target - from), 8.f, {0, 0, 0}, false);
+                for (int i = 0; i < 72 * 3; ++i) {
+                    in[0] = standing(g, 0);
+                    stepCopy(g, in);
+                    bool done = false;
+                    for (const GameEvent& e : g.events)
+                        if (e.type == EventType::KnuckleBlock && e.player == 1) { sum += e.value; ++punches[adv]; done = true; }
+                    if (done || g.pl[0].ball.state != BallState::Flying) break;
+                }
+            }
+            meanOut[adv] = punches[adv] ? sum / punches[adv] : 0.f;
+        }
+        std::printf("       (UNBEATABLE's knuckle guard, balls at 8 m/s: Basic %d punched back at %.1f m/s on average, Advanced %d at %.1f)\n",
+                    punches[0], meanOut[0], punches[1], meanOut[1]);
+        CHECK(punches[0] >= 12 && punches[1] >= 12 && meanOut[0] > meanOut[1] + 1.5f,
+              "BOT STYLE: the BRAWLER punches through a ball it blocks with a knuckle guard, in rounds too: it goes back faster than the DUELLIST's");
+        // ADVANCED's duellist: holding its charged ball while you hold yours, it keeps its shield (as before); your ball
+        // uncharged (no shield for you), it throws at once
+        float firstThrow[2] = {-1, -1};
+        for (int exposed = 0; exposed < 2; ++exposed) {
+            Game g; g.setArena(tris); g.tun.advanced = true; g.tun.botPlay = 1; g.tun.meetTime = 0; g.tun.botLevel = kBotLevels - 1; g.reset(true);
+            PlayerInput in[2] = {standing(g, 0), {}};
+            for (int i = 0; i < 72 * 4 && g.match != MatchState::InProgress; ++i) stepCopy(g, in);
+            grabBall(g, in, 1);
+            for (int i = 0; i < 72 * 4 && g.pl[1].ball.state != BallState::Held; ++i) stepCopy(g, in);
+            if (exposed) g.pl[0].ball.charged = false;
+            const float t0 = g.now;
+            for (int i = 0; i < 72 * 6 && firstThrow[exposed] < 0; ++i) {
+                stepCopy(g, in);
+                if (exposed) g.pl[0].ball.charged = false;
+                for (const GameEvent& e : g.events)
+                    if (e.type == EventType::Throw && e.player == 1) firstThrow[exposed] = g.now - t0;
+            }
+        }
+        std::printf("       (ADVANCED's UNBEATABLE holding its charged ball: you with a shield, it threw after %.1f s; without one, after %.1f s)\n",
+                    firstThrow[0], firstThrow[1]);
+        CHECK(firstThrow[1] >= 0 && firstThrow[1] < 1.2f && (firstThrow[0] < 0 || firstThrow[0] > firstThrow[1] + 1.0f),
+              "ADVANCED's duellist throws at once when you have no shield, and keeps its own while you keep yours");
     }
 }
 
@@ -1737,6 +2057,145 @@ int main(int argc, char** argv) {
         std::printf("    a full-power throw with %d strikes: %.2f m/s regulation, %.2f m/s FASTER\n", g.strikesHeld(0), reg, fs);
         CHECK(g.strikesHeld(0) == 0 || fs > reg, "a full-power throw with strikes is faster on FASTER");
     }
+    {   // ROOMS AND THEIR OPTIONS (0.3.21; the owner's design, 2026-11-17): MAIDEN, AIM ASSIST, STRIKE ZONE, BALL GROWTH
+        std::printf("[rooms and their options]\n");
+        Tunables t;
+        CHECK(!t.maidenNow() && t.aimAssistNow() == 2 && t.strikeZoneNow() == 1 && t.ballGrowthNow() == 3 && t.statsMode() == 0 &&
+                  std::fabs(t.aimAssistDeg() - 3.f) < 1e-4f && std::fabs(t.strikeRadius() - 0.7f) < 1e-4f && t.growthShare() == 1.f,
+              "as the rules say by default: Basic's MEDIUM aim assist (3 deg), a 70 cm ring, the ball's full growth; standard");
+        t.advanced = true;
+        CHECK(t.aimAssistNow() == 1 && std::fabs(t.aimAssistDeg() - 1.5f) < 1e-4f && t.statsMode() == 0, "Advanced: LOW (1.5 deg)");
+        // a throw 8 degrees off the opponent's chest, aim assist on: how far it turns toward them
+        float turned[4] = {};
+        for (int s = 0; s < 4; ++s) {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.tun.aimAssist = s;
+            const Vec3 from = g.tun.start[0] + Vec3{0.6f, 1.3f, 0};
+            const Vec3 d0 = normalize(g.chestPoint(1) - from);
+            const Vec3 dir = Quat::axisAngle({0, 1, 0}, 8.f * 3.14159265f / 180.f).rotate(d0);
+            g.serve(0, from, dir, 10.f, {0, 0, 0}, true);
+            turned[s] = std::acos(std::max(-1.f, std::min(1.f, dot(normalize(g.pl[0].ball.vel), dir)))) * 57.2957795f;
+        }
+        std::printf("       (a throw 8 deg off, turned: OFF %.2f, LOW %.2f, MEDIUM %.2f, HIGH %.2f deg)\n", turned[0], turned[1], turned[2], turned[3]);
+        CHECK(turned[0] < 0.01f && std::fabs(turned[1] - 1.5f) < 0.1f && std::fabs(turned[2] - 3.f) < 0.1f && std::fabs(turned[3] - 4.5f) < 0.1f,
+              "AIM ASSIST: a throw is turned OFF 0, LOW 1.5, MEDIUM 3, HIGH 4.5 deg toward its target");
+        // a ball through the ring 0.6 m and 0.8 m from its centre: a strike or not, by the ring's size
+        auto strikeAt = [&](int zone, float off) {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.tun.strikeZone = zone;
+            in[0].head.p.z = -1.5f; g.pl[0].in.head.p.z = -1.5f;   // (out of the way)
+            Ball& b = g.pl[1].ball;
+            const Vec3 at = g.strikeZoneCenter(0) + Vec3{0, 0, off};
+            fireOpponentBall(g, at + normalize(at - (g.tun.start[1] + Vec3{-0.6f, 1.6f, 0})) * 0.5f);
+            std::vector<GameEvent> log;
+            run(g, in, 2.0f, &log);
+            (void)b;
+            return hasEvent(log, EventType::Strike, 0);
+        };
+        const bool s06 = strikeAt(0, 0.6f), r06 = strikeAt(1, 0.6f), r08 = strikeAt(1, 0.8f), l08 = strikeAt(2, 0.8f);
+        CHECK(!s06 && r06 && !r08 && l08, "STRIKE ZONE: 60 cm out a strike in REGULATION, not SMALL (50 cm); 80 cm one in LARGE (90 cm), not REGULATION");
+        // BALL GROWTH: the ball at 4 strikes (regulation: twice its size)
+        float grown[4] = {};
+        for (int k = 0; k < 4; ++k) { Game g; g.tun.ballGrowth = k; grown[k] = g.strikeScale(4); }
+        CHECK(grown[0] == 1.f && std::fabs(grown[1] - 1.25f) < 1e-4f && std::fabs(grown[2] - 1.5f) < 1e-4f && std::fabs(grown[3] - 2.f) < 1e-4f,
+              "BALL GROWTH at 4 strikes: NONE 1x, QUARTER 1.25x, HALF 1.5x, REGULATION 2x");
+        // MAIDEN: an uncharged ball still raises the shield, and a block never breaks it
+        {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.tun.maiden = true;
+            grabBall(g, in, 1);
+            g.pl[0].ball.charged = false;
+            const Quat q = fromTo({0, 1, 0}, {1, 0, 0});
+            const Vec3 face = g.pl[0].in.head.p;
+            const Pose sl = g.shieldLocal(1);
+            const Quat gq = q * sl.q.conj();
+            in[0].hand[1].grip = {gq, face + Vec3{0.45f, 0, 0} - gq.rotate(sl.p)};
+            run(g, in, 0.05f);
+            const bool upUncharged = g.pl[0].hands[1].shieldUp;
+            g.pl[0].ball.charged = true;
+            fireOpponentBall(g, face);
+            std::vector<GameEvent> log;
+            run(g, in, 2.0f, &log);
+            CHECK(upUncharged && hasEvent(log, EventType::ShieldBlock, 0) && !hasEvent(log, EventType::ShieldBreak, 0) &&
+                      g.pl[0].ball.charged && g.pl[0].hands[1].shieldUp && g.pl[1].score == 0,
+                  "MAIDEN: the shield is up with an uncharged ball, blocks, and stays up (no break, the charge kept)");
+        }
+        // FAIR MATCHES and the rooms: an older player in the match, or a four-player room, plays them as the rules say
+        Tunables f;
+        f.maiden = true; f.aimAssist = 3; f.strikeZone = 2; f.ballGrowth = 1;
+        CHECK(f.maidenNow() && f.aimAssistNow() == 3 && f.strikeZoneNow() == 2 && f.ballGrowthNow() == 1 && f.statsMode() == 2,
+              "every option plays when every player's game has them (0.3.21), and the match counts as custom");
+        f.matchVersion = 3020;   // (the competition build)
+        CHECK(!f.maidenNow() && f.aimAssistNow() == 2 && f.strikeZoneNow() == 1 && f.ballGrowthNow() == 3 && f.statsMode() == 0 &&
+                  f.maiden && f.aimAssist == 3,
+              "... a player on 0.3.20 (the competition build): all as the rules say, the match standard, the host's choices kept");
+        {   // the Meta competition build (0.3.20, frozen 11-15): the FOUL LINE plays; the reach, knuckles and room options as before
+            Tunables c; c.matchVersion = 3020; c.foulShift = 2; c.maiden = true; c.advanced = true; c.advancedRoundsToWin = 3;
+            const Vec3 k = c.knuckleOffsetNow(), ko = c.knuckleOffsetOld;
+            CHECK(c.foulMove() == 1.0f && !c.fistReachNow() && k.x == ko.x && k.y == ko.y && k.z == ko.z && !c.maidenNow() &&
+                      c.roundsToWinNow() == 2,
+                  "a player on 0.3.20 (the competition build): FOUL LINE plays; the old reach and knuckles, no room options, BEST OF 3");
+        }
+        f.matchVersion = Tunables::kVerAll; f.experimental = true; f.expRoom = ROOM_DIAMOND;
+        const bool diamond = f.maidenNow() && f.strikeZoneNow() == 2;
+        f.expRoom = ROOM_CORNERS;
+        const bool corners = !f.maidenNow() && f.aimAssistNow() == 2 && f.strikeZoneNow() == 1 && f.ballGrowthNow() == 3;
+        f.expRoom = ROOM_BLITZ;
+        const bool blitz = !f.maidenNow() && f.strikeZoneNow() == 1;
+        CHECK(diamond && corners && blitz, "DIAMOND has them; FOUR CORNERS and FIREBALL BLITZ keep their own for now");
+        f = Tunables(); f.maiden = true; f.shields = false;
+        CHECK(!f.maidenNow() && f.statsMode() == 1, "MAIDEN needs shields: with SHIELDS OFF it's HOTDOG");
+        {   // SHIELD SIZE (the owner, 11-17): a ball 35 cm out from the plate's middle: past a regulation shield, blocked by +50%
+            auto blocks = [&](int size) {
+                PlayerInput in[2]; Game g = makeGame(tris, in);
+                g.tun.shieldSize = size;
+                grabBall(g, in, 1);
+                const Quat q = fromTo({0, 1, 0}, {1, 0, 0});
+                const Vec3 face = g.pl[0].in.head.p;
+                const Pose sl = g.shieldLocal(1);
+                const Quat gq = q * sl.q.conj();
+                in[0].hand[1].grip = {gq, face + Vec3{0.45f, 0, 0} - gq.rotate(sl.p)};
+                run(g, in, 0.05f);
+                const Pose sp = g.shieldPose(0, 1);
+                const Vec3 side = normalize(sp.q.rotate({1, 0, 0}));
+                fireOpponentBall(g, sp.p + side * 0.35f);
+                std::vector<GameEvent> log;
+                run(g, in, 2.0f, &log);
+                return hasEvent(log, EventType::ShieldBlock, 0);
+            };
+            Tunables c; c.shieldSize = 4; c.matchVersion = 3020;
+            CHECK(!blocks(0) && blocks(2) && c.shieldSizeNow() == 0 && std::fabs(c.shieldScale() - 1.f) < 1e-6f,
+                  "SHIELD SIZE: a ball 35 cm out from the middle passes a regulation shield, a +50% one blocks it; a 0.3.20 player: regulation");
+            // BALL FEEL (the owner, 11-17): the owner's pick the standard ball; only how it looks: never custom in the stats
+            Tunables f;
+            const int std0 = f.statsMode();
+            bool same = f.ballFeel == (BALL_TRUE | BALL_SPIN | BALL_WEIGHT);
+            for (int bits = 0; bits <= BALL_FEEL_ALL; ++bits) { f.ballFeel = bits; same &= f.statsMode() == std0; }
+            CHECK(same, "BALL FEEL: the standard ball is glow core, true size, visible spin, heavy; any ball feel leaves the stats as they are");
+        }
+        {   // ROUNDS: BEST OF 5 is three rounds won (5 s rounds here: the one ahead at time takes each)
+            PlayerInput in[2];
+            Game g; g.setArena(tris); g.tun.advanced = true; g.tun.meetTime = 0; g.tun.advancedRoundTime = 5.f;
+            g.tun.advancedRoundsToWin = 3;
+            g.reset(false);
+            in[0] = standing(g, 0); in[1] = standing(g, 1);
+            run(g, in, 3.6f);
+            const bool custom = g.tun.statsMode() == 2;
+            int rounds = 0;
+            for (int r = 0; r < 6 && g.match != MatchState::MatchSummary; ++r) {
+                if (g.match == MatchState::InProgress) { g.pl[0].score = 3; ++rounds; }
+                run(g, in, 6.f);
+                if (g.match != MatchState::MatchSummary) run(g, in, g.tun.roundSummaryTime + g.tun.countdown + 0.5f);
+            }
+            Tunables old; old.advanced = true; old.advancedRoundsToWin = 3; old.matchVersion = 3020;
+            Tunables d; d.experimental = true; d.expRoom = ROOM_DIAMOND; d.advanced = true; d.advancedRoundsToWin = 9;
+            const bool diamondRounds = d.roundsToWinNow() == 5 && d.aimAssistNow() == 1 && !d.knuckleGuards() && d.statsMode() == 2;
+            std::printf("       (BEST OF 5: the match ended after %d rounds, %d won)\n", rounds, g.pl[0].roundWins);
+            CHECK(custom && g.match == MatchState::MatchSummary && g.pl[0].roundWins == 3 && rounds == 3 && old.roundsToWinNow() == 2,
+                  "ROUNDS: BEST OF 5 ends at the third round won (a custom match); with a player on 0.3.20, BEST OF 3");
+            CHECK(diamondRounds, "DIAMOND plays rounds too (its rules' LOW aim assist, no knuckle guards); at most BEST OF 9");
+        }
+    }
     {
         std::printf("[FOUL LINE: a host's option to move the line, 0.5 m a step]\n");
         Tunables t;
@@ -1955,6 +2414,44 @@ int main(int argc, char** argv) {
             if (mode == 2) CHECK(!waited && hit, "the rule off: the hit at once, as before");
             if (mode == 3) CHECK(waited && !blocked && hit, "a round trip past lateBlockMax (0.25 s): a block that late does not count");
         }
+    }
+    {   // THE REACH ROUND THE FIST (two players' report, 2026-11-17: picking a ball up "too small", "hard to tell where
+        // the hitbox is"): the ball on its spawner, the right fist put beside it, behind it or in front of it, the trigger
+        // pulled; as before (a match with an older game: FAIR MATCHES) and now
+        std::printf("[the reach round the fist]\n");
+        struct Place { const char* name; Vec3 d; bool before, now; };   // the ball from the fist (m: forward, right, up)
+        const Place places[] = {{"30 cm beside the fist", {0, 0.32f, 0}, false, true},
+                                {"25 cm behind the fist", {-0.25f, 0, 0}, false, true},
+                                {"15 cm under the fist", {0, 0, -0.15f}, true, true},
+                                {"50 cm in front", {0.50f, 0, 0}, true, true},
+                                {"60 cm in front", {0.60f, 0, 0}, false, false},
+                                {"45 cm beside the fist", {0, 0.45f, 0}, false, false}};
+        bool right = true, cueRight = true;
+        for (const Place& pl : places)
+            for (int now = 0; now < 2; ++now) {
+                PlayerInput in[2]; Game g = makeGame(tris, in);
+                g.tun.matchVersion = now ? Tunables::kVerAll : Tunables::kVerReach - 1;
+                const Quat q = kFaceP0;
+                const Vec3 fwd = q.rotate({0, 0, -1}), side = q.rotate({1, 0, 0}), up = {0, 1, 0};
+                const Vec3 ball = g.pl[0].ball.pos;
+                const Vec3 fist = ball - (fwd * pl.d.x + side * pl.d.y + up * pl.d.z);
+                in[0].hand[1].grip = {q, fist - q.rotate(g.tun.fistReachOffset)};
+                in[0].hand[1].trigger = 0;
+                stepCopy(g, in);
+                const bool cue = g.ballInReach(0, 1);
+                in[0].hand[1].trigger = 1;
+                std::vector<GameEvent> log;
+                run(g, in, 0.05f, &log);
+                const bool took = hasEvent(log, EventType::Grab, 0);
+                const bool want = now ? pl.now : pl.before;
+                if (took != want) {
+                    right = false;
+                    std::printf("  %s, %s: %s\n", pl.name, now ? "now" : "before", took ? "taken" : "not taken");
+                }
+                if (cue != took) cueRight = false;
+            }
+        CHECK(right, "beside and behind the fist a ball is taken now (not before); in front as far as before, and no further");
+        CHECK(cueRight, "the ball shows it is in reach exactly when the trigger would take it");
     }
     {   // a player's report (11-11: "slap shots work from the side but hardly on a ball coming straight on"): a ball
         // straight at the chest; the right fist sweeps across its path 0.5 m in front, through the ball's middle at the
@@ -2552,7 +3049,9 @@ int main(int argc, char** argv) {
         }
         std::printf("       ROOKIE: %d catches, %d slap shots; UNBEATABLE: %d catches, %d slap shots (%d curved or off a wall)\n", catches[0],
                     slaps[0], catches[1], slaps[1], shaped);
-        CHECK(shaped * 5 >= slaps[1] && shaped > 0, "UNBEATABLE's slaps curve and bank too (planned while its ball comes back)");
+        // (a shape only when its trial flight would score; against itself, with the knuckle guards on the fist (2026-11-17),
+        // it catches and slaps more, the shaped ones as many as before (2), the rest straight: 1 in 5 became 1 in 11)
+        CHECK(shaped * 12 >= slaps[1] && shaped >= 2, "UNBEATABLE's slaps curve and bank too (planned while its ball comes back)");
         CHECK(slaps[0] == 0 && catches[1] > 4 && slaps[1] * 3 >= catches[1], "UNBEATABLE often sends its caught ball straight back; ROOKIE never");
     }
     {   // the attack plan (testers, 2026-10-30): CHAMPION and UNBEATABLE go for strikes, left and right of the ring in turn,
@@ -2561,8 +3060,8 @@ int main(int argc, char** argv) {
         // (and every shape of throw, testers 2026-10-30: curved, off the walls, curved off the walls, off the floor)
         int shapes[5] = {0, 0, 0, 0, 0}, landedCurved = 0, landedBounced = 0, landedBoth = 0;
         for (int adv = 0; adv < 2; ++adv) {
-            Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
-            g.tun.botLevel = kBotLevels - 1; g.reset(true);
+            Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.botPlay = adv; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
+            g.tun.botLevel = kBotLevels - 1; g.reset(true);   // (timed with the BRAWLER, rounds with the DUELLIST)
             PlayerInput in[2] = {standing(g, 0), {}};
             bool thrownCurved = false;
             int throwsCold = 0, atCold = 0, throwsHot = 0, atHot = 0, strikes = 0, onSide = 0, sides[2] = {0, 0}, hits = 0;
@@ -2596,12 +3095,22 @@ int main(int argc, char** argv) {
             std::printf("       %s: %d throws under 3 strikes (%d at the player), %d at 3 (%d at the player); %d strikes (%d / %d each side, %d where it meant), %d hits\n",
                         mode, throwsCold, atCold, throwsHot, atHot, strikes, sides[0], sides[1], onSide, hits);
             char msg[112];
-            std::snprintf(msg, sizeof msg, "%s: under 3 strikes it goes for strikes, about one throw in seven at the player", mode);
-            CHECK(throwsCold > 20 && atCold * 20 >= throwsCold && atCold * 4 <= throwsCold && strikes * 2 >= throwsCold - atCold, msg);
-            std::snprintf(msg, sizeof msg, "%s: its strikes go left and right of the ring in turn", mode);
-            CHECK(strikes > 10 && onSide * 10 >= strikes * 9 && sides[0] * 3 >= strikes && sides[1] * 3 >= strikes, msg);
-            std::snprintf(msg, sizeof msg, "%s: holding 3 strikes, nearly every throw is at the player, and hits", mode);
-            CHECK(throwsHot > 5 && atHot * 10 >= throwsHot * 7 && hits > 5, msg);
+            if (!adv) {
+                std::snprintf(msg, sizeof msg, "%s: under 3 strikes it goes for strikes, about one throw in seven at the player", mode);
+                CHECK(throwsCold > 20 && atCold * 20 >= throwsCold && atCold * 4 <= throwsCold && strikes * 2 >= throwsCold - atCold, msg);
+                std::snprintf(msg, sizeof msg, "%s: its strikes go left and right of the ring in turn", mode);
+                CHECK(strikes > 10 && onSide * 10 >= strikes * 9 && sides[0] * 3 >= strikes && sides[1] * 3 >= strikes, msg);
+                std::snprintf(msg, sizeof msg, "%s: holding 3 strikes, nearly every throw is at the player, and hits", mode);
+                CHECK(throwsHot > 5 && atHot * 10 >= throwsHot * 7 && hits > 5, msg);
+            } else {   // (BOT STYLES, 2026-11-17: ADVANCED's duellist, first to 4 points, goes at you more, and at once when
+                       // you have no shield; its strikes still alternate)
+                std::snprintf(msg, sizeof msg, "%s (the duellist): under 3 strikes a quarter to three quarters of its throws at the player", mode);
+                CHECK(throwsCold > 20 && atCold * 4 >= throwsCold && atCold * 4 <= throwsCold * 3, msg);
+                std::snprintf(msg, sizeof msg, "%s: its strikes go left and right of the ring in turn", mode);
+                CHECK(strikes > 6 && onSide * 10 >= strikes * 9 && sides[0] * 4 >= strikes && sides[1] * 4 >= strikes, msg);
+                std::snprintf(msg, sizeof msg, "%s: holding 3 strikes, nearly every throw is at the player, and it hits", mode);
+                CHECK(atHot * 10 >= throwsHot * 7 && hits > 10, msg);
+            }
         }
         std::printf("       shapes thrown: %d straight, %d curved, %d off a wall, %d curved off a wall, %d off the floor; "
                     "points and strikes: %d curved, %d off a wall or the floor, %d both\n",
@@ -2656,6 +3165,509 @@ int main(int argc, char** argv) {
         char msg[112];
         std::snprintf(msg, sizeof msg, "%s: nothing starts until everyone is READY, then the countdown", room == 1 ? "FOUR CORNERS" : "FIREBALL BLITZ");
         CHECK(waited && waitedForOne && g.match == MatchState::Countdown, msg);
+    }
+    {   // ELBOWS OUT OF THE BODY (owner, 2026-11-16, her video in the builder's mirror: hands together at the chest, the
+        // elbows sank into the torso): the elbow swings out round the shoulder-to-wrist line only as far as it must
+        std::printf("[elbows out of the body]\n");
+        struct HandPose { Vec3 p; float pitch, yaw; };
+        auto make = [](int body, const HandPose& l, const HandPose& r, AvatarDesc& d) {   // facing +Z, as tools/avatar_pose.cpp
+            d = avatar::preset(0);
+            d.body = (uint8_t)body;
+            const Quat face = Quat::axisAngle({0, 1, 0}, kPi);
+            PlayerInput in;
+            in.headTracked = true;
+            in.head = {face, {0, 1.62f, 0}};
+            const HandPose hp[2] = {l, r};
+            for (int h = 0; h < 2; ++h) {
+                const Quat q = face * Quat::axisAngle({0, 1, 0}, deg2rad(hp[h].yaw)) * Quat::axisAngle({1, 0, 0}, deg2rad(hp[h].pitch));
+                in.hand[h].tracked = true;
+                in.hand[h].grip = {q, face.rotate({hp[h].p.x, 0, -hp[h].p.z}) + Vec3{0, hp[h].p.y, 0}};
+            }
+            in.avatar = d;
+            return in;
+        };
+        avatar::RigTuning& T = avatar::rigTuning();
+        const float allow = T.elbowAllow;
+        auto solve = [&](const PlayerInput& in, const AvatarDesc& d, bool swing) {
+            T.elbowAllow = swing ? allow : 1e9f;
+            const avatar::Rig r = avatar::solveRig(in, d);
+            T.elbowAllow = allow;
+            return r;
+        };
+        struct Named { const char* name; HandPose l, r; bool deep = true; };
+        const Named usual[] = {{"rest", {{-0.24f, 0.92f, 0.12f}, -60, 0}, {{0.24f, 0.92f, 0.12f}, -60, 0}},
+                               {"ready", {{-0.21f, 1.08f, 0.30f}, -22, 8}, {{0.21f, 1.08f, 0.30f}, -22, -8}},
+                               {"throw", {{-0.22f, 1.22f, 0.36f}, 10, 10}, {{0.30f, 1.58f, -0.12f}, 35, -10}}};
+        // (the far reach turns the torso 40 degrees toward that hand: the other arm, still in front, would cross it)
+        const Named inside[] = {{"the far reach", {{-0.21f, 1.08f, 0.30f}, -22, 8}, {{0.80f, 1.10f, 0.35f}, 0, -60}, false},
+                                {"at the chest", {{-0.05f, 1.27f, 0.24f}, 40, 30}, {{0.05f, 1.27f, 0.24f}, 40, -30}},
+                                {"at the belly", {{-0.06f, 1.05f, 0.20f}, 0, 30}, {{0.06f, 1.05f, 0.20f}, 0, -30}},
+                                {"at the chin", {{-0.05f, 1.45f, 0.22f}, 60, 30}, {{0.05f, 1.45f, 0.22f}, 60, -30}}};
+        bool kept = true, cleared = true, wereIn = true, lengths = true;
+        for (int body = 0; body < 2; ++body) {
+            for (const Named& p : usual) {   // (an arm already clear of the body keeps its elbow; one in it, out)
+                AvatarDesc d;
+                const PlayerInput in = make(body, p.l, p.r, d);
+                const avatar::Rig a = solve(in, d, false), b = solve(in, d, true);
+                for (int k = 0; k < 2; ++k) {
+                    const float moved = length(a.upper[k].b - b.upper[k].b), before = avatar::armInBody(a, d, k), after = avatar::armInBody(b, d, k);
+                    if (moved > 0.001f)
+                        std::printf("       %s, body %d: %.0f mm in, the elbow moved %.0f mm, then %.0f mm in\n", p.name, body, before * 1000, moved * 1000, after * 1000);
+                    if ((before <= allow && moved > 0.001f) || after > 0.020f) kept = false;
+                }
+            }
+            for (const Named& p : inside) {
+                AvatarDesc d;
+                const PlayerInput in = make(body, p.l, p.r, d);
+                const avatar::Rig a = solve(in, d, false), b = solve(in, d, true);
+                for (int k = 0; k < 2; ++k) {
+                    const float before = avatar::armInBody(a, d, k), after = avatar::armInBody(b, d, k);
+                    if (p.deep) wereIn &= before > 0.04f;
+                    if (after > 0.030f) { cleared = false; std::printf("       %s, body %d: %.0f mm in (%.0f before)\n", p.name, body, after * 1000, before * 1000); }
+                    lengths &= std::fabs(length(b.upper[k].b - b.upper[k].a) - length(a.upper[k].b - a.upper[k].a)) < 1e-3f &&
+                               std::fabs(length(b.fore[k].b - b.upper[k].b) - length(a.fore[k].b - a.upper[k].b)) < 1e-3f;
+                }
+            }
+        }
+        // (the PR #25 masculine body is broad, its arms thick: standing and ready, its arms were in it)
+        CHECK(kept, "standing, ready and throwing, an elbow stays where it was unless its arm was in the body, then out of it");
+        CHECK(wereIn, "(test setup: hands at the chest, the belly and the chin put the arms 4 cm or more into the body)");
+        // (within 1 cm, but for the hands at the belly: the straight forearm across its curve, the PR #25 masculine body's
+        // 2.6 cm in; issue #24's far reach, past what an avatar's arm reaches even sized: the torso turned 40 degrees, the
+        // other arm in front of it)
+        CHECK(cleared, "there, the elbows swing out until the arms clear the body (to within 3 cm, from 7 to 14 cm in)");
+        CHECK(lengths, "the upper arm and forearm keep their lengths");
+        // the hands brought in from ready to the chest and down to the belly, 3 mm a step: the elbows never jump
+        float jump = 0;
+        for (int body = 0; body < 2; ++body) {
+            Vec3 prev[2];
+            const int steps = 120;
+            for (int i = 0; i <= steps; ++i) {
+                const float t = float(i) / steps;
+                const Vec3 a{0.21f, 1.08f, 0.30f}, b{0.05f, 1.27f, 0.24f}, c{0.06f, 1.05f, 0.20f};
+                const Vec3 p = t < 0.5f ? lerp(a, b, t * 2) : lerp(b, c, t * 2 - 1);
+                const float pitch = t < 0.5f ? -22 + 62 * t * 2 : 40 - 40 * (t * 2 - 1), yaw = t < 0.5f ? -8 - 22 * t * 2 : -30;
+                AvatarDesc d;
+                const PlayerInput in = make(body, {{-p.x, p.y, p.z}, pitch, -yaw}, {p, pitch, yaw}, d);
+                const avatar::Rig r = solve(in, d, true);
+                for (int k = 0; k < 2; ++k) {
+                    if (i) jump = std::max(jump, length(r.upper[k].b - prev[k]));
+                    prev[k] = r.upper[k].b;
+                }
+            }
+        }
+        std::printf("       (hands brought in to the chest and the belly, 3 mm a step: an elbow moved at most %.0f mm a step)\n", jump * 1000);
+        CHECK(jump < 0.03f, "brought in a few millimetres at a time, the elbows never jump");
+    }
+    {   // THE REACH (astrobleem's PR #25 and issue #24; ARM SIZING, the owner's go 2026-11-17)
+        std::printf("[the reach]\n");
+        struct HandPose { Vec3 p; float pitch, yaw; };
+        auto make = [](int body, const HandPose& l, const HandPose& r, AvatarDesc& d) {   // facing +Z, as tools/avatar_pose.cpp
+            d = avatar::preset(0);
+            d.body = (uint8_t)body;
+            const Quat face = Quat::axisAngle({0, 1, 0}, kPi);
+            PlayerInput in;
+            in.headTracked = true;
+            in.head = {face, {0, 1.62f, 0}};
+            const HandPose hp[2] = {l, r};
+            for (int h = 0; h < 2; ++h) {
+                const Quat q = face * Quat::axisAngle({0, 1, 0}, deg2rad(hp[h].yaw)) * Quat::axisAngle({1, 0, 0}, deg2rad(hp[h].pitch));
+                in.hand[h].tracked = true;
+                in.hand[h].grip = {q, face.rotate({hp[h].p.x, 0, -hp[h].p.z}) + Vec3{0, hp[h].p.y, 0}};
+            }
+            in.avatar = d;
+            return in;
+        };
+        auto xf = [](const Mat4& m, const Vec3& v) {
+            return Vec3{m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z + m.m[12], m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z + m.m[13],
+                        m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z + m.m[14]};
+        };
+        const HandPose ready[2] = {{{-0.21f, 1.08f, 0.30f}, -22, 8}, {{0.21f, 1.08f, 0.30f}, -22, -8}};
+        const HandPose far = {{0.80f, 1.10f, 0.35f}, 0, -60};    // the reach fixture of issue #24
+        const HandPose overhead = {{0.25f, 2.15f, 0.10f}, 80, 0};
+        const avatar::RigTuning& T = avatar::rigTuning();
+        bool clavFollows = true, neverStretched = true, leans = true;
+        for (int body = 0; body < 2; ++body)
+            for (const HandPose& rp : {far, overhead, ready[1]}) {
+                AvatarDesc d;
+                const PlayerInput in = make(body, ready[0], rp, d);
+                const avatar::Rig r = avatar::solveRig(in, d);
+                const avatar::BodyBind& K = avatar::bodyBind(body);
+                for (int k = 0; k < 2; ++k) {
+                    // #24: the collarbone's skin carries the shoulder the arm hangs from (it slid away from it)
+                    if (length(xf(r.skin[avatar::BONE_CLAV_L + k], K.shoulder[k]) - r.upper[k].a) > 0.001f + length(T.shoulder)) clavFollows = false;
+                    const float L1 = length(K.elbow[k] - K.shoulder[k]) * T.upperLen, L2 = length(K.wrist[k] - K.elbow[k]) * T.foreLen;
+                    if (length(r.upper[k].b - r.upper[k].a) > L1 * 1.0005f || length(r.fore[k].b - r.fore[k].a) > L2 * 1.0005f) neverStretched = false;
+                }
+                if (&rp == &far || rp.p.x == far.p.x) {
+                    // the torso turned and leant toward the far hand, so less is left over than the shoulder alone leaves
+                    const Vec3 up = r.torso.q.rotate({0, 1, 0}), front = r.torso.q.rotate({0, 0, -1});
+                    const float turned = rad2deg(std::acos(clampf(dot(front, Vec3{0, 0, 1}), -1.f, 1.f)));
+                    const float leant = rad2deg(std::acos(clampf(up.y, -1.f, 1.f)));
+                    std::printf("       (body %d, the far reach: the torso turned %.0f deg, leant %.0f; the forearm %.0f mm short)\n", body, turned, leant, r.reachGap[1] * 1000);
+                    // ... bending at the waist: the hips stay upright under the leant chest
+                    const Vec3 hipsUp = normalize(Vec3{r.pelvis.m[4], r.pelvis.m[5], r.pelvis.m[6]});
+                    std::printf("       (body %d: the hips lean %.1f deg)\n", body, rad2deg(std::acos(clampf(hipsUp.y, -1.f, 1.f))));
+                    leans &= turned + leant > 5.f && leant > 5.f && r.bent && hipsUp.y > 0.9995f;
+                }
+            }
+        CHECK(clavFollows, "the collarbone's skin moves with the shoulder (issue #24: it stayed while the shoulder slid)");
+        CHECK(neverStretched, "no arm is ever longer than its bones, however far the hand");
+        CHECK(leans, "a hand out of reach turns and leans the chest toward it, bending at the waist: the hips stay upright");
+        // a state stepped at 90 frames a second: the torso never turns faster than 120 degrees a second
+        {
+            AvatarDesc d;
+            avatar::RigState st;
+            double t = 0;
+            float fastest = 0, gapEnd = 1;
+            Quat prev;
+            for (int i = 0; i < 180; ++i, t += 1.0 / 90) {
+                const PlayerInput in = make(0, ready[0], i < 30 ? ready[1] : far, d);
+                avatar::stepRig(st, in, d, t);
+                const avatar::Rig r = avatar::solveRig(in, d, &st);
+                if (i) {
+                    const float c = std::fabs(prev.x * r.torso.q.x + prev.y * r.torso.q.y + prev.z * r.torso.q.z + prev.w * r.torso.q.w);
+                    fastest = std::max(fastest, rad2deg(2.f * std::acos(clampf(c, 0.f, 1.f))) * 90.f);
+                }
+                prev = r.torso.q;
+                gapEnd = r.reachGap[1];
+            }
+            AvatarDesc d2;
+            const avatar::Rig target = avatar::solveRig(make(0, ready[0], far, d2), d2);
+            std::printf("       (a hand thrown out to the far reach: the torso at most %.0f deg/s; after 1.5 s %.0f mm short, the moment's posture %.0f)\n",
+                        fastest, gapEnd * 1000, target.reachGap[1] * 1000);
+            CHECK(fastest <= 121.f, "the torso follows smoothly, never faster than 120 degrees a second");
+        }
+        // ARM SIZING: reaching again and again a little past the arm closes the gap; within reach, the arms stay
+        {
+            // (the right elbow's bend at the reach: 0 a straight arm; a player's video, 2026-11-17: arms fully extended in
+            // life, the avatar's elbows bent)
+            float lastBend = 0;
+            auto bendOf = [](const avatar::Rig& r) {
+                const Vec3 a = normalize(r.upper[1].a - r.upper[1].b), b = normalize(r.fore[1].b - r.fore[1].a);
+                return 180.f - rad2deg(std::acos(clampf(dot(a, b), -1.f, 1.f)));
+            };
+            auto play = [&](int body, const HandPose& out, int glitchAt, float& gapStart, float& gapEnd) {
+                AvatarDesc d;
+                avatar::RigState st;
+                double t = 0;
+                gapStart = -1;
+                for (int i = 0; i < 90 * 40; ++i, t += 1.0 / 90) {   // 40 s: a punch out and back every second
+                    const bool outNow = (i % 90) >= 40 && (i % 90) < 60;
+                    PlayerInput in = make(body, ready[0], outNow ? out : ready[1], d);
+                    if (i == glitchAt) in.hand[1].grip.p = in.hand[1].grip.p + Vec3{2.f, 0, 0};   // (tracking: one frame 2 m off)
+                    avatar::stepRig(st, in, d, t);
+                    const avatar::Rig r = avatar::solveRig(in, d, &st);
+                    if (outNow && (i % 90) == 59) { if (gapStart < 0) gapStart = r.reachGap[1]; gapEnd = r.reachGap[1]; lastBend = bendOf(r); }
+                }
+                return st.armScale;
+            };
+            // a long-armed player's full reaches, past each body's arm and what its shoulder's swing covers (about 1.12
+            // and 1.16 the avatar's arms: real arms are 5 to 20% longer than these avatars')
+            const HandPose pastM = {{0.50f, 1.30f, 0.60f}, 0, -40}, pastF = {{0.45f, 1.30f, 0.50f}, 0, -40};
+            float g0, g1, f0, f1, w0, w1, s0, s1;
+            const float mScale = play(0, pastM, -1, g0, g1);
+            const float mBend = lastBend;
+            const float fScale = play(1, pastF, -1, f0, f1);
+            const float fBend = lastBend;
+            const float glitchScale = play(0, ready[1], 900, s0, s1);
+            const float farScale = play(1, far, -1, w0, w1);
+            std::printf("       (reaching past the arm, 40 punches: masculine x%.2f, short %.0f mm at first, %.0f at the end; feminine x%.2f, %.0f -> %.0f mm)\n",
+                        mScale, g0 * 1000, g1 * 1000, fScale, f0 * 1000, f1 * 1000);
+            std::printf("       (the far reach, feminine: x%.2f, %.0f -> %.0f mm short; within reach with a 2 m glitch: x%.3f)\n", farScale, w0 * 1000,
+                        w1 * 1000, glitchScale);
+            CHECK(g1 < 0.005f && f1 < 0.005f, "ARM SIZING: reaching past the arm again and again, the arms lengthen until the forearm meets the gauntlet (both bodies)");
+            std::printf("       (the elbow at those full reaches: masculine bent %.0f deg, feminine %.0f)\n", mBend, fBend);
+            CHECK(mBend < 8.f && fBend < 8.f, "ARM SIZING: a full reach is a straight arm, not bent at the elbow (both bodies)");
+            // (the PR #25 bodies' arms are shorter than the MPFB bodies': the masculine 49 cm, x1.27 for this reach)
+            CHECK(mScale > 1.05f && mScale < 1.3f && fScale > 1.05f && fScale < 1.3f, "ARM SIZING: to the player's reach, not to the limit");
+            CHECK(farScale <= 1.35f, "ARM SIZING: never more than 35% longer");
+            CHECK(glitchScale <= 1.f && glitchScale >= 0.8f, "ARM SIZING: within reach the arms never lengthen (a tracking jump is no reach), at most 20% shorter");
+            // the owner's mirror (2026-11-17): arms that grew too long (or bodies whose arms are longer than the player's)
+            // shorten to the reach the hands show, so a full reach is a straight arm; and a hand across the body is no reach
+            auto play2 = [&](int body, float startScale, const HandPose& out, float seconds, float& gapEnd) {
+                AvatarDesc d;
+                avatar::RigState st;
+                double t = 0;
+                bool first = true;
+                for (int i = 0; i < (int)(90 * seconds); ++i, t += 1.0 / 90) {   // a reach out and back every second
+                    const bool outNow = (i % 90) >= 40 && (i % 90) < 60;
+                    PlayerInput in = make(body, ready[0], outNow ? out : ready[1], d);
+                    avatar::stepRig(st, in, d, t);
+                    if (first) { st.armScale = startScale; st.reachPeak = startScale; first = false; }
+                    const avatar::Rig r = avatar::solveRig(in, d, &st);
+                    if (outNow && (i % 90) == 59) gapEnd = r.reachGap[1];
+                }
+                const float scale = st.armScale;
+                for (int i = 0; i < 90; ++i, t += 1.0 / 90) {   // (then the reach held a second, as in a mirror: the elbow)
+                    const PlayerInput in = make(body, ready[0], out, d);
+                    avatar::stepRig(st, in, d, t);
+                    lastBend = bendOf(avatar::solveRig(in, d, &st));
+                }
+                return scale;
+            };
+            const HandPose nearM = {{0.30f, 1.30f, 0.40f}, 0, -30}, across = {{-0.45f, 1.25f, 0.45f}, 0, 40};
+            float n1 = 0, n2 = 0, a1 = 0, u1 = 0, u2 = 0;
+            const float shortM = play2(0, 1.25f, nearM, 90.f, n1);
+            const float nBendM = lastBend;
+            const float shortF = play2(1, 1.25f, nearM, 90.f, n2);
+            const float nBendF = lastBend;
+            const float acrossScale = play2(0, 1.f, across, 40.f, a1);
+            // both arms straight up, as in the player's video: a hand 60 cm over the shoulder, again and again
+            const HandPose up = {{0.24f, 2.05f, 0.04f}, 80, 0};
+            play2(0, 1.f, up, 40.f, u1);
+            const float upBendM = lastBend;
+            play2(1, 1.f, up, 40.f, u2);
+            const float upBendF = lastBend;
+            std::printf("       (arms at x1.25, a shorter full reach for 90 s: masculine x%.2f, feminine x%.2f, short %.0f / %.0f mm at the reach, "
+                        "the elbow bent %.0f / %.0f deg; reaching across the body for 40 s: x%.2f; straight up: bent %.0f / %.0f deg, %.0f / %.0f mm short)\n",
+                        shortM, shortF, n1 * 1000, n2 * 1000, nBendM, nBendF, acrossScale, upBendM, upBendF, u1 * 1000, u2 * 1000);
+            CHECK(shortM < 1.15f && shortF < 1.15f && shortM >= 0.8f && shortF >= 0.8f && n1 < 0.005f && n2 < 0.005f,
+                  "ARM SIZING: arms longer than the reach shown shorten toward it (a full reach is a straight arm; it still meets the gauntlet)");
+            CHECK(nBendM < 8.f && nBendF < 8.f && upBendM < 8.f && upBendF < 8.f,
+                  "ARM SIZING: arms that shortened to the reach are straight at it; both arms straight up are straight (the elbows not bent)");
+            CHECK(acrossScale <= 1.f, "ARM SIZING: a hand reaching across the body never lengthens the arms");
+        }
+        // FOREARM TWIST (PR #25): the forearm bone turns with the hand; the shader turns its skin back toward the elbow.
+        // Here the shader's sum for one forearm influence (render.cpp), on rings round the forearm near each end
+        std::printf("[forearm twist]\n");
+        auto wrapAngle = [](float a) { while (a > kPi) a -= 2 * kPi; while (a < -kPi) a += 2 * kPi; return a; };
+        auto twisted = [&](const avatar::Rig& r, int k, const Vec3& bp, bool on) {
+            const float* t = r.twist;
+            auto v4 = [&](int i) { return Vec3{t[i * 4], t[i * 4 + 1], t[i * 4 + 2]}; };
+            const Vec3 p = xf(r.skin[avatar::BONE_FORE_L + k], bp);
+            if (!on) return p;
+            const float s = clampf(dot(bp - v4(k), v4(2 + k)) * t[k * 4 + 3], 0.f, 1.f);
+            const float th = -t[(2 + k) * 4 + 3] * (1.f - s * s * (3.f - 2.f * s));
+            const Vec3 E = v4(4 + k);
+            return E + Quat::axisAngle(v4(6 + k), th).rotate(p - E);
+        };
+        // the right hand held out in front at chest height, turned about its own forward axis by `roll` degrees
+        auto held = [&](int body, float roll, AvatarDesc& d) {
+            PlayerInput in = make(body, ready[0], {{0.21f, 1.22f, 0.42f}, 0, 0}, d);
+            in.hand[1].grip.q = in.hand[1].grip.q * Quat::axisAngle({0, 0, 1}, deg2rad(roll));
+            return in;
+        };
+        // a ring's turn about the forearm, against the shoulder seen from the elbow
+        auto ringTurn = [&](const avatar::Rig& r, int body, float at, bool on) {
+            const avatar::BodyBind& K = avatar::bodyBind(body);
+            const Vec3 a = K.elbow[1], b = K.wrist[1], ax0 = normalize(b - a);
+            const Vec3 side = normalize(cross(ax0, Vec3{0, 1, 0}));
+            const Vec3 bp = a + (b - a) * at + side * 0.04f;
+            const Vec3 E = r.fore[1].a, ax = normalize(r.fore[1].b - r.fore[1].a);
+            Vec3 u = twisted(r, 1, bp, on) - E, ref = r.upper[1].a - E;
+            u = u - ax * dot(u, ax);
+            ref = ref - ax * dot(ref, ax);
+            return std::atan2(dot(cross(ref, u), ax), dot(ref, u));
+        };
+        bool restNone = true, follows = true, elbowStays = true, wristTurns = true, smooth = true;
+        float worstElbow = 0, worstJump = 0, worstWrist = 0;
+        for (int body = 0; body < 2; ++body) {
+            AvatarDesc d;
+            PlayerInput rest = make(body, ready[0], ready[1], d);
+            rest.hand[0].tracked = rest.hand[1].tracked = false;
+            const avatar::Rig r0 = avatar::solveRig(rest, d);
+            if (r0.twisted || std::fabs(r0.roll[0]) > 1e-4f || std::fabs(r0.roll[1]) > 1e-4f) restNone = false;
+            for (float base : {-60.f, 0.f, 40.f}) {
+                const avatar::Rig ra = avatar::solveRig(held(body, base, d), d), rb = avatar::solveRig(held(body, base + 50.f, d), d);
+                const float dRoll = rad2deg(wrapAngle(rb.roll[1] - ra.roll[1]));
+                // the roll is the hand's turn about the forearm (the grip's z points back along it: its +50 is the forearm's -50)
+                if (dRoll > -40.f || dRoll < -60.f) follows = false;
+                // near the elbow (4% of the way) the skin keeps its turn whatever the hand does; untwisted it turned with it
+                const float tOn = rad2deg(wrapAngle(ringTurn(rb, body, 0.04f, true) - ringTurn(ra, body, 0.04f, true)));
+                const float tOff = rad2deg(wrapAngle(ringTurn(rb, body, 0.04f, false) - ringTurn(ra, body, 0.04f, false)));
+                worstElbow = std::max(worstElbow, std::fabs(tOn));
+                if (std::fabs(tOn) > 6.f || std::fabs(tOff) < 40.f) elbowStays = false;
+                // at the wrist the skin turns with the hand, as the bone does
+                const float wOn = rad2deg(wrapAngle(ringTurn(rb, body, 1.f, true) - ringTurn(ra, body, 1.f, true)));
+                if (std::fabs(wOn - dRoll) > 6.f) wristTurns = false;
+            }
+            // the hand turned all the way round, 2 degrees a step: what the shader undoes follows the turn within a wrist's
+            // reach (120 degrees either way from thumbs up), and never jumps (past 135 it fades out: at 180 the turn's side
+            // is a guess)
+            float last = 0;
+            for (int i = 0; i <= 360; i += 2) {
+                const avatar::Rig r = avatar::solveRig(held(body, -180.f + (float)i, d), d);
+                const float undo = rad2deg(r.twist[(2 + 1) * 4 + 3]);
+                if (i > 0) worstJump = std::max(worstJump, std::fabs(undo - last));
+                if (i > 0 && std::fabs(-180.f + (float)i) <= 120.f) worstWrist = std::max(worstWrist, std::fabs(undo - last));
+                last = undo;
+            }
+        }
+        smooth = worstJump < 15.f && worstWrist < 3.f;
+        std::printf("       (the skin near the elbow turned at most %.1f deg with the hand turned 50; the undone turn moves at most %.1f deg a 2 deg step within a wrist's turn, %.1f past it)\n",
+                    worstElbow, worstWrist, worstJump);
+        CHECK(restNone, "FOREARM TWIST: arms at rest are untwisted");
+        CHECK(follows, "FOREARM TWIST: the roll follows the hand's turn about the forearm");
+        CHECK(elbowStays, "FOREARM TWIST: near the elbow the skin keeps its turn when the hand turns (untwisted, it turned with the hand)");
+        CHECK(wristTurns, "FOREARM TWIST: at the wrist the skin turns with the hand");
+        CHECK(smooth, "FOREARM TWIST: turning the hand all the way round, the twist never jumps");
+        // TENNIS SKIRT and KILT (PR #25, his swish): the swing, stepped at 90 frames a second
+        std::printf("[skirts]\n");
+        {
+            AvatarDesc d = avatar::preset(0);
+            d.lower = 5;
+            bool kinds = avatar::swishKind(d) == 0;
+            d.lower = 6;
+            kinds &= avatar::swishKind(d) == 1;
+            d.lower = 4;
+            kinds &= avatar::swishKind(d) == -1;
+            CHECK(kinds, "SKIRTS: the tennis skirt and the kilt sway, nothing else does");
+            const float maxOff[2] = {0.065f, 0.05f}, maxTw[2] = {0.23f, 0.17f};
+            bool trails = true, bounded = true, settles = true, lags = true, fresh = true;
+            float most = 0, after = 1;
+            for (int kind = 0; kind < 2; ++kind) {
+                avatar::Swish s;
+                double t = 0;
+                float x = 0, yaw = 0;
+                avatar::stepSwish(s, kind, x, 0, yaw, t);
+                // a sidestep: 1 m/s along +x for half a second, facing -z (yaw 0): the hem trails toward -x
+                for (int i = 0; i < 45; ++i) {
+                    t += 1.0 / 90; x += 1.f / 90;
+                    avatar::stepSwish(s, kind, x, 0, yaw, t);
+                    if (std::hypot(s.x, s.z) > maxOff[kind] + 1e-5f || !std::isfinite(s.x)) bounded = false;
+                    most = std::max(most, std::hypot(s.x, s.z));
+                }
+                if (s.x > -0.01f) trails = false;
+                // stopped: back to rest within 1.5 s
+                for (int i = 0; i < 135; ++i) { t += 1.0 / 90; avatar::stepSwish(s, kind, x, 0, yaw, t); }
+                after = std::max(after == 1 ? 0.f : after, std::hypot(s.x, s.z));
+                if (std::hypot(s.x, s.z) > 0.002f) settles = false;
+                // a quick turn to the left (yaw growing): the skirt lags, turned the other way, never past its limit
+                float least = 0;
+                for (int i = 0; i < 30; ++i) {
+                    t += 1.0 / 90; yaw += 3.f / 90;
+                    avatar::stepSwish(s, kind, x, 0, yaw, t);
+                    least = std::min(least, s.twist);
+                    if (std::fabs(s.twist) > maxTw[kind] + 1e-5f) bounded = false;
+                }
+                if (least > -0.05f) lags = false;
+                // a jump (a teleport, a respawn): afresh, at rest
+                t += 1.0 / 90;
+                avatar::stepSwish(s, kind, x + 2.f, 0, yaw, t);
+                if (s.x != 0 || s.z != 0 || s.twist != 0) fresh = false;
+            }
+            std::printf("       (a sidestep swings the hem out %.0f mm at most; stopped, %.1f mm left after 1.5 s)\n", most * 1000, after * 1000);
+            CHECK(trails, "SKIRTS: stepping sideways, the hem trails the way it came");
+            CHECK(bounded, "SKIRTS: never further than the skirt's limits (out, twist)");
+            CHECK(settles, "SKIRTS: stopped, the skirt settles back to rest");
+            CHECK(lags, "SKIRTS: turning, the skirt lags the turn");
+            CHECK(fresh, "SKIRTS: after a jump, at rest again");
+        }
+    }
+    {   // HANDS APART (owner, 2026-11-16, her video: with the controllers held together the gauntlets crossed): the
+        // shapes of the real gauntlet models, and the two drawn hands moved apart until they only touch
+        std::printf("[hands apart]\n");
+        std::string dir = col;
+        dir = dir.substr(0, dir.find_last_of("/\\") + 1);
+        auto readFile = [](const std::string& path) {
+            std::vector<uint8_t> out;
+            if (FILE* f = std::fopen(path.c_str(), "rb")) {
+                uint8_t buf[4096];
+                for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) out.insert(out.end(), buf, buf + n);
+                std::fclose(f);
+            }
+            return out;
+        };
+        const Mat4 lancer = avatar::ueLocalToGrip({1, -0.5f, 0}, {5, 0, 0}, {1, 1, 1});
+        avatar::HandShape fist, cuff;
+        const std::vector<uint8_t> fm = readFile(dir + "gauntlet_0_hand.mdl"), cm = readFile(dir + "gauntlet_0_cuff.mdl");
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool built = !fm.empty() && !cm.empty() && avatar::handShapeFromModel(fist, fm.data(), fm.size(), lancer, 5) &&
+                           avatar::handShapeFromModel(cuff, cm.data(), cm.size(), lancer, 4);
+        const double buildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        std::printf("       (the STRIKER fist and cuff: %zu and %zu points, built in %.0f ms)\n", fist.pts.size(), cuff.pts.size(), buildMs);
+        CHECK(built, "the gauntlet's fist and cuff become shapes");
+        if (built) {   // KNUCKLES ON THE FIST (two players' report, 2026-11-17): the bumper's front face at the drawn knuckles
+            const Pose fp = avatar::fistPose();
+            float front = 1e9f;
+            for (const Vec3& p : fist.pts) front = std::min(front, fp.transform(p).z);
+            const Tunables tn;
+            const float boxFront = tn.knuckleOffset.z - tn.knuckleHalf.z, oldFront = tn.knuckleOffsetOld.z - tn.knuckleHalf.z;
+            std::printf("       (the drawn fist's front %.1f cm out from the grip; the knuckle bumper's front %.1f cm, before %.1f)\n",
+                        -front * 100, -boxFront * 100, -oldFront * 100);
+            CHECK(std::fabs(boxFront - front) < 0.005f, "KNUCKLES ON THE FIST: the knuckle bumper's front face is at the drawn knuckles (within 5 mm)");
+        }
+        if (built) {
+            std::vector<float> on;
+            for (const Vec3& p : fist.pts) on.push_back(std::fabs(fist.dist(p)));
+            std::sort(on.begin(), on.end());
+            std::printf("       (its surface points from its surface: half within %.1f mm, 90%% within %.1f; 30 cm off: %.0f mm out)\n",
+                        on[on.size() / 2] * 1000, on[on.size() * 9 / 10] * 1000, fist.dist(fist.c + Vec3{0.3f, 0, 0}) * 1000);
+            CHECK(on[on.size() / 2] < 0.002f && fist.dist(fist.c + Vec3{0.3f, 0, 0}) > 0.2f, "its surface points are on its surface; far away is outside");
+            // the drawn parts of both hands, as main.cpp handsApart places them (the left mirrored)
+            auto parts = [&](const Pose grip[2], avatar::HandPart P[2][2]) {
+                for (int h = 0; h < 2; ++h) {
+                    Mat4 mirror = Mat4::identity();
+                    if (h == 0) mirror.m[0] = -1;
+                    const Mat4 gm = Mat4::fromPose(grip[h]) * mirror;
+                    P[h][0].shape = &fist; P[h][0].place = gm * Mat4::fromPose(avatar::fistPose());
+                    P[h][1].shape = &cuff; P[h][1].place = gm * Mat4::fromPose(avatar::cuffPose(false));
+                    for (avatar::HandPart& p : P[h]) p.inv = avatar::affineInverse(p.place);
+                }
+            };
+            // the picture tool's poses (main.cpp --handstouch): 0 the tops together, 1 the palms, 2 the knuckles, 3 crossed
+            auto pose = [](int k, float gap, Pose grip[2]) {
+                Quat qr, ql;
+                Vec3 dr{gap, 0, 0}, dl{-gap, 0, 0};
+                if (k == 0) { qr = Quat::axisAngle({0, 0, 1}, kPi * 0.25f); ql = Quat::axisAngle({0, 0, 1}, -kPi * 0.25f); }
+                if (k == 2) { qr = Quat::axisAngle({0, 1, 0}, kPi * 0.5f); ql = Quat::axisAngle({0, 1, 0}, -kPi * 0.5f); }
+                if (k == 3) { qr = Quat::axisAngle({0, 1, 0}, kPi * 0.20f); ql = Quat::axisAngle({0, 1, 0}, -kPi * 0.20f); dr = {-gap, 0.035f, 0}; dl = {gap, -0.005f, 0}; }
+                grip[1] = {qr, Vec3{0, 1.2f, -0.4f} + dr};
+                grip[0] = {ql, Vec3{0, 1.2f, -0.4f} + dl};
+            };
+            bool cleared = true, small = true, sideways = true, overlapped = false;
+            double worstMs = 0;
+            for (int k = 0; k < 4; ++k)
+                for (float gap = 0.015f; gap < 0.071f; gap += 0.005f) {
+                    Pose grip[2];
+                    pose(k, gap, grip);
+                    avatar::HandPart P[2][2];
+                    parts(grip, P);
+                    const float before = avatar::handsApartDepth(P[0], 2, P[1], 2, {0, 0, 0});
+                    const auto s0 = std::chrono::steady_clock::now();
+                    const Vec3 S = avatar::handsApartShift(P[0], 2, P[1], 2, 0.06f);
+                    worstMs = std::max(worstMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count());
+                    const float after = avatar::handsApartDepth(P[0], 2, P[1], 2, S);
+                    overlapped |= before > 0.01f;
+                    if (length(S) < 0.0595f && after > 0.0025f) {
+                        cleared = false;
+                        std::printf("       pose %d, %.0f mm out: %.1f mm deep after %.1f mm apart (%.1f before)\n", k, gap * 1000, after * 1000, length(S) * 1000, before * 1000);
+                    }
+                    small &= length(S) <= 0.0601f && (before > 0 || length(S) == 0);
+                    if (k < 3 && length(S) > 0.004f && std::fabs(S.x) < 0.7f * length(S)) {
+                        sideways = false;
+                        std::printf("       pose %d, %.0f mm out: moved (%.1f %.1f %.1f) mm\n", k, gap * 1000, S.x * 1000, S.y * 1000, S.z * 1000);
+                    }
+                }
+            std::printf("       (the slowest: %.2f ms)\n", worstMs);
+            CHECK(overlapped, "(test setup: the poses' gauntlets cross)");
+            CHECK(cleared, "moved apart, the gauntlets no longer cross (under 2.5 mm), unless the 3 cm each way ran out");
+            CHECK(small, "they move only when they cross, and at most 3 cm each");
+            CHECK(sideways, "side by side, they move apart sideways (not forward or up)");
+            {   // drawing them 30 cm apart: nothing; sliding them together: no jumps
+                Pose grip[2];
+                pose(1, 0.15f, grip);
+                avatar::HandPart P[2][2];
+                parts(grip, P);
+                CHECK(length(avatar::handsApartShift(P[0], 2, P[1], 2, 0.06f)) == 0.f, "hands apart are left where they are");
+                float worst = 0;
+                for (int k : {0, 1, 3}) {   // the tops, the palms, the wrists crossed
+                    float jump = 0;
+                    Vec3 prev{0, 0, 0};
+                    for (float gap = 0.07f; gap > 0.025f; gap -= 0.001f) {
+                        pose(k, gap, grip);
+                        parts(grip, P);
+                        const Vec3 S = avatar::handsApartShift(P[0], 2, P[1], 2, 0.06f);
+                        if (gap < 0.0695f) jump = std::max(jump, length(S - prev));
+                        prev = S;
+                    }
+                    std::printf("       (pose %d slid together 1 mm at a time: the biggest step %.1f mm)\n", k, jump * 1000);
+                    worst = std::max(worst, jump);
+                }
+                CHECK(worst < 0.006f, "slid together a millimetre at a time, the drawn hands never jump");
+            }
+        }
     }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

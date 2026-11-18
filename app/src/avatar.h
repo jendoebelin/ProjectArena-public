@@ -98,6 +98,51 @@ struct Rig {
     bool arm[2] = {false, false};  // hand tracked
     Bone upper[2], fore[2];        // 0 = left, 1 = right
     Mat4 skin[BONE_COUNT];         // bind -> world for the skinned parts
+    float reachGap[2] = {0, 0};    // THE REACH: how far each forearm ends short of its gauntlet (m; the arm never stretches)
+    // THE REACH: the torso leans at the waist: below it the hips stay upright (pelvis: bone 0 there, bind -> world; the
+    // shader blends it into skin[BONE_TORSO] over the waist, render.cpp); bent: it differs from the torso
+    Mat4 pelvis;
+    bool bent = false;
+    float armScale = 1.f;          // ARM SIZING: the arms' length against the avatar's own
+    // FOREARM TWIST (PR #25): the forearm bone turns with the hand (its front is the controller's top), so a turned hand
+    // twisted the skin all at the elbow; the shader turns it back there, less and less toward the wrist (render.cpp).
+    // 8 vec4, per forearm k (0 left, 1 right): [k] the bind elbow, 1 / (0.96 |d|^2); [2+k] d = bind elbow -> wrist, the
+    // roll (rad); [4+k] the elbow (world), 1 / (0.96 length); [6+k] the forearm's axis (world). twisted: a roll to undo
+    float twist[32] = {};
+    float roll[2] = {0, 0};        // each forearm's turn against the upper arm's, untwisted (rad, -pi .. pi)
+    bool twisted = false;
+};
+
+// TENNIS SKIRT and KILT (PR #25, his swish): a skirt's swing about the hips, one avatar's own: the hem trails the way
+// the body moves and lags its turns, a damped spring, bounded; it starts afresh after a jump, a stall or a new skirt.
+// Stepped with the rig (stepRig); the shader moves each vertex by it, by its weight, and keeps it out of the body
+// (render.cpp uSwish)
+struct Swish {
+    int kind = -1;                       // 0 the tennis skirt, 1 the kilt; -1 none
+    bool ready = false;
+    double time = 0;
+    float px = 0, pz = 0, yaw = 0;       // the hips last step (world)
+    float fvx = 0, fvz = 0, fturn = 0;   // their speed (m/s) and turn (rad/s), filtered
+    float x = 0, z = 0, twist = 0;       // the swing, in the garment's frame (m, rad)
+    float vx = 0, vz = 0, vt = 0;
+};
+int swishKind(const AvatarDesc& d);      // the skirt worn: 0 tennis, 1 kilt, -1 none
+void stepSwish(Swish& s, int kind, float px, float pz, float yaw, double now);
+
+// THE REACH (PR #25; ARM SIZING): one avatar's rig across frames, its own (never shared): the torso's
+// smoothed turn and lean toward a hand out of reach, each shoulder's swing, and how long its arms have grown to the
+// reach its hands show. Stepped once a frame (stepRig), read by every draw of that frame (solveRig).
+struct RigState {
+    bool started = false;
+    double time = 0;              // (the caller's clock, s) when last stepped
+    Vec3 torso{0, 0, 0};          // heading (world), pitch, roll
+    Vec3 slide[2];                // each shoulder's swing toward its hand (m)
+    float armScale = 1.f;         // 0.8 .. 1.35
+    float reachPeak = 1.f;        // ARM SIZING: the longest reach the hands have shown lately (against the arm's own)
+    double peakAt = 0;            // ... when a reach last came up to it
+    Vec3 lastW[2];                // (each wrist last frame: a jump faster than a hand is tracking, not a reach)
+    bool handSeen[2] = {false, false};
+    Swish swish;                  // TENNIS SKIRT / KILT
 };
 
 // Skeleton and arm-attachment values the rig uses, adjustable live in developer mode (MENU > SETTINGS > TUNING; the
@@ -109,8 +154,14 @@ struct RigTuning {
     float armThick = 1.f;                       // arm cross-section scale (with the build's)
     Vec3 elbowPole{0.35f, -1.0f, 0.25f};        // the elbow's pull: out, down, back (torso frame)
     float elbowPull = 0.12f;                    // how far toward the pole (m)
-    float reach = 0.07f;                        // the shoulder follows a hand out of reach by up to this (m)
-    float reachStart = 0.97f;                   // ... once the hand is beyond this share of the arm's length
+    // ELBOWS OUT OF THE BODY (owner, 2026-11-16): the elbow swings out once the arm is deeper in the torso than
+    // elbowAllow (m); the arm kept clear by this share of its thickness (at rest it lies against the body by design)
+    float elbowAllow = 0.010f, armClearShare = 0.6f;
+    float reach = 0.09f;                        // the shoulder follows a hand out of reach by up to this (m; 7 cm
+                                                // until the cuff moved under the fist, 2026-11-16, its wrist 4.5 cm lower)
+    float reachStart = 1.0f;                    // ... once the hand is beyond this share of the arm's length (0.97 until
+                                                // 2026-11-17: the shoulder came out to meet a hand the arm still
+                                                // reached, so every full reach held the elbow bent; a player's video)
     float shrug = 0.06f;                        // how far a shoulder lifts with its hand straight overhead (m)
     float torsoFollow = 0.6f;                   // how much the chest turns toward the hands
     float torsoLimitDeg = 50.f;                 // never more than this from the head's heading
@@ -118,19 +169,64 @@ struct RigTuning {
     // where the forearm ends inside a plate gauntlet's cuff (grip space), and the cuff's own pose against the hand:
     // a rotation (pitch / yaw / roll degrees, gripEuler) about the wrist pivot, then an offset
     Vec3 forearmEnd{0.0247f, 0.0382f, 0.0876f};
-    // the cuff against the hand: the owner's TUNING export (2026-10-18, second): 1.6 right, 2.2 up, 2.6 back (cm),
-    // pitched 17 deg, yaw and roll -1
-    Vec3 cuffPos{0.016f, 0.022f, 0.026f}, cuffRot{17.0f, -2.0f, -1.3f};   // owner's export 2026-10-19
+    // the cuff against the hand: the owner's TUNING export (2026-10-19: 1.6 right, 2.2 up, 2.6 back (cm), pitched 17 deg,
+    // yaw and roll -1), then lined up behind the fist when it was turned in line with the forearm (owner, 2026-11-16,
+    // main.cpp drawGauntlet): swung 12 degrees about its own wrist point and 3.5 cm toward the little finger's side
+    Vec3 cuffPos{0.016f, -0.013f, 0.026f}, cuffRot{28.99f, -2.19f, -1.78f};
 };
 RigTuning& rigTuning();
 constexpr Vec3 kCuffPivot{0.004f, 0.005f, 0.050f};   // the wrist joint of the plate gauntlets (make_props.py, grip space)
 // the cuff's pose against the hand (grip space; left = mirrored), from rigTuning()
 Pose cuffPose(bool left);
+// the plate gauntlets' fist against the hand (grip space, the right hand; the left is drawn mirrored): turned in line
+// with the cuff and the forearm (owner, 2026-11-16; main.cpp drawGauntlet)
+Pose fistPose();
+
+// HANDS APART (owner, 2026-11-16, her video: with the controllers held together, the two gauntlets crossed into each
+// other; armour is bigger than a hand round a controller): each part of a drawn gauntlet (the fist, the cuff) as a
+// grid of its signed distance (inside negative) with points on its surface, so the two hands can be drawn just apart.
+// Drawing only: the game keeps the tracked hands.
+struct HandShape {
+    Vec3 lo{0, 0, 0};                  // the grid's first point (the part's own frame)
+    float h = 0;                       // the grid's spacing (m)
+    int n[3] = {0, 0, 0};
+    std::vector<int8_t> d;             // the signed distance at each point (mm, clamped)
+    std::vector<Vec3> pts;             // points on its outside, about a centimetre apart
+    Vec3 c{0, 0, 0};                   // a sphere round the points
+    float r = 0;
+    bool valid() const { return !pts.empty(); }
+    float dist(const Vec3& p) const;   // (m) trilinear; off the grid, its edge value plus the way off
+    Vec3 normal(const Vec3& p) const;  // the way out (unit)
+};
+// from a model's vertex positions (`stride` bytes apart, three floats first) and triangles, placed by toFrame. A point
+// is inside when the surface lies on at least `sides` of its six axis directions (5 for a fist, whose plates have
+// gaps between them; 4 for a tube open at both ends, such as a cuff)
+void buildHandShape(HandShape& s, const uint8_t* verts, int stride, int nv, const uint32_t* idx, int ni, const Mat4& toFrame,
+                    int sides);
+// one part of a drawn hand: its shape, where it is drawn (place may mirror) and the way back
+struct HandPart { const HandShape* shape = nullptr; Mat4 place, inv; };
+Mat4 affineInverse(const Mat4& m);
+// how far to move hand b (hand a moving the other way: half each) so that no surface point of either is inside the
+// other, at most maxShift; zero when they don't meet
+Vec3 handsApartShift(const HandPart* a, int na, const HandPart* b, int nb, float maxShift);
+// the deepest any surface point of either hand is inside the other (m), with hand b moved S against hand a
+float handsApartDepth(const HandPart* a, int na, const HandPart* b, int nb, const Vec3& S);
+// buildHandShape from a whole model file (.mdl); false when it isn't one
+bool handShapeFromModel(HandShape& s, const uint8_t* data, size_t size, const Mat4& toFrame, int sides);
+// a hand prop's model space -> the grip (gltf metres -> UE centimetres -> the UE motion controller's transform -> the
+// OpenXR grip: see tools/frames.py); main.cpp draws the gauntlets with ueLocalToGrip({1, -0.5, 0}, {5, 0, 0}, {1, 1, 1})
+Mat4 ueLocalToGrip(Vec3 locCm, Vec3 pyrDeg, Vec3 scale);
 
 // The two-bone IK elbow for shoulder s, wrist w and bone lengths l1, l2: on the circle of valid elbows, the point
 // toward `pole`. Out of reach the arm points straight at the wrist.
 Vec3 elbowIK(const Vec3& s, const Vec3& w, float l1, float l2, const Vec3& pole);
-Rig solveRig(const PlayerInput& in, const AvatarDesc& d);
+// the rig: with st, as it stands this frame (stepRig); without, the posture the moment asks for, arms unsized
+Rig solveRig(const PlayerInput& in, const AvatarDesc& d, const RigState* st = nullptr);
+// THE REACH: one step of an avatar's rig state, to `now` (s, the caller's clock; again within the same frame: nothing)
+void stepRig(RigState& st, const PlayerInput& in, const AvatarDesc& d, double now);
+// ELBOWS OUT OF THE BODY: how deep arm k of a solved rig is inside its torso (m, beyond RigTuning armClearShare of the
+// arm's thickness; 0: clear). The torso's shape: app/src/avatar_torso.inc (tools/measure_torso.py)
+float armInBody(const Rig& r, const AvatarDesc& d, int k);
 // Model matrix for a bone mesh: joint a at the origin, -Y along the bone (scaled to its length), -Z toward front;
 // mirrorX for the left side (negative determinant: flip the winding when drawing); thick scales the cross-section.
 Mat4 boneMatrix(const Bone& b, bool mirrorX, float thick = 1.f);

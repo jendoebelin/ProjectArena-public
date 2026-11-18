@@ -37,6 +37,10 @@ struct Model {
     bool valid() const { return vao != 0; }
 };
 
+// a skirt's sway (TENNIS SKIRT / KILT, <model>.swish): the body's radii as a texture, the hips' centre and the most a
+// vertex moves (c: x, z, max, 0), the rows (p: first row's height, 1 / row step, rows, columns), its height (waist, hem)
+struct SwishShape { GLuint tex = 0; float c[4] = {0, 0, 0, 0}, p[4] = {0, 0, 0, 0}; float waistY = 0, hemY = 0; int kind = 0; };
+
 struct DrawParams {
     float tintMul[4] = {1, 1, 1, 1};
     float emissiveAdd[4] = {0, 0, 0, 0};
@@ -55,6 +59,13 @@ struct DrawParams {
     float rim[4] = {0, 0, 0, 0};
     GLuint pattern = 0;
     const Mat4* bones = nullptr;   // skinned models: the 9 avatar bone matrices (avatar.h BONE_*; bind -> world, before `model`)
+    // THE REACH: the body bending at the waist: bone 0 (the torso) is `pelvis` below the waist, bones[0] above it, blended
+    // over the waist by the bind-space height (avatar.h kWaistLow / kWaistHigh); null: the torso one piece
+    const Mat4* pelvis = nullptr;
+    const float* twist = nullptr;   // FOREARM TWIST: 8 vec4 (avatar::Rig::twist); null: none
+    // TENNIS SKIRT / KILT: the swing (x, z, twist, lift: avatar::Swish) and the garment's shape (its .swish file)
+    const float* swish = nullptr;
+    const struct SwishShape* swishShape = nullptr;
     // hair under headgear: a tuckTexture() (per direction from tuckC, model space, the radius the hair stays inside)
     GLuint tuck = 0;
     float tuckC[3] = {0, 0, 0};
@@ -95,6 +106,7 @@ public:
     GLuint texture(const char* name, bool srgb) { return loadTexture(name, srgb); }   // tex/<name>.tex, cached
     // a hair tuck map (w x h radius bytes, rows from straight down; tools/build_open_assets.py write_tuck) as a texture
     GLuint tuckTexture(int w, int h, const uint8_t* v);
+    GLuint swishTexture(int cols, int rows, const float* v);
     void drawScreenTexture(GLuint tex, float alpha);   // full-view overlay (cross-fades), bottom-up texture
     // a finished frame (sRGB texture, premultiplied, transparent behind) to the bound framebuffer as straight alpha for a
     // capture that keeps transparency (OBS Game Capture > Allow Transparency); additive glows become see-through light
@@ -119,7 +131,7 @@ private:
     float side_[2][3] = {{0.1f, 0.7f, 1.0f}, {1.0f, 0.4f, 0.1f}};
     GLint dMVP_ = -1, dModel_ = -1, dDepthVP_ = -1, dDepthView_ = -1, dNearFar_ = -1, dLayer_ = -1, dTex_ = -1, dCol_ = -1;
     GLint uUVOff_ = -1, uErode_ = -1, uRim_ = -1, uPattern_ = -1, uPatCol_ = -1, uPatGlow_ = -1;
-    GLint uSkinned_ = -1, uBones_ = -1, uDesign_ = -1, uDesCol_ = -1, uDesGlow_ = -1;
+    GLint uSkinned_ = -1, uBones_ = -1, uBend_ = -1, uPelvis_ = -1, uTwist_ = -1, uTw_ = -1, uSwish_ = -1, uSw_ = -1, uSwC_ = -1, uSwP_ = -1, uDesign_ = -1, uDesCol_ = -1, uDesGlow_ = -1;
     GLint uChar_ = -1, uCloth_ = -1, uTuck_ = -1, uTuckC_ = -1, uDecals_ = -1, uDecalM_ = -1;
     GLuint fabricTex_ = 0;   // open_fabric: the knit for MAT_CLOTH
     GLint uMVP_, uModel_, uShader_, uTint_, uEmissive_, uUV_, uHasDiffuse_, uHasMask_, uTeam0_, uTeam1_, uEye_, uLightDir_;

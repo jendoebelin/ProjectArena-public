@@ -14,16 +14,19 @@ copy /y "%NDKINC%\GLES3\gl3.h" "%INC%\GLES3\" >nul || exit /b 1
 copy /y "%NDKINC%\GLES3\gl3platform.h" "%INC%\GLES3\" >nul || exit /b 1
 copy /y "%NDKINC%\KHR\khrplatform.h" "%INC%\KHR\" >nul || exit /b 1
 python -I "%ROOT%\tools\write_servers_header.py" || exit /b 1
+rem the sources: app\src, or PA_SRC: a release's, the public form of the source (tools\public_source.py, without
+rem the private cross-play code; the owner, 2026-11-18)
+if not defined PA_SRC set "PA_SRC=%ROOT%\app\src"
 if not exist "%OUT%" mkdir "%OUT%"
 if not exist "%ROOT%\build\pc\obj" mkdir "%ROOT%\build\pc\obj"
 rem the icon (taskbar, title bar, Explorer): every build embeds app\src\pc\ProjectArena.ico
 rc /nologo /fo "%ROOT%\build\pc\obj\ProjectArena.res" "%ROOT%\app\src\pc\ProjectArena.rc" || exit /b 1
 set XP_SRC=
 cl /nologo /std:c++17 /O2 /EHsc /W3 /MT /D_CRT_SECURE_NO_WARNINGS /D_WINSOCK_DEPRECATED_NO_WARNINGS /DPROJECTARENA_QUIET ^
-   /I"%ROOT%\app\src" /I"%INC%" /I"%OXR%" /Fo"%ROOT%\build\pc\obj\\" /Fe"%OUT%\ProjectArena.exe" ^
-   "%ROOT%\app\src\main.cpp" "%ROOT%\app\src\render.cpp" "%ROOT%\app\src\audio.cpp" "%ROOT%\app\src\game.cpp" ^
-   "%ROOT%\app\src\net.cpp" "%ROOT%\app\src\record.cpp" "%ROOT%\app\src\training.cpp" "%ROOT%\app\src\sound_studio.cpp" "%ROOT%\app\src\entitlement.cpp" %XP_SRC% "%ROOT%\app\src\avatar.cpp" "%ROOT%\app\src\log.cpp" "%ROOT%\app\src\platform.cpp" ^
-   "%ROOT%\app\src\pc\gl_pc.cpp" "%ROOT%\app\src\pc\xr_loader.cpp" "%ROOT%\app\src\pc\discord_rpc.cpp" "%ROOT%\app\src\pc\webcam.cpp" "%ROOT%\app\src\pc\updater.cpp" "%ROOT%\build\pc\obj\ProjectArena.res" ^
+   /I"%PA_SRC%" /I"%INC%" /I"%OXR%" /Fo"%ROOT%\build\pc\obj\\" /Fe"%OUT%\ProjectArena.exe" ^
+   "%PA_SRC%\main.cpp" "%PA_SRC%\render.cpp" "%PA_SRC%\audio.cpp" "%PA_SRC%\game.cpp" ^
+   "%PA_SRC%\net.cpp" "%PA_SRC%\record.cpp" "%PA_SRC%\training.cpp" "%PA_SRC%\sound_studio.cpp" "%PA_SRC%\entitlement.cpp" %XP_SRC% "%PA_SRC%\avatar.cpp" "%PA_SRC%\log.cpp" "%PA_SRC%\platform.cpp" ^
+   "%PA_SRC%\pc\gl_pc.cpp" "%PA_SRC%\pc\xr_loader.cpp" "%PA_SRC%\pc\discord_rpc.cpp" "%PA_SRC%\pc\webcam.cpp" "%PA_SRC%\pc\updater.cpp" "%ROOT%\build\pc\obj\ProjectArena.res" ^
    /link /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup opengl32.lib user32.lib gdi32.lib ws2_32.lib ole32.lib shell32.lib advapi32.lib hid.lib setupapi.lib mfplat.lib mf.lib mfreadwrite.lib mfuuid.lib comctl32.lib winhttp.lib bcrypt.lib || exit /b 1
 robocopy "%ROOT%\app\assets_open" "%OUT%\assets" /MIR /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 exit /b 1

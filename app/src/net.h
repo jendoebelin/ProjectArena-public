@@ -250,6 +250,7 @@ public:
     const char* status() const;
     void sendState(const Game& g);    // host: the post-step snapshot to every member and spectator
     static size_t snapshotBytes(const Game& g);   // a STATE packet's size with a full event log (tests: the relay's 1200)
+    static bool snapshotInto(const Game& g, Game& into);   // g's STATE read into another game, as a spectator's (tests)
     struct SentEvent { uint32_t id; double t; GameEvent e; };
 
 private:
@@ -360,7 +361,8 @@ private:
     uint32_t seq_ = 0, lastRecvSeq_ = 0, lastRoomSeq_ = 0;
     uint32_t statRecv_ = 0, statLost_ = 0, statLate_ = 0;
     float pingAvg_ = -1;           // BALL LOOK-AHEAD: the round trip (ms), smoothed
-    bool lookAhead_ = false;       // (off unless the player turns it on: owner, 2026-11-05)
+    bool lookAhead_ = true;        // (on by default from 0.3.21: owner, 2026-11-17, after a player's lag report; it was
+                                   // off while it was tried, owner 2026-11-05)
     double stateAt_ = 0;           // when the latest snapshot came (Net's clock)
     double hostOff_ = 0;           // the host's game clock minus ours, from its quickest snapshot
     bool hostOffSet_ = false;

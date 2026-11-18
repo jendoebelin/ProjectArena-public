@@ -269,6 +269,7 @@ void Audio::onEvent(const GameEvent& e, const Vec3& listener, bool ours, const V
     if (e.type == EventType::HitPlayer) key = ours ? "HitPlayerSelf" : "HitPlayerOpponent";
     if (e.type == EventType::RoundEnd || e.type == EventType::MatchEnd) key += ours ? "Win" : "Lose";
     if (e.type == EventType::Throw) key = e.value < 6 ? "ThrowSlow" : e.value < 9 ? "ThrowMed" : e.value < 12 ? "ThrowFast" : "ThrowFull";
+    if (e.type == EventType::KnuckleBlock && e.value >= 12.f) key = "KnucklePunch";   // (THE PUNCH LANDS: a hard one, its crack)
     const bool duck = e.type == EventType::RoundEnd || e.type == EventType::MatchEnd;   // (the crowd's roar: under voices)
     {   // (SOUND STUDIO's choice for it)
         auto o = override_.find(key);

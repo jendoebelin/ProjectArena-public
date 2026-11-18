@@ -1,4 +1,5 @@
 #include "avatar.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -12,8 +13,10 @@ struct Swatch { const char* name; uint8_t r, g, b; };   // sRGB
 
 const char* kSuit[] = {"GRID RUNNER", "ARENA JERSEY", "VANGUARD", "STREET JACKET", "HOODIE", "ECHO SUIT", "TANK TOP", "PILOT",
                        "CIRCUIT VEST", "TRAINING TEE", "CIRCUIT RUNNER",   // 10: modelled traces with moving pulses
-                       "GRID RUNNER LIVE", "ECHO SUIT LIVE", "CIRCUIT VEST LIVE"};   // 11-13: their glow lines raised, pulsing
-const char* kLower[] = {"NONE", "ATHLETIC SHORTS", "CIRCUIT SHORTS", "BIKE SHORTS"};
+                       "GRID RUNNER LIVE", "ECHO SUIT LIVE", "CIRCUIT VEST LIVE",   // 11-13: their glow lines raised, pulsing
+                       "VECTOR", "NIGHTFORGE"};   // 14, 15: PR #25 (their own LOWER BODY 1-4; older versions: GRID RUNNER)
+const char* kLower[] = {"NONE", "ATHLETIC SHORTS", "CIRCUIT SHORTS", "BIKE SHORTS",
+                        "LONG SHORTS", "TENNIS SKIRT", "KILT"};   // 4-6: PR #25 (the skirts sway; older versions: NONE)
 const char* kBody[] = {"MASCULINE", "FEMININE"};
 const char* kGauntlet[] = {"STRIKER", "TITAN", "PHANTOM", "CONTROLLER"};
 const char* kFace[] = {"FACE 1", "FACE 2", "FACE 3", "FACE 4"};   // tools/blender/make_body.py FACES (FACE 1 = the base)
@@ -22,7 +25,8 @@ const char* kPattern[] = {"NONE", "CIRCUIT", "STRIPES", "CHEVRON", "HEX", "SPLIT
 const char* kPatternTex[] = {nullptr, "open_pat_circuit", "open_pat_stripes", "open_pat_chevron", "open_pat_hex",
                              "open_pat_split", "open_pat_pixel", "open_pat_bands"};
 const char* kHair[] = {"NONE", "BUZZ CUT", "SWEPT", "PONYTAIL", "MOHAWK", "SPIKES", "BOB", "TOP KNOT", "TOUSLED"};
-const char* kHeadgear[] = {"NONE", "GRID HELMET", "RACER HELMET", "HOOD", "CREST HELMET", "HEADPHONES", "CAP"};
+const char* kHeadgear[] = {"NONE", "GRID HELMET", "RACER HELMET", "HOOD", "CREST HELMET", "HEADPHONES", "CAP",
+                           "HORNED HELMET", "VECTOR HELMET"};   // 7, 8: PR #25 (older versions: NONE)
 const char* kVisor[] = {"NONE", "BAND VISOR", "FULL SHIELD", "SHADES", "GOGGLES", "HEADSET", "HALO", "SLIT VISOR"};
 const char* kMask[] = {"NONE", "MOUTH GUARD", "CYBER JAW", "BREATHER", "BANDANA", "FACEPLATE"};
 
@@ -241,7 +245,7 @@ AvatarDesc uniform(const AvatarDesc& in) {
     if (!N) return d;
     d.suit = 1;      // ARENA JERSEY
     d.pattern = 0;
-    if (d.lower != 3) d.lower = 1;   // ATHLETIC SHORTS (BIKE SHORTS stay)
+    if (d.lower == 0 || d.lower == 2) d.lower = 1;   // ATHLETIC SHORTS (BIKE, LONG SHORTS and the skirts stay)
     d.primary = (uint8_t)nearest(kSuitCol, count(kSuitCol), 0, N->kit[0]);
     d.secondary = (uint8_t)nearest(kSuitCol, count(kSuitCol), 0, N->kit[kitTrim(N)]);
     d.glow = (uint8_t)nearest(kGlowCol, count(kGlowCol), 1, N->kit[2]);
@@ -392,10 +396,105 @@ Vec3 elbowIK(const Vec3& s, const Vec3& w, float l1, float l2, const Vec3& pole)
 }
 
 #include "avatar_bodies.inc"
+#include "avatar_torso.inc"
+
+// ---------------------------------------------------------------- ELBOWS OUT OF THE BODY
+// (owner, 2026-11-16, her video in the builder's mirror: hands together at the chest, the elbows sank into the torso and
+// the forearms came out of the chest: the elbow was placed without the body in mind)
+namespace {
+// how deep a point (torso space with the build's scale taken out) is inside the torso grown by `grow` (0: outside,
+// or above the chest / below the hips, where the shoulders and legs are)
+float torsoDepth(const TorsoShape& T, const Vec3& p, float grow) {
+    const float fi = (p.y - kTorsoY0) / kTorsoDY;   // (the slices go down)
+    if (fi < -0.5f || fi > kTorsoSlices - 0.5f) return 0.f;
+    const int i0 = std::max(0, std::min(kTorsoSlices - 1, int(std::floor(fi))));
+    const int i1 = std::min(kTorsoSlices - 1, i0 + 1);
+    const float fy = clampf(fi - float(i0), 0.f, 1.f);
+    const float cz = T.cz[i0] + (T.cz[i1] - T.cz[i0]) * fy;
+    const float fs = (std::atan2(p.z - cz, p.x) + kPi) / (2.f * kPi) * kTorsoSectors - 0.5f;
+    const float fl = std::floor(fs);
+    const int k0 = ((int(fl) % kTorsoSectors) + kTorsoSectors) % kTorsoSectors, k1 = (k0 + 1) % kTorsoSectors;
+    const float fk = fs - fl;
+    auto at = [&](int i) { return T.r[i][k0] + (T.r[i][k1] - T.r[i][k0]) * fk; };
+    const float R = at(i0) + (at(i1) - at(i0)) * fy;
+    return std::max(0.f, R + grow - std::sqrt(p.x * p.x + (p.z - cz) * (p.z - cz)));
+}
+
+float armInTorso(const TorsoShape& T, const Pose& torso, const Vec3& scale, const Vec3& S, const Vec3& E, const Vec3& W,
+                 float upperR, float foreR) {
+    auto local = [&](const Vec3& p) {
+        const Vec3 q = torso.q.conj().rotate(p - torso.p);
+        return Vec3{q.x / scale.x, q.y, q.z / scale.z};
+    };
+    float worst = 0.f;
+    for (int i = 0; i <= 4; ++i)   // the upper arm from halfway (by the shoulder it meets the body by design) to the elbow
+        worst = std::max(worst, torsoDepth(T, local(lerp(S, E, 0.5f + 0.125f * i)), upperR));
+    for (int i = 1; i <= 4; ++i)   // the forearm from the elbow to the cuff's rim (its last half is inside the gauntlet's
+        worst = std::max(worst, torsoDepth(T, local(lerp(E, W, 0.1375f * i)), foreR));   // cuff, on the controller)
+    return worst;
+}
+
+// the elbow E0 (on the circle the two bones allow round the shoulder-to-wrist line) swung the least way round it until
+// the arm is no deeper in the torso than `allow`: out to the side rather than in (going in counts half as far again),
+// and only as far as it must, so it starts from where it was as soon as the arm meets the body (no jumps)
+Vec3 elbowClear(const TorsoShape& T, const Pose& torso, const Vec3& scale, float side, const Vec3& S, const Vec3& W,
+                const Vec3& E0, float upperR, float foreR, float allow) {
+    if (armInTorso(T, torso, scale, S, E0, W, upperR, foreR) <= allow) return E0;
+    const Vec3 sw = W - S;
+    const float d = length(sw);
+    if (d < 1e-4f) return E0;
+    const Vec3 n = sw / d;
+    const Vec3 C = S + n * dot(E0 - S, n);
+    Vec3 u = E0 - C;
+    const float rho = length(u);
+    if (rho < 0.01f) return E0;   // (the arm straight: nothing to swing)
+    u = u / rho;
+    const Vec3 v = cross(n, u);
+    auto at = [&](float phi) { return C + (u * std::cos(phi) + v * std::sin(phi)) * rho; };
+    auto depth = [&](float phi) { return armInTorso(T, torso, scale, S, at(phi), W, upperR, foreR); };
+    // which way round is out: the way the elbow first moves away from the torso's middle line
+    const Vec3 outward = torso.q.rotate({side, 0, 0});
+    const float outSign = dot(v, outward) >= 0 ? 1.f : -1.f;
+    const float step = deg2rad(4.f), most = deg2rad(140.f);
+    float found[2] = {-1.f, -1.f};   // [0] outward, [1] inward: the first clear angle
+    float bestPhi = 0.f, bestDepth = 1e9f;
+    for (int w = 0; w < 2; ++w) {
+        const float sgn = w == 0 ? outSign : -outSign;
+        float prev = 0.f;
+        for (float a = step; a <= most + 1e-4f; a += step) {
+            const float dd = depth(sgn * a);
+            if (dd < bestDepth - 1e-4f) { bestDepth = dd; bestPhi = sgn * a; }
+            if (dd <= allow) {   // clear: halve back toward the last step that wasn't
+                float lo = prev, hi = a;
+                for (int i = 0; i < 4; ++i) {
+                    const float mid = (lo + hi) * 0.5f;
+                    (depth(sgn * mid) <= allow ? hi : lo) = mid;
+                }
+                found[w] = hi;
+                break;
+            }
+            prev = a;
+        }
+    }
+    float phi;
+    if (found[0] >= 0 && (found[1] < 0 || found[0] <= found[1] * 1.5f)) phi = outSign * found[0];
+    else if (found[1] >= 0) phi = -outSign * found[1];
+    else phi = bestPhi;   // (it can't clear: the hand is inside the body; as clear as it gets)
+    return at(phi);
+}
+}  // namespace
+
+float armInBody(const Rig& r, const AvatarDesc& d, int k) {
+    const TorsoShape& T = kTorsoShape[bodyType(d)];
+    const Build B = buildOf(d.build);
+    const float thick = B.arm * rigTuning().armThick * rigTuning().armClearShare;
+    return armInTorso(T, r.torso, {B.width, 1.f, B.depth}, r.upper[k].a, r.upper[k].b, r.fore[k].b, T.upperArm * thick,
+                      T.foreArm * thick);
+}
 
 const BodyBind& bodyBind(int body) { return kBodyBind[body < 0 ? 0 : body > 1 ? 1 : body]; }
 
-static Mat4 affineInverse(const Mat4& m) {
+Mat4 affineInverse(const Mat4& m) {
     const float* a = m.m;   // column-major 3x3 + translation
     const float c00 = a[5] * a[10] - a[9] * a[6], c01 = a[8] * a[6] - a[4] * a[10], c02 = a[4] * a[9] - a[8] * a[5];
     const float det = a[0] * c00 + a[1] * c01 + a[2] * c02;
@@ -418,19 +517,404 @@ Pose cuffPose(bool left) {
     return {q, piv + Vec3{s * T.cuffPos.x, T.cuffPos.y, T.cuffPos.z} - q.rotate(piv)};
 }
 
-Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
-    Rig r;
-    const RigTuning& T = rigTuning();
+Pose fistPose() {
+    // turned 30 degrees about the knuckle bumper (game.h Tunables::knuckleOffset, as it stands by default), so the
+    // knuckle glass and the ball stay on it; then 2 cm toward the thumb and 2.5 cm back into the cuff's opening
+    const Vec3 kn{0, -0.026f, -0.057f};
+    const Quat q = Quat::axisAngle({1, 0, 0}, deg2rad(30.f));
+    return {q, kn + Vec3{0, 0.020f, 0.025f} - q.rotate(kn)};
+}
+
+// ---------------------------------------------------------------- HANDS APART
+namespace {
+constexpr float kShapeVoxel = 0.003f;   // the grid's spacing (m)
+constexpr int kShapePad = 3;            // its border, in points
+constexpr float kPointCell = 0.010f;    // one surface point per cell this size
+
+Vec3 xfPoint(const Mat4& m, const Vec3& v) {
+    return {m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z + m.m[12], m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z + m.m[13],
+            m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z + m.m[14]};
+}
+Vec3 xfDir(const Mat4& m, const Vec3& v) {
+    return {m.m[0] * v.x + m.m[4] * v.y + m.m[8] * v.z, m.m[1] * v.x + m.m[5] * v.y + m.m[9] * v.z, m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z};
+}
+
+// the exact squared distance transform along one line (Felzenszwalb and Huttenlocher), in place: f holds 0 at the
+// features and kFar elsewhere
+constexpr float kFar = 1e20f;
+void edtLine(float* f, int n, std::vector<float>& g, std::vector<int>& v, std::vector<float>& z) {
+    int first = 0;
+    while (first < n && f[first] >= kFar) ++first;
+    if (first == n) return;   // (nothing near on this line yet: it stays far)
+    g.assign(f, f + n);
+    v.resize(n);
+    z.resize(n + 1);
+    int k = 0;
+    v[0] = first; z[0] = -1e30f; z[1] = 1e30f;
+    for (int q = first + 1; q < n; ++q) {
+        if (g[q] >= kFar) continue;
+        float s = ((g[q] + float(q) * q) - (g[v[k]] + float(v[k]) * v[k])) / (2.f * (q - v[k]));
+        while (k > 0 && s <= z[k]) {
+            --k;
+            s = ((g[q] + float(q) * q) - (g[v[k]] + float(v[k]) * v[k])) / (2.f * (q - v[k]));
+        }
+        ++k;
+        v[k] = q; z[k] = s; z[k + 1] = 1e30f;
+    }
+    k = 0;
+    for (int q = 0; q < n; ++q) {
+        while (z[k + 1] < q) ++k;
+        f[q] = float(q - v[k]) * (q - v[k]) + g[v[k]];
+    }
+}
+
+// squared distance (in grid steps) from every point to the nearest feature point
+std::vector<float> edt3(const std::vector<uint8_t>& feature, const int n[3]) {
+    const size_t N = size_t(n[0]) * n[1] * n[2];
+    std::vector<float> f(N);
+    for (size_t i = 0; i < N; ++i) f[i] = feature[i] ? 0.f : kFar;
+    std::vector<float> line, g, z;
+    std::vector<int> v;
+    const size_t stride[3] = {1, size_t(n[0]), size_t(n[0]) * n[1]};
+    for (int ax = 0; ax < 3; ++ax) {
+        const int a1 = (ax + 1) % 3, a2 = (ax + 2) % 3;
+        line.resize(n[ax]);
+        for (int j = 0; j < n[a1]; ++j)
+            for (int k = 0; k < n[a2]; ++k) {
+                const size_t base = j * stride[a1] + k * stride[a2];
+                for (int i = 0; i < n[ax]; ++i) line[i] = f[base + i * stride[ax]];
+                edtLine(line.data(), n[ax], g, v, z);
+                for (int i = 0; i < n[ax]; ++i) f[base + i * stride[ax]] = line[i];
+            }
+    }
+    return f;
+}
+}  // namespace
+
+void buildHandShape(HandShape& s, const uint8_t* verts, int stride, int nv, const uint32_t* idx, int ni, const Mat4& toFrame,
+                    int sides) {
+    s = HandShape();
+    if (nv <= 0 || ni < 3) return;
+    std::vector<Vec3> P(nv);
+    Vec3 lo{1e9f, 1e9f, 1e9f}, hi{-1e9f, -1e9f, -1e9f};
+    for (int i = 0; i < nv; ++i) {
+        float p[3];
+        std::memcpy(p, verts + size_t(i) * stride, 12);
+        P[i] = xfPoint(toFrame, {p[0], p[1], p[2]});
+        lo = {std::min(lo.x, P[i].x), std::min(lo.y, P[i].y), std::min(lo.z, P[i].z)};
+        hi = {std::max(hi.x, P[i].x), std::max(hi.y, P[i].y), std::max(hi.z, P[i].z)};
+    }
+    const float h = kShapeVoxel;
+    s.h = h;
+    s.lo = lo - Vec3{h, h, h} * float(kShapePad);
+    const Vec3 span = hi - lo;
+    s.n[0] = int(std::ceil(span.x / h)) + 2 * kShapePad + 1;
+    s.n[1] = int(std::ceil(span.y / h)) + 2 * kShapePad + 1;
+    s.n[2] = int(std::ceil(span.z / h)) + 2 * kShapePad + 1;
+    if (s.n[0] * s.n[1] * s.n[2] > 400000) { s = HandShape(); return; }   // (not a hand)
+    const int* n = s.n;
+    const size_t N = size_t(n[0]) * n[1] * n[2];
+    auto at = [&](int x, int y, int z) { return (size_t(z) * n[1] + y) * n[0] + x; };
+    // the surface: each triangle sampled half a step apart, its grid points marked; one surface point kept for
+    // each centimetre cell (the first one sampled there)
+    std::vector<uint8_t> surf(N, 0);
+    std::vector<Vec3> samples;
+    const int cells[3] = {int(span.x / kPointCell) + 1, int(span.y / kPointCell) + 1, int(span.z / kPointCell) + 1};
+    std::vector<uint8_t> cellTaken(size_t(cells[0]) * cells[1] * cells[2], 0);
+    for (int t = 0; t + 2 < ni; t += 3) {
+        if (idx[t] >= uint32_t(nv) || idx[t + 1] >= uint32_t(nv) || idx[t + 2] >= uint32_t(nv)) continue;
+        const Vec3 A = P[idx[t]], B = P[idx[t + 1]], C = P[idx[t + 2]];
+        const float e = std::max(length(B - A), std::max(length(C - B), length(A - C)));
+        const int m = std::max(1, std::min(200, int(std::ceil(e / (h * 0.5f)))));
+        for (int i = 0; i <= m; ++i)
+            for (int j = 0; i + j <= m; ++j) {
+                const float u = float(i) / m, w = float(j) / m;
+                const Vec3 p = A * u + B * w + C * (1.f - u - w);
+                const int gx = int(std::floor((p.x - s.lo.x) / h + 0.5f)), gy = int(std::floor((p.y - s.lo.y) / h + 0.5f)),
+                          gz = int(std::floor((p.z - s.lo.z) / h + 0.5f));
+                if (gx < 0 || gy < 0 || gz < 0 || gx >= n[0] || gy >= n[1] || gz >= n[2]) continue;
+                surf[at(gx, gy, gz)] = 1;
+                const int cx = std::min(cells[0] - 1, std::max(0, int((p.x - lo.x) / kPointCell)));
+                const int cy = std::min(cells[1] - 1, std::max(0, int((p.y - lo.y) / kPointCell)));
+                const int cz = std::min(cells[2] - 1, std::max(0, int((p.z - lo.z) / kPointCell)));
+                uint8_t& taken = cellTaken[(size_t(cz) * cells[1] + cy) * cells[0] + cx];
+                if (!taken) { taken = 1; samples.push_back(p); }
+            }
+    }
+    // inside: the surface on at least `sides` of the six directions along the axes
+    std::vector<uint8_t> count(N, 0);
+    for (int ax = 0; ax < 3; ++ax) {
+        const int a1 = (ax + 1) % 3, a2 = (ax + 2) % 3;
+        for (int j = 0; j < n[a1]; ++j)
+            for (int k = 0; k < n[a2]; ++k) {
+                int c[3];
+                c[a1] = j; c[a2] = k;
+                bool seen = false;
+                for (int i = 0; i < n[ax]; ++i) { c[ax] = i; const size_t q = at(c[0], c[1], c[2]); seen |= surf[q] != 0; count[q] += seen; }
+                seen = false;
+                for (int i = n[ax] - 1; i >= 0; --i) { c[ax] = i; const size_t q = at(c[0], c[1], c[2]); seen |= surf[q] != 0; count[q] += seen; }
+            }
+    }
+    std::vector<uint8_t> solid(N), empty(N);
+    for (size_t q = 0; q < N; ++q) { solid[q] = surf[q] || count[q] >= sides; empty[q] = !solid[q]; }
+    const std::vector<float> toSolid = edt3(solid, n), toEmpty = edt3(empty, n);
+    s.d.resize(N);
+    for (size_t q = 0; q < N; ++q) {   // (zero through the outermost solid points: the surface runs through them)
+        const float mm = solid[q] ? -(float(std::sqrt(toEmpty[q])) - 1.f) * h * 1000.f : float(std::sqrt(toSolid[q])) * h * 1000.f;
+        s.d[q] = int8_t(std::max(-120.f, std::min(120.f, std::round(mm))));
+    }
+    // the surface points on its outside (not those within it, such as the dark grip inside the fist)
+    for (const Vec3& p : samples)
+        if (s.dist(p) > -h * 1.5f) s.pts.push_back(p);
+    if (s.pts.empty()) { s = HandShape(); return; }
+    Vec3 plo{1e9f, 1e9f, 1e9f}, phi{-1e9f, -1e9f, -1e9f};
+    for (const Vec3& p : s.pts) {
+        plo = {std::min(plo.x, p.x), std::min(plo.y, p.y), std::min(plo.z, p.z)};
+        phi = {std::max(phi.x, p.x), std::max(phi.y, p.y), std::max(phi.z, p.z)};
+    }
+    s.c = (plo + phi) * 0.5f;
+    for (const Vec3& p : s.pts) s.r = std::max(s.r, length(p - s.c));
+    s.r += h;
+}
+
+float HandShape::dist(const Vec3& p) const {
+    if (d.empty()) return 1.f;
+    const float g[3] = {(p.x - lo.x) / h, (p.y - lo.y) / h, (p.z - lo.z) / h};
+    float off2 = 0, f[3];
+    int i0[3];
+    for (int k = 0; k < 3; ++k) {
+        const float c = std::max(0.f, std::min(float(n[k] - 1), g[k]));
+        off2 += (g[k] - c) * (g[k] - c);
+        i0[k] = std::min(n[k] - 2, int(c));
+        f[k] = c - i0[k];
+    }
+    auto v = [&](int dx, int dy, int dz) { return float(d[(size_t(i0[2] + dz) * n[1] + (i0[1] + dy)) * n[0] + (i0[0] + dx)]); };
+    const float x00 = v(0, 0, 0) + (v(1, 0, 0) - v(0, 0, 0)) * f[0], x10 = v(0, 1, 0) + (v(1, 1, 0) - v(0, 1, 0)) * f[0];
+    const float x01 = v(0, 0, 1) + (v(1, 0, 1) - v(0, 0, 1)) * f[0], x11 = v(0, 1, 1) + (v(1, 1, 1) - v(0, 1, 1)) * f[0];
+    const float y0 = x00 + (x10 - x00) * f[1], y1 = x01 + (x11 - x01) * f[1];
+    return (y0 + (y1 - y0) * f[2]) * 0.001f + std::sqrt(off2) * h;
+}
+
+Vec3 HandShape::normal(const Vec3& p) const {
+    const float e = h * 0.75f;
+    const Vec3 g{dist(p + Vec3{e, 0, 0}) - dist(p - Vec3{e, 0, 0}), dist(p + Vec3{0, e, 0}) - dist(p - Vec3{0, e, 0}),
+                 dist(p + Vec3{0, 0, e}) - dist(p - Vec3{0, 0, e})};
+    const float l = length(g);
+    if (l > 1e-6f) return g / l;
+    const Vec3 o = p - c;   // (flat there: straight out from the middle)
+    return length(o) > 1e-6f ? normalize(o) : Vec3{0, 1, 0};
+}
+
+namespace {
+// how deep any surface point of either hand is inside the other, with hand b moved S against hand a; `vote` (when
+// given) adds up each one's way out for hand b, by its depth; it stops early once one is deeper than `enough`
+float apartDepth(const HandPart* a, int na, const HandPart* b, int nb, const Vec3& S, Vec3* vote, float enough) {
+    float deepest = 0;
+    for (int i = 0; i < na; ++i)
+        for (int j = 0; j < nb; ++j) {
+            const HandPart& A = a[i];
+            const HandPart& B = b[j];
+            if (!A.shape || !B.shape || !A.shape->valid() || !B.shape->valid()) continue;
+            const Vec3 ca = xfPoint(A.place, A.shape->c), cb = xfPoint(B.place, B.shape->c) + S;
+            if (length(ca - cb) > A.shape->r + B.shape->r) continue;
+            for (const Vec3& p : A.shape->pts) {   // a's surface inside b: b goes back, the way out of b reversed
+                const Vec3 w = xfPoint(A.place, p);
+                if (length(w - cb) > B.shape->r) continue;
+                const Vec3 q = xfPoint(B.inv, w - S);
+                const float d = B.shape->dist(q);
+                if (d >= 0) continue;
+                deepest = std::max(deepest, -d);
+                if (vote) *vote = *vote + xfDir(B.place, B.shape->normal(q)) * d;
+                else if (deepest > enough) return deepest;
+            }
+            for (const Vec3& p : B.shape->pts) {   // b's surface inside a: b goes on, the way out of a
+                const Vec3 w = xfPoint(B.place, p) + S;
+                if (length(w - ca) > A.shape->r) continue;
+                const Vec3 q = xfPoint(A.inv, w);
+                const float d = A.shape->dist(q);
+                if (d >= 0) continue;
+                deepest = std::max(deepest, -d);
+                if (vote) *vote = *vote + xfDir(A.place, A.shape->normal(q)) * -d;
+                else if (deepest > enough) return deepest;
+            }
+        }
+    return deepest;
+}
+
+constexpr float kApartTouch = 0.001f;   // deeper than this, they cross (m)
+constexpr float kApartStep = 0.004f;
+
+// the least distance along D from which, out to maxShift, the hands stay apart (stepped, then halved down); more
+// than maxShift when they don't come apart within it
+float apartAlong(const HandPart* a, int na, const HandPart* b, int nb, const Vec3& D, float maxShift) {
+    float last = 0;   // the furthest step at which they still cross (0: only where they are)
+    for (float t = kApartStep; t < maxShift + kApartStep * 0.5f; t += kApartStep)
+        if (apartDepth(a, na, b, nb, D * t, nullptr, kApartTouch) > kApartTouch) last = t;
+    if (last >= maxShift - kApartStep * 0.5f) return maxShift * 2.f;
+    float lo = last, hi = std::min(maxShift, last + kApartStep);
+    for (int i = 0; i < 3; ++i) {
+        const float mid = (lo + hi) * 0.5f;
+        (apartDepth(a, na, b, nb, D * mid, nullptr, kApartTouch) > kApartTouch ? lo : hi) = mid;
+    }
+    return hi;
+}
+}  // namespace
+
+namespace {
+// the closest points of segments p0-p1 and q0-q1
+void closestOnSegments(const Vec3& p0, const Vec3& p1, const Vec3& q0, const Vec3& q1, Vec3& cp, Vec3& cq) {
+    const Vec3 d1 = p1 - p0, d2 = q1 - q0, r = p0 - q0;
+    const float a = dot(d1, d1), e = dot(d2, d2), f = dot(d2, r);
+    float s = 0, t = 0;
+    if (a < 1e-10f && e < 1e-10f) { cp = p0; cq = q0; return; }
+    if (a < 1e-10f) {
+        t = clampf(f / e, 0.f, 1.f);
+    } else {
+        const float c = dot(d1, r);
+        if (e < 1e-10f) {
+            s = clampf(-c / a, 0.f, 1.f);
+        } else {
+            const float b = dot(d1, d2), den = a * e - b * b;
+            s = den > 1e-10f ? clampf((b * f - c * e) / den, 0.f, 1.f) : 0.5f;   // (parallel: their middles)
+            t = (b * s + f) / e;
+            if (t < 0) { t = 0; s = clampf(-c / a, 0.f, 1.f); }
+            else if (t > 1) { t = 1; s = clampf((b - c) / a, 0.f, 1.f); }
+        }
+    }
+    cp = p0 + d1 * s;
+    cq = q0 + d2 * t;
+}
+}  // namespace
+
+Vec3 handsApartShift(const HandPart* a, int na, const HandPart* b, int nb, float maxShift) {
+    // The way apart: each hand's middle line (from its fist's middle to its cuff's), and the way from the nearest point
+    // of one to the other's: across when the hands are side by side, over or under when the wrists cross (the way
+    // they already are). Along it, the least distance from which they stay apart. (A way picked from the points inside
+    // went back and forth: sliding apart, hands can first cross deeper, and more than half a fist across, the way out
+    // of it points back; choosing between two ways flipped crossed wrists over and under.)
+    if (na <= 0 || nb <= 0 || !a[0].shape || !b[0].shape || apartDepth(a, na, b, nb, {0, 0, 0}, nullptr, kApartTouch) <= kApartTouch)
+        return {0, 0, 0};
+    auto line = [](const HandPart* h, int n, Vec3& p0, Vec3& p1) {
+        p0 = xfPoint(h[0].place, h[0].shape->c);
+        p1 = n > 1 && h[1].shape && h[1].shape->valid() ? xfPoint(h[1].place, h[1].shape->c) : p0;
+    };
+    Vec3 a0, a1, b0, b1, ca, cb;
+    line(a, na, a0, a1);
+    line(b, nb, b0, b1);
+    closestOnSegments(a0, a1, b0, b1, ca, cb);
+    Vec3 D = cb - ca;
+    if (length(D) < 0.001f) {   // (the middle lines meet: across both, the way from one fist to the other)
+        D = cross(a1 - a0, b1 - b0);
+        if (dot(D, b0 - a0) < 0) D = D * -1.f;
+        if (length(D) < 1e-6f) D = b0 - a0;
+        if (length(D) < 1e-6f) D = {1, 0, 0};
+    }
+    D = normalize(D);
+    return D * std::min(maxShift, apartAlong(a, na, b, nb, D, maxShift));
+}
+
+float handsApartDepth(const HandPart* a, int na, const HandPart* b, int nb, const Vec3& S) {
+    return apartDepth(a, na, b, nb, S, nullptr, 1e9f);
+}
+
+bool handShapeFromModel(HandShape& s, const uint8_t* data, size_t size, const Mat4& toFrame, int sides) {
+    s = HandShape();
+    if (size < 24 || std::memcmp(data, "SMDL", 4) != 0) return false;
+    uint32_t hdr[5];
+    std::memcpy(hdr, data + 4, sizeof hdr);
+    const size_t vsz = hdr[0] >= 3 ? 52 : 44;
+    if (size < 24 + size_t(hdr[1]) * vsz + size_t(hdr[2]) * 4) return false;
+    std::vector<uint32_t> idx(hdr[2]);
+    std::memcpy(idx.data(), data + 24 + size_t(hdr[1]) * vsz, idx.size() * 4);
+    buildHandShape(s, data + 24, int(vsz), int(hdr[1]), idx.data(), int(hdr[2]), toFrame, sides);
+    return s.valid();
+}
+
+Mat4 ueLocalToGrip(Vec3 locCm, Vec3 pyrDeg, Vec3 scale) {
+    float p = deg2rad(pyrDeg.x), y = deg2rad(pyrDeg.y), r = deg2rad(pyrDeg.z);
+    float sp = std::sin(p), cp = std::cos(p), sy = std::sin(y), cy = std::cos(y), sr = std::sin(r), cr = std::cos(r);
+    float R[3][3] = {{cp * cy, cp * sy, sp}, {sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, -sr * cp}, {-(cr * sp * cy + sr * sy), cy * sr - cr * sp * sy, cr * cp}};
+    Mat4 T = Mat4::identity();
+    for (int c = 0; c < 3; ++c) for (int rr = 0; rr < 3; ++rr) T.m[c * 4 + rr] = R[c][rr] * (&scale.x)[c];
+    T.m[12] = locCm.x; T.m[13] = locCm.y; T.m[14] = locCm.z;
+    Mat4 S{};   // gltf (x,y,z) m -> UE (x,z,y) cm
+    S.m[0] = 100; S.m[6] = 100; S.m[9] = 100; S.m[15] = 1;
+    Mat4 C{};   // UE cm -> grip (y, z, -x) m
+    C.m[2] = -0.01f; C.m[4] = 0.01f; C.m[9] = 0.01f; C.m[15] = 1;
+    return C * T * S;
+}
+
+// ---------------------------------------------------------------- THE REACH
+// (ProjectArena-public PR #25 and issue #24, taken into the game 2026-11-17 with the owner's go: his
+// reaching, plus ARM SIZING): a hand out of reach swings its shoulder forward about the collarbone's root, the
+// collarbone's skin with it (in #24 the shoulder slid toward the hand while its skin stayed), turns and leans the
+// torso toward it about the neck (the head and the neck's length stay), and the arm never stretches: what is left is a
+// gap between the forearm and the gauntlet, which ARM SIZING closes by lengthening a player's arms to the reach their
+// hands show. With a RigState (one per avatar, stepped once a frame) the torso and shoulders move smoothly; without
+// one, the rig is the posture the moment asks for.
+namespace {
+// the torso leans at most 25 degrees (pitch and roll together) about the neck, bending at the waist: the hips stay
+// upright under it (Rig::pelvis; leant whole, the hips and thighs swung out sideways: owner, 2026-11-17, the pictures,
+// "I don't think that was a correct fix ... why can't we have a lean that is natural")
+constexpr float kMaxTilt = 0.4363323f;
+constexpr float kWaistY = -0.38f;            // the bend's middle (bind space; the shader blends from -0.50 to -0.26)
+constexpr float kMaxProtract = 0.5235988f;   // a collarbone swings forward at most 30 degrees about its root
+constexpr float kRigTau = 0.12f;             // the torso's and shoulders' smoothing (s)
+constexpr float kTorsoSpeed = 2.0943951f;    // ... and their limits: 120 degrees a second
+constexpr float kSlideSpeed = 0.4f;          // ... 40 cm a second
+constexpr float kArmSizing = 1.5f;           // ARM SIZING: the arms lengthen toward a longer reach over this (s)
+constexpr float kMaxArmScale = 1.35f;        // ... at most 35% longer (the feminine avatar's arms are 47 cm: a
+                                             // tall player's reach is 1.3 times that)
+// ... and they shorten toward the longest reach the hands have shown lately (the owner, 2026-11-17, her mirror videos:
+// arms straight in life, the avatar's elbows bent, and nothing ever shortened them): that reach remembered, fading
+// kPeakFall a second once kPeakHold has passed without a reach that long, while a hand is out kPeakOut of the arm's
+// length or more (a full reach in play renews it; hands by the chest in a menu don't shorten them), the arms toward it
+// over kArmShrink, never under kMinArmScale. (Held 20 s, then 0.5% a second until 2026-11-17: a player's and the
+// owner's videos in the mirror, arms fully extended in life and the avatar's elbows bent, long forearms on the
+// masculine body in the short-sleeved team kit; one long reach kept the arms long for minutes)
+constexpr float kMinArmScale = 0.8f;
+constexpr float kPeakHold = 5.f;
+constexpr float kPeakFall = 0.03f;
+constexpr float kPeakOut = 0.85f;
+constexpr float kStraightFrom = 0.96f, kStraightAt = 0.985f;   // FULL REACH, STRAIGHT (solveWith)
+constexpr float kUpperShare = 1.3f;   // the upper arm takes this much of ARM SIZING's change (its share of the length), the forearm the rest
+constexpr float kArmShrink = 6.f;
+constexpr float kTouch = 0.001f;             // an arm that comes within this of its hand reaches it (m)
+float smooth01(float x) { x = clampf(x, 0.f, 1.f); return x * x * (3.f - 2.f * x); }
+
+float wrapAngle(float a) {
+    while (a > kPi) a -= 2.f * kPi;
+    while (a < -kPi) a += 2.f * kPi;
+    return a;
+}
+
+struct RigFrame {
+    const RigTuning* T;
+    const BodyBind* K;
+    Build B;
+    Vec3 scale, neckTop;
+    float headHeading = 0, restOffset = 0;   // the head's heading; the torso's at rest, against it (toward the hands)
+    bool tracked[2];
+    Vec3 W[2];   // where each forearm reaches for: inside the gauntlet's cuff
+    float natural[2];   // each arm's length (tuned, not sized)
+};
+
+RigFrame frameOf(const PlayerInput& in, const AvatarDesc& d) {
+    RigFrame F;
+    F.T = &rigTuning();
+    F.K = &bodyBind(bodyType(d));
+    F.B = buildOf(d.build);
+    const RigTuning& T = *F.T;
+    const BodyBind& K = *F.K;
     const Pose& h = in.head;
-    const Build B = buildOf(d.build);
-    const BodyBind& K = bodyBind(bodyType(d));
-    // the head carries the neck top as in the bind pose; the torso hangs upright below it, so nodding or tilting the
-    // head never swings the body
-    const Vec3 neckTop = h.transform(K.neckTop - K.eye + T.neck);
-    // facing: the head's heading pulled toward the hands (looking aside while throwing keeps the chest on the
-    // throw), never more than 50 degrees from where the head looks (RigTuning torsoFollow / torsoLimitDeg)
+    F.scale = {F.B.width, 1.f, F.B.depth};
+    // the head carries the neck top as in the bind pose; the torso hangs below it, so nodding or tilting the head never
+    // swings the body
+    F.neckTop = h.transform(K.neckTop - K.eye + T.neck);
+    // at rest: the head's heading pulled toward the hands (looking aside while throwing keeps the chest on the throw),
+    // never more than torsoLimitDeg from where the head looks
     const Vec3 hf = flat(h.q.rotate({0, 0, -1}));
-    const Vec3 base0 = neckTop + Vec3{0, -K.neckTop.y, 0};
+    const Vec3 base0 = F.neckTop + Vec3{0, -K.neckTop.y, 0};
     Vec3 f = hf;
     Vec3 mid{0, 0, 0};
     int nt = 0;
@@ -447,73 +931,447 @@ Rig solveRig(const PlayerInput& in, const AvatarDesc& d) {
             f = normalize(hf * c50 + perp * s50);
         }
     }
-    const Quat yaw = Quat::axisAngle({0, 1, 0}, std::atan2(-f.x, -f.z));
-    const Vec3 base = neckTop - yaw.rotate(K.neckTop);
-    r.torso = {yaw, base};
-    const Vec3 fwd = yaw.rotate({0, 0, -1});
-    const float neckLen = length(K.neckTop);
-    r.neck = {neckTop, base, fwd, neckLen};
-    const Bone bindNeck = {K.neckTop, {0, 0, 0}, {0, 0, -1}, neckLen};
-    const Vec3 scale{B.width, 1.f, B.depth};
-    r.skin[BONE_TORSO] = Mat4::fromPose(r.torso, scale);
-    r.skin[BONE_HEAD] = Mat4::fromPose(h) * Mat4::fromPose({Quat{}, Vec3{0, 0, 0} - K.eye});
-    r.skin[BONE_NECK] = boneMatrix(r.neck, false, 1.f) * affineInverse(boneMatrix(bindNeck, false, 1.f));
+    F.headHeading = std::atan2(-hf.x, -hf.z);
+    F.restOffset = wrapAngle(std::atan2(-f.x, -f.z) - F.headHeading);
     for (int k = 0; k < 2; ++k) {
         const float side = k == 1 ? 1.f : -1.f;
-        // natural (bind) lengths for the meshes; the IK uses the tuned ones (the meshes stretch to match)
+        F.tracked[k] = in.hand[k].tracked;
+        // the forearm ends inside the gauntlet's bracer or cuff (RigTuning forearmEnd, carried with the cuff when the
+        // tuning tool moves it; the classic lancer's wrist ring, tools/blender/make_props.py)
+        const Vec3 fe{side * T.forearmEnd.x, T.forearmEnd.y, T.forearmEnd.z};
+        F.W[k] = in.hand[k].grip.transform(gauntletOf(in.avatar) < 3 ? cuffPose(k == 0).transform(fe) : Vec3{side * 0.004f, -0.042f, 0.105f});
+        F.natural[k] = length(K.elbow[k] - K.shoulder[k]) * T.upperLen + length(K.wrist[k] - K.elbow[k]) * T.foreLen;
+    }
+    return F;
+}
+
+// the torso turned by a (x: heading against the head's, y: pitch, z: roll), about the neck
+Quat torsoRot(const RigFrame& F, const Vec3& a) {
+    return Quat::axisAngle({0, 1, 0}, F.headHeading + a.x) * Quat::axisAngle({0, 0, 1}, a.z) * Quat::axisAngle({1, 0, 0}, a.y);
+}
+Pose torsoAt(const RigFrame& F, const Vec3& a) {
+    const Quat q = torsoRot(F, a);
+    return {q, F.neckTop - q.rotate(F.K->neckTop)};
+}
+Vec3 constrain(const RigFrame& F, Vec3 a) {
+    const float lim = deg2rad(F.T->torsoLimitDeg);
+    a.x = clampf(a.x, -lim, lim);
+    const float tilt = std::sqrt(a.y * a.y + a.z * a.z);
+    if (tilt > kMaxTilt) { a.y *= kMaxTilt / tilt; a.z *= kMaxTilt / tilt; }
+    return a;
+}
+
+// the shortest swing of the shoulder about the collarbone's root toward `wanted`, at most kMaxProtract (a swing,
+// never the collarbone sliding)
+Quat protraction(const Vec3& root, const Vec3& shoulder, const Vec3& wanted) {
+    const Vec3 a = shoulder - root, b = wanted - root;
+    if (length2(a) < 1e-8f || length2(b) < 1e-8f) return Quat{};
+    const Vec3 na = normalize(a), nb = normalize(b);
+    const float angle = std::acos(clampf(dot(na, nb), -1.f, 1.f));
+    if (angle < 1e-6f) return Quat{};
+    Vec3 axis = cross(na, nb);
+    if (length2(axis) < 1e-10f) axis = cross(na, Vec3{0, 1, 0});
+    return Quat::axisAngle(normalize(axis), std::min(angle, kMaxProtract));
+}
+
+struct Shoulder {
+    Vec3 S;        // where the arm hangs from
+    Vec3 S0;       // ... before the collarbone's forward swing
+    Vec3 wanted;   // the swing the hand asks for (m, toward it)
+    Mat4 clav;     // the collarbone's skin (bind -> world)
+};
+
+// arm k's shoulder on torso `torso`: lifted with a raised hand (a real one shrugs as the arm goes overhead: the
+// collarbone turned up about a point near the neck, its skin with it, build_body_parts.py), then swung forward
+// about the collarbone's root by `slide` (or as the hand asks, when null); `total`: the arm's length
+Shoulder shoulderOf(const RigFrame& F, int k, const Pose& torso, const Mat4& torsoSkin, float total, const Vec3* slide) {
+    const RigTuning& T = *F.T;
+    const BodyBind& K = *F.K;
+    const float side = k == 1 ? 1.f : -1.f;
+    Shoulder o;
+    const Vec3 rest = torso.transform({K.shoulder[k].x * F.scale.x + side * T.shoulder.x, K.shoulder[k].y + T.shoulder.y,
+                                       K.shoulder[k].z * F.scale.z + T.shoulder.z});
+    // e: 0 with the hand level or below, 1 straight up (the torso's up)
+    const float e = F.tracked[k] ? clampf(dot(normalize(F.W[k] - rest), torso.q.rotate({0, 1, 0})) * 1.4f, 0.f, 1.f) : 0.f;
+    // (the collarbone's root: near the neck; the new bodies bring their own, plan item 22)
+    const Vec3 piv{side * 0.05f, K.shoulder[k].y, K.shoulder[k].z};
+    const float ang = side * std::asin(clampf(T.shrug * e / (std::fabs(K.shoulder[k].x) - 0.05f), 0.f, 0.8f));
+    const Quat cq = Quat::axisAngle({0, 0, 1}, ang);
+    const Vec3 Kr = piv + cq.rotate(K.shoulder[k] - piv);
+    o.S0 = torso.transform({Kr.x * F.scale.x + side * T.shoulder.x, Kr.y + T.shoulder.y, Kr.z * F.scale.z + T.shoulder.z});
+    // a hand beyond reachStart of the arm's length draws the shoulder after it (a real shoulder blade slides), up to
+    // T.reach: now a swing about the collarbone's root. As far as brings the hand in: a swing about the root doesn't
+    // carry the shoulder straight at the hand, so it swings on by what is still left, within T.reach (started early, at
+    // 97% of the arm, it covered that, but held every full reach's elbow bent: a player's video, 2026-11-17)
+    const Vec3 root = torso.transform({piv.x * F.scale.x, piv.y, piv.z * F.scale.z});
+    o.wanted = {0, 0, 0};
+    if (F.tracked[k]) {
+        const Vec3 SW = F.W[k] - o.S0;
+        const float over = length(SW) - total * T.reachStart;
+        if (over > 0) {   // (half a millimetre inside: the forearm then ends on the gauntlet exactly)
+            const Vec3 dir = normalize(SW);
+            const float inside = total * T.reachStart - 5e-4f;
+            float amt = std::min(over + 5e-4f, T.reach);
+            for (int it = 0; it < 4 && amt < T.reach; ++it) {
+                const Vec3 Sx = root + protraction(root, o.S0, o.S0 + dir * amt).rotate(o.S0 - root);
+                const float left = length(F.W[k] - Sx) - inside;
+                if (left <= 0.f) break;
+                amt = std::min(T.reach, amt + left);
+            }
+            o.wanted = dir * amt;
+        }
+    }
+    const Quat pr = protraction(root, o.S0, o.S0 + (slide ? *slide : o.wanted));
+    o.S = root + pr.rotate(o.S0 - root);
+    o.clav = Mat4::fromPose({pr, root - pr.rotate(root)}) * torsoSkin * Mat4::fromPose({cq, piv - cq.rotate(piv)});
+    return o;
+}
+
+// how far arm k falls short of its hand with the torso at a (0: it reaches)
+float shortfall(const RigFrame& F, int k, const Vec3& a, float armScale, const Vec3* slide) {
+    if (!F.tracked[k]) return 0.f;
+    const Pose torso = torsoAt(F, a);
+    const float total = F.natural[k] * armScale;
+    const Shoulder s = shoulderOf(F, k, torso, Mat4::fromPose(torso, F.scale), total, slide);
+    return std::max(0.f, length(F.W[k] - s.S) - total + 2e-4f);
+}
+
+// the torso the moment asks for: at rest, unless a hand is out of reach; then turned and leant the least that brings
+// the hands in (both hands take part; an arm that reaches at rest is kept reaching), by a deterministic descent
+Vec3 targetPosture(const RigFrame& F, float armScale) {
+    Vec3 a = constrain(F, {F.restOffset, 0, 0});
+    const float base[2] = {shortfall(F, 0, a, armScale, nullptr), shortfall(F, 1, a, armScale, nullptr)};
+    if (base[0] <= kTouch && base[1] <= kTouch) return a;
+    const Vec3 rest = a;
+    auto cost = [&](const Vec3& p) {
+        float c = 0.f;
+        for (int k = 0; k < 2; ++k) {
+            const float r = shortfall(F, k, p, armScale, nullptr);
+            if (base[k] <= kTouch && r > kTouch) return 1000.f + r * r;   // (don't pull a reaching arm away)
+            c += r * r;
+        }
+        return c + 0.00001f * length2(p - rest);
+    };
+    float best = cost(a);
+    for (int it = 0; it < 100; ++it) {
+        Vec3 g{};
+        const float eps = 0.0002f;
+        for (int ax = 0; ax < 3; ++ax) {
+            Vec3 plus = a, minus = a;
+            (ax == 0 ? plus.x : ax == 1 ? plus.y : plus.z) += eps;
+            (ax == 0 ? minus.x : ax == 1 ? minus.y : minus.z) -= eps;
+            (ax == 0 ? g.x : ax == 1 ? g.y : g.z) = (cost(constrain(F, plus)) - cost(constrain(F, minus))) / (2.f * eps);
+        }
+        const float g2 = length2(g);
+        if (g2 < 1e-14f) break;
+        Vec3 step = g * -std::min(best / g2, 0.05f / std::sqrt(g2));
+        bool better = false;
+        for (int b = 0; b < 14; ++b) {
+            const Vec3 trial = constrain(F, a + step);
+            const float v = cost(trial);
+            if (v < best - 1e-12f) { a = trial; best = v; better = true; break; }
+            step = step * 0.5f;
+        }
+        if (!better) break;
+    }
+    return a;
+}
+
+// the rig for torso a, the shoulders' swings (null: as the hands ask) and the arms' length
+Rig solveWith(const RigFrame& F, const PlayerInput& in, const AvatarDesc& d, const Vec3& a, const Vec3* slides, float armScale) {
+    Rig r;
+    const RigTuning& T = *F.T;
+    const BodyBind& K = *F.K;
+    const Build& B = F.B;
+    const Quat q = torsoRot(F, a);
+    r.torso = {q, F.neckTop - q.rotate(K.neckTop)};
+    const Vec3 fwd = q.rotate({0, 0, -1});
+    const float neckLen = length(K.neckTop);
+    r.neck = {F.neckTop, r.torso.p, fwd, neckLen};
+    const Bone bindNeck = {K.neckTop, {0, 0, 0}, {0, 0, -1}, neckLen};
+    r.skin[BONE_TORSO] = Mat4::fromPose(r.torso, F.scale);
+    r.skin[BONE_HEAD] = Mat4::fromPose(in.head) * Mat4::fromPose({Quat{}, Vec3{0, 0, 0} - K.eye});
+    r.skin[BONE_NECK] = boneMatrix(r.neck, false, 1.f) * affineInverse(boneMatrix(bindNeck, false, 1.f));
+    r.armScale = armScale;
+    {   // the hips: the torso upright (its heading, no lean), hinged to it at the waist
+        const TorsoShape& TS = kTorsoShape[bodyType(d)];
+        const float wi = clampf((kWaistY - kTorsoY0) / kTorsoDY, 0.f, float(kTorsoSlices - 1));
+        const int i0 = int(wi), i1 = std::min(kTorsoSlices - 1, i0 + 1);
+        const Vec3 waist{0, kWaistY, TS.cz[i0] + (TS.cz[i1] - TS.cz[i0]) * (wi - float(i0))};
+        const Vec3 waistScaled{0, waist.y, waist.z * F.scale.z};
+        const Quat up = Quat::axisAngle({0, 1, 0}, F.headHeading + a.x);
+        r.pelvis = Mat4::fromPose({up, r.torso.transform(waistScaled) - up.rotate(waistScaled)}, F.scale);
+        r.bent = std::fabs(a.y) + std::fabs(a.z) > 1e-4f;
+    }
+    for (int k = 0; k < 2; ++k) {
+        const float side = k == 1 ? 1.f : -1.f;
+        // natural (bind) lengths for the meshes; the IK uses the tuned and sized ones (the meshes stretch to match)
         const float L1 = length(K.elbow[k] - K.shoulder[k]), L2 = length(K.wrist[k] - K.elbow[k]);
-        const float L1t = L1 * T.upperLen, L2t = L2 * T.foreLen;
-        Vec3 S = r.torso.transform({K.shoulder[k].x * scale.x + side * T.shoulder.x, K.shoulder[k].y + T.shoulder.y,
-                                    K.shoulder[k].z * scale.z + T.shoulder.z});
+        // (ARM SIZING's change mostly above the elbow, the reach the same: these avatars' forearms are already as long as
+        // their upper arms, a real one about 4/5; lengthened evenly a long arm's forearm read as Popeye's, the owner's
+        // video of the masculine body in the short-sleeved team kit, 2026-11-17)
+        const float L1u = L1 * T.upperLen, L2f = L2 * T.foreLen, g = armScale - 1.f;
+        const float L1t = L1u * (1.f + g * kUpperShare), L2t = L2f * (1.f + g * (1.f - (kUpperShare - 1.f) * L1u / L2f));
         const Bone bu = {K.shoulder[k], K.elbow[k], (K.wrist[k] - K.elbow[k]) + Vec3{0, 0, -0.3f}, L1};
         const Bone bf = {K.elbow[k], K.wrist[k], K.thumb[k] - K.wrist[k], L2};
         const HandInput& hi = in.hand[k];
-        r.skin[BONE_CLAV_L + k] = r.skin[BONE_TORSO];   // (the collarbone as bound, unless an arm raises it, below)
-        if (!hi.tracked) {   // arms at rest: the bind pose, rotated with the torso
-            r.upper[k] = {S, r.torso.transform(K.elbow[k]), yaw.rotate(bu.front), L1};
-            r.fore[k] = {r.upper[k].b, r.torso.transform(K.wrist[k]), yaw.rotate(bf.front), L2};
+        r.skin[BONE_CLAV_L + k] = r.skin[BONE_TORSO];   // (the collarbone as bound, unless an arm moves it, below)
+        if (!hi.tracked) {   // arms at rest: the bind pose, turned with the torso
+            const Vec3 S = r.torso.transform({K.shoulder[k].x * F.scale.x + side * T.shoulder.x, K.shoulder[k].y + T.shoulder.y,
+                                              K.shoulder[k].z * F.scale.z + T.shoulder.z});
+            r.upper[k] = {S, r.torso.transform(K.elbow[k]), q.rotate(bu.front), L1};
+            r.fore[k] = {r.upper[k].b, r.torso.transform(K.wrist[k]), q.rotate(bf.front), L2};
         } else {
             r.arm[k] = true;
-            // the forearm ends inside the gauntlet's bracer (tools/blender/make_props.py lancer: wrist ring at grip
-            // (0.004, -0.040, 0.050), bracer to z = 0.135). The plate gauntlets' cuffs turn up 30 deg and swing 32 deg
-            // about that wrist ring (WRIST_TILT / WRIST_SWING there): the forearm ends inside the new cuff, but the
-            // elbow is still placed the natural way (straight back from the controller, below the hand): placing it
-            // along the cuff lifted the elbows out whenever the hands were held low.
-            const bool plate = gauntletOf(in.avatar) < 3;
-            // (RigTuning forearmEnd, carried with the cuff when the tuning tool moves it)
-            const Vec3 fe{side * T.forearmEnd.x, T.forearmEnd.y, T.forearmEnd.z};
-            const Vec3 W = hi.grip.transform(plate ? cuffPose(k == 0).transform(fe) : Vec3{side * 0.004f, -0.042f, 0.105f});
+            const Shoulder sh = shoulderOf(F, k, r.torso, r.skin[BONE_TORSO], L1t + L2t, slides ? &slides[k] : nullptr);
+            r.skin[BONE_CLAV_L + k] = sh.clav;
+            const Vec3 S = sh.S, W = F.W[k];
             const Vec3 back = hi.grip.q.rotate(normalize(Vec3{0, -0.047f, 1.f}));
-            // elbow: where a straight wrist would put it, nudged down / out / back so the IK stays stable
-            // a hand raised above the shoulder (e: 0 level or below, 1 straight up): the shoulder lifts with it (a real
-            // one shrugs as the arm goes overhead) and the elbow turns out to the side instead of hanging down
-            // (owner's report 2026-10-27: arms raised to the ceiling folded the shoulders in)
-            const float e = clampf(dot(normalize(W - S), Vec3{0, 1, 0}) * 1.4f, 0.f, 1.f);
-            // the collarbone (BONE_CLAV_*, bind space): turned up about a point near the neck so the shoulder rises
-            // T.shrug with the arm straight up; the skin around the shoulder goes with it (build_body_parts.py)
-            const Vec3 piv{side * 0.05f, K.shoulder[k].y, K.shoulder[k].z};
-            const float ang = side * std::asin(clampf(T.shrug * e / (std::fabs(K.shoulder[k].x) - 0.05f), 0.f, 0.8f));
-            const Quat cq = Quat::axisAngle({0, 0, 1}, ang);
-            r.skin[BONE_CLAV_L + k] = r.skin[BONE_TORSO] * Mat4::fromPose({cq, piv - cq.rotate(piv)});
-            const Vec3 Kr = piv + cq.rotate(K.shoulder[k] - piv);
-            S = r.torso.transform({Kr.x * scale.x + side * T.shoulder.x, Kr.y + T.shoulder.y, Kr.z * scale.z + T.shoulder.z});
-            const Vec3 hang = yaw.rotate({side * T.elbowPole.x, T.elbowPole.y, T.elbowPole.z});
-            const Vec3 out = yaw.rotate({side * 1.0f, 0.15f, 0.35f});
+            // elbow: where a straight wrist would put it, nudged down / out / back so the IK stays stable; a hand raised
+            // above the shoulder turns it out to the side instead of hanging down (owner's report 2026-10-27: arms
+            // raised to the ceiling folded the shoulders in)
+            const float e = clampf(dot(normalize(W - sh.S0), q.rotate({0, 1, 0})) * 1.4f, 0.f, 1.f);
+            const Vec3 hang = q.rotate({side * T.elbowPole.x, T.elbowPole.y, T.elbowPole.z});
+            const Vec3 out = q.rotate({side * 1.0f, 0.15f, 0.35f});
             const Vec3 pole = W + back * (L2t * (1.f - 0.6f * e)) + normalize(lerp(hang, out, e)) * (T.elbowPull + 0.25f * e);
-            // a hand beyond the arm's reach draws the shoulder after it (up to 7 cm, as a real shoulder blade
-            // slides) before the arm has to stretch
+            // never stretched: the forearm ends on the arm's reach; what is left is a gap to the gauntlet (ARM SIZING)
             const Vec3 SW = W - S;
-            const float over = length(SW) - (L1t + L2t) * T.reachStart;
-            if (over > 0) S += normalize(SW) * std::min(over, T.reach);
-            const Vec3 E = elbowIK(S, W, L1t, L2t, pole);
-            r.upper[k] = {S, E, (W - E) + fwd * 0.3f, L1};   // the inner elbow faces the forearm
-            r.fore[k] = {E, W, hi.grip.q.rotate({0, 1, 0}), L2};   // thumb side (controller top) is the front
+            const float dist = length(SW);
+            const Vec3 dir = dist > 1e-5f ? SW / dist : q.rotate({side, 0, 0});
+            // FULL REACH, STRAIGHT (a player's video and the owner's, 2026-11-17: arms fully extended in life, the
+            // avatar's elbows bent): a hand within kStraightAt of the arm's reach is a full reach, the arm drawn straight,
+            // its bones that much shorter (from kStraightFrom, more and more so). An arm sized even 1% long was bent
+            // 11 degrees there, and 3% short of its reach a real arm is bent 28: tracking can't tell those apart
+            float Lu = L1t, Lf = L2t;
+            {
+                const float ext = dist / (L1t + L2t);
+                if (ext > kStraightFrom && ext < 1.f) {
+                    const float f1 = std::min(1.f, (dist + 2.5e-4f) / (L1t + L2t));
+                    const float f = 1.f + (f1 - 1.f) * smooth01((ext - kStraightFrom) / (kStraightAt - kStraightFrom));
+                    Lu *= f;
+                    Lf *= f;
+                }
+            }
+            const Vec3 Wd = S + dir * clampf(dist, std::fabs(Lu - Lf) + 1e-3f, Lu + Lf - 2e-4f);
+            r.reachGap[k] = length(W - Wd);
+            Vec3 E = elbowIK(S, Wd, Lu, Lf, pole);
+            // ELBOWS OUT OF THE BODY (owner, 2026-11-16): swung out round the shoulder-to-wrist line, only as far as
+            // keeps the upper arm and forearm out of the torso (hands together at the chest put them inside it)
+            const TorsoShape& TS = kTorsoShape[bodyType(d)];
+            const float thick = B.arm * T.armThick * T.armClearShare;
+            E = elbowClear(TS, r.torso, F.scale, side, S, Wd, E, TS.upperArm * thick, TS.foreArm * thick, T.elbowAllow);
+            r.upper[k] = {S, E, (Wd - E) + fwd * 0.3f, L1};   // the inner elbow faces the forearm
+            r.fore[k] = {E, Wd, hi.grip.q.rotate({0, 1, 0}), L2};   // thumb side (controller top) is the front
         }
         const bool mir = k == 0;
         r.skin[BONE_UPPER_L + k] = boneMatrix(r.upper[k], mir, B.arm * T.armThick) * affineInverse(boneMatrix(bu, mir, 1.f));
         r.skin[BONE_FORE_L + k] = boneMatrix(r.fore[k], mir, B.arm * T.armThick) * affineInverse(boneMatrix(bf, mir, 1.f));
+        // FOREARM TWIST: the forearm as the upper arm carries it (its bind direction and front, turned the least way onto
+        // where the forearm points) is the untwisted one; the roll is how far the hand's turns it from that, about the
+        // forearm. More than 135 degrees from the hand held thumbs up it fades out (a wrist can't turn that far; at 180 the
+        // turn's side is a guess: no snap from one side to the other)
+        const Mat4& Mu = r.skin[BONE_UPPER_L + k];
+        const Mat4& Mf = r.skin[BONE_FORE_L + k];
+        const Vec3 dv = K.wrist[k] - K.elbow[k];
+        const Vec3 bfront = bf.front - dv * (dot(bf.front, dv) / std::max(1e-8f, dot(dv, dv)));
+        const Vec3 Ew = xfPoint(Mf, K.elbow[k]), dw = xfDir(Mf, dv);
+        const float Lw = std::max(1e-4f, length(dw));
+        const Vec3 ax = dw / Lw;
+        const Vec3 a1 = xfDir(Mu, dv);
+        Vec3 f0 = fromTo(normalize(a1), ax).rotate(xfDir(Mu, bfront)), fa = xfDir(Mf, bfront);
+        f0 = f0 - ax * dot(f0, ax);
+        fa = fa - ax * dot(fa, ax);
+        float roll = 0.f;
+        if (length2(f0) > 1e-10f && length2(fa) > 1e-10f) roll = std::atan2(dot(cross(f0, fa), ax), dot(f0, fa));
+        // (about the hand held thumbs up, where the forearm is turned some 60 degrees out from the bind's: the turns a
+        // wrist makes, about 90 degrees either way, stay clear of the fade)
+        const float neutral = side * 1.0471976f, rel = wrapAngle(roll - neutral);
+        roll = neutral + rel;
+        r.roll[k] = roll;
+        const float fade = 1.f - smooth01((std::fabs(rel) - 2.356194f) / (kPi - 2.356194f));
+        float* t = r.twist;
+        const float v[4][4] = {{K.elbow[k].x, K.elbow[k].y, K.elbow[k].z, 1.f / (0.96f * std::max(1e-8f, dot(dv, dv)))},
+                               {dv.x, dv.y, dv.z, roll * fade},
+                               {Ew.x, Ew.y, Ew.z, 1.f / (0.96f * Lw)},
+                               {ax.x, ax.y, ax.z, 0.f}};
+        for (int j = 0; j < 4; ++j) std::memcpy(t + (2 * j + k) * 4, v[j], sizeof v[j]);
+        if (std::fabs(roll * fade) > 1e-4f) r.twisted = true;
     }
     return r;
+}
+}  // namespace
+
+Rig solveRig(const PlayerInput& in, const AvatarDesc& d, const RigState* st) {
+    const RigFrame F = frameOf(in, d);
+    if (st && st->started) {
+        const Vec3 a = constrain(F, {wrapAngle(st->torso.x - F.headHeading), st->torso.y, st->torso.z});
+        return solveWith(F, in, d, a, st->slide, st->armScale);
+    }
+    const float scale = st ? st->armScale : 1.f;
+    return solveWith(F, in, d, targetPosture(F, scale), nullptr, scale);
+}
+
+// ---------------------------------------------------------------- TENNIS SKIRT and KILT
+// (PR #25: his swish.mjs, the inspector's) The hem's target is where drag and inertia carry it, against the hips'
+// filtered speed and its change, in the garment's frame, at most maxOffset; the twist lags the hips' turn. A damped
+// spring follows them (240 steps a second), never past the bounds. A jump (30 cm or 1 rad in a step), a stall
+// (0.12 s), a step back in time or another skirt: afresh, at rest.
+namespace {
+struct SwishStyle { float omega, damping, maxOffset, maxTwist, drag, inertia, turnLag; };
+const SwishStyle kSwish[2] = {{11.f, 0.61f, 0.065f, 0.23f, 0.025f, 0.007f, 0.10f},    // the tennis skirt
+                              {8.f, 0.72f, 0.05f, 0.17f, 0.020f, 0.006f, 0.12f}};      // the kilt
+}  // namespace
+
+int swishKind(const AvatarDesc& d) { return d.lower == 5 ? 0 : d.lower == 6 ? 1 : -1; }
+
+void stepSwish(Swish& s, int kind, float px, float pz, float yaw, double now) {
+    auto afresh = [&] {
+        s = Swish{};
+        s.kind = kind;
+        s.ready = kind >= 0;
+        s.time = now; s.px = px; s.pz = pz; s.yaw = yaw;
+    };
+    if (kind < 0) { if (s.kind >= 0) s = Swish{}; return; }
+    if (!s.ready || s.kind != kind) { afresh(); return; }
+    const double dtd = now - s.time;
+    if (dtd == 0) return;   // (another draw in the same frame)
+    if (dtd < 0 || dtd > 0.12) { afresh(); return; }
+    const float dt = (float)dtd;
+    const float dx = px - s.px, dz = pz - s.pz, dyaw = wrapAngle(yaw - s.yaw);
+    if (std::hypot(dx, dz) > 0.3f || std::fabs(dyaw) > 1.f) { afresh(); return; }
+    const SwishStyle& c = kSwish[kind];
+    const float alpha = 1.f - std::exp(-dt / 0.045f), ovx = s.fvx, ovz = s.fvz;
+    s.fvx += (clampf(dx / dt, -4.f, 4.f) - s.fvx) * alpha;
+    s.fvz += (clampf(dz / dt, -4.f, 4.f) - s.fvz) * alpha;
+    s.fturn += (clampf(dyaw / dt, -5.f, 5.f) - s.fturn) * alpha;
+    const float ax = clampf((s.fvx - ovx) / dt, -12.f, 12.f), az = clampf((s.fvz - ovz) / dt, -12.f, 12.f);
+    const float cy = std::cos(yaw), sy = std::sin(yaw);
+    float tx = -(cy * s.fvx - sy * s.fvz) * c.drag - (cy * ax - sy * az) * c.inertia;
+    float tz = -(sy * s.fvx + cy * s.fvz) * c.drag - (sy * ax + cy * az) * c.inertia;
+    const float tr = std::hypot(tx, tz);
+    if (tr > c.maxOffset) { tx *= c.maxOffset / tr; tz *= c.maxOffset / tr; }
+    const float tt = clampf(-s.fturn * c.turnLag, -c.maxTwist, c.maxTwist);
+    const int n = std::max(1, (int)std::ceil(dt * 240.f));
+    const float h = dt / (float)n, k = c.omega * c.omega, dd = 2.f * c.damping * c.omega;
+    for (int i = 0; i < n; ++i) {
+        s.vx += (k * (tx - s.x) - dd * s.vx) * h;
+        s.vz += (k * (tz - s.z) - dd * s.vz) * h;
+        s.vt += (k * (tt - s.twist) - dd * s.vt) * h;
+        s.x += s.vx * h; s.z += s.vz * h; s.twist += s.vt * h;
+        const float rr = std::hypot(s.x, s.z);
+        if (rr > c.maxOffset) {
+            s.x *= c.maxOffset / rr; s.z *= c.maxOffset / rr;
+            const float out = (s.vx * s.x + s.vz * s.z) / std::max(rr, 1e-9f);
+            if (out > 0) { s.vx -= out * s.x / c.maxOffset; s.vz -= out * s.z / c.maxOffset; }
+        }
+        if (std::fabs(s.twist) > c.maxTwist) {
+            s.twist = clampf(s.twist, -c.maxTwist, c.maxTwist);
+            if (s.twist * s.vt > 0) s.vt = 0;
+        }
+    }
+    s.time = now; s.px = px; s.pz = pz; s.yaw = yaw;
+}
+
+void stepRig(RigState& st, const PlayerInput& in, const AvatarDesc& d, double now) {
+    if (st.started && now - st.time < 0.0005) return;   // (stepped already this frame: the other draws use it)
+    const RigFrame F = frameOf(in, d);
+    const float dt = st.started ? clampf(float(now - st.time), 0.f, 0.1f) : 0.f;
+    const Vec3 target = targetPosture(F, st.armScale);
+    Vec3 posture = target;
+    if (st.started) {
+        // toward what the moment asks, smoothly (frame-rate independent), never faster than kTorsoSpeed
+        const Vec3 prev = constrain(F, {wrapAngle(st.torso.x - F.headHeading), st.torso.y, st.torso.z});
+        Vec3 delta = (target - prev) * (1.f - std::exp(-dt / kRigTau));
+        const float dl = length(delta), maxStep = kTorsoSpeed * dt;
+        if (dl > maxStep && dl > 0) delta = delta * (maxStep / dl);
+        posture = constrain(F, prev + delta);
+        // a hand that the target reaches but the smoothed torso leaves short: as much further toward the target as
+        // it takes (contact first), then the whole step bounded again (never a snap)
+        auto worst = [&](const Vec3& p) { return std::max(shortfall(F, 0, p, st.armScale, nullptr), shortfall(F, 1, p, st.armScale, nullptr)); };
+        if (worst(posture) > kTouch && worst(target) <= kTouch) {
+            float lo = 0, hi = 1;
+            for (int i = 0; i < 16; ++i) { const float m = (lo + hi) * 0.5f; (worst(lerp(posture, target, m)) <= kTouch ? hi : lo) = m; }
+            posture = lerp(posture, target, hi);
+        }
+        const Quat oldQ = torsoRot(F, prev);
+        auto turned = [&](const Vec3& p) {
+            const Quat qq = torsoRot(F, p);
+            const float c = std::fabs(oldQ.x * qq.x + oldQ.y * qq.y + oldQ.z * qq.z + oldQ.w * qq.w);
+            return 2.f * std::acos(clampf(c, 0.f, 1.f));
+        };
+        if (turned(posture) > maxStep) {
+            const Vec3 want = posture;
+            float lo = 0, hi = 1;
+            for (int i = 0; i < 18; ++i) { const float m = (lo + hi) * 0.5f; (turned(lerp(prev, want, m)) <= maxStep ? lo : hi) = m; }
+            posture = lerp(prev, want, lo);
+        }
+    }
+    st.torso = {F.headHeading + posture.x, posture.y, posture.z};
+    // each shoulder's swing, the same way (40 cm a second at most, contact first)
+    const Pose torso = torsoAt(F, posture);
+    stepSwish(st.swish, swishKind(d), torso.p.x, torso.p.z, st.torso.x, now);   // (TENNIS SKIRT / KILT)
+    const Mat4 torsoSkin = Mat4::fromPose(torso, F.scale);
+    for (int k = 0; k < 2; ++k) {
+        const float total = F.natural[k] * st.armScale;
+        const Shoulder want = shoulderOf(F, k, torso, torsoSkin, total, nullptr);
+        if (!st.started || !F.tracked[k]) { st.slide[k] = want.wanted; continue; }
+        auto gap = [&](const Vec3& s) {
+            const Shoulder o = shoulderOf(F, k, torso, torsoSkin, total, &s);
+            return std::max(0.f, length(F.W[k] - o.S) - total + 2e-4f);
+        };
+        const float maxStep = kSlideSpeed * dt;
+        Vec3 s = st.slide[k] + (want.wanted - st.slide[k]) * (1.f - std::exp(-dt / kRigTau));
+        if (length(s - st.slide[k]) > maxStep) s = st.slide[k] + normalize(s - st.slide[k]) * maxStep;
+        if (gap(s) > kTouch && gap(want.wanted) <= kTouch) {
+            float lo = 0, hi = 1;
+            for (int i = 0; i < 16; ++i) { const float m = (lo + hi) * 0.5f; (gap(lerp(s, want.wanted, m)) <= kTouch ? hi : lo) = m; }
+            s = lerp(s, want.wanted, hi);
+        }
+        if (length(s - st.slide[k]) > maxStep) s = st.slide[k] + normalize(s - st.slide[k]) * maxStep;
+        if (length(s) > F.T->reach) s = normalize(s) * F.T->reach;
+        st.slide[k] = s;
+    }
+    // ARM SIZING: how far each hand gets from its shoulder on the torso at rest (no turn or lean toward the hand), with
+    // the shoulder's own forward swing as the hand asks (a real shoulder blade's, up to T.reach): the player's arm, not
+    // what the body does to reach. A reach longer than the arms lengthens them toward it over kArmSizing (a jump faster
+    // than a hand moves is tracking, not a reach). So the arms grow only past what the shoulder covers, and the lean is
+    // for reaches past those. (From the leant, smoothed shoulder, a quick punch looked longer than it was and longer arms
+    // leant less: they grew to the cap; from a shoulder that never swings, every full reach grew them by its swing)
+    const Pose restTorso = torsoAt(F, constrain(F, {F.restOffset, 0, 0}));
+    const Mat4 restSkin = Mat4::fromPose(restTorso, F.scale);
+    float peakNow = 0.f;   // (this frame's longest reach, either hand)
+    for (int k = 0; k < 2; ++k) {
+        if (!F.tracked[k]) { st.handSeen[k] = false; continue; }
+        const Shoulder sh = shoulderOf(F, k, restTorso, restSkin, F.natural[k] * st.armScale, nullptr);
+        const float ratio = length(F.W[k] - sh.S) / std::max(0.1f, F.natural[k]);
+        const bool jumped = st.handSeen[k] && length(F.W[k] - st.lastW[k]) > 8.f * std::max(dt, 1.f / 90.f);
+        // (a hand across the body is no measure of the arm: the real shoulder turns and reaches with it, so from the
+        // shoulder at rest it looks further than the arm is long: pointing at a menu across the body grew the arms)
+        Vec3 out = sh.S - restTorso.p;
+        out.y = 0.f;
+        const bool ownSide = length(out) < 1e-4f || dot(F.W[k] - restTorso.p, normalize(out)) > -0.05f;
+        if (st.started && dt > 0 && !jumped && ownSide && ratio > st.armScale && ratio < 1.6f)
+            st.armScale = std::min(kMaxArmScale, st.armScale + (ratio - st.armScale) * (1.f - std::exp(-dt / kArmSizing)));
+        if (!jumped && ownSide && ratio < 1.6f) peakNow = std::max(peakNow, ratio);
+        st.lastW[k] = F.W[k];
+        st.handSeen[k] = true;
+    }
+    if (!st.started) {
+        st.reachPeak = st.armScale;   // (the arms' own length: nothing shortens them before reaches are seen)
+        st.peakAt = now;
+    } else if (dt > 0) {
+        // (a reach as long as the one remembered: held again. Within 2% until 2026-11-17: the fade stopped 2% above the
+        // reach the hands showed, and an arm 2% too long is bent 24 degrees at its full reach)
+        if (peakNow >= st.reachPeak - 0.001f) st.peakAt = now;
+        // (fading only while a hand is out at arm's length, reaching shorter than remembered: hands by the chest in a
+        // menu don't shorten them)
+        const float fall = now - st.peakAt > kPeakHold && peakNow >= kPeakOut ? kPeakFall * dt : 0.f;
+        st.reachPeak = std::max(peakNow, st.reachPeak - fall);
+        const float toward = std::max(kMinArmScale, st.reachPeak);
+        if (st.armScale > toward) st.armScale += (toward - st.armScale) * (1.f - std::exp(-dt / kArmShrink));
+    }
+    st.started = true;
+    st.time = now;
 }
 
 Mat4 boneMatrix(const Bone& b, bool mirrorX, float thick) {
@@ -553,12 +1411,14 @@ void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& din, std::v
     add(name, I, false, PART_SKINNED);
     std::snprintf(name, sizeof name, "av_bhead_%s", fk);
     add(name, I, false, PART_SKINNED);
-    if (d.lower) { std::snprintf(name, sizeof name, "av_bottom_%d_%c", d.lower, bk); add(name, I, false, PART_SKINNED); }
+    if (d.lower >= 1 && d.lower <= 4 && d.suit >= 14)   // VECTOR and NIGHTFORGE: their own shorts
+        { std::snprintf(name, sizeof name, "av_sbottom_%d_%d_%c", d.suit, d.lower, bk); add(name, I, false, PART_SKINNED); }
+    else if (d.lower) { std::snprintf(name, sizeof name, "av_bottom_%d_%c", d.lower, bk); add(name, I, false, PART_SKINNED); }
     else { std::snprintf(name, sizeof name, "av_wfade_%c", bk); add(name, I, false, PART_SKINNED); }
     if (d.headgear) { std::snprintf(name, sizeof name, "av_gear_%d_%c", d.headgear, bk); add(name, head, false); }
     else if (lod && d.hair) { std::snprintf(name, sizeof name, "av_hair_%d_%c", d.hair, bk); add(name, head, false, neonHair(d) ? PART_NEON : 0); }
     if (lod) return;   // miniatures: the silhouette is enough
-    if (d.suit >= 10) {   // CIRCUIT RUNNER and the LIVE suits: the pulses along their raised traces (scrolled by the game)
+    if (d.suit >= 10 && d.suit <= 13) {   // CIRCUIT RUNNER and the LIVE suits: the pulses along their raised traces (scrolled by the game)
         std::snprintf(name, sizeof name, "av_tpulse_%d_%c", d.suit, bk);
         add(name, I, false, PART_SKINNED | PART_PULSE);
     }

@@ -15,3 +15,16 @@ Exceptions:
 - The licensed music (`app/assets_music`, in the builds only, never in the public repository) was made with Suno and
   is used by CrossGenGaming under Suno's terms: it is **not** covered by CC BY 4.0 and may not be reused apart from the game.
 - Project Arena contains no assets from any other game.
+
+- The isolated `experiments/avatar_anatomy` bodies, heads, eyes and eyebrows are derived from Quaternius's
+  Universal Base Characters Standard pack, dedicated to CC0 1.0 (see its included `QUATERNIUS-LICENSE.txt`).
+  They have been retargeted, clipped and depth-adjusted for this experimental comparison. The generated
+  Project Arena garment patterns remain CC BY 4.0, with credit to Project Arena. Experiment code remains MIT.
+  These assets are not installed as the game's default avatar assets.
+
+- The additional experimental Vector/Nightforge clothing, helmets, fitted existing headwear,
+  opaque shorts, skirts and kilts are Project Arena contributions under CC BY 4.0.
+  Fits derived from Quaternius bodies retain their CC0 geometry origin; source game assets
+  retain their existing licenses. The bundled inspector's Three.js r169 code is MIT, with
+  its copyright notice and full license in `experiments/avatar_anatomy/inspector/THREE-LICENSE.txt`.
+  Inspector replay datasets are experimental review fixtures, not a production runtime.

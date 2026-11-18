@@ -1,0 +1,121 @@
+"""ELBOWS OUT OF THE BODY: the avatar torso's shape for the arm solver (avatar.cpp clearTorso), measured from the
+skinned body parts (every top and bottom, both body types) in bind space (origin the neck base, +X right, +Y up, -Z
+forward). Per height, every 5 cm from the chest down, the torso's radius in 16 directions round its middle (the
+vertices that follow the torso, not the arms; the outermost of every top, so the elbow clears the bulkiest), and
+how thick the upper arm and forearm are.
+
+Writes app/src/avatar_torso.inc. Run it again when the bodies or the tops change (tools/build_body_parts.py).
+Usage: python -I tools/measure_torso.py [ASSETS]"""
+import math
+import os
+import struct
+import sys
+
+import numpy as np
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ASSETS = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'app', 'assets_open')
+OUT = os.path.join(ROOT, 'app', 'src', 'avatar_torso.inc')
+TORSO, NECK, HEAD, UPL, UPR, FOL, FOR, CLL, CLR = range(9)
+Y0, DY, SLICES, SECTORS = -0.10, -0.05, 13, 16
+
+
+def load(name):
+    path = os.path.join(ASSETS, name + '.mdl')
+    if not os.path.exists(path):
+        return None
+    b = open(path, 'rb').read()
+    ver, nv, ni, ns, nm = struct.unpack_from('<5I', b, 4)
+    if ver < 3:
+        return None
+    dt = np.dtype([('p', '<f4', 3), ('n', '<f4', 3), ('u0', '<f4', 2), ('u1', '<f4', 2), ('c', 'u1', 4), ('bi', 'u1', 4), ('bw', 'u1', 4)])
+    v = np.frombuffer(b, dtype=dt, count=nv, offset=24)
+    W = np.zeros((nv, 9))
+    for k in range(4):
+        np.add.at(W, (np.arange(nv), v['bi'][:, k]), v['bw'][:, k] / 255.0)
+    return v['p'].astype(float), W
+
+
+def bind(body):
+    """The shoulder, elbow and wrist of the right arm, from avatar_bodies.inc."""
+    text = open(os.path.join(ROOT, 'app', 'src', 'avatar_bodies.inc')).read()
+    line = [l for l in text.splitlines() if l.strip().startswith('{{')][body]
+    nums = [float(x) for x in line.replace('f', ' ').replace('{', ' ').replace('}', ' ').replace(',', ' ').split()
+            if x.replace('.', '').replace('-', '').isdigit()]
+    v = np.array(nums[:30]).reshape(10, 3)   # eye, neckTop, shoulder L R, elbow L R, wrist L R, thumb L R
+    return v[3], v[5], v[7]
+
+
+def main():
+    rows = []
+    for bi, body in enumerate('mf'):
+        torso, arms = [], {UPR: [], FOR: []}
+        for n in ['av_top_%d_%s' % (k, body) for k in range(14)] + ['av_bottom_%d_%s' % (k, body) for k in (1, 2, 3)]:
+            m = load(n)
+            if m is None:
+                continue
+            P, W = m
+            arm = W[:, UPL] + W[:, UPR] + W[:, FOL] + W[:, FOR]
+            torso.append(P[(arm < 0.05) & (W[:, HEAD] + W[:, NECK] < 0.5)])
+            for bone in arms:
+                arms[bone].append(P[W[:, bone] > 0.9])
+        P = np.concatenate(torso)
+        S, E, Wr = bind(bi)
+
+        def thickness(pts, a, b):   # the radius round the bone's middle half (90% of the points within it)
+            ax = (b - a) / np.linalg.norm(b - a)
+            t = (pts - a) @ ax / np.linalg.norm(b - a)
+            sel = (t > 0.25) & (t < 0.75)
+            d = pts[sel] - a - np.outer((pts[sel] - a) @ ax, ax)
+            return float(np.percentile(np.linalg.norm(d, axis=1), 90))
+        upper = thickness(np.concatenate(arms[UPR]), S, E)
+        fore = thickness(np.concatenate(arms[FOR]), E, Wr)
+        cz, r = [], []
+        for i in range(SLICES):
+            y = Y0 + DY * i
+            s = P[np.abs(P[:, 1] - y) < 0.025]
+            c = (s[:, 2].min() + s[:, 2].max()) * 0.5
+            ang = np.arctan2(s[:, 2] - c, s[:, 0])   # 0 = right, +pi/2 = back
+            rad = np.hypot(s[:, 0], s[:, 2] - c)
+            sec = ((ang + math.pi) / (2 * math.pi) * SECTORS).astype(int) % SECTORS
+            rr = []
+            for k in range(SECTORS):
+                got = rad[sec == k]
+                rr.append(float(np.percentile(got, 99)) if len(got) > 4 else 0.0)
+            # (an empty sector, such as the sides by the armpits, where the skin follows the arms: between the nearest
+            # measured ones either way round)
+            got = [k for k in range(SECTORS) if rr[k] > 0]
+            filled = list(rr)
+            for k in range(SECTORS):
+                if rr[k] > 0 or not got:
+                    continue
+                a = max((g for g in got), key=lambda g: -((k - g) % SECTORS))   # nearest before
+                b = min((g for g in got), key=lambda g: (g - k) % SECTORS)       # nearest after
+                da, db = (k - a) % SECTORS, (b - k) % SECTORS
+                filled[k] = (rr[a] * db + rr[b] * da) / (da + db)
+            rr = filled
+            cz.append(float(c)); r.append(rr)
+        rows.append((body, cz, r, upper, fore))
+        print('%s: upper arm %.3f m, forearm %.3f m thick (radius); chest at y %.2f: %s' % (
+            body, upper, fore, Y0 + DY * 3, ' '.join('%.3f' % x for x in r[3])))
+
+    L = ['// generated by tools/measure_torso.py from the skinned tops and bottoms: do not edit.',
+         '// ELBOWS OUT OF THE BODY: the torso in bind space (origin the neck base, -Z forward), for each body type: slice i',
+         '// at y = kTorsoY0 + i * kTorsoDY, its middle at z = cz, its radius r in sector k (angle -pi + (k + 0.5) * 2pi / 16',
+         '// from +X toward +Z); the arms\' radii.',
+         '#pragma once',
+         'static const int kTorsoSlices = %d, kTorsoSectors = %d;' % (SLICES, SECTORS),
+         'static const float kTorsoY0 = %.3ff, kTorsoDY = %.3ff;' % (Y0, DY),
+         'struct TorsoShape { float cz[%d]; float r[%d][%d]; float upperArm, foreArm; };' % (SLICES, SLICES, SECTORS),
+         'static const TorsoShape kTorsoShape[2] = {']
+    for body, cz, r, upper, fore in rows:
+        L.append('    {{%s},' % ', '.join('%.4ff' % c for c in cz))
+        L.append('     {%s},' % ',\n      '.join('{' + ', '.join('%.4ff' % x for x in rr) + '}' for rr in r))
+        L.append('     %.4ff, %.4ff},   // %s' % (upper, fore, 'MASCULINE' if body == 'm' else 'FEMININE'))
+    L += ['};', '']
+    open(OUT, 'w', newline='\n').write('\n'.join(L))
+    print('wrote', OUT)
+
+
+if __name__ == '__main__':
+    main()

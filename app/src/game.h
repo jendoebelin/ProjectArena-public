@@ -65,6 +65,11 @@ std::vector<CollisionTri> diamondCollision(bool solidPlatforms = false);
 enum : int { ARENA_CLASSIC, ARENA_CORNERS, ARENA_DIAMOND, ARENA_FOURCORNERS, ARENA_OCTAGON };
 // the EXPERIMENTAL rooms (Tunables::expRoom): DIAMOND for two; FOUR CORNERS and FIREBALL BLITZ for up to four
 enum : int { ROOM_DIAMOND, ROOM_CORNERS, ROOM_BLITZ, kRooms };
+// BALL FEEL (Tunables::ballFeel): CORE SOLID (a lit core inside the plasma), GLOW TRUE SIZE (its outside where it hits;
+// otherwise drawn 25% wider), SPIN VISIBLE (it turns with its real spin as it flies), WEIGHT HEAVY (a held ball trails
+// the hand a little; the controller hums as you swing it). The owner's pick, the default: glow core, the rest on
+enum : int { BALL_CORE = 1, BALL_TRUE = 2, BALL_SPIN = 4, BALL_WEIGHT = 8, BALL_FEEL_ALL = 15,
+             BALL_FEEL_DEFAULT = BALL_TRUE | BALL_SPIN | BALL_WEIGHT };
 inline bool fourPlayerRoom(int expRoom) { return expRoom == ROOM_CORNERS || expRoom == ROOM_BLITZ; }
 
 struct Tunables {
@@ -96,7 +101,10 @@ struct Tunables {
         // (knuckle guards count by what is in play: "off" chosen in Basic and then Advanced picked is Advanced's own rule)
         const bool std_ = knuckleGuards() == !advanced && (advanced ? advancedRoundTime <= 0.f : basicMatchTime == 180.0f) &&
                           perStrike() == speedIncreasePerStrike &&   // (STRIKE SPEED other than REGULATION: custom)
-                          foulMove() == 0.f;                         // (and the FOUL LINE moved)
+                          foulMove() == 0.f &&                       // (and the FOUL LINE moved)
+                          !maidenNow() && aimAssistNow() == (advanced ? 1 : 2) &&   // (ROOMS AND THEIR OPTIONS)
+                          strikeZoneNow() == 1 && ballGrowthNow() == 3 && (!advanced || roundsToWinNow() == 2) &&
+                          shieldSizeNow() == 0;
         return std_ ? 0 : 2;
     }
 
@@ -150,10 +158,13 @@ struct Tunables {
     // match's players (games before 0.3.20 don't say theirs: 0) and an option newer than that plays at regulation for
     // the match. The host's choice is kept for the next match. A new option that changes play gets its version here
     // and goes through *Now() (docs/BUILD_REVIEW_CHECKLIST.md)
-    static constexpr int kVerStrikeSpeed = 3019, kVerFoulLine = 3020, kVerAll = 1 << 30;
+    // (0.3.20 is also the Meta competition build, frozen on 11-15 with the FOUL LINE but without THE REACH ROUND THE
+    // FIST, KNUCKLES ON THE FIST and ROOMS AND THEIR OPTIONS: those are 0.3.21, so a judge's game plays them as before)
+    static constexpr int kVerStrikeSpeed = 3019, kVerFoulLine = 3020, kVerReach = 3021, kVerKnuckle = 3021, kVerAll = 1 << 30;
     int matchVersion = kVerAll;   // (offline, and every guest: all; guests get the host's rules as they play)
     int strikeSpeedNow() const { return matchVersion >= kVerStrikeSpeed ? std::max(0, std::min(2, strikeSpeed)) : 0; }
     int foulShiftNow() const { return matchVersion >= kVerFoulLine ? std::max(-2, std::min(2, foulShift)) : 0; }
+    bool fistReachNow() const { return matchVersion >= kVerReach; }   // (THE REACH ROUND THE FIST, below)
     // FOUL LINE (0.3.20, a host's MATCH OPTION; owner 2026-11-15): the line moved in steps of 0.5 m, +1 / +2 LONGER (toward
     // the centre: a longer way to throw to clear it), -1 / -2 SHORTER; the foul zone moves with it. The classic room only
     // (Basic, Advanced): not the four-player rooms, nor DIAMOND (its foul zone is the platform)
@@ -163,6 +174,45 @@ struct Tunables {
         const bool twoPlayer = !experimental || expRoom == ROOM_DIAMOND;
         return speedIncreasePerStrike * (1 + (twoPlayer ? strikeSpeedNow() : 0));
     }
+    // ROOMS AND THEIR OPTIONS (0.3.21; the owner's design, 2026-11-17, and players' reports that day: the ball grows
+    // too big too fast, maybe more aim assist): more of the host's options for a room, in the two-player rooms (the
+    // SQUARE, DIAMOND) for now; each through FAIR MATCHES (an older player in the match: as the rules say). DIAMOND
+    // plays either match too (the owner, 11-17: the SQUARE's options): a timed match or rounds, as any version can
+    // SHIELDS: ALWAYS ON (MAIDEN, the community's name; the owner: it never breaks): with shields on, your shield is up
+    // whenever you hold your ball, charged or not, and a block never breaks it
+    bool maiden = false;
+    // AIM ASSIST (the owner: four steps): -1 as the rules say (Basic MEDIUM, Advanced LOW), 0 OFF, 1 LOW
+    // (aimCorrectAdvancedDeg, 1.5 deg), 2 MEDIUM (aimCorrectBasicDeg, 3), 3 HIGH (half as much again, 4.5)
+    int aimAssist = -1;
+    // STRIKE ZONE: 0 SMALL (a ring of 50 cm radius), 1 REGULATION (strikeZoneRadius, 70 cm), 2 LARGE (90 cm)
+    int strikeZone = 1;
+    // BALL GROWTH with strikes (the owner: none, quarter, half, regulation): that share of the regulation growth
+    int ballGrowth = 3;
+    static constexpr int kVerRoomOptions = 3021;
+    bool roomOptionsNow() const { return matchVersion >= kVerRoomOptions && (!experimental || expRoom == ROOM_DIAMOND); }
+    bool maidenNow() const { return shields && maiden && roomOptionsNow(); }
+    int aimAssistNow() const { return roomOptionsNow() && aimAssist >= 0 ? std::min(3, aimAssist) : (advanced ? 1 : 2); }
+    int strikeZoneNow() const { return roomOptionsNow() ? std::max(0, std::min(2, strikeZone)) : 1; }
+    int ballGrowthNow() const { return roomOptionsNow() ? std::max(0, std::min(3, ballGrowth)) : 3; }
+    float aimAssistDeg() const {   // how far a throw may be turned toward its target
+        const int s = aimAssistNow();
+        return s == 0 ? 0.f : s == 1 ? aimCorrectAdvancedDeg : s == 2 ? aimCorrectBasicDeg : 1.5f * aimCorrectBasicDeg;
+    }
+    float strikeRadius() const { return strikeZoneRadius + 0.2f * (float)(strikeZoneNow() - 1); }
+    float growthShare() const { static const float k[4] = {0.f, 0.25f, 0.5f, 1.f}; return k[ballGrowthNow()]; }
+    // ROUNDS (the owner, 2026-11-17: how many rounds; timed rounds too, advancedRoundTime): a match of rounds is BEST
+    // OF 1, 3, 5, 7 or 9 (advancedRoundsToWin 1 to 5 rounds won; regulation BEST OF 3; the owner: a most we allow)
+    int roundsToWinNow() const { return roomOptionsNow() ? std::max(1, std::min(5, advancedRoundsToWin)) : 2; }
+    // SHIELD SIZE (the owner, 2026-11-17: the shield felt small in the hand): 0 REGULATION, 1 +25%, 2 +50%, 3 +75%,
+    // 4 DOUBLE, its width and height (the plate drawn with it; SHIELDS: OFF is the way to none)
+    int shieldSize = 0;
+    int shieldSizeNow() const { return roomOptionsNow() ? std::max(0, std::min(4, shieldSize)) : 0; }
+    float shieldScale() const { return 1.f + 0.25f * (float)shieldSizeNow(); }
+    Vec3 shieldHalfNow() const { const float s = shieldScale(); return {shieldHalfExtents.x * s, shieldHalfExtents.y, shieldHalfExtents.z * s}; }
+    // BALL FEEL (the owner, 2026-11-17, from the BALL FEEL (TEST) switches: a room option, the host's, and its pick the
+    // default): how the ball looks and feels, BALL_* bits. Drawing and haptics only: no rule (nothing in play, no FAIR
+    // MATCHES version, not custom in the stats); a guest of an older host keeps its own
+    int ballFeel = BALL_FEEL_DEFAULT;
     float scaleIncreasePerStrike = 0.25f;     // UProjectileLaunchParams.ScaleIncreasePerStrike
     int maxStrikes = 42;                      // MatchTuningData.MaxStrikes
     // Ball size per strike: the recovered +0.25 per strike for the first 4, then +0.05 per strike up to
@@ -217,6 +267,12 @@ struct Tunables {
     // ---- hands
     // Offsets in OpenXR grip-local space (+X right, +Y up, -Z forward); UE (x,y,z) cm -> grip (y, z, -x)/100.
     float catchRadius = 0.125f, catchHalfHeight = 0.25f;   // BrawlCatcher.Collision capsule 12.5 / 25 cm
+    // THE REACH ROUND THE FIST (two players' report, 2026-11-17: picking a ball up felt too small, "hard to tell where the
+    // hitbox is"): a hand takes a ball within catchHalfHeight + the ball's radius of its catcher, 22 cm in front of the
+    // controller, so a ball beside or just behind the fist was out of reach; a second reach as big round the fist
+    // (fistReachOffset, grip space) takes those too. Catches are judged by the host, so it plays when every player's game
+    // has it (FAIR MATCHES: kVerReach)
+    Vec3 fistReachOffset = {0.0f, 0.0f, -0.04f};
     Vec3 catcherOffset = {-0.01f, 0.0f, -0.22f};           // CatcherTransform (22,-1,0) cm
     Vec3 launcherOffset = {-0.02f, 0.02f, -0.25f};         // LauncherTransform (25,-2,2) cm (throw physics)
     Vec3 holdOffset = {-0.079f, 0.011f, -0.010f};         // where a held ball sits: in the fist (owner's TUNING export,
@@ -227,8 +283,15 @@ struct Tunables {
     // BrawlKnuckleGuardVisual_BP.TempMesh (-9,0,0) right-hand grip-space centre / half extents below
     // (x is mirrored for the left hand). The face normal is grip -Z (the front of the fist). The original centre was
     // (-0.022, 0.010, -0.137); the owner moved the glass onto the fist with the TUNING tool (2026-10-18), and the
-    // bumper goes with it (what you see is what hits).
-    Vec3 knuckleOffset = {0.0f, -0.026f, -0.057f};
+    // bumper goes with it (what you see is what hits). KNUCKLES ON THE FIST (two players' report, 2026-11-17: punches
+    // felt like "the slider in pong, not like I physically punched the ball"): the gauntlets' fists, drawn in line with
+    // the cuff since 11-16, have their front 3.4 cm out from the grip, and the bumper sat in front of them (2.8 to
+    // 8.6 cm out: a ball turned some 5 cm before it reached the knuckles); now its front face is at the knuckles, the
+    // same box, for every gauntlet look (the knuckle glass with it). Older games keep the old place (FAIR MATCHES:
+    // kVerKnuckle; the host judges blocks)
+    Vec3 knuckleOffset = {0.0f, -0.010f, -0.005f};
+    Vec3 knuckleOffsetOld = {0.0f, -0.026f, -0.057f};
+    Vec3 knuckleOffsetNow() const { return matchVersion >= kVerKnuckle ? knuckleOffset : knuckleOffsetOld; }
     Vec3 knuckleHalf = {0.064f, 0.048f, 0.029f};
     float knuckleRadius = 0.07f;                           // used for glow rendering only
     // Deflections treat the guard / shield as a moving surface: v_out = reflect(v_in - v_hand) * restitution + v_hand,
@@ -285,6 +348,9 @@ struct Tunables {
     // follows the player: up botMatchStep each time the person scores against the bot, down each time the bot scores
     // (close matches: it settles where both score about as often)
     bool botAdapt = false;
+    // BOT STYLE (the owner, 2026-11-17: a bot option with its level, any match, shields or not; Game::brawler): 0 BRAWLER,
+    // 1 DUELLIST. In the two-player rooms (the SQUARE, DIAMOND); the four-player rooms' bots play as they did
+    int botPlay = 0;
     float botMatch = 2.f, botMatchStep = 0.15f;
     bool botMeet = false;   // practice: meet the bot in the centre for a fist bump first (owner, 2026-10-27)
     Vec3 botShoulder = {0.18f, -0.295f, 0.04f}, botWrist = {0.04f, 0.047f, 0.122f};
@@ -495,6 +561,7 @@ struct PlayerState {
     int botThrow = 0;                      // 0 holding, 1 winding up, 2 swinging
     bool botSlap = false;                  // the swing is a slap shot (it goes on whatever comes at it)
     int botIntent = 0;                     // BotSkill::hunts: this throw is for a strike (0) or at the player (1)
+    bool botPounce = false;                // BOT STYLES, ADVANCED's duellist: throwing now, at an opponent without a shield
     int botStrikeSide = 1;                 // ... the side of the ring the next strike goes (it alternates)
     int botStyle = 0;                      // ... this throw's shape (straight, curved, off a wall, curved off a wall, off the floor)
     bool botPre = false;                   // ... its slap's shape being planned while its ball comes back to it
@@ -632,6 +699,18 @@ public:
     bool grabbable(const Ball& b) const {
         return b.state == BallState::Idle || (b.state == BallState::Spawning && b.timer <= tun.spawnRiseTime);
     }
+    // within hand h's reach to grab or catch (its catcher's, and round the fist when that plays), r the reach (m)
+    Vec3 fistPoint(int p, int h) const { return pl[p].in.hand[h].grip.transform(tun.fistReachOffset); }
+    bool inReach(int p, int h, const Vec3& pos, float r) const {
+        return length(catcherPoint(p, h) - pos) < r || (tun.fistReachNow() && length(fistPoint(p, h) - pos) < r);
+    }
+    // p's own ball could be taken by hand h now, the trigger pulled (the game shows p it is in reach)
+    bool ballInReach(int p, int h) const {
+        const Ball& b = pl[p].ball;
+        if (!pl[p].in.hand[h].tracked || b.state == BallState::Held || b.scored) return false;
+        if (!grabbable(b) && b.state != BallState::Flying && b.state != BallState::Returning) return false;
+        return inReach(p, h, b.pos, tun.catchHalfHeight + ballRadius(p));
+    }
     // CATCHES ONLINE (a player's report, 2026-11-10: returns hard to catch in someone else's room, not every time). A
     // player who isn't hosting sees the balls one round trip late (the snapshot's way here, their hand's way back), so a
     // ball they snatch as it reaches their hand has already gone on past it here. Their catch is also judged against
@@ -662,6 +741,8 @@ public:
     Vec3 handVelocity(int p, int h, float now) const;
     float ballRadius(int p) const { return tun.projectileRadius * pl[p].ball.scale; }
     float strikeScale(int strikes) const;
+    // a ball that raises its shield when held: charged, or any ball with SHIELDS: ALWAYS ON (MAIDEN)
+    bool shieldCharged(const Ball& b) const { return b.charged || tun.maidenNow(); }
     // the flight of `owner`'s ball from now (up to `horizon` seconds, in steps of dt: the game's own, so it matches the
     // real flight step for step) as the game would play it if nothing of player `reader` touched it (its body and hands
     // out of the way); stops when the ball stops flying or someone else deflects it. A copy of the game runs it: a few
@@ -715,6 +796,15 @@ private:
     mutable bool botTriesOut = false;
     void botPlanShot(int p, const BotSkill& sk, int hand = -1);   // tries one more throw (planned shots; hand: from that one)
     void botChooseIntent(int p, const BotSkill& sk);           // BotSkill::hunts: what its next throw is for
+    // BOT STYLES (a player's report, 2026-11-17: "probably need different logic for basic and advanced bots"; the owner:
+    // a bot option with its level, Tunables::botPlay, not tied to the match): a BRAWLER holds the ball 35% shorter, and the
+    // better levels punch through a ball they block with a knuckle guard; a DUELLIST keeps its shield while you keep
+    // yours (its shield the only guard, as before), and the hunting levels throw at you at once when you have no shield,
+    // and aim at you more. In the two-player rooms (the SQUARE, DIAMOND); the four-player rooms' bots as they were
+    bool twoPlayerRoom() const { return np == 2 && !octagon(); }   // (the SQUARE, DIAMOND)
+    bool brawler() const { return tun.botPlay == 0 && twoPlayerRoom(); }
+    bool duelist() const { return tun.botPlay == 1 && twoPlayerRoom(); }
+    float botHoldTime(const BotSkill& sk);                     // seconds it holds a ball it just took (one draw)
     Vec3 botHuntAim(int p, int style, int j, Vec3& spin);      // ... and where it aims a throw of that shape (j: which way)
     BotSkill botSkillOf(int p) const;
     Pose botBlockGrip(int p, int h, int plan, const BallPathPt& at) const;   // the grip that puts the shield / guard / catcher on the ball

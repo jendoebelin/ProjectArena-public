@@ -109,7 +109,8 @@ if HEAD_KEY:
     from mathutils.bvhtree import BVHTree
     _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     # 'm' / 'f', or a FACE variant 'm1'.. (the same body with another face: body_<masc|fem>_face<k>.npz)
-    _bd = np.load(os.path.join(_ROOT, 'build', 'open_src', 'body', 'body_%s%s.npz' % (
+    # (the bodies: PR #25's (tools/repose_bodies.py, its head regions marked there) unless PA_BODIES=mpfb)
+    _bd = np.load(os.path.join(_ROOT, 'build', 'open_src', 'body' if os.environ.get('PA_BODIES') == 'mpfb' else 'body_q', 'body_%s%s.npz' % (
         {'m': 'masc', 'f': 'fem'}[HEAD_KEY[0]], '_face' + HEAD_KEY[1:] if len(HEAD_KEY) > 1 else '')))
     import json as _json
     _J = _json.loads(str(_bd['joints']))

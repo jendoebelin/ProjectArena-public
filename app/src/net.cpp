@@ -809,6 +809,12 @@ static void writeState(Writer& w, const Game& g) {
     // (the rules this match plays: an option an older player's game lacks goes out at regulation, FAIR MATCHES)
     if (g.np == 2) w.put<uint8_t>((uint8_t)g.tun.strikeSpeedNow());   // (0.3.19: STRIKE SPEED)
     if (g.np == 2) w.put<int8_t>((int8_t)g.tun.foulShiftNow());       // (0.3.20: FOUL LINE)
+    if (g.np == 2)   // (0.3.21, ROOMS AND THEIR OPTIONS: MAIDEN, AIM ASSIST's step, STRIKE ZONE, BALL GROWTH, as they play)
+        w.put<uint8_t>((uint8_t)((g.tun.maidenNow() ? 1 : 0) | (g.tun.aimAssistNow() << 1) | (g.tun.strikeZoneNow() << 3) |
+                                 (g.tun.ballGrowthNow() << 5)));
+    if (g.np == 2) w.put<uint8_t>((uint8_t)g.tun.roundsToWinNow());   // (0.3.21: ROUNDS, rounds to win: BEST OF 1 to 9)
+    if (g.np == 2) w.put<uint8_t>((uint8_t)g.tun.shieldSizeNow());    // (0.3.21: SHIELD SIZE, 0 regulation .. 4 double)
+    if (g.np == 2) w.put<uint8_t>((uint8_t)(g.tun.ballFeel & BALL_FEEL_ALL));   // (0.3.21: BALL FEEL, BALL_* bits)
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -875,6 +881,11 @@ static bool readState(Reader& r, Game& g, int localIndex) {
                 f.speedLimit = std::max(5.f, std::sqrt(vel.x * vel.x + vel.z * vel.z));   // (read ahead for its warning)
             }
         }
+    } else if (g.ringMask) {   // out of FIREBALL BLITZ: everyone back to the room's own places (a spectator's copy of the
+        // match kept the ring's, and its DIAMOND drew the platforms there, away from the players; owner, 2026-11-16)
+        const Tunables def;
+        for (int p = 0; p < kMaxPlayers; ++p) { g.tun.start[p] = def.start[p]; g.tun.spawner[p] = def.spawner[p]; }
+        g.ringMask = 0;
     }
     if (np == 2 && r.ok && r.e - r.p >= 2)   // the shot clocks (hosts from 0.3.14)
         for (int p = 0; p < 2; ++p) g.pl[p].shotClock = r.get<uint8_t>() / 10.f;
@@ -901,6 +912,21 @@ static bool readState(Reader& r, Game& g, int localIndex) {
     if (np == 2 && r.ok && r.e - r.p >= 1) g.tun.strikeSpeed = std::min<int>(2, r.get<uint8_t>());
     g.tun.foulShift = 0;     // (FOUL LINE, hosts from 0.3.20; older hosts: where the arena has it)
     if (np == 2 && r.ok && r.e - r.p >= 1) g.tun.foulShift = std::max(-2, std::min<int>(2, r.get<int8_t>()));
+    g.tun.maiden = false; g.tun.aimAssist = -1; g.tun.strikeZone = 1; g.tun.ballGrowth = 3;   // (ROOMS AND THEIR OPTIONS,
+    if (np == 2 && r.ok && r.e - r.p >= 1) {                                                 // hosts from 0.3.21; older: the rules')
+        const uint8_t o = r.get<uint8_t>();
+        g.tun.maiden = (o & 1) != 0;
+        g.tun.aimAssist = (o >> 1) & 3;
+        g.tun.strikeZone = std::min(2, (o >> 3) & 3);
+        g.tun.ballGrowth = (o >> 5) & 3;
+    }
+    g.tun.advancedRoundsToWin = 2;   // (ROUNDS, hosts from 0.3.21; older: BEST OF 3)
+    if (np == 2 && r.ok && r.e - r.p >= 1) g.tun.advancedRoundsToWin = std::max(1, std::min<int>(5, r.get<uint8_t>()));
+    g.tun.shieldSize = 0;   // (SHIELD SIZE, hosts from 0.3.21; older: regulation)
+    if (np == 2 && r.ok && r.e - r.p >= 1) g.tun.shieldSize = std::min<int>(4, r.get<uint8_t>());
+    // (BALL FEEL, hosts from 0.3.21: the host's ball for everyone at its arena; an older host sends none, and a guest
+    // keeps its own: only how the ball looks and feels)
+    if (np == 2 && r.ok && r.e - r.p >= 1) g.tun.ballFeel = r.get<uint8_t>() & BALL_FEEL_ALL;
     return r.ok;
 }
 
@@ -2159,6 +2185,11 @@ size_t Net::snapshotBytes(const Game& g) {
     for (int i = 0; i < 24; ++i) log.push_back({(uint32_t)i + 1, 0.0, GameEvent{EventType::Bounce, 0, -1, {}, 0.f}});
     Writer w; header(w, MSG_STATE, 1, 1); writeEvents(w, log); writeState(w, g);
     return w.b.size();
+}
+bool Net::snapshotInto(const Game& g, Game& into) {
+    Writer w; writeState(w, g);
+    Reader r{w.b.data(), w.b.data() + w.b.size()};
+    return readState(r, into, -1);
 }
 
 void Net::sendState(const Game& g) {

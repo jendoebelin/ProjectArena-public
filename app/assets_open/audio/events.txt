@@ -31,3 +31,4 @@ Cheer oa_Cheer
 ClockTick oa_ClockTick
 LeadChange oa_LeadChange
 TargetHit oa_TargetHit
+KnucklePunch oa_KnucklePunch

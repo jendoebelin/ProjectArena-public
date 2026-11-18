@@ -109,7 +109,7 @@ def items(opt):
             look(suit=0, build=k, primary=13, secondary=0, glow=2, hair=1, haircolor=0, lower=2), group='build')
     for k, name in enumerate(F['PATTERN']):
         if k:
-            add(name.title() + ' pattern', PATTERN_DESC[k], 'tex/open_pat_%s.tex' % name.lower(),
+            add(name.title() + ' pattern', PATTERN_DESC[k], 'tex/open_pat_%s_m.tex (and _f)' % name.lower(),
                 look(suit=5, primary=2, secondary=10, glow=2, pattern=k, hair=1, lower=3), group='pattern')
     for k, name in enumerate(F['HAIR']):
         if k:

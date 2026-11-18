@@ -68,7 +68,8 @@ Streamers: capture the window in OBS.
   - **FORFEIT MATCH** takes you back to the waiting area. **SPECTATE GAMES** shows every live match.
   - Playing someone far away? **SETTINGS → GRAPHICS AND VIEW → BALL LOOK-AHEAD ONLINE** (experimental, off by
     default): in someone else's room your throws leave your hand at once and their ball is shown where it really is.
-- Voice chat in a room: hold the **left grip** to talk (SETTINGS → VOICE AND MUTES for open mic and mutes).
+- Voice chat in a room: hold the **left grip** to talk, or the button you give it (SETTINGS → CONTROLLERS →
+  BUTTONS, where every button's job is chosen, LEFT-HANDED too; open mic and mutes: VOICE AND MUTES).
 - Something wrong? **MENU → REPORT BUG** sends a short note and the game's recent log to us. Someone behaving
   badly? **MENU → REPORT PLAYER** (report or mute them, or **VOTE TO REMOVE** them from your arena: it takes more than
   half of the other people in the room).

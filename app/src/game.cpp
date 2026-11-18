@@ -15,7 +15,7 @@ Vec3 Game::launcherPoint(int p, int h) const { return pl[p].in.hand[h].grip.tran
 Vec3 Game::catcherPoint(int p, int h) const { return pl[p].in.hand[h].grip.transform(tun.catcherOffset); }
 Vec3 Game::knucklePoint(int p, int h) const { return knucklePose(p, h).p; }
 Pose Game::knucklePose(int p, int h) const {
-    Vec3 o = tun.knuckleOffset;
+    Vec3 o = tun.knuckleOffsetNow();
     if (h == 0) o.x = -o.x;   // left hand mirror (HandnessRoot)
     const Pose& g = pl[p].in.hand[h].grip;
     return {g.q, g.transform(o)};
@@ -382,14 +382,15 @@ void Game::spawnBall(int p) {
 
 float Game::strikeScale(int n) const {
     int early = std::min(n, tun.fullScaleSteps), late = std::max(0, n - tun.fullScaleSteps);
-    return std::min(tun.maxBallScale, 1.f + tun.scaleIncreasePerStrike * early + tun.lateScaleIncreasePerStrike * late);
+    const float full = std::min(tun.maxBallScale, 1.f + tun.scaleIncreasePerStrike * early + tun.lateScaleIncreasePerStrike * late);
+    return 1.f + (full - 1.f) * tun.growthShare();   // (BALL GROWTH: that share of the regulation growth)
 }
 
 void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist) {
     Ball& b = pl[p].ball;
     if (assist && !octagon()) {   // (FIREBALL BLITZ: none; a fireball's drop is part of the aim)
         const Vec3 to = assistDir(p, b.pos, dir);
-        const float deg = tun.advanced ? tun.aimCorrectAdvancedDeg : tun.aimCorrectBasicDeg;
+        const float deg = tun.aimAssistDeg();   // (AIM ASSIST: the rules' own, Basic MEDIUM and Advanced LOW, or the room's)
         const float ang = std::acos(clampf(dot(dir, to), -1.f, 1.f));
         if (ang > 1e-4f) dir = normalize(lerp(dir, to, std::min(1.f, deg2rad(deg) / ang)));
     }
@@ -553,7 +554,7 @@ bool Game::hitsShield(int p, int h, const Vec3& from, const Vec3& to, float r, V
     Pose s = shieldPose(p, h);
     Quat inv = s.q.conj();
     Vec3 a = inv.rotate(from - s.p), b = inv.rotate(to - s.p);
-    Vec3 e = tun.shieldHalfExtents + Vec3{r, r, r};
+    Vec3 e = tun.shieldHalfNow() + Vec3{r, r, r};   // (SHIELD SIZE)
     float t0 = 0, t1 = 1;
     Vec3 d = b - a;
     const float* pa = &a.x; const float* pd = &d.x; const float* pe = &e.x;
@@ -792,7 +793,7 @@ void Game::stepBall(int p, float dt) {
                 if ((from.x - c.x) * (to.x - c.x) <= 0 && std::fabs(to.x - from.x) > 1e-6f) {
                     float t = (c.x - from.x) / (to.x - from.x);
                     Vec3 x = from + (to - from) * t;
-                    if (length(Vec3{0, x.y - c.y, x.z - c.z}) < tun.strikeZoneRadius) addStrike(victim, x, p);
+                    if (length(Vec3{0, x.y - c.y, x.z - c.z}) < tun.strikeRadius()) addStrike(victim, x, p);   // (STRIKE ZONE)
                 }
             } else {   // (the ring faces its player's facing)
                 const Vec3 f = facing(victim);
@@ -800,7 +801,7 @@ void Game::stepBall(int p, float dt) {
                 if (a0 * a1 <= 0 && std::fabs(a1 - a0) > 1e-6f) {
                     const Vec3 x = from + (to - from) * (a0 / (a0 - a1));
                     const Vec3 off = x - c;
-                    if (length(off - f * dot(off, f)) < tun.strikeZoneRadius) addStrike(victim, x, p, b.instigator);
+                    if (length(off - f * dot(off, f)) < tun.strikeRadius()) addStrike(victim, x, p, b.instigator);
                 }
             }
         }
@@ -1086,7 +1087,7 @@ void Game::stepFire(int p, int k, float dt) {
                         emit(EventType::ShieldBreak, q, hh, from);
                         handled = true;
                     } else if (pass == 1 && pl[q].hands[hh].knuckleUp && hitsBox(knucklePose(q, hh), tun.knuckleHalf, from, to, rg, n)) {
-                        Vec3 lo = tun.knuckleOffset;
+                        Vec3 lo = tun.knuckleOffsetNow();
                         if (hh == 0) lo.x = -lo.x;
                         Vec3 face = knucklePose(q, hh).q.rotate({0, 0, -1});
                         const Vec3 vs = recentHandVel(q, hh, lo, now);
@@ -1167,8 +1168,10 @@ Vec3 Game::botFireAim(int p, int h, const BotSkill& sk, Vec3& spinOut) {
     struct Way { Vec3 dir; float spin; int shape; };
     std::vector<Way> ways = {{flat, 0.f, 0}};
     if (sk.hunts) {
-        for (float yawOff : {-0.25f, 0.25f}) {
-            const float spin = (yawOff > 0 ? -16.f : 16.f) * (dot(cross(kUp, flat), side) >= 0 ? 1.f : -1.f);
+        // (curved: aimed out 9, 14 or 20 degrees, spun to bend back in about as much; one angle found too few at the
+        // distances a match brings, 2026-11-17)
+        for (float yawOff : {-0.35f, -0.25f, -0.15f, 0.15f, 0.25f, 0.35f}) {
+            const float spin = (yawOff > 0 ? -1.f : 1.f) * 64.f * std::fabs(yawOff) * (dot(cross(kUp, flat), side) >= 0 ? 1.f : -1.f);
             ways.push_back({normalize(flat + side * std::tan(yawOff)), spin, 1});
         }
         const Vec3 T{tgt.x, 0, tgt.z}, F{from.x, 0, from.z};
@@ -1281,15 +1284,16 @@ void Game::stepPlayer(int p, float dt) {
                 }
             } else if (grabbable(b) &&
                        ((pressed && length(launcherPoint(p, h) - b.pos) < 0.25f) ||
-                        (hi.trigger > 0.5f && length(catcherPoint(p, h) - b.pos) < tun.catchHalfHeight + ballRadius(p)))) {
+                        (hi.trigger > 0.5f && inReach(p, h, b.pos, tun.catchHalfHeight + ballRadius(p))))) {
                 // off the spawner: a trigger press at the ball, or a swing through it with the trigger already held
                 b.state = BallState::Held; b.heldHand = h; b.vel = {};
                 emit(EventType::Grab, p, h, b.pos);
             } else if (hi.trigger > 0.5f && (b.state == BallState::Flying || b.state == BallState::Returning) &&
                        // (your own ball, whoever touched it last: owner, 2026-11-11, a player found a ball in their
                        // colour that the other player had blocked floating beside them, and it couldn't be caught)
-                       (length(catcherPoint(p, h) - b.pos) < tun.catchHalfHeight + ballRadius(p) ||
-                        sawBallNear(p, catcherPoint(p, h), tun.catchHalfHeight + ballRadius(p)))) {
+                       (inReach(p, h, b.pos, tun.catchHalfHeight + ballRadius(p)) ||
+                        sawBallNear(p, catcherPoint(p, h), tun.catchHalfHeight + ballRadius(p)) ||
+                        (tun.fistReachNow() && sawBallNear(p, fistPoint(p, h), tun.catchHalfHeight + ballRadius(p))))) {
                 // catch your own ball ("You can't catch your opponent's ball!")
                 b.state = BallState::Held; b.heldHand = h; b.vel = {}; b.spin = {};
                 b.hitWaitAt = -1;   // (CATCHES ONLINE: a catch that came while the hit waited wins)
@@ -1298,7 +1302,7 @@ void Game::stepPlayer(int p, float dt) {
         }
         holding = (b.state == BallState::Held && b.heldHand == h);
         // "To activate your shield, you must first hold a charged ball."
-        hs.shieldUp = hi.tracked && holding && b.charged && tun.shields;   // (MATCH OPTIONS: shields off = HOTDOG MODE)
+        hs.shieldUp = hi.tracked && holding && shieldCharged(b) && tun.shields;   // (shields off = HOTDOG MODE; MAIDEN: any ball)
         // in Basic the gauntlet bumpers are always active, trigger or not. (The tutorial line "Pulling the trigger will
         // deactivate the knuckle guard on that hand" belongs to the tutorial's own setup, not Brawl Basic.)
         hs.knuckleUp = tun.knuckleGuards() && hi.tracked;   // (MATCH OPTIONS can turn them on or off in either rules)
@@ -1411,8 +1415,8 @@ void Game::lookAhead(int L, float lead, float dt) {
             const bool pressed = hi.trigger > 0.55f && ahead.prevTrig[h] <= 0.55f;
             const float reach = tun.catchHalfHeight + ballRadius(L);
             const bool grab = grabbable(mb) &&
-                              ((pressed && length(launcherPoint(L, h) - mb.pos) < 0.25f) || (hi.trigger > 0.5f && length(catcherPoint(L, h) - mb.pos) < reach));
-            const bool caught = hi.trigger > 0.5f && flying(mb) && length(catcherPoint(L, h) - drawn) < reach;   // (your own ball, always)
+                              ((pressed && length(launcherPoint(L, h) - mb.pos) < 0.25f) || (hi.trigger > 0.5f && inReach(L, h, mb.pos, reach)));
+            const bool caught = hi.trigger > 0.5f && flying(mb) && inReach(L, h, drawn, reach);   // (your own ball, always)
             if (grab || caught) { ahead.held = true; ahead.heldHand = h; ahead.heldAt = now; }
         }
     }
@@ -1422,7 +1426,7 @@ void Game::lookAhead(int L, float lead, float dt) {
     // its shield is up at once
     if (mb.state == BallState::Held && mb.heldHand >= 0 && mb.heldHand < 2) mb.pos = me.in.hand[mb.heldHand].grip.transform(tun.holdOffset);
     for (int h = 0; h < 2; ++h)
-        me.hands[h].shieldUp = me.in.hand[h].tracked && mb.state == BallState::Held && mb.heldHand == h && mb.charged && tun.shields &&
+        me.hands[h].shieldUp = me.in.hand[h].tracked && mb.state == BallState::Held && mb.heldHand == h && shieldCharged(mb) && tun.shields &&
                                !ahead.mine;   // (thrown here: the snapshots still have it in my hand for a round trip)
     // my throw: the host launches it when my let-go reaches it, from the same hand motion; here it leaves at once
     if (ahead.mine) {
@@ -1553,6 +1557,10 @@ bool Game::tryBlock(Ball& b, int ball, int q, int hh, int pass, const Vec3& from
     if (pass == 0 && hitsShield(q, hh, from, to, r, n)) {
         Vec3 vs = recentHandVel(q, hh, shieldLocal(hh).p, now);
         deflectMoving(b, n, vs, q, tun.advanced ? tun.shieldAimAssistAdvancedDeg : tun.shieldAimAssistBasicDeg, from);
+        if (tun.maidenNow()) {   // SHIELDS: ALWAYS ON (MAIDEN): a block, and the shield stays
+            emit(EventType::ShieldBlock, q, hh, from, 0, ball);
+            return true;
+        }
         if (!(np == 4 && tun.teamMode == TEAMS_3V1 && q == tun.theOne)) {   // (THE ONE's shield never breaks)
             pl[q].ball.charged = false;        // "Shield breaks on hit": the held ball loses its charge
             pl[q].hands[hh].shieldUp = false;
@@ -1562,7 +1570,7 @@ bool Game::tryBlock(Ball& b, int ball, int q, int hh, int pass, const Vec3& from
         return true;
     }
     if (pass == 1 && pl[q].hands[hh].knuckleUp && hitsBox(knucklePose(q, hh), tun.knuckleHalf, from, to, r, n)) {
-        Vec3 lo = tun.knuckleOffset;
+        Vec3 lo = tun.knuckleOffsetNow();
         if (hh == 0) lo.x = -lo.x;
         Vec3 vs = recentHandVel(q, hh, lo, now);
         // bounce off the guard's front face (fist forward), not whichever box face was entered first
@@ -1656,7 +1664,7 @@ Pose Game::botBlockGrip(int p, int h, int plan, const BallPathPt& x) const {
     }
     if (plan == BOT_KNUCKLE) {   // the front of the fist facing n, knuckles up
         const Quat gq = roll(fromTo({0, 0, -1}, n), {0, 1, 0}, {0, 1, 0});
-        Vec3 ko = tun.knuckleOffset;
+        Vec3 ko = tun.knuckleOffsetNow();
         if (h == 0) ko.x = -ko.x;
         return {gq, x.pos - gq.rotate(ko)};
     }
@@ -1733,7 +1741,8 @@ void Game::botWatch(int p, int k, const BotSkill& sk) {
         r.body = s.botBody + s.botBodyVel * (length(s.botBodyVel) / (2.f * sk.bodyAccel));
         for (int h = 0; h < 2; ++h) { r.rel[h] = s.botHand[h] - s.in.head.p; r.relQ[h] = s.botHandQ[h]; }
         r.act = rnd() < sk.defend;
-        r.catchIt = mode == 2 && rnd() < sk.catchChance;
+        // (its own ball coming back, or sent back at it: its own to catch, whoever touched it last, 0.3.19's rule)
+        r.catchIt = (mode == 2 || (k == 1 && twoPlayerRoom())) && rnd() < sk.catchChance;   // (four players: as they were)
         const Vec3 e{rnd() - 0.5f, rnd() - 0.5f, rnd() - 0.5f};
         r.err = normalize(e) * (sk.readError * rnd());
     }
@@ -1881,7 +1890,9 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
                 if (x.t >= now && dot(x.pos - head, s.in.head.q.rotate({0, 0, -1})) < 0.6f) { r.hitT = x.t; break; }
     }
     const PlayerState::BotRead& other = s.botRead[1 - k];
-    const int busy = other.plan == BOT_SHIELD || other.plan == BOT_KNUCKLE || other.plan == BOT_CATCH ? other.hand : -1;
+    // (its defence may take the hand a catch of its own ball has: that catch plans again, the owner 2026-11-17)
+    const int busy = other.plan == BOT_SHIELD || other.plan == BOT_KNUCKLE ||
+                     (other.plan == BOT_CATCH && (k != 0 || !twoPlayerRoom())) ? other.hand : -1;   // (four players: as they were)
     // the point of the path where hand h meets the ball best (in reach, in time, before `until`): nearest its shoulder
     // (tried out: it must take the ball and not send it back into it, nor into its own foul zone unless `need` allows)
     auto pick = [&](int h, int plan, float until, float& dist, int need) {
@@ -1909,6 +1920,8 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
         const Pose g = botBlockGrip(p, h, plan, r.path[i]);
         r.plan = plan; r.hand = h; r.grip = g.p; r.gripQ = g.q;
         r.body = still;   // (it holds still for it)
+        PlayerState::BotRead& o = s.botRead[1 - k];
+        if (k == 0 && twoPlayerRoom() && o.plan == BOT_CATCH && o.hand == h) { o.plan = BOT_NONE; o.hand = -1; o.again = true; }   // (its own: again)
     };
     auto either = [&](int plan, float until, int need) {   // the better of the two hands
         float d0, d1;
@@ -1981,12 +1994,16 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
         if (r.act && r.hitT >= 0 && (k == 0 || !s.botRead[0].mode) && !dodge(2)) dodge(1);
         return;
     }
+    // its own ball sent back at it (punched or blocked: the opponent touched it last): it catches it, as its level
+    // catches (the owner, 2026-11-17: not dodge it; and slap it straight back, as its catch does); a block or a
+    // dodge only when no hand gets there in time
+    if (k == 1 && r.catchIt && either(BOT_CATCH, r.hitT >= 0 ? r.hitT - 0.02f : 1e9f, 2)) return;
     if (!r.act) return;
     const float until = r.hitT >= 0 ? r.hitT - 0.02f : sk.guardsStrikes && strikeT >= 0 ? strikeT - 0.02f : -1.f;
     if (until < 0) return;   // it misses (and the strike zone, or it doesn't mind)
     // the shield (on the hand holding a charged ball), then a knuckle guard, then a dodge; a block that fouls only when
     // nothing else will do
-    const bool shield = s.ball.state == BallState::Held && s.ball.charged && tun.shields;
+    const bool shield = s.ball.state == BallState::Held && shieldCharged(s.ball) && tun.shields;
     for (int need = 2; need >= 1; --need) {
         if (shield) {
             const int i = pick(s.ball.heldHand, BOT_SHIELD, until, d, need);
@@ -2001,13 +2018,18 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
 enum : int { HUNT_STRAIGHT, HUNT_CURVE, HUNT_BANK, HUNT_CURVED_BANK, HUNT_FLOOR, HUNT_SHAPES };
 static const float kSideWall = 2.5f;   // the classic arena's side walls (training.h's kSideZ)
 
+float Game::botHoldTime(const BotSkill& sk) {
+    return lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f) * (octagon() && tun.fireBalls >= 4 ? 0.35f : 1.f) *
+           (brawler() ? 0.65f : 1.f);   // (BOT STYLES: BASIC's brawler keeps up the pace)
+}
+
 void Game::botChooseIntent(int p, const BotSkill& sk) {
     PlayerState& s = pl[p];
     s.botIntent = 0;
     s.botStyle = HUNT_STRAIGHT;
     if (!sk.hunts) return;
     const bool hot = strikesHeld(p) >= 3;   // (a big, fast ball: go for the player)
-    s.botIntent = hot ? (rnd() < 0.9f ? 1 : 0) : (rnd() < 0.15f ? 1 : 0);
+    s.botIntent = hot ? (rnd() < 0.9f ? 1 : 0) : (rnd() < (duelist() ? 0.35f : 0.15f) ? 1 : 0);   // (the duellist: at you more)
     // and its shape: strikes every way; at the player more straight than off the walls
     static const float kStrike[HUNT_SHAPES] = {0.30f, 0.25f, 0.20f, 0.15f, 0.10f}, kAt[HUNT_SHAPES] = {0.55f, 0.12f, 0.20f, 0.08f, 0.05f};
     const float* w = s.botIntent ? kAt : kStrike;
@@ -2028,7 +2050,7 @@ Vec3 Game::botHuntAim(int p, int style, int j, Vec3& spin) {
     float side;   // the side it goes for: the ring's side for a strike; for the player, either
     if (s.botIntent == 0) {   // a strike: through the ring beside the body, this throw's side
         side = (float)s.botStrikeSide;
-        at = strikeZoneCenter(opp) + across * (side * 0.42f) + Vec3{0, (j & 1) ? 0.15f : -0.05f, 0};
+        at = strikeZoneCenter(opp) + across * (side * 0.6f * tun.strikeRadius()) + Vec3{0, (j & 1) ? 0.15f : -0.05f, 0};   // (0.42 m in a regulation ring)
     } else {   // at the player: where they usually stand (one throw in seven), or where they are, at 3 strikes
         side = (j & 2) ? 1.f : -1.f;
         at = strikesHeld(p) >= 3 || !s.botOppSpotSet ? chestPoint(opp) : Vec3{s.botOppSpot.x, chestPoint(opp).y, s.botOppSpot.z};
@@ -2059,6 +2081,7 @@ void Game::botPlanShot(int p, const BotSkill& sk, int hand) {
         const Vec3 rel = botShoulder(p, h) + fwd * 0.45f;
         Vec3 spin;
         const int style = k < 8 ? s.botStyle : HUNT_STRAIGHT;   // (its shape, eight ways; then straight, if none works)
+        const float later = k < 8 ? 0.f : 150.f;
         const Vec3 aim = botHuntAim(p, style, k & 7, spin);
         const Vec3 dir = normalize(aim - rel);
         Game g = *this;
@@ -2076,10 +2099,10 @@ void Game::botPlanShot(int p, const BotSkill& sk, int hand) {
                 if (e.type == EventType::Strike && e.player == opp) {   // (a strike: best through this throw's side of the ring)
                     const Vec3 across = np == 2 ? Vec3{0, 0, 1} : normalize(cross(kUp, facing(opp)));
                     const bool side = dot(e.pos - strikeZoneCenter(opp), across) * (float)s.botStrikeSide > 0;
-                    score = std::max(score, (s.botIntent == 0 ? (side ? 900.f : 250.f) : 300.f) - 100.f * t - (k < 8 ? 0.f : 150.f));
+                    score = std::max(score, (s.botIntent == 0 ? (side ? 900.f : 250.f) : 300.f) - 100.f * t - later);
                 }
                 if (e.type == EventType::HitPlayer && e.player == opp) {
-                    score = std::max(score, (s.botIntent == 1 ? 1000.f : 600.f) - 120.f * t - (k < 8 ? 0.f : 150.f));
+                    score = std::max(score, (s.botIntent == 1 ? 1000.f : 600.f) - 120.f * t - later);
                     done = true;
                 } else if ((e.type == EventType::ShieldBlock || e.type == EventType::KnuckleBlock) && e.player == opp) {
                     score = std::min(score, -500.f);
@@ -2216,6 +2239,13 @@ void Game::stepBot(int p, float dt) {
         // reaches it within a second, or there would always be one on its way and the bot would hardly ever throw)
         threatened |= r->mode != 0 && (np == 2 || (r->mode == 1 && r->hitT >= 0 && r->hitT - now < 1.0f));
         if (r->plan == BOT_SHIELD || r->plan == BOT_KNUCKLE || r->plan == BOT_CATCH) want[r->hand] = {r->gripQ, r->grip};
+        // BOT STYLES, BASIC's brawler (the better levels): a knuckle block punched through, the fist cocked 15 cm back
+        // and driven through the ball's way over its last tenth of a second (the punch sends it back faster)
+        if (r->plan == BOT_KNUCKLE && brawler() && sk.planShots && r->hitT >= 0) {
+            const float to = r->hitT - now;
+            const float off = to > 0.08f ? -0.15f : -0.15f + (0.08f - to) * 2.1f;
+            want[r->hand].p = r->grip + r->gripQ.rotate({0, 0, -1}) * clampf(off, -0.15f, 0.06f);
+        }
         if (r->mode && r->plan != BOT_CATCH && (r == reads[0] || !reads[0]->mode)) bodyWant = r->body;   // (still while it watches; or its dodge)
     }
     if (octagon()) threatened |= botFireDodge(p, sk, right, bodyWant);   // (FIREBALL BLITZ: out of the fireballs' way)
@@ -2250,7 +2280,7 @@ void Game::stepBot(int p, float dt) {
             if (length(launcherPoint(p, h) - b.pos) < 0.25f) {
                 b.state = BallState::Held; b.heldHand = h; b.vel = {};
                 emit(EventType::Grab, p, h, b.pos);
-                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f) * (octagon() && tun.fireBalls >= 4 ? 0.35f : 1.f);   // (four players: quicker, more to aim at)
+                s.botTimer = botHoldTime(sk);   // (four players, BASIC's brawler: quicker)
                 s.botThrow = 0; s.botShotsTried = 0; s.botShotScore = -1e9f;
                 if (sk.hunts) botChooseIntent(p, sk);
             }
@@ -2262,7 +2292,7 @@ void Game::stepBot(int p, float dt) {
     for (const PlayerState::BotRead* r : reads)   // (but not with a ball on its way into it: its shield goes with the ball)
         if (r->mode == 1 && (r->hitT >= 0 || r->plan != BOT_NONE)) s.botSlap = false;
     if (!holding || (threatened && !s.botSlap) || match != MatchState::InProgress) s.botThrow = 0;   // (a slap shot goes on)
-    if (holding && !b.charged && !s.coach.on) s.botTimer = std::min(s.botTimer, 0.35f);   // recharge by throwing
+    if (holding && !shieldCharged(b) && !s.coach.on) s.botTimer = std::min(s.botTimer, 0.35f);   // recharge by throwing
     if (holding && (!threatened || s.botSlap) && match == MatchState::InProgress) {
         const int h = b.heldHand;
         if (s.botThrow == 0 && s.coach.on) {   // a coach: the throw it is told, when it is told
@@ -2278,10 +2308,23 @@ void Game::stepBot(int p, float dt) {
             if (sk.planShots && !octagon() && s.botShotsTried < 12 && botTriesLeft == kBotTriesPerStep) botPlanShot(p, sk);
             // the best keep their ball (their shield) while the opponent can throw, unless their shot clock runs low
             const Ball& ob = pl[opp].ball;
-            const bool patient = sk.guardsStrikes && tun.shields && !tun.knuckleGuards() && b.charged &&
+            const bool patient = sk.guardsStrikes && tun.shields && !tun.knuckleGuards() && shieldCharged(b) &&
                                  (ob.state == BallState::Held || ob.state == BallState::Idle) && s.shotClock > 3.f &&
                                  s.botTimer > -4.f;
-            if (s.botTimer <= 0 && !patient) {
+            // BOT STYLES, ADVANCED's duellist (the hunting levels): you without a shield (your ball away from you, or
+            // uncharged): it throws now, at you (its shot tried out afresh for that)
+            const bool exposed = duelist() && sk.hunts && tun.shields &&
+                                 (ob.state == BallState::Flying || ob.state == BallState::Returning || ob.state == BallState::Spawning ||
+                                  ob.state == BallState::Dead || !shieldCharged(ob));
+            if (exposed && !s.botPounce) {
+                s.botPounce = true;
+                s.botIntent = 1;
+                s.botShotsTried = 0; s.botShotScore = -1e9f;
+                s.botTimer = std::min(s.botTimer, 0.15f);
+            } else if (!exposed) {
+                s.botPounce = false;
+            }
+            if (s.botTimer <= 0 && (!patient || s.botPounce)) {   // (the duellist doesn't wait on a player without a shield)
                 if (octagon()) {   // a fireball: tried out against its target as it would hop
                     s.botShotDir = botFireAim(p, h, sk, s.botShotSpin);
                 } else if (sk.hunts && s.botShotScore <= 0) {   // (the plan's own aim, straight)
@@ -2327,7 +2370,8 @@ void Game::stepBot(int p, float dt) {
                 if (sk.hunts && s.botIntent == 0) s.botStrikeSide = -s.botStrikeSide;   // (the next strike: the other side)
                 s.botThrow = 0;
                 s.botSlap = false;
-                s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f) * (octagon() && tun.fireBalls >= 4 ? 0.35f : 1.f);   // (four players: quicker, more to aim at)
+                s.botPounce = false;
+                s.botTimer = botHoldTime(sk);   // (four players, BASIC's brawler: quicker)
                 s.botShotsTried = 0;
                 s.botShotScore = -1e9f;
                 if (np == 4) s.botTarget = botPickTarget(p);   // (four players: someone, maybe someone else, next)
@@ -2388,7 +2432,7 @@ void Game::stepBot(int p, float dt) {
     }
     // the slap shot's shape, planned while its ball comes back to it (owner, 2026-11-02: CHAMPION threw only straight
     // balls: a slap gave it a frame or two to try a curve or a bank, and it nearly never found one in time)
-    if (sk.hunts && !octagon() && !s.coach.on && match == MatchState::InProgress && !holding && b.instigator == p &&
+    if (sk.hunts && !octagon() && !s.coach.on && match == MatchState::InProgress && !holding &&
         (b.state == BallState::Flying || b.state == BallState::Returning) && s.botRead[1].plan == BOT_CATCH && s.botRead[1].hand >= 0 &&
         !threatened && botTriesLeft == kBotTriesPerStep) {   // (not while a ball comes at it: its defence comes first)
         if (!s.botPre) { botChooseIntent(p, sk); s.botPre = true; s.botShotsTried = 0; s.botShotScore = 0.f; }
@@ -2397,12 +2441,16 @@ void Game::stepBot(int p, float dt) {
     if (holding) s.botPre = false;
     // a catch: its own ball, in its catcher
     const PlayerState::BotRead& c = s.botRead[1];
-    if (c.plan == BOT_CATCH && (b.state == BallState::Flying || b.state == BallState::Returning) && b.instigator == p) {
+    if (c.plan == BOT_CATCH && (b.state == BallState::Flying || b.state == BallState::Returning)) {   // (its own, whoever touched it)
         s.in.hand[c.hand].trigger = 1;
-        if (length(catcherPoint(p, c.hand) - b.pos) < tun.catchHalfHeight + ballRadius(p)) {
+        // (the ball's way this step, not only where it is: a fast ball sent back at it covers 20-30 cm a step and could
+        // pass the hand between two looks, as shields and knuckle guards check its whole path; four players: as they were)
+        const Vec3 cp = catcherPoint(p, c.hand), seg = twoPlayerRoom() ? b.vel * lastDt : Vec3{};
+        const float su = clampf(dot(cp - b.pos, seg) / std::max(1e-6f, dot(seg, seg)), 0.f, 1.f);
+        if (length(b.pos + seg * su - cp) < tun.catchHalfHeight + ballRadius(p)) {
             b.state = BallState::Held; b.heldHand = c.hand; b.vel = {}; b.spin = {};
             emit(EventType::Caught, p, c.hand, b.pos);
-            s.botTimer = lerpf(sk.holdMin, sk.holdMax, rnd()) * (np == 4 ? 0.5f : 1.f) * (octagon() && tun.fireBalls >= 4 ? 0.35f : 1.f);   // (four players: quicker, more to aim at)
+            s.botTimer = botHoldTime(sk);   // (four players, BASIC's brawler: quicker)
             const bool pre = s.botPre && s.botShotScore > 0;   // (a shape found while it came back)
             const Vec3 preDir = s.botShotDir, preSpin = s.botShotSpin;
             s.botThrow = 0; s.botShotsTried = 0; s.botShotScore = -1e9f;
@@ -2619,7 +2667,7 @@ void Game::stepMatch(float dt) {
     case MatchState::RoundSummary:
         stateTimer -= dt;
         if (stateTimer <= 0) {
-            int w = pl[0].roundWins >= tun.advancedRoundsToWin ? 0 : pl[1].roundWins >= tun.advancedRoundsToWin ? 1 : -1;
+            int w = pl[0].roundWins >= tun.roundsToWinNow() ? 0 : pl[1].roundWins >= tun.roundsToWinNow() ? 1 : -1;   // (ROUNDS: BEST OF n)
             for (int p = 0; p < np; ++p) { pl[p].strikesAgainst = 0; pl[p].strikesFor = 0; spawnBall(p); }
             if (w >= 0) {
                 matchWinner = w;

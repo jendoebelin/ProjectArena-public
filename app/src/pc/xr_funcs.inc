@@ -158,6 +158,12 @@ XRAPI_ATTR XrResult XRAPI_CALL xrGetActionStateVector2f(XrSession session, const
     return f ? f(session, getInfo, state) : XR_ERROR_FUNCTION_UNSUPPORTED;
 }
 
+XRAPI_ATTR XrResult XRAPI_CALL xrGetCurrentInteractionProfile(XrSession session, XrPath topLevelUserPath, XrInteractionProfileState* interactionProfile) {
+    static PFN_xrGetCurrentInteractionProfile f = nullptr;
+    if (!f) xrLoaderGet("xrGetCurrentInteractionProfile", (PFN_xrVoidFunction*)&f);
+    return f ? f(session, topLevelUserPath, interactionProfile) : XR_ERROR_FUNCTION_UNSUPPORTED;
+}
+
 XRAPI_ATTR XrResult XRAPI_CALL xrGetInstanceProperties(XrInstance instance, XrInstanceProperties* instanceProperties) {
     static PFN_xrGetInstanceProperties f = nullptr;
     if (!f) xrLoaderGet("xrGetInstanceProperties", (PFN_xrVoidFunction*)&f);
@@ -186,6 +192,12 @@ XRAPI_ATTR XrResult XRAPI_CALL xrLocateViews(XrSession session, const XrViewLoca
     static PFN_xrLocateViews f = nullptr;
     if (!f) xrLoaderGet("xrLocateViews", (PFN_xrVoidFunction*)&f);
     return f ? f(session, viewLocateInfo, viewState, viewCapacityInput, viewCountOutput, views) : XR_ERROR_FUNCTION_UNSUPPORTED;
+}
+
+XRAPI_ATTR XrResult XRAPI_CALL xrPathToString(XrInstance instance, XrPath path, uint32_t bufferCapacityInput, uint32_t* bufferCountOutput, char* buffer) {
+    static PFN_xrPathToString f = nullptr;
+    if (!f) xrLoaderGet("xrPathToString", (PFN_xrVoidFunction*)&f);
+    return f ? f(instance, path, bufferCapacityInput, bufferCountOutput, buffer) : XR_ERROR_FUNCTION_UNSUPPORTED;
 }
 
 XRAPI_ATTR XrResult XRAPI_CALL xrPollEvent(XrInstance instance, XrEventDataBuffer* eventData) {

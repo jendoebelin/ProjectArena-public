@@ -577,6 +577,18 @@ int main() {
             char msg[112];
             std::snprintf(msg, sizeof msg, "FIREBALL BLITZ: four players and twelve fireballs with a full event log fit the relay (%d of 1200 bytes)", (int)bytes);
             CHECK(bytes <= 1200, msg);
+            {   // a spectator's copy of the match it watches, from FIREBALL BLITZ to a DIAMOND room (owner, 2026-11-16: the
+                // PC spectator drew DIAMOND's platforms at the ring's places, the players away from them)
+                full.ringMask = 0xF; full.layoutRing(0xF);
+                Game diamond; diamond.tun.experimental = true; diamond.tun.expRoom = ROOM_DIAMOND;
+                diamond.useArena(ARENA_DIAMOND, {}); diamond.resetWithBots(2);
+                Game seen;
+                bool home = Net::snapshotInto(full, seen) && length(seen.tun.start[1] - full.tun.start[1]) < 1e-3f;
+                home &= Net::snapshotInto(diamond, seen);
+                for (int p = 0; p < 2; ++p)
+                    home &= length(seen.tun.start[p] - diamond.tun.start[p]) < 1e-3f && length(seen.tun.spawner[p] - diamond.tun.spawner[p]) < 1e-3f;
+                CHECK(home, "a watched match from FIREBALL BLITZ to DIAMOND: the players' places are the room's own again");
+            }
             Q.game.tun.expRoom = ROOM_BLITZ;
             Q.game.useArena(ARENA_OCTAGON, {});
             for (int i = 1; i <= 3; ++i) { pump(fs, 0.3); fs[i]->game.useArena(fs[i]->game.tun.expRoom == ROOM_BLITZ ? ARENA_OCTAGON : ARENA_CLASSIC, {}); }
@@ -663,6 +675,26 @@ int main() {
               "... an older player in the match: FOUL LINE and STRIKE SPEED play at regulation, for the host too");
         CHECK(H.game.tun.foulShift == 2 && H.game.tun.strikeSpeed == 2, "... the host's choice kept for the next match");
         H.game.tun.foulShift = 0; H.game.tun.strikeSpeed = 0; H.game.tun.matchVersion = Tunables::kVerAll;
+        pump(hs, 0.5);
+        // ROOMS AND THEIR OPTIONS (0.3.21): the host's MAIDEN, AIM ASSIST, STRIKE ZONE and BALL GROWTH reach the players
+        H.game.tun.maiden = true; H.game.tun.aimAssist = 3; H.game.tun.strikeZone = 2; H.game.tun.ballGrowth = 1;
+        H.game.tun.advancedRoundsToWin = 3; H.game.tun.shieldSize = 2;
+        B.game.tun.ballFeel = BALL_FEEL_DEFAULT; H.game.tun.ballFeel = BALL_CORE | BALL_SPIN;
+        pump(hs, 0.5);
+        CHECK(B.game.tun.ballFeel == (BALL_CORE | BALL_SPIN), "BALL FEEL: the host's ball (CORE SOLID, SPIN VISIBLE) is every player's at the arena");
+        H.game.tun.ballFeel = BALL_FEEL_DEFAULT;
+        CHECK(B.game.tun.maidenNow() && B.game.tun.aimAssistNow() == 3 && B.game.tun.strikeZoneNow() == 2 && B.game.tun.ballGrowthNow() == 1 &&
+                  std::fabs(B.game.tun.strikeRadius() - 0.9f) < 1e-4f && B.game.tun.advancedRoundsToWin == 3 && B.game.tun.shieldSizeNow() == 2,
+              "ROOM OPTIONS: the host's MAIDEN, AIM ASSIST, STRIKE ZONE and BALL GROWTH are the players' too");
+        H.game.tun.matchVersion = 3020;   // (a player on 0.3.20: the competition build)
+        pump(hs, 0.5);
+        const int rulesAim = H.game.tun.advanced ? 1 : 2;
+        CHECK(!B.game.tun.maidenNow() && B.game.tun.aimAssistNow() == rulesAim && B.game.tun.strikeZoneNow() == 1 &&
+                  B.game.tun.ballGrowthNow() == 3 && !H.game.tun.maidenNow() && H.game.tun.strikeZoneNow() == 1,
+              "... a player on 0.3.20 (the competition build) in the match: all as the rules say, for the host too");
+        H.game.tun.maiden = false; H.game.tun.aimAssist = -1; H.game.tun.strikeZone = 1; H.game.tun.ballGrowth = 3;
+        H.game.tun.advancedRoundsToWin = 2; H.game.tun.shieldSize = 0;
+        H.game.tun.matchVersion = Tunables::kVerAll;
         pump(hs, 0.5);
         pump(hs, 2.0);   // (the shot clock has been running a while)
         CHECK(H.game.pl[0].shotClock < H.game.tun.shotClockSeconds - 1.5f && std::fabs(B.game.pl[0].shotClock - H.game.pl[0].shotClock) < 0.5f,

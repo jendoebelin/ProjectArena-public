@@ -17,6 +17,15 @@ uniform mat4 uMVP;
 uniform mat4 uModel;
 uniform int uSkinned;
 uniform mat4 uBones[9];
+uniform int uBend;          // THE REACH: bending at the waist: bone 0 is uPelvis below it, uBones[0] above (bind-space height)
+uniform mat4 uPelvis;
+uniform int uTwist;         // FOREARM TWIST (PR #25): the forearm's skin turned back toward the elbow (avatar.h Rig::twist)
+uniform vec4 uTw[8];
+uniform int uSwish;         // TENNIS SKIRT / KILT (PR #25): swung about the hips, kept out of the body (avatar.h Swish)
+uniform vec4 uSw;           // the swing: x, z (m, the garment's frame), twist (rad), lift (m)
+uniform vec4 uSwC;          // the hips' centre x, z, the most a vertex moves (m)
+uniform vec4 uSwP;          // the body's radii (uSwTex): the first row's height, 1 / row step, rows, columns
+uniform highp sampler2D uSwTex;
 uniform int uUV;
 uniform vec4 uUVRect;
 uniform int uTuck;          // hair under headgear: kept inside it (uTuckTex: per direction from uTuckC, the radius)
@@ -31,10 +40,34 @@ out vec3 vN;
 out vec3 vW;
 out vec2 vUV;
 out vec4 vCol;
+float swishRadius(float y, float th) {   // the body's radius at this height and angle (his radialRadius)
+    int rows = int(uSwP.z), cols = int(uSwP.w);
+    float fy = clamp((y - uSwP.x) * uSwP.y, 0.0, float(rows - 1));
+    int lo = int(floor(fy)), hi = min(lo + 1, rows - 1);
+    float u = fract(th * 0.1591549 + 1.0) * float(cols);
+    int i = int(floor(u)) % cols, j = (i + 1) % cols;
+    float f = u - floor(u);
+    float ra = mix(texelFetch(uSwTex, ivec2(i, lo), 0).r, texelFetch(uSwTex, ivec2(j, lo), 0).r, f);
+    float rb = mix(texelFetch(uSwTex, ivec2(i, hi), 0).r, texelFetch(uSwTex, ivec2(j, hi), 0).r, f);
+    return mix(ra, rb, fy - float(lo));
+}
 void main() {
     vec4 p = vec4(aPos, 1.0);
     vec3 nrm = aNrm;
     float pin = 0.0;
+    if (uSwish == 1 && aUV1.x > 0.0) {   // (the skirt: its weight and the room it keeps from the body in aUV1)
+        float w = aUV1.x, a = uSw.z * w, c = cos(a), s = sin(a);
+        vec2 d = aPos.xz - uSwC.xy;
+        vec3 q = vec3(uSwC.x + c * d.x + s * d.y + uSw.x * w, aPos.y + uSw.w * w, uSwC.y - s * d.x + c * d.y + uSw.y * w);
+        vec3 m = q - aPos;
+        float L = length(m), bound = uSwC.z * w;
+        if (L > bound) q = aPos + m * (bound / L);
+        vec2 e = q.xz - uSwC.xy;
+        float r = length(e), target = swishRadius(q.y, atan(e.x, -e.y)) + aUV1.y;
+        if (r < target) q.xz = uSwC.xy + (r > 1e-6 ? e * (target / r) : vec2(target, 0.0));
+        p.xyz = q;
+        nrm = vec3(c * aNrm.x + s * aNrm.z, aNrm.y, -s * aNrm.x + c * aNrm.z);
+    }
     if (uTuck == 1) {   // pulled in (smoothly, from 6 mm short of the radius) and, where the gear covers it, held still
         vec3 d = aPos - uTuckC;
         float r = max(length(d), 1e-4);
@@ -50,11 +83,49 @@ void main() {
         vDecN = vec2((mat3(uDecalM[0]) * aNrm).z, (mat3(uDecalM[1]) * aNrm).z);
     }
     if (uSkinned == 1) {   // linear blend skinning over the avatar's 9 bones (avatar.h BONE_*)
-        mat4 S = uBones[int(aBone.x)] * aWeight.x + uBones[int(aBone.y)] * aWeight.y +
-                 uBones[int(aBone.z)] * aWeight.z + uBones[int(aBone.w)] * aWeight.w;
+        mat4 B[4];
+        B[0] = uBones[int(aBone.x)]; B[1] = uBones[int(aBone.y)]; B[2] = uBones[int(aBone.z)]; B[3] = uBones[int(aBone.w)];
+        if (uBend == 1) {   // (the torso bending at the waist: from the hips, the pelvis, to the chest, the torso)
+            float t = smoothstep(-0.50, -0.26, aPos.y);
+            mat4 T = uPelvis * (1.0 - t) + uBones[0] * t;
+            if (int(aBone.x) == 0) B[0] = T;
+            if (int(aBone.y) == 0) B[1] = T;
+            if (int(aBone.z) == 0) B[2] = T;
+            if (int(aBone.w) == 0) B[3] = T;
+        }
+        // (the forearm twist: a forearm influence turned about the forearm by -roll at the elbow, none from 96% of the way
+        // to the wrist (smoothly); the normal follows the turn and its change along the arm)
+        float twG[4] = float[4](0.0, 0.0, 0.0, 0.0);
+        if (uTwist == 1) {
+            for (int i = 0; i < 4; ++i) {
+                int b = int(aBone[i]);
+                if (b == 5 || b == 6) {
+                    int k = b - 5;
+                    float s = clamp(dot(aPos - uTw[k].xyz, uTw[2 + k].xyz) * uTw[k].w, 0.0, 1.0);
+                    float th = -uTw[2 + k].w * (1.0 - s * s * (3.0 - 2.0 * s));
+                    vec3 ax = uTw[6 + k].xyz, E = uTw[4 + k].xyz;
+                    float c = cos(th), sn = sin(th);
+                    mat3 R = mat3(c) + sn * mat3(0.0, ax.z, -ax.y, -ax.z, 0.0, ax.x, ax.y, -ax.x, 0.0) + (1.0 - c) * outerProduct(ax, ax);
+                    mat4 Rt = mat4(R);
+                    Rt[3] = vec4(E - R * E, 1.0);
+                    B[i] = Rt * B[i];
+                    twG[i] = uTw[2 + k].w * 6.0 * s * (1.0 - s) * uTw[4 + k].w;
+                }
+            }
+        }
+        mat4 S = B[0] * aWeight.x + B[1] * aWeight.y + B[2] * aWeight.z + B[3] * aWeight.w;
         if (uTuck == 1) S = S * (1.0 - pin) + mat4(1.0) * pin;   // (hair rigs: bone 0 is the head)
         p = S * p;
-        nrm = mat3(S) * aNrm;
+        nrm = mat3(S) * nrm;
+        if (uTwist == 1) {
+            for (int i = 0; i < 4; ++i) {
+                if (twG[i] != 0.0) {
+                    int k = int(aBone[i]) - 5;
+                    vec3 ax = uTw[6 + k].xyz;
+                    nrm -= aWeight[i] * twG[i] * ax * dot(cross(ax, p.xyz - uTw[4 + k].xyz), nrm);
+                }
+            }
+        }
     }
     gl_Position = uMVP * p;
     vW = (uModel * p).xyz;
@@ -230,6 +301,19 @@ static GLuint compile(GLenum type, const char* src) {
         LOGE("shader compile failed: %s", buf);
     }
     return s;
+}
+
+// a skirt's body radii (TENNIS SKIRT / KILT): cols x rows floats, read exactly (texelFetch)
+GLuint Renderer::swishTexture(int cols, int rows, const float* v) {
+    GLuint t = 0;
+    glGenTextures(1, &t);
+    glBindTexture(GL_TEXTURE_2D, t);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, cols, rows, 0, GL_RED, GL_FLOAT, v);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    return t;
 }
 
 GLuint Renderer::tuckTexture(int w, int h, const uint8_t* v) {
@@ -448,6 +532,14 @@ bool Renderer::init() {
     uDecals_ = glGetUniformLocation(prog_, "uDecals");
     uDecalM_ = glGetUniformLocation(prog_, "uDecalM");
     uBones_ = glGetUniformLocation(prog_, "uBones");
+    uBend_ = glGetUniformLocation(prog_, "uBend");
+    uPelvis_ = glGetUniformLocation(prog_, "uPelvis");
+    uTwist_ = glGetUniformLocation(prog_, "uTwist");
+    uTw_ = glGetUniformLocation(prog_, "uTw");
+    uSwish_ = glGetUniformLocation(prog_, "uSwish");
+    uSw_ = glGetUniformLocation(prog_, "uSw");
+    uSwC_ = glGetUniformLocation(prog_, "uSwC");
+    uSwP_ = glGetUniformLocation(prog_, "uSwP");
     uDesign_ = glGetUniformLocation(prog_, "uDesign");
     uDesCol_ = glGetUniformLocation(prog_, "uDesCol");
     uDesGlow_ = glGetUniformLocation(prog_, "uDesGlow");
@@ -460,6 +552,7 @@ bool Renderer::init() {
     glUniform1i(glGetUniformLocation(prog_, "uFabric"), 3);
     glUniform1i(glGetUniformLocation(prog_, "uTuckTex"), 4);
     glUniform1i(glGetUniformLocation(prog_, "uDecalTex"), 5);
+    glUniform1i(glGetUniformLocation(prog_, "uSwTex"), 6);
     glUniform1i(uDecals_, 0);
     glUniform1i(uTuck_, 0);
     uChar_ = glGetUniformLocation(prog_, "uChar");
@@ -591,6 +684,18 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
     const bool skin = m.skinned && dp.bones;
     glUniform1i(uSkinned_, skin ? 1 : 0);
     if (skin) glUniformMatrix4fv(uBones_, 9, GL_FALSE, dp.bones[0].m);
+    glUniform1i(uBend_, skin && dp.pelvis ? 1 : 0);
+    if (skin && dp.pelvis) glUniformMatrix4fv(uPelvis_, 1, GL_FALSE, dp.pelvis->m);
+    glUniform1i(uTwist_, skin && dp.twist ? 1 : 0);
+    if (skin && dp.twist) glUniform4fv(uTw_, 8, dp.twist);
+    const bool swish = skin && dp.swish && dp.swishShape && dp.swishShape->tex;
+    glUniform1i(uSwish_, swish ? 1 : 0);
+    if (swish) {
+        glUniform4fv(uSw_, 1, dp.swish);
+        glUniform4fv(uSwC_, 1, dp.swishShape->c);
+        glUniform4fv(uSwP_, 1, dp.swishShape->p);
+        glActiveTexture(GL_TEXTURE6); glBindTexture(GL_TEXTURE_2D, dp.swishShape->tex);
+    }
     const int decals = dp.decalTex ? std::max(0, std::min(2, dp.decals)) : 0;
     glUniform1i(uDecals_, decals);
     if (decals) {
@@ -664,6 +769,9 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
     glDepthMask(GL_TRUE);
     glUniform2f(uUVOff_, 0, 0);   // text / ribbons don't go through draw(): leave neutral values behind
     glUniform1i(uSkinned_, 0);
+    glUniform1i(uBend_, 0);
+    glUniform1i(uTwist_, 0);
+    glUniform1i(uSwish_, 0);
     glUniform1i(uTuck_, 0);
     glUniform1i(uDecals_, 0);   // (left on, the next thing drawn another way wore the flag: the fireballs did)
     glUniform1i(uDesign_, 0);

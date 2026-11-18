@@ -61,16 +61,27 @@ rm -f "$OUT/apk/lib/arm64-v8a/"*.so   # only this build's libraries (an old libo
 
 if [ "$MODE" = release ]; then OPT="-O2 -DNDEBUG"; else OPT="-O2 -g"; fi
 CFLAGS="--target=$TARGET --sysroot=$SYSROOT -fPIC -ffunction-sections -fdata-sections $OPT $STOREDEF -Wall -Wno-unused-function"
-INC="-I$ROOT/app/src -I$NDK/sources/android/native_app_glue -I$OXR/prefab/modules/headers/include"
 
 python -I "$ROOT/tools/write_servers_header.py"
+# a release (the store, GitHub, SideQuest) is built from the public form of the source, without the private
+# cross-play code (tools/public_source.py), and our own names stay inside the library: only the entry point the
+# glue exports is seen from outside (the owner, 2026-11-18: the 0.3.21 store build carried the other game's
+# name in 28 internal names and three lines of text). Debug builds keep app/src as it is.
+SRCDIR="$ROOT/app/src"
+VIS=""
+if [ "$MODE" = release ] || [ "${PA_PUBLIC_SOURCE:-}" = 1 ]; then   # (PA_PUBLIC_SOURCE=1: a debug build of it, to try)
+  SRCDIR="$OUT/src"
+  python -I "$ROOT/tools/public_source.py" "$SRCDIR"
+  VIS="-fvisibility=hidden -fvisibility-inlines-hidden"
+fi
+INC="-I$SRCDIR -I$NDK/sources/android/native_app_glue -I$OXR/prefab/modules/headers/include"
 echo "== compiling"
 objs=()
 "$CC" $CFLAGS $INC -c "$NDK/sources/android/native_app_glue/android_native_app_glue.c" -o "$OUT/obj/glue.o"
 objs+=("$OUT/obj/glue.o")
-for f in "$ROOT"/app/src/*.cpp; do
+for f in "$SRCDIR"/*.cpp; do
   o="$OUT/obj/$(basename "${f%.cpp}").o"
-  "$CXX" $CFLAGS -std=c++17 -fno-exceptions -fno-rtti $INC -c "$f" -o "$o"
+  "$CXX" $CFLAGS $VIS -std=c++17 -fno-exceptions -fno-rtti $INC -c "$f" -o "$o"
   objs+=("$o")
 done
 

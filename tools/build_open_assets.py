@@ -32,7 +32,8 @@ Who writes what in app/assets_open (today no file has two writers):
                              tex/open_pat_*, app/src/avatar_bodies.inc
   tools/gen_open_textures.py the other tex/open_* textures
   tools/gen_open_audio.py    audio/ (only with --audio)
-  not run from here          tex/flag_* (gen_flags.py), tex/fx_* (gen_crowd_fx.py), vr_splash.png (gen_splash.py),
+  not run from here          tex/room_pictures (make_room_pictures.py: needs the PC app built),
+                             tex/flag_* (gen_flags.py), tex/fx_* (gen_crowd_fx.py), vr_splash.png (gen_splash.py),
                              contributed models (import_glb.py), tutorials/ (make_tutorial.py)
 """
 import math
@@ -41,6 +42,7 @@ import re
 import shutil
 import struct
 import subprocess
+import zipfile
 import sys
 
 import numpy as np
@@ -650,12 +652,16 @@ def main():
             print('blender: props')
             run_blender('make_props.py', [os.path.join(SRC, 'props.npz')])
         if '--arena-only' not in sys.argv:
-            print('blender: MPFB2 bodies (needs the MPFB extension in Blender)')
-            run_blender('make_body.py', [os.path.join(SRC, 'body')], factory=False)
+            # the bodies: PR #25's (Quaternius, CC0: experiments/avatar_anatomy/base), posed as the game binds them (the
+            # MPFB2 bodies before 2026-11-17: tools/blender/make_body.py, the MPFB extension in Blender, PA_BODIES=mpfb)
+            print('bodies: PR #25 (tools/repose_bodies.py)')
+            subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tools', 'repose_bodies.py')], check=True)
             for key in ('m', 'f'):
                 print('blender: head parts on the %s head' % key)
                 run_blender('make_avatar.py', [os.path.join(SRC, 'avatar_head_%s.npz' % key), '--head', key])
             for key in FACE_KEYS:   # FACE 2..4: face shields and masks fitted to each face (hair and helmets fit them all)
+                if not os.path.exists(os.path.join(SRC, 'body_q', 'body_%s_face%s.npz' % ({'m': 'masc', 'f': 'fem'}[key[0]], key[1:]))):
+                    continue   # (the PR #25 bodies: one face each)
                 print('blender: face shields and masks on face', key)
                 run_blender('make_avatar.py', [os.path.join(SRC, 'avatar_head_%s.npz' % key), '--head', key, 'av_visor', 'av_mask'])
     print('models')
@@ -700,6 +706,13 @@ def main():
         built |= build_props('avatar_head_%s.npz' % key)
     print('skinned bodies')
     subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tools', 'build_body_parts.py')], check=True)
+    # PR #25's fits and outfits (its clothing/assets.zip, as reviewed: the helmets over ours, the new shorts, skirts and
+    # helmets, VECTOR and NIGHTFORGE; its generators, clothing/generators/build_all.py, rebuild them with Python 3.10+)
+    print('PR #25 clothing')
+    pr25 = os.path.join(SRC, 'pr25_clothing')
+    with zipfile.ZipFile(os.path.join(ROOT, 'experiments', 'avatar_anatomy', 'clothing', 'assets.zip')) as z:
+        z.extractall(pr25)
+    subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tools', 'import_pr25.py'), pr25], check=True, stdout=subprocess.DEVNULL)
     # parts of the old formula-built avatars (before the MPFB bodies)
     old = ('av_head.', 'av_neck.', 'av_torso_', 'av_upper_', 'av_fore_', 'av_waist', 'av_lower_')
     for f in os.listdir(OUT):
