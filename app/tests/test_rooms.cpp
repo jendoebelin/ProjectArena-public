@@ -152,6 +152,35 @@ int main() {
     pump(ns, 1.0);
     CHECK(H.net.room().slot[0] == H.net.session() && H.net.room().slot[1] == ns[1]->net.session(), "their JOIN QUEUE takes the bot's place in the tank");
     CHECK(ns[1]->net.localSlot() == 1, "the visitor knows it plays slot 1");
+    H.game.tun.aimAssist = 3;
+    H.game.pl[0].ball.bankAimPending = true;
+    H.game.pl[1].ball.bankTurn = {0.f, 0.0123f, 0.f};
+    pump(ns, 0.5);
+    CHECK(ns[1]->game.tun.aimAssistNow() == 3, "the host's aim-assist preset reaches the guest");
+    CHECK(ns[1]->game.tun.usesBankAim() && ns[1]->game.pl[0].ball.bankAimPending &&
+          std::fabs(ns[1]->game.pl[1].ball.bankTurn.y - 0.0123f) < 0.00011f,
+          "guests receive pending bank assist and the remaining turn");
+    CHECK(ns[1]->game.tun.usesLivelySideWalls(), "guests use the host's livelier Basic side walls");
+    H.game.tun.advanced = true;
+    pump(ns, 0.5);
+    CHECK(ns[1]->game.tun.advanced && !ns[1]->game.tun.usesBankAim() && ns[1]->game.tun.usesLivelySideWalls(),
+          "guests receive the livelier Advanced wall rule even without Bank Assist");
+    H.game.tun.matchVersion = Tunables::kVerRoomOptions;
+    pump(ns, 0.5);
+    CHECK(!ns[1]->game.tun.usesLivelySideWalls(), "0.3.21 matches keep the earlier Advanced wall rebound");
+    H.game.tun.advanced = false;
+    pump(ns, 0.5);
+    CHECK(!ns[1]->game.tun.usesBankAim() && !ns[1]->game.tun.usesLivelySideWalls() && ns[1]->game.tun.aimAssistNow() == 3 &&
+          !ns[1]->game.pl[0].ball.bankAimPending && length2(ns[1]->game.pl[1].ball.bankTurn) == 0.f,
+          "0.3.21 matches keep release-assist presets and clear bank turns on the guest");
+    H.game.pl[0].ball.bankAimPending = false;
+    H.game.pl[1].ball.bankTurn = {};
+    H.game.tun.matchVersion = H.net.matchVersion();   // the test clients report 0.3.11
+    pump(ns, 0.5);
+    CHECK(ns[1]->game.tun.aimAssistNow() == 2 && H.game.tun.aimAssistNow() == 2 && H.game.tun.aimAssist == 3,
+          "an older player brings aim assist back to default for both sides and keeps the host's choice");
+    H.game.tun.aimAssist = -1;
+    H.game.tun.matchVersion = Tunables::kVerAll;
     std::printf("[ping between the host and a player]\n");
     pump(ns, 2.5);
     CHECK(ns[1]->net.pingMs() >= 0.f && ns[1]->net.pingMs() < 250.f, "the player measures its round trip to the host (PING / PONG)");

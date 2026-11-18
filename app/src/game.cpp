@@ -35,7 +35,8 @@ Vec3 Game::recentHandVel(int p, int h, const Vec3& local, float t) const {
     if (dt <= 1e-4f) return {};
     return (hs.gripHist[newest].transform(local) - hs.gripHist[oldest].transform(local)) / dt;
 }
-bool Game::hitsBox(const Pose& box, const Vec3& half, const Vec3& from, const Vec3& to, float r, Vec3& n) const {
+bool Game::hitsBox(const Pose& box, const Vec3& half, const Vec3& from, const Vec3& to, float r, Vec3& n,
+                   float* entry) const {
     Quat inv = box.q.conj();
     Vec3 a = inv.rotate(from - box.p), b = inv.rotate(to - box.p);
     Vec3 e = half + Vec3{r, r, r};
@@ -59,14 +60,43 @@ bool Game::hitsBox(const Pose& box, const Vec3& half, const Vec3& from, const Ve
     (&ln.x)[axis] = (pa[axis] + pd[axis] * t0) >= 0 ? 1.f : -1.f;
     n = box.q.rotate(ln);
     if (dot(n, to - from) > 0) n = -n;
+    if (entry) *entry = t0;
     return true;
 }
+
+static Vec3 bounceWithFriction(Ball& b, const Vec3& n, const Vec3& surfaceVel, float radius,
+                               float restitution, float friction, float maxSpin) {
+    const Vec3 relative = b.vel - surfaceVel;
+    const float normalSpeed = dot(relative, n);
+    if (normalSpeed >= 0.f) return b.vel;
+
+    const float normalImpulse = -(1.f + restitution) * normalSpeed;  // impulse per unit mass
+    const Vec3 arm = -n * radius;
+    const Vec3 slip = relative - n * normalSpeed + cross(b.spin, arm);
+    // A solid sphere has inertia 2/5 mR², so 2/7 of the slip speed would stop sliding at contact.
+    Vec3 tangentImpulse = slip * (-2.f / 7.f);
+    const float impulse = length(tangentImpulse);
+    const float limit = friction * normalImpulse;
+    if (impulse > limit) tangentImpulse *= limit / impulse;
+
+    b.spin += cross(arm, tangentImpulse) * (2.5f / (radius * radius));
+    const float spin = length(b.spin);
+    if (spin > maxSpin) b.spin *= maxSpin / spin;
+    return b.vel + n * normalImpulse + tangentImpulse;
+}
+
 void Game::deflectMoving(Ball& b, const Vec3& n, const Vec3& vs, int deflector, float assistDeg, const Vec3& from,
-                         bool punch) {
-    Vec3 rel = b.vel - vs;
-    float vn = dot(rel, n);
-    if (vn < 0) rel = rel - n * ((1.f + tun.deflectRestitution) * vn);
-    Vec3 out = rel + vs;
+                         bool punch, float contactRadius) {
+    Vec3 out;
+    if (contactRadius > 0.f) {
+        out = bounceWithFriction(b, n, vs, contactRadius, tun.deflectRestitution, tun.knuckleFriction, tun.maxSpin);
+    } else {
+        Vec3 relative = b.vel - vs;
+        const float vn = dot(relative, n);
+        if (vn < 0.f) relative -= n * ((1.f + tun.deflectRestitution) * vn);
+        out = relative + vs;
+        b.spin *= 0.5f;
+    }
     if (punch) {
         // a knuckle-guard hit is a punch: follow the fist's motion and always send the ball toward the opponent's end
         float hs = length(vs);
@@ -87,9 +117,10 @@ void Game::deflectMoving(Ball& b, const Vec3& n, const Vec3& vs, int deflector, 
     b.vel = dir * sp;
     b.speedLimit = sp;
     b.instigator = deflector;
+    b.bankAimPending = false;
+    b.bankTurn = {};
     b.rechargePending = false;
     b.scored = false;
-    b.spin *= 0.5f;
     b.timer = 0;   // (the self-hit grace, after a block as after a throw)
     b.progX = b.pos.x; b.progZ = b.pos.z; b.progT = 0;
 }
@@ -369,6 +400,8 @@ void Game::spawnBall(int p) {
     b.timer = tun.respawnDelay + tun.postSpawnDelay + tun.spawnPreTime + tun.spawnRiseTime;
     b.vel = {};
     b.spin = {};
+    b.bankAimPending = false;
+    b.bankTurn = {};
     b.heldHand = -1;
     b.instigator = p;
     b.charged = true;              // ABrawlProjectileSpawner::SpawnProjectileWithShieldRecharge
@@ -388,11 +421,14 @@ float Game::strikeScale(int n) const {
 
 void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist) {
     Ball& b = pl[p].ball;
-    if (assist && !octagon()) {   // (FIREBALL BLITZ: none; a fireball's drop is part of the aim)
+    const bool bankMode = tun.usesBankAim() && !pl[p].isBot && aimAt[p].empty();
+    b.bankAimPending = assist && bankMode && tun.bankAimDegrees() > 0.f;
+    b.bankTurn = {};
+    const float degrees = tun.aimAssistDeg();
+    if (assist && !bankMode && degrees > 0.f && !octagon()) {
         const Vec3 to = assistDir(p, b.pos, dir);
-        const float deg = tun.aimAssistDeg();   // (AIM ASSIST: the rules' own, Basic MEDIUM and Advanced LOW, or the room's)
         const float ang = std::acos(clampf(dot(dir, to), -1.f, 1.f));
-        if (ang > 1e-4f) dir = normalize(lerp(dir, to, std::min(1.f, deg2rad(deg) / ang)));
+        if (ang > 1e-4f) dir = normalize(lerp(dir, to, std::min(1.f, deg2rad(degrees) / ang)));
     }
     float sl = length(spin);
     if (sl > tun.maxSpin) spin *= tun.maxSpin / sl;
@@ -459,6 +495,8 @@ void Game::deflect(Ball& b, const Vec3& n, int deflector, float assistDeg, const
     if (ang > 1e-4f) dir = normalize(lerp(dir, tgt, std::min(1.f, deg2rad(assistDeg) / ang)));
     b.vel = dir * sp;
     b.instigator = deflector;      // OnRep_Instigator: scoring / zone rules follow the last deflector
+    b.bankAimPending = false;
+    b.bankTurn = {};
     b.rechargePending = false;
     b.scored = false;
     b.spin *= 0.5f;
@@ -608,7 +646,67 @@ void Game::addStrike(int against, const Vec3& where, int ball, int by) {
     emit(EventType::Strike, against, -1, where, float(pl[against].strikesAgainst), ball);
 }
 
-void Game::stepBall(int p, float dt) {
+static void advanceFlight(Ball& b, const Tunables& tun, float dt) {
+    if (length2(b.bankTurn) > 0.f && b.state == BallState::Flying && !b.fouled && !b.homing && tun.usesBankAim()) {
+        const float left = length(b.bankTurn);
+        const float turn = std::min(left, deg2rad(24.f) * dt);
+        b.vel = Quat::axisAngle(b.bankTurn / left, turn).rotate(b.vel);
+        b.bankTurn *= (left - turn) / left;
+    }
+    if (length2(b.spin) > 1e-4f) {
+        b.vel += cross(b.spin, b.vel) * (tun.magnusFactor * dt);
+        b.vel = normalize(b.vel) * b.speedLimit;
+        b.spin *= std::exp(-tun.spinDecayPerSecond * dt);
+    }
+}
+
+void Game::planBankAim(Ball& b, const Vec3& from, float radius) const {
+    if (!b.bankAimPending || !tun.usesBankAim() || b.state != BallState::Flying || b.fouled || b.homing ||
+        b.instigator < 0 || b.instigator >= 2 || b.speedLimit < tun.recallSpeed) return;
+    const int opponent = 1 - b.instigator;
+    if (!pl[opponent].in.headTracked) return;
+    const Vec3 head = pl[opponent].in.head.p;
+    const Vec3 target = head - Vec3{0, 0.35f, 0};
+    const float forward = facing(b.instigator).x;
+    if ((target.x - from.x) * forward < 0.1f || b.vel.x * forward <= 0.f) return;
+
+    // Look only as far as the opponent's plane. A surface ahead means this leg is still setting up another bank.
+    const float step = std::min(1.f / 120.f, 0.05f / b.speedLimit);
+    auto arrival = [&](Ball flight, bool skipExistingHit, Vec3& at, float& elapsed) {
+        flight.pos = from;
+        for (float t = 0; t < 2.5f; t += step) {
+            advanceFlight(flight, tun, step);
+            Vec3 next = flight.pos + flight.vel * step;
+            const bool crosses = (next.x - target.x) * forward >= 0.f;
+            const float fraction = crosses ? (target.x - flight.pos.x) / (next.x - flight.pos.x) : 1.f;
+            next = lerp(flight.pos, next, fraction);
+            Vec3 hit, normal;
+            uint32_t tags;
+            if (sweepArena(flight.pos, next, radius, hit, normal, tags) ||
+                (skipExistingHit && bodyTouchesPath(head, flight.pos, next, radius))) return false;
+            if (crosses) { at = next; elapsed = t + step * fraction; return true; }
+            flight.pos = next;
+        }
+        return false;
+    };
+
+    Vec3 at;
+    float elapsed;
+    if (!arrival(b, true, at, elapsed)) return;
+    const Vec3 miss = target - at;
+    const float distance = length(miss);
+    const float correction = std::atan2(distance, b.speedLimit * std::max(0.01f, elapsed - 0.08f));
+    if (distance > 0.85f || correction > deg2rad(8.f)) return;
+
+    Ball steered = b;
+    steered.bankTurn = normalize(cross(b.vel, miss)) * std::min(correction, deg2rad(tun.bankAimDegrees()));
+    if (arrival(steered, false, at, elapsed) && length2(target - at) < length2(miss)) {
+        b.bankTurn = steered.bankTurn;
+        b.bankAimPending = false;
+    }
+}
+
+void Game::stepBall(int p, float dt, int ignoredPlayer) {
     PlayerState& s = pl[p];
     Ball& b = s.ball;
     // stepped growth: ease toward the size for the current strike count
@@ -752,12 +850,7 @@ void Game::stepBall(int p, float dt) {
     const int sub = std::max(1, int(std::ceil(length(b.vel) * dt / 0.02f)));
     const float h = dt / sub;
     for (int i = 0; i < sub; ++i) {
-        // Magnus curve from spin, at constant speed (SpeedLimit FixedToInitialSpeed)
-        if (length2(b.spin) > 1e-4f) {
-            b.vel += cross(b.spin, b.vel) * (tun.magnusFactor * h);
-            b.vel = normalize(b.vel) * b.speedLimit;
-            b.spin *= std::exp(-tun.spinDecayPerSecond * h);
-        }
+        advanceFlight(b, tun, h);
         Vec3 from = b.pos, to = b.pos + b.vel * h;
         // recharge once the owner's throw crosses the owner's foul line
         if (b.rechargePending && b.instigator == p && dot(to, facing(p)) > -foulLine()) {
@@ -788,24 +881,18 @@ void Game::stepBall(int p, float dt) {
         const int victim = np == 2 ? 1 - b.instigator : vi;
         if (np == 2 ? vi > 0 : !rivals(b.instigator, victim)) continue;
         if (b.state == BallState::Flying) {   // strike: the ball crosses the victim's strike-zone ring inside its radius
-            Vec3 c = strikeZoneCenter(victim);
-            if (np == 2) {
-                if ((from.x - c.x) * (to.x - c.x) <= 0 && std::fabs(to.x - from.x) > 1e-6f) {
-                    float t = (c.x - from.x) / (to.x - from.x);
-                    Vec3 x = from + (to - from) * t;
-                    if (length(Vec3{0, x.y - c.y, x.z - c.z}) < tun.strikeRadius()) addStrike(victim, x, p);   // (STRIKE ZONE)
-                }
-            } else {   // (the ring faces its player's facing)
-                const Vec3 f = facing(victim);
-                const float a0 = dot(from - c, f), a1 = dot(to - c, f);
-                if (a0 * a1 <= 0 && std::fabs(a1 - a0) > 1e-6f) {
-                    const Vec3 x = from + (to - from) * (a0 / (a0 - a1));
-                    const Vec3 off = x - c;
-                    if (length(off - f * dot(off, f)) < tun.strikeRadius()) addStrike(victim, x, p, b.instigator);
-                }
+            const Vec3 center = strikeZoneCenter(victim);
+            const Vec3 normal = np == 2 ? Vec3{1, 0, 0} : facing(victim);
+            const float start = dot(from - center, normal), end = dot(to - center, normal);
+            // Count a step that ends on the plane, and skip the next step that starts there.
+            if ((start < 0.f && end >= 0.f) || (start > 0.f && end <= 0.f)) {
+                const Vec3 crossing = lerp(from, to, start / (start - end));
+                const float radius = tun.strikeRadius();
+                if (length2(crossing - center) <= radius * radius)
+                    addStrike(victim, crossing, p, b.instigator);
             }
         }
-        if (!handled && !b.scored && hitsBody(victim, to, r)) {
+        if (!handled && !b.scored && victim != ignoredPlayer && hitsBody(victim, to, r)) {
             if (lateBlock && seenLate[victim] > 0.f &&
                 (pl[victim].hands[0].shieldUp || pl[victim].hands[1].shieldUp || pl[victim].hands[0].knuckleUp ||
                  pl[victim].hands[1].knuckleUp)) {   // (BLOCKS ONLINE: their block may still be coming)
@@ -828,7 +915,7 @@ void Game::stepBall(int p, float dt) {
             int self = b.instigator;
             Vec3 toSelf = pl[self].in.head.p - to;
             if (tun.selfHitScores && !b.scored && b.timer > tun.selfHitGrace && dot(b.vel, toSelf) > 0 &&
-                pl[self].in.headTracked && hitsBody(self, to, r)) {
+                self != ignoredPlayer && pl[self].in.headTracked && hitsBody(self, to, r)) {
                 if (lateCatch && seenLate[self] > 0.f) {   // (CATCHES ONLINE: their catch may still be coming)
                     b.pos = to;
                     b.vel = {};
@@ -944,12 +1031,22 @@ void Game::stepBall(int p, float dt) {
                         return;
                     }
                 }
-                Vec3 v = b.vel - hn * (2 * dot(b.vel, hn));
-                // spin grips the wall: tangential kick, then lose some spin
-                v += cross(b.spin, hn) * (tun.spinBounceFactor * r);
-                b.spin *= (1.f - tun.spinBounceFactor);
-                if (tun.bouncesChangeSpeed && !returning) b.speedLimit = std::max(tun.minSpeed, b.speedLimit * tun.elasticity);
-                b.vel = normalize(v) * b.speedLimit;
+                const bool sideWall = arenaKind <= ARENA_CLASSIC ? std::fabs(hn.z) > 0.9f : (tags & TAG_SIDE_WALL) != 0;
+                const bool lively = sideWall && tun.usesLivelySideWalls();
+                if ((usesSpinContacts() || lively) && !returning && tun.bouncesChangeSpeed) {
+                    const float restitution = lively ? tun.sideWallElasticity : tun.elasticity;
+                    const Vec3 v = bounceWithFriction(b, hn, {}, r, restitution, tun.bankFriction, tun.maxSpin);
+                    b.speedLimit = std::max(tun.minSpeed, length(v));
+                    b.vel = normalize(v) * b.speedLimit;
+                } else {
+                    Vec3 v = b.vel - hn * (2 * dot(b.vel, hn));
+                    v += cross(b.spin, hn) * (tun.spinBounceFactor * r);
+                    b.spin *= (1.f - tun.spinBounceFactor);
+                    if (tun.bouncesChangeSpeed && !returning) b.speedLimit = std::max(tun.minSpeed, b.speedLimit * tun.elasticity);
+                    b.vel = normalize(v) * b.speedLimit;
+                }
+                b.bankTurn = {};
+                planBankAim(b, hp, r);
                 b.bounces++;
                 emit(EventType::Bounce, p, -1, hp, b.speedLimit);
                 to = hp;
@@ -1046,8 +1143,12 @@ int Game::fireSub(Ball& b, float h, Vec3& at) const {
         const float a = (float)i * 0.25f * kPi;
         const Vec3 n{std::cos(a), 0, std::sin(a)};
         const float d = dot(to, n) - (ringApothem - r);
-        if (d > 0 && dot(b.vel, n) > 0) {
-            b.vel -= n * (2.f * dot(b.vel, n));
+        const float normalSpeed = dot(b.vel, n);
+        if (d > 0 && normalSpeed > 0) {
+            const bool lively = tun.usesLivelySideWalls();
+            const float restitution = lively ? tun.sideWallElasticity : 1.f;
+            b.vel -= n * ((1.f + restitution) * normalSpeed);
+            if (lively) b.speedLimit = std::max(tun.fireMinSpeed, length(Vec3{b.vel.x, 0, b.vel.z}));
             to -= n * (2.f * d);
             at = to;
             ++hits;
@@ -1569,15 +1670,24 @@ bool Game::tryBlock(Ball& b, int ball, int q, int hh, int pass, const Vec3& from
         emit(EventType::ShieldBreak, q, hh, from);
         return true;
     }
-    if (pass == 1 && pl[q].hands[hh].knuckleUp && hitsBox(knucklePose(q, hh), tun.knuckleHalf, from, to, r, n)) {
+    if (pass == 1 && pl[q].hands[hh].knuckleUp) {
+        const Pose guard = knucklePose(q, hh);
+        float entry;
+        if (!hitsBox(guard, tun.knuckleHalf, from, to, r, n, &entry)) return false;
         Vec3 lo = tun.knuckleOffsetNow();
         if (hh == 0) lo.x = -lo.x;
-        Vec3 vs = recentHandVel(q, hh, lo, now);
+        const bool spinContact = usesSpinContacts();
+        if (spinContact) {
+            const Vec3 local = guard.q.conj().rotate(lerp(from, to, entry) - guard.p);
+            const Vec3 half = tun.knuckleHalf;
+            lo += Vec3{clampf(local.x, -half.x, half.x), clampf(local.y, -half.y, half.y), clampf(local.z, -half.z, half.z)};
+        }
+        const Vec3 vs = recentHandVel(q, hh, lo, now);
         // bounce off the guard's front face (fist forward), not whichever box face was entered first
-        Vec3 face = knucklePose(q, hh).q.rotate({0, 0, -1});
+        Vec3 face = guard.q.rotate({0, 0, -1});
         if (dot(face, b.vel - vs) > 0) face = -face;
         n = normalize(face * 0.75f + n * 0.25f);
-        deflectMoving(b, n, vs, q, tun.knuckleAimAssistDeg, from, true);
+        deflectMoving(b, n, vs, q, tun.knuckleAimAssistDeg, from, true, spinContact ? r : 0.f);
         emit(EventType::KnuckleBlock, q, hh, from, length(b.vel), ball);
         return true;
     }
@@ -1620,7 +1730,12 @@ void Game::predictBall(int owner, int reader, float horizon, float dt, std::vect
     out.clear();
     Game g = *this;
     PlayerState& r = g.pl[reader];
-    r.in.head.p = {0, -50, 0};   // the reader out of the way: no hit, no block
+    // Basic's own-ball read still needs the reader's position if a bank starts the automatic return.
+    const bool preserveTarget = tun.usesBankAim() && g.pl[owner].ball.bankAimPending;
+    if (!preserveTarget) {
+        if (owner == reader && usesSpinContacts()) r.in.headTracked = false;
+        else r.in.head.p = {0, -50, 0};
+    }
     for (HandState& hs : r.hands) hs.shieldUp = hs.knuckleUp = false;
     const Ball& b = g.pl[owner].ball;
     const int by = b.instigator;
@@ -1629,7 +1744,7 @@ void Game::predictBall(int owner, int reader, float horizon, float dt, std::vect
     out.push_back({g.now - dt, b.pos, b.vel, false, b});
     for (float t = 0; t < horizon; t += dt, g.now += dt) {
         g.events.clear();
-        g.stepBall(owner, dt);
+        g.stepBall(owner, dt, preserveTarget ? reader : -1);
         // (a returning ball can only reach its owner)
         if ((b.state != BallState::Flying && b.state != BallState::Returning) || b.instigator != by ||
             (b.state == BallState::Returning && owner != reader))
@@ -1756,16 +1871,21 @@ void Game::botWatch(int p, int k, const BotSkill& sk) {
         if (i > 0 && r.path[i].t > r.path[i - 1].t)
             at = lerp(r.path[i - 1].pos, at, clampf((tb - r.path[i - 1].t) / (r.path[i].t - r.path[i - 1].t), 0.f, 1.f));
         // (and read on before it runs out: a slow ball can be in the air longer than one read reaches)
-        fresh = r.path.back().t < now + (r.full ? 1.f : 0.f) || length(at - r.err - B.pos) > 0.08f;
+        const Ball& expected = r.path[i].ball;
+        const bool turnChanged = tun.usesBankAim() && expected.bankAimPending != B.bankAimPending;
+        fresh = turnChanged || r.path.back().t < now + (r.full ? 1.f : 0.f) || length(at - r.err - B.pos) > 0.08f;
     } else if (!fresh) {
         fresh = now - r.readT > 0.12f;   // a straight-line read, taken again as the ball comes
     }
-    // (a shield up or down since it planned (it caught its ball, or blocked with it): its plan was tried out without
-    // that, so a new one)
+    // Replan if a shield changes or an incoming shot frees a hand or makes it possible to dodge the return.
+    const PlayerState::BotRead& incoming = s.botRead[0];
+    const int incomingHand = k == 1 && mode == 2 && usesSpinContacts() && incoming.mode ? incoming.hand : -2;
     const int hands = (s.hands[0].shieldUp ? 1 : 0) | (s.hands[1].shieldUp ? 2 : 0);
-    if (!fresh && r.hands >= 0 && hands != r.hands && !r.path.empty()) {
+    const bool replan = r.hands >= 0 && (hands != r.hands || incomingHand != r.incomingHand);
+    r.hands = hands;
+    r.incomingHand = incomingHand;
+    if (!fresh && replan && !r.path.empty()) {
         const PlayerState::BotRead was = r;
-        r.hands = hands;
         r.tried.clear();
         botPlan(p, k, sk);
         if (sk.hunts && r.plan == BOT_NONE && was.plan != BOT_NONE) {   // (nothing new in time: the plan it had goes on; it
@@ -1774,7 +1894,6 @@ void Game::botWatch(int p, int k, const BotSkill& sk) {
         }
         return;
     }
-    r.hands = hands;
     if (!fresh && !r.again) return;
     if (!fresh) {   // the rest of a plan, the read unchanged
         r.again = false;
@@ -2750,6 +2869,7 @@ std::vector<CollisionTri> collision(bool four) {
             uint32_t tags = TAG_ARENA;
             if (std::fabs(mid.x) > kBackX) tags |= TAG_RETURN | (mid.x < 0 ? TAG_TEAM0 : TAG_TEAM1);
             else if (four && std::fabs(mid.z) > kBackX) tags |= TAG_RETURN | (mid.z < 0 ? TAG_TEAM2 : TAG_TEAM3);
+            else tags |= TAG_SIDE_WALL;
             quad(a + Vec3{0, kFloor, 0}, b + Vec3{0, kFloor, 0}, b + Vec3{0, kCeiling, 0}, a + Vec3{0, kCeiling, 0},
                  Vec3{-mid.x, 0, -mid.z}, tags);
         }
@@ -2802,10 +2922,10 @@ std::vector<CollisionTri> diamondCollision(bool solidPlatforms) {
     xs.push_back(4.73f); xs.push_back(kRollLen);
     for (size_t i = 0; i + 1 < xs.size(); ++i) {
         const float x0 = xs[i], x1 = xs[i + 1];
-        const uint32_t tags = TAG_ARENA;
         for (int k = 0; k < 4; ++k) {
             const Vec3 a = v[k], b = v[(k + 1) % 4];
             const Vec3 in = ctr - (a + b) * 0.5f;
+            const uint32_t tags = TAG_ARENA | ((k % 2) ? TAG_SIDE_WALL : 0u);   // the sideways panels before the court was rolled
             quad(a + Vec3{x0, 0, 0}, b + Vec3{x0, 0, 0}, b + Vec3{x1, 0, 0}, a + Vec3{x1, 0, 0}, {0, in.y, in.z}, tags);
         }
     }

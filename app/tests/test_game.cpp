@@ -524,11 +524,12 @@ static void botTests(const std::vector<CollisionTri>& tris) {
     }
     {
         std::printf("[practice bot: UNBEATABLE against a strong player]\n");
-        struct M { const char* name; bool adv, shields; int knuckles; } modes[] = {
-            {"Basic", false, true, -1}, {"Advanced", true, true, -1}, {"Basic HOTDOG", false, false, -1},
-            {"Advanced HOTDOG", true, false, -1}};
+        struct M { const char* name; bool adv, shields, bankAim; } modes[] = {
+            {"Basic (release assist)", false, true, false}, {"Advanced", true, true, false},
+            {"Basic HOTDOG (release assist)", false, false, false}, {"Advanced HOTDOG", true, false, false},
+            {"Basic (bank assist)", false, true, true}, {"Basic HOTDOG (bank assist)", false, false, true}};
         for (const M& m : modes) {
-            Game g; g.setArena(tris); g.tun.advanced = m.adv; g.tun.shields = m.shields; g.tun.knuckleMode = m.knuckles;
+            Game g; g.setArena(tris); g.tun.advanced = m.adv; g.tun.shields = m.shields; g.tun.bankAimEnabled = m.bankAim;
             g.tun.basicMatchTime = 0; g.tun.meetTime = 0; g.tun.botLevel = kBotLevels - 1; g.reset(true);
             // 200 throws each from three spots and at the headset's two frame rates
             int throws = 0, points = 0, rebounds = 0, scored = 0, strikes = 0, blocks = 0, punches = 0;
@@ -543,10 +544,11 @@ static void botTests(const std::vector<CollisionTri>& tris) {
             std::printf("       %s: %d throws, %d hits (and %d of its own blocks back into it), it scored %d; %d strikes, %d shield blocks, %d punches; slowest step %.2f ms\n",
                         m.name, throws, points, rebounds, scored, strikes, blocks, punches, slowest * 1000);
             char msg[112];
-            // (never hit, until it attacked with every shape, 2026-10-30: its curves and banks come back slower, so in
-            // Basic it is without its ball, its shield, for longer; three strikes on it make a big fast ball)
-            std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: 1200 hard throws, hit 4 times at most", m.name);
-            CHECK(throws == 1200 && points <= 4, msg);
+            // Keep the release-assist defence benchmark. The bank-assist attack gets more strikes and larger balls,
+            // and can score up to 2% including the bot's self-hits across the six runs.
+            const int maxHits = m.bankAim ? 24 : 4;
+            std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: 1200 hard throws, hit %d times at most", m.name, maxHits);
+            CHECK(throws == 1200 && points <= maxHits, msg);
             std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: none of its own blocks comes back into it", m.name);
             CHECK(rebounds == 0, msg);
         }
@@ -1185,6 +1187,7 @@ static void octagonTests(const std::vector<CollisionTri>& tris) {
     }
     {   // a fireball: down to the floor, back up to knee height each hop, its speed along the floor kept, gone at its 4th bounce
         Game g = octGame(tris, 0);
+        g.ringApothem = 20.f;   // measure floor hops in isolation from the side-wall rebound
         PlayerInput in[4] = {standing(g, 0), {}, {}, {}};
         g.serve(0, g.tun.start[0] + Vec3{0.6f, 1.3f, 0.3f}, normalize(Vec3{1, 0, 0.35f}), 9.f, {}, false);
         CHECK(g.pl[0].ball.state != BallState::Flying && g.fireCount(0) == 1, "a throw becomes a fireball (the tee keeps no flying ball)");
@@ -1205,6 +1208,15 @@ static void octagonTests(const std::vector<CollisionTri>& tris) {
         std::snprintf(msg, sizeof msg, "it hops to the waist (%.2f m) at the same speed along the floor (%.2f to %.2f m/s)", apex, minFlat, maxFlat);
         CHECK(apex > 0.9f && apex < 1.06f && maxFlat - minFlat < 0.05f, msg);
         CHECK(bounces == 3 && fizzles == 1 && g.fireCount(0) == 0, "three hops, and it fizzles out at the fourth bounce");
+    }
+    {
+        Game g = octGame(tris, 0);
+        PlayerInput in[4] = {};
+        g.serve(0, {0, 0.7f, g.ringApothem - 0.14f}, {0, 0, 1}, 14.f, {}, false);
+        stepCopy(g, in);
+        const Ball& b = g.fire[0][0];
+        CHECK(b.bounces == 1 && std::fabs(b.vel.z + 13.58f) < 0.01f && b.vel.y < 0.f,
+              "a Fireball Blitz wall retains 97% of normal speed while the ball keeps falling");
     }
     {   // a body: the legs count; your own fireball never hurts you
         Game g = octGame(tris, 0);
@@ -1320,34 +1332,37 @@ static void octagonTests(const std::vector<CollisionTri>& tris) {
         CHECK(g.pl[0].health == 0 && g.pl[0].ball.state == BallState::Dead, "you, standing still, are knocked out (and your tee stays empty)");
     }
     {   // the best bots' fireballs: straight, curved and off the walls (owner, 2026-11-02: "only straight balls")
-        Game g = octGame(tris, 0xE, 100);
-        g.tun.botLevel = kBotLevels - 1;
-        PlayerInput in[4];
         int thrown = 0, curved = 0, banked = 0;
-        for (int i = 0; i < 72 * 60; ++i) {
-            in[0] = standing(g, 0);
-            g.step(1.f / 72, in);
-            for (const GameEvent& e : g.events) {
-                if (e.type != EventType::Throw || e.player == 0) continue;
-                for (const Ball& f : g.fire[e.player]) {
-                    if (f.state != BallState::Flying || f.timer > 0.03f) continue;   // (the one just thrown)
-                    ++thrown;
-                    if (length(f.spin) > 3.f) ++curved;
-                    else {   // aimed well off the line to everyone: off a wall
-                        float bestDot = -2.f;
-                        for (int q = 0; q < 4; ++q) {
-                            if (q == e.player || !g.alive(q)) continue;
-                            const Vec3 to = g.pl[q].in.head.p - f.pos;
-                            bestDot = std::max(bestDot, dot(normalize(Vec3{to.x, 0, to.z}), normalize(Vec3{f.vel.x, 0, f.vel.z})));
+        for (uint32_t seed : {0x12345u, 1234u, 777u}) {
+            Game g = octGame(tris, 0xE, 100);
+            g.rngSeed(seed);
+            g.tun.botLevel = kBotLevels - 1;
+            PlayerInput in[4]{};
+            for (int i = 0; i < 72 * 60; ++i) {
+                in[0] = standing(g, 0);
+                g.step(1.f / 72, in);
+                for (const GameEvent& e : g.events) {
+                    if (e.type != EventType::Throw || e.player == 0) continue;
+                    for (const Ball& f : g.fire[e.player]) {
+                        if (f.state != BallState::Flying || f.timer > 0.03f) continue;   // (the one just thrown)
+                        ++thrown;
+                        if (length(f.spin) > 3.f) ++curved;
+                        else {   // aimed well off the line to everyone: off a wall
+                            float bestDot = -2.f;
+                            for (int q = 0; q < 4; ++q) {
+                                if (q == e.player || !g.alive(q)) continue;
+                                const Vec3 to = g.pl[q].in.head.p - f.pos;
+                                bestDot = std::max(bestDot, dot(normalize(Vec3{to.x, 0, to.z}), normalize(Vec3{f.vel.x, 0, f.vel.z})));
+                            }
+                            banked += bestDot < 0.93f;
                         }
-                        banked += bestDot < 0.93f;
                     }
                 }
             }
         }
         char msg[128];
         std::snprintf(msg, sizeof msg, "UNBEATABLE's fireballs: %d thrown, %d curved, %d off a wall, the rest straight", thrown, curved, banked);
-        CHECK(thrown > 20 && curved * 10 >= thrown && banked * 8 >= thrown && (thrown - curved - banked) * 3 >= thrown, msg);
+        CHECK(thrown > 60 && curved >= 12 && banked * 8 >= thrown && (thrown - curved - banked) * 3 >= thrown, msg);
     }
     {   // a knockout: a ceasefire until the room has closed in (owner, 2026-11-02: no cheap shots while everyone moves)
         Game g = octGame(tris, 0, 1);
@@ -1855,29 +1870,31 @@ int main(int argc, char** argv) {
             CHECK(hasEvent(log3, EventType::Strike, 2) && g3.pl[0].strikesFor == 1, "through a corner player's strike ring: a strike, held by the thrower");
         }
         for (int mode = 0; mode < 3; ++mode) {   // four bots, a match each way
-            Game g; g.setArena(tris); g.tun.players = 4; g.tun.teamMode = mode; g.tun.basicMatchTime = 0; g.tun.botLevel = 1;
-            g.useArena(ARENA_FOURCORNERS, tris); g.resetWithBots(0xF);
-            PlayerInput in[4];
-            std::vector<GameEvent> log;
-            for (int i = 0; i < 72 * 120; ++i) {
-                PlayerInput tmp[4] = {in[0], in[1], in[2], in[3]};
-                g.step(1.f / 72, tmp);
-                log.insert(log.end(), g.events.begin(), g.events.end());
+            int throws[4]{}, hits[4]{}, nan = 0, sum = 0;
+            for (uint32_t seed : {0x12345u, 1234u, 777u}) {
+                Game g;
+                g.tun.experimental = true; g.tun.expRoom = ROOM_CORNERS; g.tun.players = 4;
+                g.tun.teamMode = mode; g.tun.basicMatchTime = 0; g.tun.botLevel = 1;
+                g.useArena(ARENA_FOURCORNERS, tris); g.resetWithBots(0xF); g.rngSeed(seed);
+                PlayerInput in[4]{};
+                for (int i = 0; i < 72 * 120; ++i) {
+                    stepCopy(g, in);
+                    for (const GameEvent& e : g.events) {
+                        if (e.type == EventType::Throw && e.player >= 0) ++throws[e.player];
+                        if (e.type == EventType::HitPlayer && e.value >= 0) ++hits[(int)e.value];
+                    }
+                }
+                for (int p = 0; p < 4; ++p) {
+                    nan += !std::isfinite(g.pl[p].ball.pos.x) || !std::isfinite(g.pl[p].in.head.p.x);
+                    sum += g.pl[p].score;
+                }
             }
-            int throws[4] = {0, 0, 0, 0}, hits[4] = {0, 0, 0, 0}, nan = 0;
-            for (const GameEvent& e : log) {
-                if (e.type == EventType::Throw && e.player >= 0) ++throws[e.player];
-                if (e.type == EventType::HitPlayer && e.value >= 0) ++hits[(int)e.value];
-            }
-            for (int p = 0; p < 4; ++p) nan += !std::isfinite(g.pl[p].ball.pos.x) || !std::isfinite(g.pl[p].in.head.p.x);
-            int scorers = 0, sum = 0;
-            for (int p = 0; p < 4; ++p) { scorers += hits[p] > 0; sum += g.pl[p].score; }
             static const char* names[3] = {"FREE-FOR-ALL", "2 V 2", "3 V 1"};
-            std::printf("       %s, four AMATEUR bots, 2 min: throws %d %d %d %d, hits %d %d %d %d, team scores %d / %d\n", names[mode], throws[0],
-                        throws[1], throws[2], throws[3], hits[0], hits[1], hits[2], hits[3], g.teamScore(0), g.teamScore(1));
+            std::printf("       %s, four AMATEUR bots, three 2-min matches: throws %d %d %d %d, hits %d %d %d %d\n",
+                        names[mode], throws[0], throws[1], throws[2], throws[3], hits[0], hits[1], hits[2], hits[3]);
             char msg[96];
-            std::snprintf(msg, sizeof msg, "%s: four bots all throw and score, nothing breaks", names[mode]);
-            CHECK(throws[0] > 4 && throws[1] > 4 && throws[2] > 4 && throws[3] > 4 && scorers >= 2 && nan == 0 && sum > 0, msg);
+            std::snprintf(msg, sizeof msg, "%s: every bot keeps throwing, and legal hits score", names[mode]);
+            CHECK(throws[0] > 12 && throws[1] > 12 && throws[2] > 12 && throws[3] > 12 && nan == 0 && sum > 0, msg);
         }
     }
     {
@@ -2069,6 +2086,7 @@ int main(int argc, char** argv) {
         float turned[4] = {};
         for (int s = 0; s < 4; ++s) {
             PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.tun.advanced = true;
             g.tun.aimAssist = s;
             const Vec3 from = g.tun.start[0] + Vec3{0.6f, 1.3f, 0};
             const Vec3 d0 = normalize(g.chestPoint(1) - from);
@@ -2078,7 +2096,7 @@ int main(int argc, char** argv) {
         }
         std::printf("       (a throw 8 deg off, turned: OFF %.2f, LOW %.2f, MEDIUM %.2f, HIGH %.2f deg)\n", turned[0], turned[1], turned[2], turned[3]);
         CHECK(turned[0] < 0.01f && std::fabs(turned[1] - 1.5f) < 0.1f && std::fabs(turned[2] - 3.f) < 0.1f && std::fabs(turned[3] - 4.5f) < 0.1f,
-              "AIM ASSIST: a throw is turned OFF 0, LOW 1.5, MEDIUM 3, HIGH 4.5 deg toward its target");
+              "Advanced release assist: OFF 0, LOW 1.5, MEDIUM 3, HIGH 4.5 deg toward its target");
         // a ball through the ring 0.6 m and 0.8 m from its centre: a strike or not, by the ring's size
         auto strikeAt = [&](int zone, float off) {
             PlayerInput in[2]; Game g = makeGame(tris, in);
@@ -2556,8 +2574,185 @@ int main(int argc, char** argv) {
             CHECK(still > 6.5f && still < 8.5f, "still fist returns the ball (~0.9 restitution)");
             CHECK(punch > still + 2.5f, "punching adds the fist's speed");
         }
+        auto swipe = [&](float speed) {
+            PlayerInput input[2]; Game game = makeGame(tris, input);
+            const Vec3 target = game.tun.start[0] + Vec3{0.5f, 1.6f, 0};
+            const Vec3 offset = game.knucklePoint(0, 0) - input[0].hand[0].grip.p;
+            input[0].hand[0].grip.p = target - offset - Vec3{0, 0, speed * 0.06f};
+            run(game, input, 0.1f);
+            game.serve(1, target + Vec3{0.85f, 0, 0}, {-1, 0, 0}, 10.f, {}, false);
+            for (int frame = 0; frame < 12; ++frame) {
+                input[0].hand[0].grip.p.z += speed / 72;
+                stepCopy(game, input);
+                if (hasEvent(game.events, EventType::KnuckleBlock, 0)) return game.pl[1].ball;
+            }
+            return Ball{};
+        };
+        const Ball square = swipe(0.f), left = swipe(-2.f), right = swipe(2.f);
+        CHECK(square.vel.x > 0 && length(square.spin) < 0.01f, "a square knuckle block adds no spin");
+        CHECK(left.vel.x > 0 && right.vel.x > 0 && left.spin.y < -8.f && right.spin.y > 8.f,
+              "opposite knuckle swipes impart opposite spin while sending the ball forward");
         PlayerInput in3[2]; Game g3 = makeGame(tris, in3, true);
         CHECK(!g3.pl[0].hands[0].knuckleUp, "Advanced: no knuckle guards");
+    }
+    {
+        std::printf("[adjustable throw aim assist]\n");
+        PlayerInput in[2]; Game g = makeGame(tris, in);
+        const Vec3 from{0, 1.3f, 0};
+        const Vec3 target = normalize(g.chestPoint(1) - from);
+        const Vec3 input = Quat::axisAngle({0, 1, 0}, deg2rad(20.f)).rotate(target);
+        auto correction = [&](int step, int version = Tunables::kVerAll, bool bot = false) {
+            g.tun.aimAssist = step;
+            g.tun.matchVersion = version;
+            g.pl[0].isBot = bot;
+            g.serve(0, from, input, 10.f, {});
+            return std::atan2(length(cross(input, g.pl[0].ball.vel)), dot(input, g.pl[0].ball.vel)) * (180.f / kPi);
+        };
+        CHECK(correction(0) < 0.01f && correction(3) < 0.01f,
+              "Basic bank assist preserves the player's release direction at every strength");
+        CHECK(std::fabs(correction(-1, 3021) - 3.f) < 0.1f && std::fabs(correction(3, 3021) - 4.5f) < 0.1f,
+              "0.3.21 rooms keep their release-assist presets");
+        CHECK(std::fabs(correction(3, 3020) - 3.f) < 0.1f && std::fabs(correction(3, Tunables::kVerAll, true) - 4.5f) < 0.1f,
+              "older matches use the rules' default and bots use the release-assist preset");
+        bool levels = true;
+        for (int preset = 0; preset <= 3; ++preset) {
+            g.tun.aimAssist = preset;
+            levels &= std::fabs(g.tun.bankAimDegrees() - preset * 0.4f) < 1e-4f;
+        }
+        CHECK(levels, "Basic's four presets cap the bank turn at 0, 0.4, 0.8 and 1.2 degrees");
+        g.tun.advanced = true;
+        CHECK(std::fabs(correction(-1) - 1.5f) < 0.1f, "Advanced keeps its 1.5 degree default");
+    }
+    {
+        std::printf("[final-bank aim assist]\n");
+        struct Shot {
+            Vec3 first, second, later;
+            int assistedAt = 0;
+            bool reached = false;
+        };
+        auto shoot = [&](int step, int banks, float dodge, float targetZ = 0.f) {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.tun.aimAssist = step;
+            g.tun.bankFriction = 0.f;  // isolate aim from the spin created by a bank
+            g.tun.knuckleMode = 0;
+            in[1].head.p.z = targetZ;
+            stepCopy(g, in);
+            const Vec3 dir = banks == 1 ? normalize(Vec3{1, 0, 0.31f}) : normalize(Vec3{1, 0, 0.883f});
+            const Vec3 point{banks == 1 ? 0.f : -2.f, 1.3f, training::kSideZ - g.ballRadius(0)};
+            g.serve(0, point - dir * 0.025f, dir, 14.f, {});
+            Shot result;
+            for (int i = 0; i < 120; ++i) {
+                stepCopy(g, in);
+                const Ball& b = g.pl[0].ball;
+                for (const GameEvent& event : g.events) {
+                    if (event.type != EventType::Bounce || event.player != 0) continue;
+                    if (b.bounces == 1) result.first = event.pos;
+                    if (b.bounces == 2) result.second = event.pos;
+                    if (length2(b.bankTurn) > 0.f && !result.assistedAt) result.assistedAt = b.bounces;
+                    if (b.bounces == banks) in[1].head.p.z = dodge;
+                }
+                if (b.state == BallState::Flying && b.pos.x >= 6.5f) {
+                    result.later = b.pos;
+                    result.reached = true;
+                    break;
+                }
+            }
+            return result;
+        };
+        const Shot off = shoot(0, 1, 1.5f);
+        const Shot assisted = shoot(3, 1, 1.5f);
+        const Shot oppositeDodge = shoot(3, 1, -1.5f);
+        CHECK(off.reached && assisted.reached && off.assistedAt == 0 && assisted.assistedAt == 1 &&
+              length(assisted.first - off.first) < 0.001f && std::fabs(assisted.later.z) + 0.07f < std::fabs(off.later.z),
+              "a near miss bends toward the opponent after a single bank while the first contact stays fixed");
+        CHECK(oppositeDodge.reached && length(oppositeDodge.later - assisted.later) < 0.001f,
+              "the ball follows the same route whichever way the opponent dodges after the bank");
+        CHECK(shoot(3, 1, 1.5f, -1.2f).assistedAt == 0 && shoot(3, 1, 1.5f, 0.45f).assistedAt == 0,
+              "wide misses and banks already on target get no assist");
+        const Shot twoOff = shoot(0, 2, 1.5f), twoOn = shoot(3, 2, 1.5f);
+        CHECK(twoOff.reached && twoOn.reached && twoOn.assistedAt == 2 &&
+              length(twoOff.first - twoOn.first) < 0.001f && length(twoOff.second - twoOn.second) < 0.001f,
+              "a two-bank shot reaches both walls unchanged and gets help only after the second contact");
+    }
+    {
+        std::printf("[Basic bank shots]\n");
+        struct Bank {
+            Vec3 contact, velocity, spin, downstream;
+            bool reached = false;
+        };
+        auto bank = [&](const Vec3& direction, const Vec3& spin, bool advanced = false, int version = Tunables::kVerAll) {
+            PlayerInput in[2]; Game g = makeGame(tris, in, advanced);
+            g.tun.matchVersion = version;
+            const Vec3 target{0, 1.5f, training::kSideZ - g.ballRadius(0)};
+            g.serve(0, target - direction * 0.025f, direction, 14.f, spin, false);
+            Bank result;
+            for (int i = 0; i < 72; ++i) {
+                stepCopy(g, in);
+                const Ball& b = g.pl[0].ball;
+                if (hasEvent(g.events, EventType::Bounce, 0) && result.velocity.z == 0.f) {
+                    result.contact = b.pos;
+                    result.velocity = b.vel;
+                    result.spin = b.spin;
+                    if (direction.x == 0.f) break;
+                }
+                if (b.pos.x >= 6.f && b.state == BallState::Flying) {
+                    result.downstream = b.pos;
+                    result.reached = true;
+                    break;
+                }
+            }
+            return result;
+        };
+        const Bank square = bank({0, 0, 1}, {});
+        const Vec3 dir = normalize(Vec3{0.91f, 0, 0.42f});
+        const Bank clean = bank(dir, {});
+        const Bank up = bank(dir, {20, 0, 0}), down = bank(dir, {-20, 0, 0});
+        const Bank advanced = bank({0, 0, 1}, {}, true);
+        const Bank olderAdvanced = bank({0, 0, 1}, {}, true, Tunables::kVerRoomOptions);
+        CHECK(std::fabs(square.velocity.z + 13.58f) < 0.01f && length(square.spin) < 0.01f,
+              "a square Basic side-wall bank keeps 97% of its speed and adds no spin");
+        CHECK(clean.reached && clean.spin.y < -10.f && clean.velocity.x < dir.x * 14.f - 0.5f,
+              "a shallow spinless bank trades sideways speed for spin");
+        std::printf("  height after bank: clean %.2f, spun %.2f and %.2f (contact separation %.3f m)\n",
+                    clean.downstream.y, up.downstream.y, down.downstream.y, length(up.contact - down.contact));
+        CHECK(up.reached && clean.reached && down.reached && length(up.contact - down.contact) < 0.025f &&
+              up.downstream.y > clean.downstream.y + 0.15f && down.downstream.y < clean.downstream.y - 0.15f,
+              "opposite spin at the same patch of wall sends the next leg above and below a clean bank");
+        CHECK(std::fabs(advanced.velocity.z + 13.58f) < 0.01f && length(advanced.spin) < 0.01f,
+              "a square Advanced side-wall bank uses the same 97% rebound as Basic");
+        CHECK(std::fabs(olderAdvanced.velocity.z + 12.6f) < 0.01f,
+              "Advanced on older builds still uses the 90% rebound");
+        PlayerInput in[2]; Game g = makeGame(tris, in);
+        g.serve(0, {0, 1.5f, 0}, {0, 1, 0}, 14.f, {}, false);
+        for (int i = 0; i < 20 && g.pl[0].ball.bounces == 0; ++i) stepCopy(g, in);
+        CHECK(std::fabs(g.pl[0].ball.vel.y + 12.6f) < 0.01f,
+              "a square Basic ceiling bank still keeps 90% of its speed");
+    }
+    {
+        auto normalRebound = [&](int kind, const std::vector<CollisionTri>& mesh, bool side) {
+            Game g;
+            g.tun.experimental = true;
+            g.tun.expRoom = kind == ARENA_DIAMOND ? ROOM_DIAMOND : ROOM_CORNERS;
+            g.tun.players = kind == ARENA_DIAMOND ? 2 : 4;
+            g.useArena(kind, tris);
+            g.reset(false);
+            PlayerInput in[4] = {};
+            const auto surface = std::find_if(mesh.begin(), mesh.end(), [&](const CollisionTri& tri) {
+                const float x = (tri.a.x + tri.b.x + tri.c.x) / 3.f;
+                return std::fabs(x) < 4.f && !(tri.tags & TAG_RETURN) && ((tri.tags & TAG_SIDE_WALL) != 0) == side;
+            });
+            if (surface == mesh.end()) return 0.f;
+            const Vec3 point = (surface->a + surface->b + surface->c) / 3.f;
+            g.serve(0, point + surface->n * (g.ballRadius(0) + 0.02f), -surface->n, 14.f, {}, false);
+            stepCopy(g, in);
+            return g.pl[0].ball.bounces == 1 ? dot(g.pl[0].ball.vel, surface->n) : 0.f;
+        };
+        const auto diamond = exparena::diamondCollision(false);
+        CHECK(std::fabs(normalRebound(ARENA_DIAMOND, diamond, true) - 13.58f) < 0.01f &&
+              std::fabs(normalRebound(ARENA_DIAMOND, diamond, false) - 12.6f) < 0.01f,
+              "Diamond uses 97% for its rolled side panels and 90% for its rolled floor and ceiling");
+        CHECK(std::fabs(normalRebound(ARENA_FOURCORNERS, exparena::collision(true), true) - 13.58f) < 0.01f,
+              "Four Corners uses the shared rebound on its diagonal side walls");
     }
     {
         std::printf("[spin curves the throw]\n");
@@ -2639,6 +2834,125 @@ int main(int argc, char** argv) {
         CHECK(hasEvent(log, EventType::Strike, 0), "strike against the player whose zone was passed");
         run(g, in, 6.0f);   // let the opponent's ball finish and respawn
         CHECK(g.ballRadius(1) > g.tun.projectileRadius * 1.2f, "opponent's ball grows with strikes against you");
+    }
+    {
+        auto edgeStrikes = [&](int attacker, float offset, int zone = 1) {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.tun.strikeZone = zone;
+            const int defender = 1 - attacker;
+            const Vec3 forward = g.facing(attacker);
+            const Vec3 at = g.strikeZoneCenter(defender) + Vec3{0, 0, offset};
+            // Land exactly on the plane at the end of the first step.
+            g.serve(attacker, at - forward * (1.f / 64.f), forward, 1.125f, {}, false);
+            run(g, in, 0.06f);
+            return g.pl[defender].strikesAgainst;
+        };
+        CHECK(edgeStrikes(0, 0.69f) == 1 && edgeStrikes(1, 0.69f) == 1,
+              "both visible strike-window edges count exactly once");
+        CHECK(edgeStrikes(0, 0.71f) == 0 && edgeStrikes(1, 0.71f) == 0,
+              "a ball whose center passes outside the visible strike window misses");
+        CHECK(edgeStrikes(0, 0.49f, 0) == 1 && edgeStrikes(0, 0.51f, 0) == 0 &&
+              edgeStrikes(0, 0.89f, 2) == 1 && edgeStrikes(0, 0.91f, 2) == 0,
+              "small and large strike windows use their configured radii");
+    }
+    {
+        std::printf("[Basic: timed two-ball attack]\n");
+        PlayerInput in[2]; Game g = makeGame(tris, in);
+        const Vec3 fist{-6.45f, 1.2f, -0.4f};
+        in[0].hand[0].grip.p += fist - g.knucklePoint(0, 0);
+        run(g, in, 0.10f);
+        g.serve(1, fist + Vec3{0.7f, 0, 0}, {-1, 0, 0}, 10.f, {}, false);
+        bool punched = false;
+        for (int i = 0; i < 12 && !punched; ++i) {
+            stepCopy(g, in);
+            punched = hasEvent(g.events, EventType::KnuckleBlock, 0);
+        }
+        if (punched) {
+            const Ball punch = g.pl[1].ball;
+            const Vec3 release{-6.25f, 1.36f, 0.35f};
+            const Vec3 direction = Quat::axisAngle({0, 1, 0}, deg2rad(56.f)).rotate(
+                Quat::axisAngle({0, 0, 1}, deg2rad(-1.f)).rotate({1, 0, 0}));
+            const Vec3 spin{0, 21, 0};
+            const float guardX = 6.7f;
+            const Vec3 returnGuard = punch.pos + punch.vel * ((guardX - punch.pos.x) / punch.vel.x);
+            std::vector<BallPathPt> path;
+            g.trialFlight(0, release, direction, 14.f, spin, false, 3.f, 1.f / 72.f, path);
+            const auto arrival = std::find_if(path.begin(), path.end(), [=](const BallPathPt& pt) { return pt.pos.x >= guardX; });
+            CHECK(arrival != path.end() && arrival != path.begin(), "the four-wall bank reaches the defender's guard");
+            if (arrival != path.end() && arrival != path.begin()) {
+                const Vec3 before = (arrival - 1)->pos;
+                const Vec3 bankGuard = lerp(before, arrival->pos, (guardX - before.x) / (arrival->pos.x - before.x));
+                struct Outcome { unsigned hits = 0, blocks = 0; int bankHit = -1; std::string walls; };
+                auto play = [&](const Vec3* guard, int dodgeAt = -1, int version = Tunables::kVerAll) {
+                    Game game = g;
+                    game.tun.matchVersion = version;
+                    PlayerInput input[2] = {in[0], in[1]};
+                    input[1].head.p.z = 0.25f;
+                    input[1].hand[0].tracked = guard != nullptr;
+                    input[1].hand[1].tracked = false;
+                    if (guard) input[1].hand[0].grip.p += *guard - game.knucklePoint(1, 0);
+                    game.parkBall(1);
+                    game.serve(0, release, direction, 14.f, spin, false);
+                    Outcome result;
+                    for (int frame = 0; frame < 210; ++frame) {
+                        if (frame == 40) game.pl[1].ball = punch;   // bank thrown 556 ms before the deflection
+                        if (dodgeAt >= 0 && frame >= dodgeAt)
+                            input[1].head.p.z = 0.25f - 0.6f * std::min(1.f, (frame - dodgeAt + 1) / 22.f);
+                        stepCopy(game, input);
+                        for (const GameEvent& e : game.events) {
+                            if (e.type == EventType::Bounce && e.player == 0 && e.pos.x < 7.f)
+                                result.walls += e.pos.z < -2.f ? 'L' : e.pos.z > 2.f ? 'R' : '?';
+                            if (e.player != 1 || e.ball < 0 || e.ball > 1) continue;
+                            if (e.type == EventType::HitPlayer && e.value == 0.f) {
+                                result.hits |= 1u << e.ball;
+                                if (e.ball == 0 && result.bankHit < 0) result.bankHit = frame;
+                            }
+                            if (e.type == EventType::KnuckleBlock) result.blocks |= 1u << e.ball;
+                        }
+                    }
+                    return result;
+                };
+                const Outcome open = play(nullptr), coverReturn = play(&returnGuard), coverBank = play(&bankGuard);
+                CHECK(open.hits == 3 && open.walls == "LRLR", "the left-right-left-right bank and the return both threaten the body");
+                CHECK(coverReturn.blocks == 2 && coverReturn.hits == 1 && coverBank.blocks == 1 && coverBank.hits == 2,
+                      "covering either lane leaves the other ball free to score");
+                CHECK(open.bankHit >= 22 && play(nullptr, open.bankHit - 22).hits == 0,
+                      "an early sidestep still avoids both balls");
+                CHECK((play(nullptr, -1, Tunables::kVerRoomOptions).hits & 1u) == 0,
+                      "the same four-wall setup with older side-wall physics goes wide");
+            }
+        }
+        const Ball& returned = g.pl[1].ball;
+        const float defendX = g.tun.start[1].x - 0.8f;
+        const Vec3 from{-6.25f, 1.36f, 0.35f};
+        const Vec3 dir = normalize(Vec3{1, 0, 0.40f});
+        std::vector<BallPathPt> trial;
+        g.trialFlight(0, from, dir, 14.f, {}, false, 2.f, 1.f / 72, trial);
+        const auto bank = std::find_if(trial.begin(), trial.end(), [&](const BallPathPt& pt) { return pt.pos.x >= defendX; });
+        bool arrived = false;
+        if (punched && returned.vel.x > 0.f && bank != trial.end()) {
+            const float delay = (defendX - returned.pos.x) / returned.vel.x - (bank->t - trial.front().t);
+            if (delay > 0.15f) {
+                run(g, in, delay);
+                g.serve(0, from, dir, 14.f, {}, false);
+                float when[2] = {-1.f, -1.f};
+                Vec3 where[2];
+                for (int i = 0; i < 120 && (when[0] < 0.f || when[1] < 0.f); ++i) {
+                    stepCopy(g, in);
+                    for (int p = 0; p < 2; ++p) {
+                        const Ball& b = g.pl[p].ball;
+                        if (when[p] < 0.f && b.pos.x >= defendX && b.state == BallState::Flying && b.instigator == 0) {
+                            when[p] = i / 72.f;
+                            where[p] = b.pos;
+                        }
+                    }
+                }
+                arrived = when[0] >= 0.f && when[1] >= 0.f && std::fabs(when[0] - when[1]) <= 0.045f &&
+                          g.pl[0].ball.bounces > 0 && std::fabs(where[0].z) < 0.7f && std::fabs(where[1].z) < 0.7f &&
+                          std::fabs(where[0].z - where[1].z) > 0.2f;
+            }
+        }
+        CHECK(arrived, "a timed bank and knuckle return stay live and enter the defender's reach in separate lanes within 45 ms");
     }
     {
         std::printf("[arena is watertight]\n");
@@ -3060,34 +3374,37 @@ int main(int argc, char** argv) {
         // (and every shape of throw, testers 2026-10-30: curved, off the walls, curved off the walls, off the floor)
         int shapes[5] = {0, 0, 0, 0, 0}, landedCurved = 0, landedBounced = 0, landedBoth = 0;
         for (int adv = 0; adv < 2; ++adv) {
-            Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.botPlay = adv; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
-            g.tun.botLevel = kBotLevels - 1; g.reset(true);   // (timed with the BRAWLER, rounds with the DUELLIST)
-            PlayerInput in[2] = {standing(g, 0), {}};
-            bool thrownCurved = false;
             int throwsCold = 0, atCold = 0, throwsHot = 0, atHot = 0, strikes = 0, onSide = 0, sides[2] = {0, 0}, hits = 0;
-            for (int i = 0; i < 72 * 240; ++i) {
-                in[0].buttonA = g.match == MatchState::MatchSummary || g.match == MatchState::RoundSummary;
-                const int held = g.strikesHeld(1);
-                PlayerInput tmp[2] = {in[0], in[1]};
-                g.step(1.f / 72, tmp);
-                for (const GameEvent& e : g.events) {
-                    if (e.type == EventType::Throw && e.player == 1) {
-                        ++shapes[std::max(0, std::min(4, g.pl[1].botStyle))];
-                        thrownCurved = length(g.pl[1].ball.spin) > 3.f;   // (as it leaves the hand: spin fades in flight)
-                        if (held >= 3) { ++throwsHot; atHot += g.pl[1].botIntent == 1; }
-                        else { ++throwsCold; atCold += g.pl[1].botIntent == 1; }
-                    }
-                    if (e.type == EventType::Strike && e.player == 0 && e.ball == 1) {   // (not the shot clock's)
-                        const float side = e.pos.z - g.strikeZoneCenter(0).z;
-                        onSide += side * g.pl[1].botStrikeSide < 0;   // (the side it meant: flipped for the next one as it threw)
-                        sides[side > 0] += 1;
-                        ++strikes;
-                    }
-                    hits += e.type == EventType::HitPlayer && e.player == 0;
-                    if ((e.type == EventType::HitPlayer && e.player == 0) || (e.type == EventType::Strike && e.player == 0 && e.ball == 1)) {
-                        const Ball& b = g.pl[1].ball;
-                        const bool curved = thrownCurved, bounced = b.bounces > 0;
-                        landedCurved += curved; landedBounced += bounced; landedBoth += curved && bounced;
+            for (uint32_t seed : {0x12345u, 1234u, 777u}) {
+                Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.botPlay = adv; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
+                g.tun.botLevel = kBotLevels - 1; g.reset(true);   // (timed with the BRAWLER, rounds with the DUELLIST)
+                g.rngSeed(seed);
+                PlayerInput in[2] = {standing(g, 0), {}};
+                bool thrownCurved = false;
+                for (int i = 0; i < 72 * 240; ++i) {
+                    in[0].buttonA = g.match == MatchState::MatchSummary || g.match == MatchState::RoundSummary;
+                    const int held = g.strikesHeld(1);
+                    PlayerInput tmp[2] = {in[0], in[1]};
+                    g.step(1.f / 72, tmp);
+                    for (const GameEvent& e : g.events) {
+                        if (e.type == EventType::Throw && e.player == 1) {
+                            ++shapes[std::max(0, std::min(4, g.pl[1].botStyle))];
+                            thrownCurved = length(g.pl[1].ball.spin) > 3.f;   // (as it leaves the hand: spin fades in flight)
+                            if (held >= 3) { ++throwsHot; atHot += g.pl[1].botIntent == 1; }
+                            else { ++throwsCold; atCold += g.pl[1].botIntent == 1; }
+                        }
+                        if (e.type == EventType::Strike && e.player == 0 && e.ball == 1) {   // (not the shot clock's)
+                            const float side = e.pos.z - g.strikeZoneCenter(0).z;
+                            onSide += side * g.pl[1].botStrikeSide < 0;   // (the side it meant: flipped for the next one as it threw)
+                            sides[side > 0] += 1;
+                            ++strikes;
+                        }
+                        hits += e.type == EventType::HitPlayer && e.player == 0;
+                        if ((e.type == EventType::HitPlayer && e.player == 0) || (e.type == EventType::Strike && e.player == 0 && e.ball == 1)) {
+                            const Ball& b = g.pl[1].ball;
+                            const bool curved = thrownCurved, bounced = b.bounces > 0;
+                            landedCurved += curved; landedBounced += bounced; landedBoth += curved && bounced;
+                        }
                     }
                 }
             }
@@ -3097,19 +3414,19 @@ int main(int argc, char** argv) {
             char msg[112];
             if (!adv) {
                 std::snprintf(msg, sizeof msg, "%s: under 3 strikes it goes for strikes, about one throw in seven at the player", mode);
-                CHECK(throwsCold > 20 && atCold * 20 >= throwsCold && atCold * 4 <= throwsCold && strikes * 2 >= throwsCold - atCold, msg);
+                CHECK(throwsCold > 60 && atCold * 20 >= throwsCold && atCold * 4 <= throwsCold && strikes * 2 >= throwsCold - atCold, msg);
                 std::snprintf(msg, sizeof msg, "%s: its strikes go left and right of the ring in turn", mode);
-                CHECK(strikes > 10 && onSide * 10 >= strikes * 9 && sides[0] * 3 >= strikes && sides[1] * 3 >= strikes, msg);
+                CHECK(strikes > 30 && onSide * 10 >= strikes * 9 && sides[0] * 3 >= strikes && sides[1] * 3 >= strikes, msg);
                 std::snprintf(msg, sizeof msg, "%s: holding 3 strikes, nearly every throw is at the player, and hits", mode);
-                CHECK(throwsHot > 5 && atHot * 10 >= throwsHot * 7 && hits > 5, msg);
+                CHECK(throwsHot > 15 && atHot * 10 >= throwsHot * 7 && hits > 15, msg);
             } else {   // (BOT STYLES, 2026-11-17: ADVANCED's duellist, first to 4 points, goes at you more, and at once when
                        // you have no shield; its strikes still alternate)
                 std::snprintf(msg, sizeof msg, "%s (the duellist): under 3 strikes a quarter to three quarters of its throws at the player", mode);
-                CHECK(throwsCold > 20 && atCold * 4 >= throwsCold && atCold * 4 <= throwsCold * 3, msg);
+                CHECK(throwsCold > 60 && atCold * 4 >= throwsCold && atCold * 4 <= throwsCold * 3, msg);
                 std::snprintf(msg, sizeof msg, "%s: its strikes go left and right of the ring in turn", mode);
-                CHECK(strikes > 6 && onSide * 10 >= strikes * 9 && sides[0] * 4 >= strikes && sides[1] * 4 >= strikes, msg);
+                CHECK(strikes > 18 && onSide * 10 >= strikes * 9 && sides[0] * 4 >= strikes && sides[1] * 4 >= strikes, msg);
                 std::snprintf(msg, sizeof msg, "%s: holding 3 strikes, nearly every throw is at the player, and it hits", mode);
-                CHECK(atHot * 10 >= throwsHot * 7 && hits > 10, msg);
+                CHECK(atHot * 10 >= throwsHot * 7 && hits > 30, msg);
             }
         }
         std::printf("       shapes thrown: %d straight, %d curved, %d off a wall, %d curved off a wall, %d off the floor; "

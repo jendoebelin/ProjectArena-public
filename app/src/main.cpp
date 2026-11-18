@@ -1599,7 +1599,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.21";   // (0.3.20: the Meta competition build)
+static const char* kAppVersion = "0.3.23";
 // A scrolling texture's offset, kept in [0, 1) (the textures repeat, so it looks the same). The headset's fragment
 // shader works at medium precision (16-bit floats): an offset that grows with the time played lost its fractions after
 // some minutes, and the ball's and fireballs' plasma broke into big square blocks (a tester's report, 2026-11-02).
@@ -3011,7 +3011,7 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
             put(shields, MenuAct::OptShields);
             put(std::string("SHIELD SIZE: ") + kShieldSizeName[t.shieldSizeNow()], MenuAct::OptShieldSize);
             put(knuckles, MenuAct::OptKnuckle);
-            put(std::string("AIM ASSIST: ") + kAimName[t.aimAssistNow()], MenuAct::OptAim);
+            put(std::string(t.usesBankAim() ? "BANK ASSIST: " : "AIM ASSIST: ") + kAimName[t.aimAssistNow()], MenuAct::OptAim);
             put(std::string("STRIKE ZONE: ") + kZoneName[t.strikeZoneNow()], MenuAct::OptZone);
             put(strikeLabel(t), MenuAct::OptStrike);
             put(std::string("BALL GROWTH: ") + kGrowthName[t.ballGrowthNow()], MenuAct::OptGrowth);
@@ -7262,6 +7262,8 @@ static void fairMatchNotice(App& a) {
              ((t.maiden && t.shields) || t.aimAssist >= 0 || t.strikeZone != 1 || t.ballGrowth != 3 ||
               (t.advanced && t.advancedRoundsToWin != 2) || (t.shields && t.shieldSize != 0)))
         what = "ROOM OPTIONS: AS THE RULES SAY (A PLAYER NEEDS 0.3.21)";
+    else if (t.matchVersion < Tunables::kVerBankPhysics)
+        what = "BANK PHYSICS: EARLIER RULES (A PLAYER NEEDS 0.3.23)";
     if (what) {
         a.net.noticeLocal(what);
         LOGI("fair match: %s (the oldest player's game: %d)", what, t.matchVersion);
@@ -9412,6 +9414,7 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
             t.experimental = a.ownRules.experimental; t.expRoom = a.ownRules.expRoom; t.players = a.ownRules.players;
             t.teamMode = a.ownRules.teamMode; t.theOne = a.ownRules.theOne; t.oneTurns = a.ownRules.oneTurns;
             t.health = a.ownRules.health; t.fireBalls = a.ownRules.fireBalls; t.octPlayers = a.ownRules.octPlayers;
+            t.aimAssist = a.ownRules.aimAssist;
             a.guestRules = false;
             if (a.game.match == MatchState::WaitingForPlayers || a.net.mode() == Net::Mode::Offline) a.game.reset(a.game.pl[1].isBot);
             LOGI("rules -> %s (our own again)", rulesLine(a.game.tun).c_str());
@@ -9526,6 +9529,10 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
         // FAIR MATCHES: hosting, an option an older player's game lacks plays at regulation this match (offline and
         // as a guest: everything; a guest gets the host's rules as they play)
         a.game.tun.matchVersion = a.net.matchVersion();
+        if (a.net.mode() != Net::Mode::Client && a.net.mode() != Net::Mode::Spectate) {
+            a.game.tun.bankAimEnabled = true;
+            a.game.tun.livelySideWallsEnabled = true;
+        }
         fairMatchNotice(a);
         if (a.trainer.active()) {   // TRAINING: the lesson steps the game (and the coach's), paused while its menu is up mid-lesson
             using training::Phase;

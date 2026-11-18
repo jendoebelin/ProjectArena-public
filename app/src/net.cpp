@@ -815,6 +815,15 @@ static void writeState(Writer& w, const Game& g) {
     if (g.np == 2) w.put<uint8_t>((uint8_t)g.tun.roundsToWinNow());   // (0.3.21: ROUNDS, rounds to win: BEST OF 1 to 9)
     if (g.np == 2) w.put<uint8_t>((uint8_t)g.tun.shieldSizeNow());    // (0.3.21: SHIELD SIZE, 0 regulation .. 4 double)
     if (g.np == 2) w.put<uint8_t>((uint8_t)(g.tun.ballFeel & BALL_FEEL_ALL));   // (0.3.21: BALL FEEL, BALL_* bits)
+    // (0.3.23: wall physics and final-bank aim, after the 0.3.21 room options)
+    const bool bankAim = g.np == 2 && g.tun.usesBankAim();
+    w.put<uint8_t>((bankAim ? 1 : 0) | (g.tun.usesLivelySideWalls() ? 2 : 0));
+    if (bankAim) for (int p = 0; p < 2; ++p) {
+        const Ball& b = g.pl[p].ball;
+        w.put<uint8_t>(b.bankAimPending ? 1 : 0);
+        for (float radians : {b.bankTurn.x, b.bankTurn.y, b.bankTurn.z})
+            w.put<int16_t>((int16_t)std::lround(radians * 10000.f));
+    }
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -927,6 +936,23 @@ static bool readState(Reader& r, Game& g, int localIndex) {
     // (BALL FEEL, hosts from 0.3.21: the host's ball for everyone at its arena; an older host sends none, and a guest
     // keeps its own: only how the ball looks and feels)
     if (np == 2 && r.ok && r.e - r.p >= 1) g.tun.ballFeel = r.get<uint8_t>() & BALL_FEEL_ALL;
+    const uint8_t bankRules = r.ok && r.e - r.p >= 1 ? r.get<uint8_t>() : 0;
+    g.tun.bankAimEnabled = np == 2 && (bankRules & 1) != 0;
+    g.tun.livelySideWallsEnabled = (bankRules & 2) != 0;
+    for (int p = 0; p < np; ++p) {
+        Ball& b = g.pl[p].ball;
+        b.bankAimPending = false;
+        b.bankTurn = {};
+        if (g.tun.bankAimEnabled) {
+            b.bankAimPending = r.get<uint8_t>() != 0;
+            b.bankTurn.x = r.get<int16_t>() * 0.0001f;
+            b.bankTurn.y = r.get<int16_t>() * 0.0001f;
+            b.bankTurn.z = r.get<int16_t>() * 0.0001f;
+            const float turn = length(b.bankTurn);
+            const float limit = deg2rad(g.tun.bankAimDegrees());
+            if (turn > limit) b.bankTurn *= limit / turn;
+        }
+    }
     return r.ok;
 }
 

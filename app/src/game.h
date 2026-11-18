@@ -7,7 +7,7 @@
 
 // collision tag bits (match tools/build_open_assets.py)
 enum : uint32_t { TAG_ARENA = 1, TAG_RETURN = 2, TAG_FOUL = 4, TAG_TEAM0 = 8, TAG_TEAM1 = 16,
-                  TAG_TEAM2 = 32, TAG_TEAM3 = 64 };   // (2, 3: the FOUR CORNERS players' zones)
+                  TAG_TEAM2 = 32, TAG_TEAM3 = 64, TAG_SIDE_WALL = 128 };
 // up to four players (FOUR CORNERS, 0.3.12); every other mode is two (slots 0 and 1)
 constexpr int kMaxPlayers = 4;
 // FOUR CORNERS' teams: everyone for themselves; partners in opposite corners (0 with 1, 2 with 3); THE ONE alone
@@ -161,6 +161,7 @@ struct Tunables {
     // (0.3.20 is also the Meta competition build, frozen on 11-15 with the FOUL LINE but without THE REACH ROUND THE
     // FIST, KNUCKLES ON THE FIST and ROOMS AND THEIR OPTIONS: those are 0.3.21, so a judge's game plays them as before)
     static constexpr int kVerStrikeSpeed = 3019, kVerFoulLine = 3020, kVerReach = 3021, kVerKnuckle = 3021, kVerAll = 1 << 30;
+    static constexpr int kVerBankPhysics = 3023;
     int matchVersion = kVerAll;   // (offline, and every guest: all; guests get the host's rules as they play)
     int strikeSpeedNow() const { return matchVersion >= kVerStrikeSpeed ? std::max(0, std::min(2, strikeSpeed)) : 0; }
     int foulShiftNow() const { return matchVersion >= kVerFoulLine ? std::max(-2, std::min(2, foulShift)) : 0; }
@@ -227,9 +228,15 @@ struct Tunables {
     int maxBounces = 16;                      // UProjectileLaunchParams.MaxBounces
     // aim assist: Basic uses the BeginnerBrawl tuning ("medium"), Advanced the Brawl tuning ("low")
     float aimCorrectBasicDeg = 3.0f, aimCorrectAdvancedDeg = 1.5f;   // MaxAimCorrectionWithinThrowArcPlane
+    bool bankAimEnabled = true;   // guests read the effective rule from the snapshot
+    bool livelySideWallsEnabled = true;
+    bool usesBankAim() const { return bankAimEnabled && !advanced && !experimental && matchVersion >= kVerBankPhysics; }
+    bool usesLivelySideWalls() const { return livelySideWallsEnabled && matchVersion >= kVerBankPhysics; }
+    float bankAimDegrees() const { return aimAssistNow() * 0.4f; }   // OFF, LOW, MEDIUM, HIGH
 
     // ---- projectile flight
     float elasticity = 0.9f;                  // PhysicsSettings.Elasticity
+    float sideWallElasticity = 0.97f;         // retain sideways speed on long side-to-side banks
     bool bouncesChangeSpeed = true;           // PhysicsSettings.bBouncesCanChangeSpeedLimit
     float minSpeed = 1.0f;                    // PhysicsDiskMovementComponent.MinSpeed = 100 cm/s
     float projectileRadius = 0.10f;           // AProjectile ctor: CollisionMesh->SetSphereRadius(10)
@@ -241,6 +248,8 @@ struct Tunables {
     float spinWindow = 0.12f;                 // peak controller angular velocity over the last 0.12 s feeds spin
     float spinDecayPerSecond = 0.35f;         // RotationalDecayPerSecond
     float spinBounceFactor = 0.25f;           // SpinBounceFactor
+    float bankFriction = 0.10f;               // Basic: tangential grip on the court
+    float knuckleFriction = 0.14f;            // Basic: grip at the moving knuckle guard
     // Return
     // hitting the OPPONENT's back wall sends the ball back on a straight line aimed at the owner's position at
     // that moment (no further seeking) at ReturnSpeed. It can be caught, can hit the owner (point to the opponent, selfHitScores), or fly past into the owner's back
@@ -462,6 +471,8 @@ private:
 struct Ball {
     BallState state = BallState::Spawning;
     Vec3 pos, vel, spin;        // spin: angular velocity (rad/s, world)
+    Vec3 bankTurn;              // fixed rotation axis times the radians left to turn
+    bool bankAimPending = false;
 
     float speedLimit = 0;
     float timer = 0;
@@ -549,6 +560,7 @@ struct PlayerState {
         int tuck = -1;          // a dodge with this hand (its shield up) pulled in to its side, out of the ball's way
         bool again = false;     // its plan ran out of tryouts this step: it goes on with it the next
         int hands = -1;         // its shields up when it planned (bits by hand): a change, a new plan
+        int incomingHand = -2;  // competing defence at the last return plan: none (-2), dodge/unassigned (-1), or hand
         std::vector<std::pair<uint32_t, int8_t>> tried;   // this read's tryouts so far (which answer, how it went)
         Vec3 rel[2];            // where its hands hold still (from its head) while it watches the ball (as planned)
         Quat relQ[2];
@@ -769,7 +781,8 @@ public:
 private:
     void stepPlayer(int p, float dt);
     void recordHand(int p, int h);   // the hand's pose into its history (throw speed, spin, a shield's swing)
-    void stepBall(int p, float dt);
+    void stepBall(int p, float dt, int ignoredPlayer = -1);
+    void planBankAim(Ball& b, const Vec3& from, float radius) const;
     void stepBot(int p, float dt);
     void toFire(int p);                         // FIREBALL BLITZ: p's thrown ball becomes a fireball; its tee refills (or waits)
     void stepFire(int p, int k, float dt);
@@ -816,9 +829,11 @@ public:   // (BALL MARKS ask it which surface a bounce was on)
 private:
     bool hitsBody(int victim, const Vec3& pos, float r) const;
     bool hitsShield(int p, int h, const Vec3& from, const Vec3& to, float r, Vec3& n) const;
-    bool hitsBox(const Pose& box, const Vec3& half, const Vec3& from, const Vec3& to, float r, Vec3& n) const;
+    bool hitsBox(const Pose& box, const Vec3& half, const Vec3& from, const Vec3& to, float r, Vec3& n,
+                 float* entry = nullptr) const;
+    bool usesSpinContacts() const { return np == 2 && !tun.experimental && !tun.advanced && tun.usesLivelySideWalls(); }
     void deflectMoving(Ball& b, const Vec3& n, const Vec3& surfaceVel, int deflector, float assistDeg, const Vec3& from,
-                       bool punch = false);
+                       bool punch = false, float contactRadius = 0.f);
     void scorePoint(int scorer, int victim, const Vec3& where, int ball);
     int botThreat(int p) const;   // four players: whose ball read 0 watches (the most urgent attack); two: the other
     int botAim(int p) const { return np == 2 ? 1 - p : pl[p].botTarget >= 0 ? pl[p].botTarget : aimTarget(p, pl[p].in.head.p, facing(p)); }
