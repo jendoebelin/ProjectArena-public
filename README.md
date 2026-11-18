@@ -48,9 +48,9 @@ Every model, texture and sound in the game is made by the scripts in `tools/` an
 
 **[The asset viewer](https://jendoebelin.github.io/ProjectArena-public/)** is the one place for all of it: every
 model in 3D, drawn with the game's own shader; the avatar put together and posed as the game does it, with every
-builder choice; the arena's layers one by one; every texture; every sound with its waveform. Each has an **ID**
-(V12, P04, S12...) and a **download** (models as .glb for Blender, with their textures; textures as PNG; sounds as
-WAV), and the **template pack** (the game's bodies, heads and the hand frame) is there to build your own on. Use
+builder choice; every country's flag and its team kit on the avatar; the arena's layers one by one; every texture;
+every sound with its waveform. Each has an **ID** (V12, P04, S12, F001...) and a **download** (models as .glb for
+Blender, with their textures; textures and flags as PNG; sounds as WAV), and the **template pack** (the game's bodies, heads and the hand frame) is there to build your own on. Use
 the ID to talk about an asset, or add it to the link (`.../ProjectArena-public/#V12`).
 
 ## Contributing
