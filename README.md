@@ -37,8 +37,8 @@ opponent in a neon glass arena. Its own code, art and sound.
 
 | | |
 |---|---|
-| ![FIREBALL BLITZ: fireballs hopping along the floor](docs/images/play_2.jpg) | ![The avatar builder's mirror](docs/images/play_3.jpg) |
-| ![FIREBALL BLITZ seen from the waiting area](docs/images/play_4.jpg) | ![A TRAINING lesson: blocking with the shield](docs/images/play_5.jpg) |
+| ![A match in the SQUARE, the score over the far end](docs/images/play_2.jpg) | ![The avatar builder's mirror](docs/images/play_3.jpg) |
+| ![TRAINING: the coach's ball coming at your shield](docs/images/play_4.jpg) | ![A TRAINING lesson: blocking with the shield](docs/images/play_5.jpg) |
 
 *Pictures from the headset, in real matches.*
 
