@@ -29,6 +29,7 @@ aside section + section { border-top: 1px solid var(--line); padding-top: 14px; 
 aside h2 { font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); margin: 0; font-weight: 600; }
 label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 .row { display: flex; flex-direction: column; }
+.locked { font-size: 13px; color: var(--muted); font-style: italic; padding: 4px 0; }
 select, button, input[type="text"] { font: 14px var(--ui); color: var(--fg); background: var(--ctl); border: 1px solid var(--ctl-line); border-radius: 6px; }
 select { width: 100%; padding: 8px 9px; cursor: pointer; }
 input[type="text"] { width: 100%; padding: 8px 10px; }
@@ -354,10 +355,18 @@ in vec3 vDec0;
 in vec3 vDec1;
 in vec2 vDecN;
 out vec4 oColor;
-vec3 printed(vec3 alb, vec3 d, float facing) {   // a print where this point lies in its box, facing out (render.cpp)
-  if (facing <= 0.0 || abs(d.x) > 0.5 || abs(d.y) > 0.5 || abs(d.z) > 0.5) return alb;
+vec3 printed(vec3 alb, vec3 d, float facing, inout float cover) {   // a print where this point lies in its box, facing out
+  if (facing <= 0.0 || abs(d.x) > 0.5 || abs(d.y) > 0.5 || abs(d.z) > 0.5) return alb;   // (render.cpp)
   vec4 t = texture(uDecalTex, vec2(d.x + 0.5, 0.5 - d.y));
+  cover = max(cover, t.a);
   return mix(alb, t.rgb, t.a);
+}
+float printCover() {   // COUNTRY KIT: under a print a suit's own glow gives way to it (its glowing lines and pulses)
+  float a = 0.0;
+  vec3 x = vec3(0.0);
+  if (uDecals > 0) x = printed(x, vDec0, vDecN.x, a);
+  if (uDecals > 1) x = printed(x, vDec1, vDecN.y, a);
+  return a;
 }
 vec3 arenaEnv(vec3 r) {
   float band = exp(-pow((r.y - 0.10) / 0.09, 2.0));
@@ -407,6 +416,7 @@ void main() {
     vec3 glow = (uTeam0.rgb * m.r * m.r * uTeam0.a + uTeam1.rgb * m.b * m.b * uTeam1.a) * 0.30;
     oColor = vec4(diff + spec + glow + uEmissive.rgb, base.a);
   } else if (uShader == 2) {
+    if (uDecals > 0 && printCover() > 0.5) discard;   // (a suit's pulses under a print)
     vec4 tx = uHasDiffuse == 1 ? texture(uDiffuse, vUV) : vec4(1.0);
     oColor = vec4(uTint.rgb * tx.rgb * uTint.a + uEmissive.rgb, 1.0);
   } else if (uShader == 3) {
@@ -425,9 +435,11 @@ void main() {
       alb = mix(alb, uPatCol.rgb, pt.r);
       glowAdd += uPatGlow.rgb * pt.g;
     }
-    if (uDecals > 0) {   // NATIONS: the flags printed on the jersey (lit and knit like the rest of it)
-      alb = printed(alb, vDec0, vDecN.x);
-      if (uDecals > 1) alb = printed(alb, vDec1, vDecN.y);
+    if (uDecals > 0) {   // NATIONS: the flags printed on the garment (lit and knit like the rest of it), over its glow
+      float cover = 0.0;
+      alb = printed(alb, vDec0, vDecN.x, cover);
+      if (uDecals > 1) alb = printed(alb, vDec1, vDecN.y, cover);
+      glowAdd *= 1.0 - cover;
     }
     float hemi = 0.5 + 0.5 * n.y;
     float ndl = max(dot(n, -uLightDir), 0.0);
@@ -493,7 +505,7 @@ function material(mt, ctx) {
     uDesCol: { value: C ? v4(C[2]) : v4([1, 1, 1, 1]) }, uDesGlow: { value: C ? v4(C[3]) : v4([0, 0, 0, 0]) },
     uChar: { value: chr ? 1 : 0 }, uCloth: { value: cloth ? 1 : 0 }, uFabric: { value: fabric || white },
     uUV: { value: mt.uv === 1 ? 1 : 0 }, uMode: { value: state.surface }, uFlat: { value: new THREE.Vector3(...flat) },
-    uDecals: { value: ctx.decalTex && sh === SH.LIT ? 2 : 0 }, uDecalTex: { value: ctx.decalTex || white },
+    uDecals: { value: ctx.decalTex && (sh === SH.LIT || sh === SH.ADD) ? 2 : 0 }, uDecalTex: { value: ctx.decalTex || white },
   };
   const m = new THREE.ShaderMaterial({ uniforms: u, vertexShader: VS, fragmentShader: FS, glslVersion: THREE.GLSL3,
     wireframe: state.wire });
@@ -669,9 +681,10 @@ function glowOf(c, fallback) {   // a kit colour as a glow (brightest 1)
 }
 // the colour of the wearer's end of the court: blue / orange, or the country's (avatar.cpp sideColors, one player)
 function teamColor(look, team) { const N = nationOf(look); return N ? N.team[0].slice() : D.teams[team].slice(); }
-// with a country, the team kit: the ARENA JERSEY, no pattern, ATHLETIC SHORTS (bike and long shorts and the skirts stay)
+// with a country, the team kit: the ARENA JERSEY, no pattern, ATHLETIC SHORTS (bike and long shorts and the skirts stay);
+// with COUNTRY KIT = MY OUTFIT (look.kit 1, avatar.cfg kit=1) your own suit, pattern and lower body in its colours
 function uniformLook(look) {
-  if (!nationOf(look)) return look;
+  if (!nationOf(look) || look.kit) return look;
   const d = Object.assign({}, look);
   d.suit = 1; d.pattern = 0;
   if (d.lower === 0 || d.lower === 2) d.lower = 1;
@@ -680,17 +693,24 @@ function uniformLook(look) {
 // main.cpp's two prints: a box in bind space each (bind space -> the unit box at the pose: x, y across, z through the
 // cloth), the flag high on the back just under the collar and small on the left chest
 const DEG = Math.PI / 180;
-function printBoxes(fem) {
+// (COUNTRY KIT: on a suit whose own design is in those places, main.cpp moves them: ECHO SUIT's back print over its
+// identity disc, VECTOR's and NIGHTFORGE's on the left shoulder blade, VANGUARD's feminine crest on the chest plate)
+function printBoxes(fem, suit) {
   const qx = (a) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), a);
   const qy = (a) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), a);
+  const back = { q: qx(15 * DEG), p: fem ? [0, -0.11, 0.090] : [0, -0.12, 0.125], size: 0.13 };
+  const crest = { q: qy(Math.PI).multiply(qx(-(fem ? 45 : 18) * DEG)), p: fem ? [-0.08, -0.118, -0.147] : [-0.08, -0.150, -0.131] };
+  const along = (b, x, y) => { const v = new THREE.Vector3(x, y, 0).applyQuaternion(b.q); return [b.p[0] + v.x, b.p[1] + v.y, b.p[2] + v.z]; };
+  if (suit === 5 || suit === 12) { back.p = along(back, 0, fem ? -0.033 : -0.015); back.size = 0.21; }
+  if (suit === 14 || suit === 15) { back.p = along(back, fem ? -0.077 : -0.090, 0); back.size = fem ? 0.09 : 0.10; }
+  if (suit === 2 && fem) { crest.q = qy(Math.PI).multiply(qx(-10 * DEG)); crest.p = [-0.08, -0.150, -0.186]; }
   return [
-    { q: qx(15 * DEG), p: fem ? [0, -0.11, 0.090] : [0, -0.12, 0.125], size: [0.13, 0.13 / 1.5, 0.16] },
-    { q: qy(Math.PI).multiply(qx(-(fem ? 45 : 18) * DEG)), p: fem ? [-0.08, -0.118, -0.147] : [-0.08, -0.150, -0.131],
-      size: [0.055, 0.055 / 1.5, 0.10] },
+    { q: back.q, p: back.p, size: [back.size, back.size / 1.5, 0.16] },
+    { q: crest.q, p: crest.p, size: [0.055, 0.055 / 1.5, 0.10] },
   ];
 }
-function decalCoords(M, fem) {   // each vertex's place in both boxes, and which way its normal faces through them
-  const boxes = printBoxes(fem).map((b) => ({ inv: b.q.clone().invert(), p: new THREE.Vector3(...b.p), size: b.size }));
+function decalCoords(M, fem, suit) {   // each vertex's place in both boxes, and which way its normal faces through them
+  const boxes = printBoxes(fem, suit).map((b) => ({ inv: b.q.clone().invert(), p: new THREE.Vector3(...b.p), size: b.size }));
   const d0 = new Float32Array(M.nv * 3), d1 = new Float32Array(M.nv * 3), dn = new Float32Array(M.nv * 2);
   const v = new THREE.Vector3(), n = new THREE.Vector3();
   for (let i = 0; i < M.nv; i++) {
@@ -769,7 +789,7 @@ function idFor(fieldName, value) {
 function defaultLook() {
   const p = D.presets[1] || D.presets[0];
   const look = { suit: 0, build: 1, pattern: 0, primary: 0, secondary: 1, glow: 0, hair: 0, haircolor: 0, headgear: 0, visor: 0,
-    visortint: 0, mask: 0, skin: 2, lower: 0, body: 0, gauntlet: 0, face: 0, nation: 0 };
+    visortint: 0, mask: 0, skin: 2, lower: 0, body: 0, gauntlet: 0, face: 0, nation: 0, kit: 0 };
   return Object.assign(look, p.look);
 }
 
@@ -868,7 +888,7 @@ async function showAvatar(keepCamera) {
   if (my !== token) return;
   clear();
   const C = channels(look, state.team);
-  const rim = [...teamColor(look, state.team), 0.5];
+  const rim = [...teamColor(look, state.team), N ? 0.25 : 0.5];   // (main.cpp lookOf: softer over a country's kit)
   const b = look.body ? 'f' : 'm';
   const pattern = look.pattern ? tex(`open_pat_${PATTERNS[look.pattern]}_${b}`, false) : null;
   const ctx = { channels: C, rim, pattern };
@@ -888,9 +908,10 @@ async function showAvatar(keepCamera) {
     let mesh;
     if (p.at === 'skin') {
       const [pos, nrm] = skin(M, rig);
-      const jersey = flagTex && p.model.startsWith('av_top_');   // (main.cpp: the prints on the jersey)
+      // (main.cpp: the prints on the jersey or your own top, and its pulses give way to them)
+      const jersey = flagTex && (p.model.startsWith('av_top_') || p.model.startsWith('av_tpulse_'));
       mesh = meshOf(p.model, M, jersey ? Object.assign({}, ctx, { decalTex: flagTex }) : ctx, pos, nrm,
-        jersey ? decalCoords(M, !!look.body) : null);
+        jersey ? decalCoords(M, !!look.body, look.suit) : null);
     } else if (p.at === 'head') {
       const c = Object.assign({}, ctx);
       if (p.neon) c.emAdd = C[3].map((x) => x * 0.35);
@@ -1060,12 +1081,28 @@ function buildAvatarPanel() {
     s.addEventListener('change', () => {
       state.look[KEY[fname]] = +s.value;
       $('preset').value = '-1';
+      if (fname === 'COUNTRY') syncAvatarPanel();   // (COUNTRY KIT's row, and the rows a country decides)
       state.item = idFor(fname, +s.value) || null;
       const e = D.avatar.find((a) => a.id === state.item);
       route(state.item, { keepCamera: !e || e.view === state.focus, fromPanel: true });
     });
     row.append(s);
+    if (KIT_ROWS.includes(KEY[fname])) row.append(el('div', { class: 'locked', 'data-k': KEY[fname], hidden: '' }));
     box.append(row);
+    if (fname === 'COUNTRY') {   // COUNTRY KIT (0.3.22): under the country, as in the game's builder
+      const kr = el('div', { class: 'row', id: 'kitRow' });
+      kr.append(el('label', { for: 'f_kit' }, 'Country kit (from 0.3.22)'));   // (said, while 0.3.21 is the release)
+      const ks = el('select', { id: 'f_kit' });
+      ks.append(el('option', { value: '0' }, 'Team jersey'), el('option', { value: '1' }, 'My outfit (its colours and flags)'));
+      ks.addEventListener('change', () => {
+        state.look.kit = +ks.value;
+        $('preset').value = '-1';
+        syncAvatarPanel();
+        showAvatar(true);
+      });
+      kr.append(ks);
+      box.append(kr);
+    }
   }
   const cbox = $('avColors');
   for (const [fname, key] of COLOR_FIELDS) {
@@ -1082,6 +1119,7 @@ function buildAvatarPanel() {
       sw.append(b);
     });
     row.append(sw);
+    row.append(el('div', { class: 'locked', 'data-k': key }));
     cbox.append(row);
   }
   ps.addEventListener('change', () => {
@@ -1111,8 +1149,21 @@ function buildAvatarPanel() {
   });
 }
 
+// with a country the game's builder shows the rows it decides as TEAM KIT (MY OUTFIT: only the colours, FLAG COLORS)
+const KIT_ROWS = ['suit', 'pattern', 'lower'], KIT_COLORS = ['primary', 'secondary', 'glow'];
 function syncAvatarPanel() {
   for (const fname of FIELD_ORDER) $('f_' + KEY[fname]).value = String(state.look[KEY[fname]]);
+  const nat = !!nationOf(state.look), own = nat && !!state.look.kit;
+  $('kitRow').hidden = !nat;
+  $('f_kit').value = String(own ? 1 : 0);
+  document.querySelectorAll('.locked').forEach((d) => {   // (in place of the choice: its select, or its swatches)
+    const colours = KIT_COLORS.includes(d.dataset.k);
+    const on = nat && (colours || (!own && KIT_ROWS.includes(d.dataset.k)));
+    d.hidden = !on;
+    d.textContent = !on ? '' : colours ? (own ? 'Flag colors: the country decides these' : 'Team kit: the country decides these')
+      : 'Team kit (from 0.3.22, Country kit: My outfit chooses your own)';
+    d.previousElementSibling.hidden = on;
+  });
   document.querySelectorAll('.swatch').forEach((b) => {
     b.setAttribute('aria-pressed', String(state.look[b.dataset.k] === +b.dataset.i));
     if (b.classList.contains('team')) b.style.background = css(teamColor(state.look, state.team));
@@ -1327,8 +1378,9 @@ function showFlag(N) {
   const h = el('h3');
   h.append(el('span', { class: 'iid' }, N.id), document.createTextNode(titleCase(N.name)));
   card.append(h, el('p', {}, `${N.code} · country ${N.n} of ${D.nations.length} in the game's table. With it, a player wears the `
-    + 'team kit in its colours, with this flag printed high on the back and small on the chest; their end of the court, its '
-    + 'strike zone and the balls take its colour, and their fans\' flags in the stands are this one.'));
+    + 'team kit in its colours, with this flag printed high on the back and small on the chest (or, with COUNTRY KIT: MY '
+    + 'OUTFIT, their own outfit in its colours with the flags); their end of the court, its strike zone and the balls take its '
+    + 'colour, and their fans\' flags in the stands are this one.'));
   const kit = el('div', { class: 'kit', role: 'group', 'aria-label': 'the team kit colours' });
   N.kit.forEach((c, i) => { const sw = el('span', { title: KIT_PART[i] + ` rgb(${c.join(', ')})` }); sw.style.background = `rgb(${c.join(',')})`; kit.append(sw); });
   const end = el('span', { title: 'its end of the court' });
