@@ -1,188 +1,1311 @@
-<title>Project Arena Asset Catalog</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Chakra+Petch:wght@500;600&family=IBM+Plex+Mono&display=swap">
+<meta charset="utf-8">
+<title>Project Arena Asset Viewer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<!-- tools/gen_viewer.py builds the page: this file with tools/viewer/viewer.js put in place of the marker below -->
 <style>
 :root {
-  /* layout: a studio contact sheet; one sticky section rail, cards in an auto-fill grid */
-  --bg: #090d14; --panel: #101724; --panel-2: #152033; --line: #22314a;
-  --fg: #dde7f3; --muted: #8b9ab0; --cyan: #5fd8ff; --amber: #ff9a4d;
-  --display: "Chakra Petch", "Bahnschrift", "Segoe UI", sans-serif;
-  --body: "Barlow", "Segoe UI", system-ui, sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  /* layout: an inspection bench, choices in a sidebar beside one large orbit view (as the body inspector of pull request #25) */
+  --bg: #111821; --panel: #18222e; --line: #33404d; --ctl: #233347; --ctl-line: #516579;
+  --fg: #eaf1f6; --muted: #aabac9; --accent: #f8bd5c; --link: #7bd2ff; --stage: #05070c;
+  --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
-html, body { background: var(--bg); color: var(--fg); }
-body { font: 15px/1.5 var(--body); padding-inline: 16px; padding-block: 0 48px; }
-.wrap { max-width: 1240px; margin: 0 auto; }
-header { padding-block: 32px 18px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
-h1 { font: 600 clamp(28px, 4vw, 44px)/1.05 var(--display); letter-spacing: 0.02em; margin: 0; text-wrap: balance; }
-h1 span { color: var(--cyan); }
-.lede { color: var(--muted); max-width: 70ch; margin: 0; }
-.hero { margin: 22px 0 6px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #000; }
-.hero img { display: block; width: 100%; height: auto; max-height: min(56vh, 520px); object-fit: cover; }
-.hero figcaption { padding: 8px 12px; color: var(--muted); font-size: 13px; background: var(--panel); }
-nav { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); padding-block: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-nav a, .chip { font: 500 13px/1 var(--display); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg); text-decoration: none;
-  border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px; background: var(--panel); }
-nav a:hover, nav a:focus-visible { border-color: var(--cyan); color: var(--cyan); outline: none; }
-nav input { margin-left: auto; min-width: 0; flex: 1 1 200px; max-width: 320px; background: var(--panel); color: var(--fg);
-  border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; font: 14px var(--body); }
-nav input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
-section { padding-block: 28px 4px; scroll-margin-top: 64px; }
-h2 { font: 600 20px/1.2 var(--display); letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 4px; display: flex; gap: 10px; align-items: baseline; }
-h2 small { font: 400 13px var(--body); letter-spacing: 0; text-transform: none; color: var(--muted); }
-.sub { color: var(--muted); margin: 0 0 14px; max-width: 75ch; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
-.card .img { aspect-ratio: 16 / 9; background: #05070c; display: grid; place-items: center; overflow: hidden; }
-.card .img img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.card .img.contain img { object-fit: contain; }
-.card .img img, .hero img { cursor: zoom-in; }
-/* enlarged view: click any picture; arrows, swipe or the side buttons step through what the filter shows */
-dialog#lb { border: 0; padding: 0; margin: 0; background: transparent; width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; color: var(--fg); }
-dialog#lb::backdrop { background: rgba(3, 5, 9, 0.94); }
-#lb .stage { position: absolute; inset: 0; display: grid; grid-template-rows: 1fr auto; justify-items: center; align-items: center; gap: 10px; padding: 52px 16px 16px; }
-#lb img { max-width: 100%; max-height: calc(100dvh - 120px); object-fit: contain; display: block; border-radius: 6px; box-shadow: 0 0 0 1px var(--line); background: #05070c; }
-#lb .cap { font: 500 14px/1.4 var(--body); text-align: center; max-width: 900px; }
-#lb .cap b { font: 600 14px var(--mono); color: var(--cyan); margin-right: 8px; }
-#lb .cap small { display: block; color: var(--muted); font-size: 13px; }
-#lb button { position: absolute; background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); border-radius: 999px;
-  width: 44px; height: 44px; font: 600 20px/1 var(--display); cursor: pointer; display: grid; place-items: center; }
-#lb button:hover, #lb button:focus-visible { border-color: var(--cyan); color: var(--cyan); outline: none; }
-#lb .close { top: 8px; right: 12px; }
-#lb .prev { left: 12px; top: 50%; transform: translateY(-50%); }
-#lb .next { right: 12px; top: 50%; transform: translateY(-50%); }
-#lb .open { top: 8px; left: 12px; width: auto; padding: 0 14px; font: 500 13px var(--body); text-decoration: none; }
-@media (max-width: 640px) { #lb .prev, #lb .next { top: auto; bottom: 10px; transform: none; } #lb .stage { padding-bottom: 64px; } }
-.card .meta { padding: 10px 12px 12px; display: grid; gap: 4px; }
-.id { font: 600 13px var(--display); letter-spacing: 0.08em; color: var(--cyan); }
-.card.tex .id { color: var(--amber); }
-.name { font: 600 16px/1.25 var(--display); }
-.desc { color: var(--muted); font-size: 13.5px; }
-.path { font: 12px/1.4 var(--mono); color: #9fb3cc; overflow-wrap: anywhere; }
-.copy { justify-self: start; margin-top: 4px; font: 500 12px var(--display); letter-spacing: 0.05em; text-transform: uppercase;
-  color: var(--fg); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 5px 9px; cursor: pointer; }
-.copy:hover, .copy:focus-visible { border-color: var(--cyan); color: var(--cyan); outline: none; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 var(--ui); display: flex; flex-direction: column; }
+header { padding-block: 16px 14px; padding-left: max(24px, env(safe-area-inset-left, 0px)); padding-right: max(24px, env(safe-area-inset-right, 0px));
+  border-bottom: 1px solid var(--line); display: grid; gap: 3px; }
+.tag { color: var(--accent); font-size: 11px; letter-spacing: 1.6px; text-transform: uppercase; }
+h1 { font-size: 23px; line-height: 1.15; margin: 0; text-wrap: balance; }
+h1 .id { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 8px; }
+header small { color: var(--muted); font-size: 13px; max-width: 95ch; }
+main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); }
+aside { min-height: 0; overflow: auto; background: var(--panel); padding-block: 18px 28px; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: 20px;
+  border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 14px; }
+aside section { display: flex; flex-direction: column; gap: 10px; }
+aside section + section { border-top: 1px solid var(--line); padding-top: 14px; }
+aside h2 { font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); margin: 0; font-weight: 600; }
+label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.row { display: flex; flex-direction: column; }
+select, button, input[type="text"] { font: 14px var(--ui); color: var(--fg); background: var(--ctl); border: 1px solid var(--ctl-line); border-radius: 6px; }
+select { width: 100%; padding: 8px 9px; cursor: pointer; }
+input[type="text"] { width: 100%; padding: 8px 10px; }
+button { padding: 7px 10px; cursor: pointer; }
+button:hover, select:hover { border-color: var(--link); }
+button:focus-visible, select:focus-visible, input:focus-visible, .swatch:focus-visible, .item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 .btns { display: flex; flex-wrap: wrap; gap: 6px; }
-a.copy.dl { text-decoration: none; display: inline-block; }
-.contrib { margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.contrib a.copy { font-size: 13px; padding: 8px 12px; border-color: var(--cyan); color: var(--cyan); }
-.sounds { display: grid; gap: 8px; }
-.snd { display: grid; grid-template-columns: 54px minmax(0, 1.2fr) minmax(0, 2fr) minmax(220px, 1fr); gap: 12px; align-items: center;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
-.snd .id { color: #b98cff; }
-.snd audio { width: 100%; height: 34px; }
-.snd .len { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
-.fx { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
-h3 { font: 600 15px/1.2 var(--display); letter-spacing: 0.08em; text-transform: uppercase; margin: 22px 0 6px; color: #ffb3d9; }
-h3 small { font: 400 12px var(--body); letter-spacing: 0; text-transform: none; color: var(--muted); margin-left: 6px; }
-.avgrid { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
-.card.av .img { aspect-ratio: 42 / 52; } .card.avc .img { aspect-ratio: 1; }
-.card.av .id, .card.avc .id { color: #ff8cc6; }
-.pal { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; align-items: start; padding: 8px 0; border-top: 1px solid var(--line); }
-.pname { font: 600 13px var(--display); letter-spacing: 0.06em; color: var(--muted); padding-top: 4px; }
-.sws { display: flex; flex-wrap: wrap; gap: 6px 12px; }
-.sw { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
-.sw i { width: 18px; height: 18px; border-radius: 3px; border: 1px solid #ffffff33; display: inline-block; }
-@media (max-width: 520px) { .pal { grid-template-columns: minmax(0, 1fr); } }
-.fx .card { padding: 12px; gap: 4px; display: grid; }
-.fx .id { color: #7dffb0; }
-footer { margin-top: 36px; border-top: 1px solid var(--line); padding-top: 14px; color: var(--muted); font-size: 13px; }
-@media (max-width: 760px) { .snd { grid-template-columns: 48px minmax(0, 1fr); } .snd .d, .snd audio { grid-column: 1 / -1; }
-  nav { position: static; } nav a { padding: 7px 10px; } nav input { margin-left: 0; max-width: none; } }
+.check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--fg); margin: 0; cursor: pointer; }
+input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+p b { color: var(--fg); font-weight: 600; }
+.swatches { display: flex; flex-wrap: wrap; gap: 5px; }
+.swatch { width: 24px; height: 24px; border-radius: 5px; border: 1px solid #0008; padding: 0; cursor: pointer; }
+.swatch[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 2px; }
+.swatch.team { background-image: linear-gradient(135deg, transparent 0 46%, #0009 46% 54%, transparent 54%); }
+.list { display: flex; flex-direction: column; gap: 4px; }
+.item { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 8px; align-items: center; text-align: left; width: 100%;
+  background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 6px 8px; color: var(--fg); }
+.item:hover { border-color: var(--ctl-line); }
+.item[aria-current="true"] { background: var(--ctl); border-color: var(--accent); }
+.item .iid { color: var(--accent); font: 12px var(--mono); }
+.item .nm { min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+.item .meta { color: var(--muted); font: 11px var(--mono); }
+.parts { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.part { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 2px 8px; }
+.part .iid { color: var(--accent); font: 12px var(--mono); grid-row: span 2; padding-top: 1px; }
+.part .file { font: 12px var(--mono); color: var(--fg); overflow-wrap: anywhere; }
+.part .meta { color: var(--muted); font: 11px var(--mono); }
+.copy { font-size: 12px; padding: 3px 8px; }
+#stage { position: relative; min-height: 0; background: var(--stage); overflow: hidden; }
+#view { display: block; width: 100%; height: 100%; touch-action: none; }
+#note { position: absolute; left: 16px; right: 16px; bottom: 12px; font-size: 12px; color: #b7c8d8; pointer-events: none; text-shadow: 0 1px 2px #000; }
+#flat { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; overflow: auto; }
+#flat .tex { max-width: 100%; max-height: calc(100% - 90px); image-rendering: auto; border: 1px solid var(--line);
+  background: repeating-conic-gradient(#1c2632 0 25%, #121a24 0 50%) 0 0 / 24px 24px; }
+#flat canvas { width: min(900px, 100%); height: 180px; border: 1px solid var(--line); border-radius: 6px; background: #0a1018; }
+#flat .card { max-width: 62ch; display: grid; gap: 8px; }
+#flat .card h3 { margin: 0; font-size: 20px; }
+#flat .card .iid { color: var(--accent); margin-right: 8px; }
+#flat .card code { font: 13px var(--mono); color: var(--link); }
+#flat .info { color: var(--muted); font-size: 13px; text-align: center; max-width: 80ch; }
+#busy { position: absolute; top: 12px; right: max(16px, env(safe-area-inset-right, 0px)); font: 12px var(--mono); color: var(--accent); background: #000a;
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+#err { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--fg); }
+.legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; font-size: 12px; color: var(--muted); }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; background: var(--c); vertical-align: -1px; }
+.hint { font-size: 12px; color: var(--muted); }
+a.dlbtn { display: inline-block; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 6px; color: var(--accent);
+  text-decoration: none; font-weight: 600; }
+a.dlbtn:hover, a.dlbtn:focus-visible { background: var(--ctl); outline: none; }
+ol.steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+ol.steps a, #dlBox a:not(.dlbtn) { color: var(--link); }
+a { color: var(--link); }
+@media (max-width: 760px) {
+  body { display: block; height: auto; }
+  html { height: auto; }
+  header { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  main { display: flex; flex-direction: column; }
+  #stage { height: 62vh; order: 1; }
+  aside { order: 2; border-right: 0; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); overflow: visible; }
+}
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
 </style>
-<div class="wrap">
+
 <header>
-  <h1>Project Arena <span>Asset Catalog</span></h1>
-  <p class="lede">Every model, texture and sound made for Project Arena, all of it generated by our own scripts. Refer to anything by its ID, for example "P04 needs thinner fingers", "V14 hair too flat" or "S12 is too harsh", or send a replacement file for that ID.</p>
-  <div class="contrib"><a class="copy dl" href="dl/project-arena-templates.zip" download>Download the template pack</a>
-  <span class="sub">Every card has a Download button for its model (.glb, opens in Blender) or texture. The template pack has the
-  bodies, heads and hand frame to build new outfits, hair, masks and gauntlets on, plus how to submit them. Contributed
-  art is published under CC BY 4.0.</span></div>
-  <figure class="hero"><img src="img/hero.jpg" alt="The neon glass arena seen from beside the court"><figcaption>All arena layers together (A01 to A07), rendered on the PC from the spectator seat beside the court.</figcaption></figure>
+  <div class="tag">Project Arena / Asset viewer</div>
+  <h1 id="title"><span class="id">V</span>Loading the game's models</h1>
+  <small>Every model, texture and sound in the game, drawn from the game's own files with a copy of its shader and rig.
+    Each has an ID and a download: refer to anything by its ID ("V14 needs a longer hem", "S12 is too harsh"), or send
+    a replacement file for that ID.</small>
 </header>
-<nav aria-label="Sections"><a href="#arena">Arena</a><a href="#props">Props</a><a href="#avatar">Avatar</a><a href="#textures">Textures</a><a href="#sounds">Sounds</a><a href="#code">Code effects</a>
-<input id="search" type="search" placeholder="Filter by ID or name" aria-label="Filter assets by ID or name"></nav>
-<section id="arena"><h2>Arena and stadium <small>A01 to A07 &middot; models</small></h2>
-<p class="sub">The court and the stadium are built together in one Blender scene so the neon really lights the floor (lightmaps T13, T14). Each layer is a separate file.</p>
-<div class="grid"><article class="card " data-search="a01 neon glass court transparent glass walls, roof and back walls with the neon tube outline, floor markings and player rings. app/assets_open/arena.mdl  |  tools/blender/make_arena.py: build_court"><div class="img"><img src="img/A01.jpg" alt="Neon glass court" loading="lazy"></div><div class="meta"><div class="id">A01</div><div class="name">Neon glass court</div><div class="desc">Transparent glass walls, roof and back walls with the neon tube outline, floor markings and player rings.</div><div class="path">app/assets_open/arena.mdl  |  tools/blender/make_arena.py: build_court</div><div class="btns"><button class="copy" type="button" data-copy="A01 Neon glass court">Copy ID</button><a class="copy dl" href="dl/A01_arena.glb" download>Download .glb</a></div></div></article><article class="card " data-search="a02 polished floor dark polished tiles with the pale runway and team-tinted end zones. lit by the cycles bake (lightmap t13). app/assets_open/floor.mdl  |  make_arena.py: build_court (floor)"><div class="img"><img src="img/A02.jpg" alt="Polished floor" loading="lazy"></div><div class="meta"><div class="id">A02</div><div class="name">Polished floor</div><div class="desc">Dark polished tiles with the pale runway and team-tinted end zones. Lit by the Cycles bake (lightmap T13).</div><div class="path">app/assets_open/floor.mdl  |  make_arena.py: build_court (floor)</div><div class="btns"><button class="copy" type="button" data-copy="A02 Polished floor">Copy ID</button><a class="copy dl" href="dl/A02_floor.glb" download>Download .glb</a></div></div></article><article class="card " data-search="a03 glow, holograms and hex energy soft halos around every neon tube, the holographic back-wall targets, hex energy on the end-zone glass, the faint floor grid, the overhead light shafts. app/assets_open/court_fx.mdl  |  make_arena.py: halo_line / hex_card / neon"><div class="img"><img src="img/A03.jpg" alt="Glow, holograms and hex energy" loading="lazy"></div><div class="meta"><div class="id">A03</div><div class="name">Glow, holograms and hex energy</div><div class="desc">Soft halos around every neon tube, the holographic back-wall targets, hex energy on the end-zone glass, the faint floor grid, the overhead light shafts.</div><div class="path">app/assets_open/court_fx.mdl  |  make_arena.py: halo_line / hex_card / neon</div><div class="btns"><button class="copy" type="button" data-copy="A03 Glow, holograms and hex energy">Copy ID</button><a class="copy dl" href="dl/A03_court_fx.glb" download>Download .glb</a></div></div></article><article class="card " data-search="a04 energy pulses cards along each neon tube that the game scrolls so energy pulses race around the outline (texture t12). shown without the tubes, brightened. app/assets_open/court_pulse.mdl  |  make_arena.py: neon (pulse cards)"><div class="img"><img src="img/A04.jpg" alt="Energy pulses" loading="lazy"></div><div class="meta"><div class="id">A04</div><div class="name">Energy pulses</div><div class="desc">Cards along each neon tube that the game scrolls so energy pulses race around the outline (texture T12). Shown without the tubes, brightened.</div><div class="path">app/assets_open/court_pulse.mdl  |  make_arena.py: neon (pulse cards)</div><div class="btns"><button class="copy" type="button" data-copy="A04 Energy pulses">Copy ID</button><a class="copy dl" href="dl/A04_court_pulse.glb" download>Download .glb</a></div></div></article><article class="card " data-search="a05 floor reflection layer mirror image of every light source below the floor; seen through the glossy floor it gives the reflections. app/assets_open/floor_reflect.mdl  |  tools/build_open_assets.py: mirrored()"><div class="img"><img src="img/A05.jpg" alt="Floor reflection layer" loading="lazy"></div><div class="meta"><div class="id">A05</div><div class="name">Floor reflection layer</div><div class="desc">Mirror image of every light source below the floor; seen through the glossy floor it gives the reflections.</div><div class="path">app/assets_open/floor_reflect.mdl  |  tools/build_open_assets.py: mirrored()</div><div class="btns"><button class="copy" type="button" data-copy="A05 Floor reflection layer">Copy ID</button><a class="copy dl" href="dl/A05_floor_reflect.glb" download>Download .glb</a></div></div></article><article class="card " data-search="a06 stadium dais rim, the slat light galleries, tiered stands with the crowd, overhead rig with spotlights, the screen block and the sky dome. app/assets_open/environment.mdl  |  make_arena.py: build_environment"><div class="img"><img src="img/A06.jpg" alt="Stadium" loading="lazy"></div><div class="meta"><div class="id">A06</div><div class="name">Stadium</div><div class="desc">Dais rim, the slat light galleries, tiered stands with the crowd, overhead rig with spotlights, the screen block and the sky dome.</div><div class="path">app/assets_open/environment.mdl  |  make_arena.py: build_environment</div><div class="btns"><button class="copy" type="button" data-copy="A06 Stadium">Copy ID</button><a class="copy dl" href="dl/A06_environment.glb" download>Download .glb</a></div></div></article><article class="card " data-search="a07 crowd lights twinkling phone and light-stick glows in the crowd (texture t07, scrolled by the game). app/assets_open/env_fx.mdl  |  make_arena.py: seat_row (twinkle cards)"><div class="img"><img src="img/A07.jpg" alt="Crowd lights" loading="lazy"></div><div class="meta"><div class="id">A07</div><div class="name">Crowd lights</div><div class="desc">Twinkling phone and light-stick glows in the crowd (texture T07, scrolled by the game).</div><div class="path">app/assets_open/env_fx.mdl  |  make_arena.py: seat_row (twinkle cards)</div><div class="btns"><button class="copy" type="button" data-copy="A07 Crowd lights">Copy ID</button><a class="copy dl" href="dl/A07_env_fx.glb" download>Download .glb</a></div></div></article></div></section>
-<section id="props"><h2>Props <small>P01 to P09 &middot; models</small></h2>
-<p class="sub">Shown in their in-game orientation and team colour (blue team). Hand pieces are drawn mirrored for the left hand.</p>
-<div class="grid"><article class="card " data-search="p01 plasma ball the energy sphere (additive, swirling veins t08). the game adds the white core, trails and electric arcs (c03). app/assets_open/projectile.mdl  |  tools/blender/make_props.py: ball"><div class="img"><img src="img/P01.jpg" alt="Plasma ball" loading="lazy"></div><div class="meta"><div class="id">P01</div><div class="name">Plasma ball</div><div class="desc">The energy sphere (additive, swirling veins T08). The game adds the white core, trails and electric arcs (C03).</div><div class="path">app/assets_open/projectile.mdl  |  tools/blender/make_props.py: ball</div><div class="btns"><button class="copy" type="button" data-copy="P01 Plasma ball">Copy ID</button><a class="copy dl" href="dl/P01_projectile.glb" download>Download .glb</a></div></div></article><article class="card " data-search="p02 filament orbits three hair-thin glowing orbits with sparks that spin with the ball and show its curve. app/assets_open/projectile_shell.mdl  |  make_props.py: shell"><div class="img"><img src="img/P02.jpg" alt="Filament orbits" loading="lazy"></div><div class="meta"><div class="id">P02</div><div class="name">Filament orbits</div><div class="desc">Three hair-thin glowing orbits with sparks that spin with the ball and show its curve.</div><div class="path">app/assets_open/projectile_shell.mdl  |  make_props.py: shell</div><div class="btns"><button class="copy" type="button" data-copy="P02 Filament orbits">Copy ID</button><a class="copy dl" href="dl/P02_projectile_shell.glb" download>Download .glb</a></div></div></article><article class="card " data-search="p03 spawn pad floor pad in front of each player, glowing in the team colour; the ball rises from it. app/assets_open/spawner.mdl  |  make_props.py: spawner"><div class="img"><img src="img/P03.jpg" alt="Spawn pad" loading="lazy"></div><div class="meta"><div class="id">P03</div><div class="name">Spawn pad</div><div class="desc">Floor pad in front of each player, glowing in the team colour; the ball rises from it.</div><div class="path">app/assets_open/spawner.mdl  |  make_props.py: spawner</div><div class="btns"><button class="copy" type="button" data-copy="P03 Spawn pad">Copy ID</button><a class="copy dl" href="dl/P03_spawner.glb" download>Download .glb</a></div></div></article><article class="card " data-search="p04 controller gauntlet (classic) gauntlet = controller: a vr controller held in an armoured glove; the glass knuckle guard floats in front of it. app/assets_open/lancer.mdl  |  make_props.py: lancer"><div class="img"><img src="img/P04.jpg" alt="Controller gauntlet (classic)" loading="lazy"></div><div class="meta"><div class="id">P04</div><div class="name">Controller gauntlet (classic)</div><div class="desc">GAUNTLET = CONTROLLER: a VR controller held in an armoured glove; the glass knuckle guard floats in front of it.</div><div class="path">app/assets_open/lancer.mdl  |  make_props.py: lancer</div><div class="btns"><button class="copy" type="button" data-copy="P04 Controller gauntlet (classic)">Copy ID</button><a class="copy dl" href="dl/P04_lancer.glb" download>Download .glb</a></div></div></article><article class="card " data-search="p05 knuckle guard clear glass bumper in front of the fist (matches the punch collision box). drawn translucent. app/assets_open/knuckleguard.mdl  |  make_props.py: knuckleguard"><div class="img"><img src="img/P05.jpg" alt="Knuckle guard" loading="lazy"></div><div class="meta"><div class="id">P05</div><div class="name">Knuckle guard</div><div class="desc">Clear glass bumper in front of the fist (matches the punch collision box). Drawn translucent.</div><div class="path">app/assets_open/knuckleguard.mdl  |  make_props.py: knuckleguard</div><div class="btns"><button class="copy" type="button" data-copy="P05 Knuckle guard">Copy ID</button><a class="copy dl" href="dl/P05_knuckleguard.glb" download>Download .glb</a></div></div></article><article class="card " data-search="p06 hex shield energy shield that forms while you hold a charged ball (hex texture t04, bright rim). app/assets_open/shield.mdl  |  make_props.py: shield"><div class="img"><img src="img/P06.jpg" alt="Hex shield" loading="lazy"></div><div class="meta"><div class="id">P06</div><div class="name">Hex shield</div><div class="desc">Energy shield that forms while you hold a charged ball (hex texture T04, bright rim).</div><div class="path">app/assets_open/shield.mdl  |  make_props.py: shield</div><div class="btns"><button class="copy" type="button" data-copy="P06 Hex shield">Copy ID</button><a class="copy dl" href="dl/P06_shield.glb" download>Download .glb</a></div></div></article><article class="card " data-search="p07 strike ring holographic ring behind each player; a ball through it is a strike (texture t03). app/assets_open/strikezone.mdl  |  make_props.py: strikezone"><div class="img"><img src="img/P07.jpg" alt="Strike ring" loading="lazy"></div><div class="meta"><div class="id">P07</div><div class="name">Strike ring</div><div class="desc">Holographic ring behind each player; a ball through it is a strike (texture T03).</div><div class="path">app/assets_open/strikezone.mdl  |  make_props.py: strikezone</div><div class="btns"><button class="copy" type="button" data-copy="P07 Strike ring">Copy ID</button><a class="copy dl" href="dl/P07_strikezone.glb" download>Download .glb</a></div></div></article><article class="card " data-search="p08 old android head (fallback) the first placeholder head. replaced by the avatar parts (v section); only used if those are missing. app/assets_open/head.mdl  |  make_props.py: head"><div class="img"><img src="img/P08.jpg" alt="Old android head (fallback)" loading="lazy"></div><div class="meta"><div class="id">P08</div><div class="name">Old android head (fallback)</div><div class="desc">The first placeholder head. Replaced by the avatar parts (V section); only used if those are missing.</div><div class="path">app/assets_open/head.mdl  |  make_props.py: head</div><div class="btns"><button class="copy" type="button" data-copy="P08 Old android head (fallback)">Copy ID</button><a class="copy dl" href="dl/P08_head.glb" download>Download .glb</a></div></div></article><article class="card " data-search="p09 old android torso (fallback) the first placeholder torso. replaced by the avatar parts (v section); only used if those are missing. app/assets_open/torso.mdl  |  make_props.py: torso"><div class="img"><img src="img/P09.jpg" alt="Old android torso (fallback)" loading="lazy"></div><div class="meta"><div class="id">P09</div><div class="name">Old android torso (fallback)</div><div class="desc">The first placeholder torso. Replaced by the avatar parts (V section); only used if those are missing.</div><div class="path">app/assets_open/torso.mdl  |  make_props.py: torso</div><div class="btns"><button class="copy" type="button" data-copy="P09 Old android torso (fallback)">Copy ID</button><a class="copy dl" href="dl/P09_torso.glb" download>Download .glb</a></div></div></article><article class="card " data-search="p10 striker gauntlet gauntlet = striker (default): a gothic plate gauntlet. overlapping scales on every finger with pointed tips, a knuckle ridge with gadlings, a fluted back plate, a thumb wing and a pointed bell cuff with rolled rims. app/assets_open/gauntlet_0.mdl  |  make_props.py: gauntlet(0)"><div class="img"><img src="img/P10.jpg" alt="Striker gauntlet" loading="lazy"></div><div class="meta"><div class="id">P10</div><div class="name">Striker gauntlet</div><div class="desc">GAUNTLET = STRIKER (default): a gothic plate gauntlet. Overlapping scales on every finger with pointed tips, a knuckle ridge with gadlings, a fluted back plate, a thumb wing and a pointed bell cuff with rolled rims.</div><div class="path">app/assets_open/gauntlet_0.mdl  |  make_props.py: gauntlet(0)</div><div class="btns"><button class="copy" type="button" data-copy="P10 Striker gauntlet">Copy ID</button><a class="copy dl" href="dl/P10_gauntlet_0.glb" download>Download .glb</a></div></div></article><article class="card " data-search="p11 titan gauntlet gauntlet = titan: heavy plate. thick finger scales, a spiked knuckle ridge, a ridged and riveted back plate and a wide bell cuff. app/assets_open/gauntlet_1.mdl  |  make_props.py: gauntlet(1)"><div class="img"><img src="img/P11.jpg" alt="Titan gauntlet" loading="lazy"></div><div class="meta"><div class="id">P11</div><div class="name">Titan gauntlet</div><div class="desc">GAUNTLET = TITAN: heavy plate. Thick finger scales, a spiked knuckle ridge, a ridged and riveted back plate and a wide bell cuff.</div><div class="path">app/assets_open/gauntlet_1.mdl  |  make_props.py: gauntlet(1)</div><div class="btns"><button class="copy" type="button" data-copy="P11 Titan gauntlet">Copy ID</button><a class="copy dl" href="dl/P11_gauntlet_1.glb" download>Download .glb</a></div></div></article><article class="card " data-search="p12 phantom gauntlet gauntlet = phantom: light plate over a dark glove. thin finger scales, a smooth knuckle ridge and back plate with glowing inlays, a slim cuff. app/assets_open/gauntlet_2.mdl  |  make_props.py: gauntlet(2)"><div class="img"><img src="img/P12.jpg" alt="Phantom gauntlet" loading="lazy"></div><div class="meta"><div class="id">P12</div><div class="name">Phantom gauntlet</div><div class="desc">GAUNTLET = PHANTOM: light plate over a dark glove. Thin finger scales, a smooth knuckle ridge and back plate with glowing inlays, a slim cuff.</div><div class="path">app/assets_open/gauntlet_2.mdl  |  make_props.py: gauntlet(2)</div><div class="btns"><button class="copy" type="button" data-copy="P12 Phantom gauntlet">Copy ID</button><a class="copy dl" href="dl/P12_gauntlet_2.glb" download>Download .glb</a></div></div></article></div></section>
-<section id="avatar"><h2>Avatars <small>V01 to V77 &middot; models</small></h2><p class="sub">Waist-up humans (no legs, like the original) built by tools/blender/make_avatar.py. In the game the arms follow your real hands, and a rim light in your team colour outlines every player. Open the builder from the menu: CUSTOMIZE AVATAR (practice only). Your look is saved in avatar.cfg and sent to the other player.</p><h3>Base bodies <small>V01&ndash;V04</small></h3><p class="sub">MPFB2 (MakeHuman for Blender, CC0) bodies with one continuous skin bent by the game rig; the thighs fade out above the knee, the hands are under the gauntlets.</p><div class="grid avgrid"><article class="card av" data-search="v01 masculine body mpfb2 masculine base body: athletic, bald (hair is a separate part). av_bhead_m, av_top_6_m, av_bottom_1_m"><div class="img"><img src="img/V01.jpg" alt="Masculine body" loading="lazy"></div><div class="meta"><div class="id">V01</div><div class="name">Masculine body</div><div class="desc">MPFB2 masculine base body: athletic, bald (hair is a separate part).</div><div class="path">av_bhead_m, av_top_6_m, av_bottom_1_m</div><div class="btns"><button class="copy" type="button" data-copy="V01 Masculine body">Copy ID</button><a class="copy dl" href="dl/V01.zip" download>Download 3 .glb</a></div></div></article><article class="card av" data-search="v02 masculine body (back) mpfb2 masculine base body: athletic, bald (hair is a separate part). av_bhead_m, av_top_6_m, av_bottom_1_m"><div class="img"><img src="img/V02.jpg" alt="Masculine body (back)" loading="lazy"></div><div class="meta"><div class="id">V02</div><div class="name">Masculine body (back)</div><div class="desc">MPFB2 masculine base body: athletic, bald (hair is a separate part).</div><div class="path">av_bhead_m, av_top_6_m, av_bottom_1_m</div><div class="btns"><button class="copy" type="button" data-copy="V02 Masculine body (back)">Copy ID</button><a class="copy dl" href="dl/V02.zip" download>Download 3 .glb</a></div></div></article><article class="card av" data-search="v03 feminine body mpfb2 feminine base body: athletic, bald (hair is a separate part). av_bhead_f, av_top_6_f, av_bottom_1_f"><div class="img"><img src="img/V03.jpg" alt="Feminine body" loading="lazy"></div><div class="meta"><div class="id">V03</div><div class="name">Feminine body</div><div class="desc">MPFB2 feminine base body: athletic, bald (hair is a separate part).</div><div class="path">av_bhead_f, av_top_6_f, av_bottom_1_f</div><div class="btns"><button class="copy" type="button" data-copy="V03 Feminine body">Copy ID</button><a class="copy dl" href="dl/V03.zip" download>Download 3 .glb</a></div></div></article><article class="card av" data-search="v04 feminine body (back) mpfb2 feminine base body: athletic, bald (hair is a separate part). av_bhead_f, av_top_6_f, av_bottom_1_f"><div class="img"><img src="img/V04.jpg" alt="Feminine body (back)" loading="lazy"></div><div class="meta"><div class="id">V04</div><div class="name">Feminine body (back)</div><div class="desc">MPFB2 feminine base body: athletic, bald (hair is a separate part).</div><div class="path">av_bhead_f, av_top_6_f, av_bottom_1_f</div><div class="btns"><button class="copy" type="button" data-copy="V04 Feminine body (back)">Copy ID</button><a class="copy dl" href="dl/V04.zip" download>Download 3 .glb</a></div></div></article></div><h3>Suits <small>V05&ndash;V15</small></h3><p class="sub">Each suit is cut from the body surface for both body types; trim, panels and glowing lines are painted into design textures. Colours come from the builder.</p><div class="grid avgrid"><article class="card av" data-search="v05 grid runner long-sleeve bodysuit with glowing circuit piping, a high collar and cuff rings (tron). av_top_0_m, av_top_0_f"><div class="img"><img src="img/V05.jpg" alt="Grid Runner" loading="lazy"></div><div class="meta"><div class="id">V05</div><div class="name">Grid Runner</div><div class="desc">Long-sleeve bodysuit with glowing circuit piping, a high collar and cuff rings (Tron).</div><div class="path">av_top_0_m, av_top_0_f</div><div class="btns"><button class="copy" type="button" data-copy="V05 Grid Runner">Copy ID</button><a class="copy dl" href="dl/V05.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v06 arena jersey loose crew-neck sports tee: short sleeves with trim bands, trim collar and side stripes. av_top_1_m, av_top_1_f"><div class="img"><img src="img/V06.jpg" alt="Arena Jersey" loading="lazy"></div><div class="meta"><div class="id">V06</div><div class="name">Arena Jersey</div><div class="desc">Loose crew-neck sports tee: short sleeves with trim bands, trim collar and side stripes.</div><div class="path">av_top_1_m, av_top_1_f</div><div class="btns"><button class="copy" type="button" data-copy="V06 Arena Jersey">Copy ID</button><a class="copy dl" href="dl/V06.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v07 vanguard dark undersuit with raised armour: chest and back plates, pauldrons, vambraces and a glowing core. av_top_2_m, av_top_2_f"><div class="img"><img src="img/V07.jpg" alt="Vanguard" loading="lazy"></div><div class="meta"><div class="id">V07</div><div class="name">Vanguard</div><div class="desc">Dark undersuit with raised armour: chest and back plates, pauldrons, vambraces and a glowing core.</div><div class="path">av_top_2_m, av_top_2_f</div><div class="btns"><button class="copy" type="button" data-copy="V07 Vanguard">Copy ID</button><a class="copy dl" href="dl/V07.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v08 street jacket padded long-sleeve jacket with a high collar, zipper line, trim cuffs and waistband. av_top_3_m, av_top_3_f"><div class="img"><img src="img/V08.jpg" alt="Street Jacket" loading="lazy"></div><div class="meta"><div class="id">V08</div><div class="name">Street Jacket</div><div class="desc">Padded long-sleeve jacket with a high collar, zipper line, trim cuffs and waistband.</div><div class="path">av_top_3_m, av_top_3_f</div><div class="btns"><button class="copy" type="button" data-copy="V08 Street Jacket">Copy ID</button><a class="copy dl" href="dl/V08.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v09 hoodie thick hoodie with a kangaroo pocket, trim cuffs and waistband. av_top_4_m, av_top_4_f"><div class="img"><img src="img/V09.jpg" alt="Hoodie" loading="lazy"></div><div class="meta"><div class="id">V09</div><div class="name">Hoodie</div><div class="desc">Thick hoodie with a kangaroo pocket, trim cuffs and waistband.</div><div class="path">av_top_4_m, av_top_4_f</div><div class="btns"><button class="copy" type="button" data-copy="V09 Hoodie">Copy ID</button><a class="copy dl" href="dl/V09.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v10 echo suit sleek long-sleeve racer suit: high collar, glowing v lines and an identity disc on the back. av_top_5_m, av_top_5_f"><div class="img"><img src="img/V10.jpg" alt="Echo Suit" loading="lazy"></div><div class="meta"><div class="id">V10</div><div class="name">Echo Suit</div><div class="desc">Sleek long-sleeve racer suit: high collar, glowing V lines and an identity disc on the back.</div><div class="path">av_top_5_m, av_top_5_f</div><div class="btns"><button class="copy" type="button" data-copy="V10 Echo Suit">Copy ID</button><a class="copy dl" href="dl/V10.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v11 tank top tank top with a round neckline and wide straps, silver-plated forearm bracers (reference sheet 1). av_top_6_m, av_top_6_f"><div class="img"><img src="img/V11.jpg" alt="Tank Top" loading="lazy"></div><div class="meta"><div class="id">V11</div><div class="name">Tank Top</div><div class="desc">Tank top with a round neckline and wide straps, silver-plated forearm bracers (reference sheet 1).</div><div class="path">av_top_6_m, av_top_6_f</div><div class="btns"><button class="copy" type="button" data-copy="V11 Tank Top">Copy ID</button><a class="copy dl" href="dl/V11.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v12 pilot flight suit with harness straps, a belt and a chest light. av_top_7_m, av_top_7_f"><div class="img"><img src="img/V12.jpg" alt="Pilot" loading="lazy"></div><div class="meta"><div class="id">V12</div><div class="name">Pilot</div><div class="desc">Flight suit with harness straps, a belt and a chest light.</div><div class="path">av_top_7_m, av_top_7_f</div><div class="btns"><button class="copy" type="button" data-copy="V12 Pilot">Copy ID</button><a class="copy dl" href="dl/V12.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v13 circuit vest sleeveless compression vest: mock collar, glowing chest y, side and back lines, dark circuit bracers. av_top_8_m, av_top_8_f"><div class="img"><img src="img/V13.jpg" alt="Circuit Vest" loading="lazy"></div><div class="meta"><div class="id">V13</div><div class="name">Circuit Vest</div><div class="desc">Sleeveless compression vest: mock collar, glowing chest Y, side and back lines, dark circuit bracers.</div><div class="path">av_top_8_m, av_top_8_f</div><div class="btns"><button class="copy" type="button" data-copy="V13 Circuit Vest">Copy ID</button><a class="copy dl" href="dl/V13.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v14 training tee fitted training tee with raglan and side panels in the trim colour, grey-plated bracers (reference sheet 2). av_top_9_m, av_top_9_f"><div class="img"><img src="img/V14.jpg" alt="Training Tee" loading="lazy"></div><div class="meta"><div class="id">V14</div><div class="name">Training Tee</div><div class="desc">Fitted training tee with raglan and side panels in the trim colour, grey-plated bracers (reference sheet 2).</div><div class="path">av_top_9_m, av_top_9_f</div><div class="btns"><button class="copy" type="button" data-copy="V14 Training Tee">Copy ID</button><a class="copy dl" href="dl/V14.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v15 echo suit (back) the identity disc on the back of the echo suit. av_top_5_f"><div class="img"><img src="img/V15.jpg" alt="Echo Suit (back)" loading="lazy"></div><div class="meta"><div class="id">V15</div><div class="name">Echo Suit (back)</div><div class="desc">The identity disc on the back of the Echo Suit.</div><div class="path">av_top_5_f</div><div class="btns"><button class="copy" type="button" data-copy="V15 Echo Suit (back)">Copy ID</button><a class="copy dl" href="dl/V15_av_top_5_f.glb" download>Download .glb</a></div></div></article></div><h3>Lower body <small>V16&ndash;V19</small></h3><p class="sub">Shorts cut from the hips and thighs, or a fade at the waist.</p><div class="grid avgrid"><article class="card av" data-search="v16 no lower body the body ends at the waist in an energy fade. av_wfade_m, av_wfade_f"><div class="img"><img src="img/V16.jpg" alt="No lower body" loading="lazy"></div><div class="meta"><div class="id">V16</div><div class="name">No lower body</div><div class="desc">The body ends at the waist in an energy fade.</div><div class="path">av_wfade_m, av_wfade_f</div><div class="btns"><button class="copy" type="button" data-copy="V16 No lower body">Copy ID</button><a class="copy dl" href="dl/V16.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v17 athletic shorts athletic shorts with a split hem and white piping (reference sheet 1); thighs fade above the knee. av_bottom_1_m, av_bottom_1_f"><div class="img"><img src="img/V17.jpg" alt="Athletic Shorts" loading="lazy"></div><div class="meta"><div class="id">V17</div><div class="name">Athletic Shorts</div><div class="desc">Athletic shorts with a split hem and white piping (reference sheet 1); thighs fade above the knee.</div><div class="path">av_bottom_1_m, av_bottom_1_f</div><div class="btns"><button class="copy" type="button" data-copy="V17 Athletic Shorts">Copy ID</button><a class="copy dl" href="dl/V17.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v18 circuit shorts long circuit shorts with glowing lines down the legs and on the waistband. av_bottom_2_m, av_bottom_2_f"><div class="img"><img src="img/V18.jpg" alt="Circuit Shorts" loading="lazy"></div><div class="meta"><div class="id">V18</div><div class="name">Circuit Shorts</div><div class="desc">Long circuit shorts with glowing lines down the legs and on the waistband.</div><div class="path">av_bottom_2_m, av_bottom_2_f</div><div class="btns"><button class="copy" type="button" data-copy="V18 Circuit Shorts">Copy ID</button><a class="copy dl" href="dl/V18.zip" download>Download 2 .glb</a></div></div></article><article class="card av" data-search="v19 bike shorts bike shorts with side panels in the trim colour (reference sheet 2). av_bottom_3_m, av_bottom_3_f"><div class="img"><img src="img/V19.jpg" alt="Bike Shorts" loading="lazy"></div><div class="meta"><div class="id">V19</div><div class="name">Bike Shorts</div><div class="desc">Bike shorts with side panels in the trim colour (reference sheet 2).</div><div class="path">av_bottom_3_m, av_bottom_3_f</div><div class="btns"><button class="copy" type="button" data-copy="V19 Bike Shorts">Copy ID</button><a class="copy dl" href="dl/V19.zip" download>Download 2 .glb</a></div></div></article></div><h3>Gauntlets <small>V20&ndash;V23</small></h3><p class="sub">The hands (GAUNTLET row): medieval-style plate gauntlets in the avatar colours; P10-P12 in the props show them alone.</p><div class="grid avgrid"><article class="card avc" data-search="v20 striker gauntlet gauntlet = striker. gothic plate: pointed finger scales, knuckle gadlings, a fluted back plate, a pointed bell cuff. gauntlet_0"><div class="img"><img src="img/V20.jpg" alt="Striker gauntlet" loading="lazy"></div><div class="meta"><div class="id">V20</div><div class="name">Striker gauntlet</div><div class="desc">GAUNTLET = STRIKER. Gothic plate: pointed finger scales, knuckle gadlings, a fluted back plate, a pointed bell cuff.</div><div class="path">gauntlet_0</div><div class="btns"><button class="copy" type="button" data-copy="V20 Striker gauntlet">Copy ID</button><a class="copy dl" href="dl/V20_gauntlet_0.glb" download>Download .glb</a></div></div></article><article class="card avc" data-search="v21 titan gauntlet gauntlet = titan. heavy plate: thick scales, a spiked knuckle ridge, a riveted back plate, a wide bell cuff. gauntlet_1"><div class="img"><img src="img/V21.jpg" alt="Titan gauntlet" loading="lazy"></div><div class="meta"><div class="id">V21</div><div class="name">Titan gauntlet</div><div class="desc">GAUNTLET = TITAN. Heavy plate: thick scales, a spiked knuckle ridge, a riveted back plate, a wide bell cuff.</div><div class="path">gauntlet_1</div><div class="btns"><button class="copy" type="button" data-copy="V21 Titan gauntlet">Copy ID</button><a class="copy dl" href="dl/V21_gauntlet_1.glb" download>Download .glb</a></div></div></article><article class="card avc" data-search="v22 phantom gauntlet gauntlet = phantom. light plate over a dark glove with glowing inlays and a slim cuff. gauntlet_2"><div class="img"><img src="img/V22.jpg" alt="Phantom gauntlet" loading="lazy"></div><div class="meta"><div class="id">V22</div><div class="name">Phantom gauntlet</div><div class="desc">GAUNTLET = PHANTOM. Light plate over a dark glove with glowing inlays and a slim cuff.</div><div class="path">gauntlet_2</div><div class="btns"><button class="copy" type="button" data-copy="V22 Phantom gauntlet">Copy ID</button><a class="copy dl" href="dl/V22_gauntlet_2.glb" download>Download .glb</a></div></div></article><article class="card avc" data-search="v23 controller gauntlet gauntlet = controller. the classic look: the vr controller in an armoured glove. lancer"><div class="img"><img src="img/V23.jpg" alt="Controller gauntlet" loading="lazy"></div><div class="meta"><div class="id">V23</div><div class="name">Controller gauntlet</div><div class="desc">GAUNTLET = CONTROLLER. The classic look: the VR controller in an armoured glove.</div><div class="path">lancer</div><div class="btns"><button class="copy" type="button" data-copy="V23 Controller gauntlet">Copy ID</button><a class="copy dl" href="dl/V23_lancer.glb" download>Download .glb</a></div></div></article></div><h3>Builds <small>V24&ndash;V27</small></h3><p class="sub">The same suit at each build (scaling of the skinned body).</p><div class="grid avgrid"><article class="card av" data-search="v24 slim build slimmer shoulders and arms. av_top_0_m (scaled)"><div class="img"><img src="img/V24.jpg" alt="Slim build" loading="lazy"></div><div class="meta"><div class="id">V24</div><div class="name">Slim build</div><div class="desc">Slimmer shoulders and arms.</div><div class="path">av_top_0_m (scaled)</div><div class="btns"><button class="copy" type="button" data-copy="V24 Slim build">Copy ID</button><a class="copy dl" href="dl/V24_av_top_0_m.glb" download>Download .glb</a></div></div></article><article class="card av" data-search="v25 standard build the base proportions. av_top_0_m (scaled)"><div class="img"><img src="img/V25.jpg" alt="Standard build" loading="lazy"></div><div class="meta"><div class="id">V25</div><div class="name">Standard build</div><div class="desc">The base proportions.</div><div class="path">av_top_0_m (scaled)</div><div class="btns"><button class="copy" type="button" data-copy="V25 Standard build">Copy ID</button><a class="copy dl" href="dl/V25_av_top_0_m.glb" download>Download .glb</a></div></div></article><article class="card av" data-search="v26 broad build broader shoulders and chest, thicker arms. av_top_0_m (scaled)"><div class="img"><img src="img/V26.jpg" alt="Broad build" loading="lazy"></div><div class="meta"><div class="id">V26</div><div class="name">Broad build</div><div class="desc">Broader shoulders and chest, thicker arms.</div><div class="path">av_top_0_m (scaled)</div><div class="btns"><button class="copy" type="button" data-copy="V26 Broad build">Copy ID</button><a class="copy dl" href="dl/V26_av_top_0_m.glb" download>Download .glb</a></div></div></article><article class="card av" data-search="v27 athletic build slightly broader, stronger arms. av_top_0_m (scaled)"><div class="img"><img src="img/V27.jpg" alt="Athletic build" loading="lazy"></div><div class="meta"><div class="id">V27</div><div class="name">Athletic build</div><div class="desc">Slightly broader, stronger arms.</div><div class="path">av_top_0_m (scaled)</div><div class="btns"><button class="copy" type="button" data-copy="V27 Athletic build">Copy ID</button><a class="copy dl" href="dl/V27_av_top_0_m.glb" download>Download .glb</a></div></div></article></div><h3>Patterns <small>V28&ndash;V34</small></h3><p class="sub">Masks on the main colour in the body UV layout: trim-colour regions and glowing lines.</p><div class="grid avgrid"><article class="card av" data-search="v28 circuit pattern circuit traces with pads, in the glow colour (tron). tex/open_pat_circuit.tex"><div class="img"><img src="img/V28.jpg" alt="Circuit pattern" loading="lazy"></div><div class="meta"><div class="id">V28</div><div class="name">Circuit pattern</div><div class="desc">Circuit traces with pads, in the glow colour (Tron).</div><div class="path">tex/open_pat_circuit.tex</div><div class="btns"><button class="copy" type="button" data-copy="V28 Circuit pattern">Copy ID</button><a class="copy dl" href="dl/V28_pat_circuit.png" download>Download .png</a></div></div></article><article class="card av" data-search="v29 stripes pattern twin racing stripes front and back, pinstripes on the sides. tex/open_pat_stripes.tex"><div class="img"><img src="img/V29.jpg" alt="Stripes pattern" loading="lazy"></div><div class="meta"><div class="id">V29</div><div class="name">Stripes pattern</div><div class="desc">Twin racing stripes front and back, pinstripes on the sides.</div><div class="path">tex/open_pat_stripes.tex</div><div class="btns"><button class="copy" type="button" data-copy="V29 Stripes pattern">Copy ID</button><a class="copy dl" href="dl/V29_pat_stripes.png" download>Download .png</a></div></div></article><article class="card av" data-search="v30 chevron pattern chevrons across the chest. tex/open_pat_chevron.tex"><div class="img"><img src="img/V30.jpg" alt="Chevron pattern" loading="lazy"></div><div class="meta"><div class="id">V30</div><div class="name">Chevron pattern</div><div class="desc">Chevrons across the chest.</div><div class="path">tex/open_pat_chevron.tex</div><div class="btns"><button class="copy" type="button" data-copy="V30 Chevron pattern">Copy ID</button><a class="copy dl" href="dl/V30_pat_chevron.png" download>Download .png</a></div></div></article><article class="card av" data-search="v31 hex pattern honeycomb lines with trim-colour cells. tex/open_pat_hex.tex"><div class="img"><img src="img/V31.jpg" alt="Hex pattern" loading="lazy"></div><div class="meta"><div class="id">V31</div><div class="name">Hex pattern</div><div class="desc">Honeycomb lines with trim-colour cells.</div><div class="path">tex/open_pat_hex.tex</div><div class="btns"><button class="copy" type="button" data-copy="V31 Hex pattern">Copy ID</button><a class="copy dl" href="dl/V31_pat_hex.png" download>Download .png</a></div></div></article><article class="card av" data-search="v32 split pattern left half in the trim colour. tex/open_pat_split.tex"><div class="img"><img src="img/V32.jpg" alt="Split pattern" loading="lazy"></div><div class="meta"><div class="id">V32</div><div class="name">Split pattern</div><div class="desc">Left half in the trim colour.</div><div class="path">tex/open_pat_split.tex</div><div class="btns"><button class="copy" type="button" data-copy="V32 Split pattern">Copy ID</button><a class="copy dl" href="dl/V32_pat_split.png" download>Download .png</a></div></div></article><article class="card av" data-search="v33 pixel pattern digital camo blocks in the trim colour. tex/open_pat_pixel.tex"><div class="img"><img src="img/V33.jpg" alt="Pixel pattern" loading="lazy"></div><div class="meta"><div class="id">V33</div><div class="name">Pixel pattern</div><div class="desc">Digital camo blocks in the trim colour.</div><div class="path">tex/open_pat_pixel.tex</div><div class="btns"><button class="copy" type="button" data-copy="V33 Pixel pattern">Copy ID</button><a class="copy dl" href="dl/V33_pat_pixel.png" download>Download .png</a></div></div></article><article class="card av" data-search="v34 bands pattern horizontal bands in the trim colour. tex/open_pat_bands.tex"><div class="img"><img src="img/V34.jpg" alt="Bands pattern" loading="lazy"></div><div class="meta"><div class="id">V34</div><div class="name">Bands pattern</div><div class="desc">Horizontal bands in the trim colour.</div><div class="path">tex/open_pat_bands.tex</div><div class="btns"><button class="copy" type="button" data-copy="V34 Bands pattern">Copy ID</button><a class="copy dl" href="dl/V34_pat_bands.png" download>Download .png</a></div></div></article></div><h3>Hair <small>V35&ndash;V43</small></h3><p class="sub">Hair takes the HAIR COLOR (NEON makes it glow in the glow colour); fitted to each head. Helmets and the hood hide it.</p><div class="grid avgrid"><article class="card avc" data-search="v35 buzz cut close-cropped. av_hair_1_m, av_hair_1_f"><div class="img"><img src="img/V35.jpg" alt="Buzz Cut" loading="lazy"></div><div class="meta"><div class="id">V35</div><div class="name">Buzz Cut</div><div class="desc">Close-cropped.</div><div class="path">av_hair_1_m, av_hair_1_f</div><div class="btns"><button class="copy" type="button" data-copy="V35 Buzz Cut">Copy ID</button><a class="copy dl" href="dl/V35.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v36 swept volume on top, swept back in layers. av_hair_2_m, av_hair_2_f"><div class="img"><img src="img/V36.jpg" alt="Swept" loading="lazy"></div><div class="meta"><div class="id">V36</div><div class="name">Swept</div><div class="desc">Volume on top, swept back in layers.</div><div class="path">av_hair_2_m, av_hair_2_f</div><div class="btns"><button class="copy" type="button" data-copy="V36 Swept">Copy ID</button><a class="copy dl" href="dl/V36.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v37 ponytail combed back to a high tie, a full wavy tail and face-framing strands. av_hair_3_m, av_hair_3_f"><div class="img"><img src="img/V37.jpg" alt="Ponytail" loading="lazy"></div><div class="meta"><div class="id">V37</div><div class="name">Ponytail</div><div class="desc">Combed back to a high tie, a full wavy tail and face-framing strands.</div><div class="path">av_hair_3_m, av_hair_3_f</div><div class="btns"><button class="copy" type="button" data-copy="V37 Ponytail">Copy ID</button><a class="copy dl" href="dl/V37.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v38 mohawk shaved sides with a crest from brow to nape. av_hair_4_m, av_hair_4_f"><div class="img"><img src="img/V38.jpg" alt="Mohawk" loading="lazy"></div><div class="meta"><div class="id">V38</div><div class="name">Mohawk</div><div class="desc">Shaved sides with a crest from brow to nape.</div><div class="path">av_hair_4_m, av_hair_4_f</div><div class="btns"><button class="copy" type="button" data-copy="V38 Mohawk">Copy ID</button><a class="copy dl" href="dl/V38.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v39 spikes short spikes swept back. av_hair_5_m, av_hair_5_f"><div class="img"><img src="img/V39.jpg" alt="Spikes" loading="lazy"></div><div class="meta"><div class="id">V39</div><div class="name">Spikes</div><div class="desc">Short spikes swept back.</div><div class="path">av_hair_5_m, av_hair_5_f</div><div class="btns"><button class="copy" type="button" data-copy="V39 Spikes">Copy ID</button><a class="copy dl" href="dl/V39.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v40 bob chin-length bob with a fringe. av_hair_6_m, av_hair_6_f"><div class="img"><img src="img/V40.jpg" alt="Bob" loading="lazy"></div><div class="meta"><div class="id">V40</div><div class="name">Bob</div><div class="desc">Chin-length bob with a fringe.</div><div class="path">av_hair_6_m, av_hair_6_f</div><div class="btns"><button class="copy" type="button" data-copy="V40 Bob">Copy ID</button><a class="copy dl" href="dl/V40.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v41 top knot shaved with a bun on top. av_hair_7_m, av_hair_7_f"><div class="img"><img src="img/V41.jpg" alt="Top Knot" loading="lazy"></div><div class="meta"><div class="id">V41</div><div class="name">Top Knot</div><div class="desc">Shaved with a bun on top.</div><div class="path">av_hair_7_m, av_hair_7_f</div><div class="btns"><button class="copy" type="button" data-copy="V41 Top Knot">Copy ID</button><a class="copy dl" href="dl/V41.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v42 tousled short and layered, swept up and to the side, ends flicking out. av_hair_8_m, av_hair_8_f"><div class="img"><img src="img/V42.jpg" alt="Tousled" loading="lazy"></div><div class="meta"><div class="id">V42</div><div class="name">Tousled</div><div class="desc">Short and layered, swept up and to the side, ends flicking out.</div><div class="path">av_hair_8_m, av_hair_8_f</div><div class="btns"><button class="copy" type="button" data-copy="V42 Tousled">Copy ID</button><a class="copy dl" href="dl/V42.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v43 ponytail (back) the ponytail from behind. av_hair_3_f"><div class="img"><img src="img/V43.jpg" alt="Ponytail (back)" loading="lazy"></div><div class="meta"><div class="id">V43</div><div class="name">Ponytail (back)</div><div class="desc">The ponytail from behind.</div><div class="path">av_hair_3_f</div><div class="btns"><button class="copy" type="button" data-copy="V43 Ponytail (back)">Copy ID</button><a class="copy dl" href="dl/V43_av_hair_3_f.glb" download>Download .glb</a></div></div></article></div><h3>Headgear <small>V44&ndash;V49</small></h3><p class="sub">Fitted to each head.</p><div class="grid avgrid"><article class="card avc" data-search="v44 grid helmet full helmet with a glowing face rim, midline and side lines (tron). av_gear_1_m, av_gear_1_f"><div class="img"><img src="img/V44.jpg" alt="Grid Helmet" loading="lazy"></div><div class="meta"><div class="id">V44</div><div class="name">Grid Helmet</div><div class="desc">Full helmet with a glowing face rim, midline and side lines (Tron).</div><div class="path">av_gear_1_m, av_gear_1_f</div><div class="btns"><button class="copy" type="button" data-copy="V44 Grid Helmet">Copy ID</button><a class="copy dl" href="dl/V44.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v45 racer helmet rounded racing helmet with twin stripes and a rear spoiler. av_gear_2_m, av_gear_2_f"><div class="img"><img src="img/V45.jpg" alt="Racer Helmet" loading="lazy"></div><div class="meta"><div class="id">V45</div><div class="name">Racer Helmet</div><div class="desc">Rounded racing helmet with twin stripes and a rear spoiler.</div><div class="path">av_gear_2_m, av_gear_2_f</div><div class="btns"><button class="copy" type="button" data-copy="V45 Racer Helmet">Copy ID</button><a class="copy dl" href="dl/V45.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v46 hood soft fabric hood with a trim edge. av_gear_3_m, av_gear_3_f"><div class="img"><img src="img/V46.jpg" alt="Hood" loading="lazy"></div><div class="meta"><div class="id">V46</div><div class="name">Hood</div><div class="desc">Soft fabric hood with a trim edge.</div><div class="path">av_gear_3_m, av_gear_3_f</div><div class="btns"><button class="copy" type="button" data-copy="V46 Hood">Copy ID</button><a class="copy dl" href="dl/V46.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v47 crest helmet helmet with a crest fin and cheek guards. av_gear_4_m, av_gear_4_f"><div class="img"><img src="img/V47.jpg" alt="Crest Helmet" loading="lazy"></div><div class="meta"><div class="id">V47</div><div class="name">Crest Helmet</div><div class="desc">Helmet with a crest fin and cheek guards.</div><div class="path">av_gear_4_m, av_gear_4_f</div><div class="btns"><button class="copy" type="button" data-copy="V47 Crest Helmet">Copy ID</button><a class="copy dl" href="dl/V47.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v48 headphones over-ear headphones with glowing rings (hair stays visible). av_gear_5_m, av_gear_5_f"><div class="img"><img src="img/V48.jpg" alt="Headphones" loading="lazy"></div><div class="meta"><div class="id">V48</div><div class="name">Headphones</div><div class="desc">Over-ear headphones with glowing rings (hair stays visible).</div><div class="path">av_gear_5_m, av_gear_5_f</div><div class="btns"><button class="copy" type="button" data-copy="V48 Headphones">Copy ID</button><a class="copy dl" href="dl/V48.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v49 cap cap with a curved brim. av_gear_6_m, av_gear_6_f"><div class="img"><img src="img/V49.jpg" alt="Cap" loading="lazy"></div><div class="meta"><div class="id">V49</div><div class="name">Cap</div><div class="desc">Cap with a curved brim.</div><div class="path">av_gear_6_m, av_gear_6_f</div><div class="btns"><button class="copy" type="button" data-copy="V49 Cap">Copy ID</button><a class="copy dl" href="dl/V49.zip" download>Download 2 .glb</a></div></div></article></div><h3>Face shields <small>V50&ndash;V56</small></h3><p class="sub">Glass parts take the SHIELD TINT and reflect the arena.</p><div class="grid avgrid"><article class="card avc" data-search="v50 band visor wraparound glass band over the eyes, glowing edges. av_visor_1_m, av_visor_1_f"><div class="img"><img src="img/V50.jpg" alt="Band Visor" loading="lazy"></div><div class="meta"><div class="id">V50</div><div class="name">Band Visor</div><div class="desc">Wraparound glass band over the eyes, glowing edges.</div><div class="path">av_visor_1_m, av_visor_1_f</div><div class="btns"><button class="copy" type="button" data-copy="V50 Band Visor">Copy ID</button><a class="copy dl" href="dl/V50.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v51 full shield smooth glass dome over the whole face. av_visor_2_m, av_visor_2_f"><div class="img"><img src="img/V51.jpg" alt="Full Shield" loading="lazy"></div><div class="meta"><div class="id">V51</div><div class="name">Full Shield</div><div class="desc">Smooth glass dome over the whole face.</div><div class="path">av_visor_2_m, av_visor_2_f</div><div class="btns"><button class="copy" type="button" data-copy="V51 Full Shield">Copy ID</button><a class="copy dl" href="dl/V51.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v52 shades sunglasses. av_visor_3_m, av_visor_3_f"><div class="img"><img src="img/V52.jpg" alt="Shades" loading="lazy"></div><div class="meta"><div class="id">V52</div><div class="name">Shades</div><div class="desc">Sunglasses.</div><div class="path">av_visor_3_m, av_visor_3_f</div><div class="btns"><button class="copy" type="button" data-copy="V52 Shades">Copy ID</button><a class="copy dl" href="dl/V52.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v53 goggles round goggles on a strap. av_visor_4_m, av_visor_4_f"><div class="img"><img src="img/V53.jpg" alt="Goggles" loading="lazy"></div><div class="meta"><div class="id">V53</div><div class="name">Goggles</div><div class="desc">Round goggles on a strap.</div><div class="path">av_visor_4_m, av_visor_4_f</div><div class="btns"><button class="copy" type="button" data-copy="V53 Goggles">Copy ID</button><a class="copy dl" href="dl/V53.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v54 headset a vr headset on a strap (a nod to the real thing). av_visor_5_m, av_visor_5_f"><div class="img"><img src="img/V54.jpg" alt="Headset" loading="lazy"></div><div class="meta"><div class="id">V54</div><div class="name">Headset</div><div class="desc">A VR headset on a strap (a nod to the real thing).</div><div class="path">av_visor_5_m, av_visor_5_f</div><div class="btns"><button class="copy" type="button" data-copy="V54 Headset">Copy ID</button><a class="copy dl" href="dl/V54.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v55 halo a glowing ring orbiting the head, with a slim eye line. av_visor_6_m, av_visor_6_f"><div class="img"><img src="img/V55.jpg" alt="Halo" loading="lazy"></div><div class="meta"><div class="id">V55</div><div class="name">Halo</div><div class="desc">A glowing ring orbiting the head, with a slim eye line.</div><div class="path">av_visor_6_m, av_visor_6_f</div><div class="btns"><button class="copy" type="button" data-copy="V55 Halo">Copy ID</button><a class="copy dl" href="dl/V55.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v56 slit visor opaque plate with a glowing eye slit. av_visor_7_m, av_visor_7_f"><div class="img"><img src="img/V56.jpg" alt="Slit Visor" loading="lazy"></div><div class="meta"><div class="id">V56</div><div class="name">Slit Visor</div><div class="desc">Opaque plate with a glowing eye slit.</div><div class="path">av_visor_7_m, av_visor_7_f</div><div class="btns"><button class="copy" type="button" data-copy="V56 Slit Visor">Copy ID</button><a class="copy dl" href="dl/V56.zip" download>Download 2 .glb</a></div></div></article></div><h3>Masks <small>V57&ndash;V61</small></h3><div class="grid avgrid"><article class="card avc" data-search="v57 mouth guard plate over the mouth and chin with vents. av_mask_1_m, av_mask_1_f"><div class="img"><img src="img/V57.jpg" alt="Mouth Guard" loading="lazy"></div><div class="meta"><div class="id">V57</div><div class="name">Mouth Guard</div><div class="desc">Plate over the mouth and chin with vents.</div><div class="path">av_mask_1_m, av_mask_1_f</div><div class="btns"><button class="copy" type="button" data-copy="V57 Mouth Guard">Copy ID</button><a class="copy dl" href="dl/V57.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v58 cyber jaw armoured jaw from ear to ear with glowing vents. av_mask_2_m, av_mask_2_f"><div class="img"><img src="img/V58.jpg" alt="Cyber Jaw" loading="lazy"></div><div class="meta"><div class="id">V58</div><div class="name">Cyber Jaw</div><div class="desc">Armoured jaw from ear to ear with glowing vents.</div><div class="path">av_mask_2_m, av_mask_2_f</div><div class="btns"><button class="copy" type="button" data-copy="V58 Cyber Jaw">Copy ID</button><a class="copy dl" href="dl/V58.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v59 breather respirator: snout, side filters and straps. av_mask_3_m, av_mask_3_f"><div class="img"><img src="img/V59.jpg" alt="Breather" loading="lazy"></div><div class="meta"><div class="id">V59</div><div class="name">Breather</div><div class="desc">Respirator: snout, side filters and straps.</div><div class="path">av_mask_3_m, av_mask_3_f</div><div class="btns"><button class="copy" type="button" data-copy="V59 Breather">Copy ID</button><a class="copy dl" href="dl/V59.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v60 bandana cloth over nose and mouth, knotted at the back. av_mask_4_m, av_mask_4_f"><div class="img"><img src="img/V60.jpg" alt="Bandana" loading="lazy"></div><div class="meta"><div class="id">V60</div><div class="name">Bandana</div><div class="desc">Cloth over nose and mouth, knotted at the back.</div><div class="path">av_mask_4_m, av_mask_4_f</div><div class="btns"><button class="copy" type="button" data-copy="V60 Bandana">Copy ID</button><a class="copy dl" href="dl/V60.zip" download>Download 2 .glb</a></div></div></article><article class="card avc" data-search="v61 faceplate smooth full-face plate with glowing eye slits. av_mask_5_m, av_mask_5_f"><div class="img"><img src="img/V61.jpg" alt="Faceplate" loading="lazy"></div><div class="meta"><div class="id">V61</div><div class="name">Faceplate</div><div class="desc">Smooth full-face plate with glowing eye slits.</div><div class="path">av_mask_5_m, av_mask_5_f</div><div class="btns"><button class="copy" type="button" data-copy="V61 Faceplate">Copy ID</button><a class="copy dl" href="dl/V61.zip" download>Download 2 .glb</a></div></div></article></div><h3>Base heads <small>V62&ndash;V63</small></h3><div class="grid avgrid"><article class="card avc" data-search="v62 masculine head mpfb2 head with our eyes, brows and lips; hair, helmets, visors and masks are fitted to it. av_bhead_m"><div class="img"><img src="img/V62.jpg" alt="Masculine head" loading="lazy"></div><div class="meta"><div class="id">V62</div><div class="name">Masculine head</div><div class="desc">MPFB2 head with our eyes, brows and lips; hair, helmets, visors and masks are fitted to it.</div><div class="path">av_bhead_m</div><div class="btns"><button class="copy" type="button" data-copy="V62 Masculine head">Copy ID</button><a class="copy dl" href="dl/V62_av_bhead_m.glb" download>Download .glb</a></div></div></article><article class="card avc" data-search="v63 feminine head mpfb2 head with our eyes, brows and lips; hair, helmets, visors and masks are fitted to it. av_bhead_f"><div class="img"><img src="img/V63.jpg" alt="Feminine head" loading="lazy"></div><div class="meta"><div class="id">V63</div><div class="name">Feminine head</div><div class="desc">MPFB2 head with our eyes, brows and lips; hair, helmets, visors and masks are fitted to it.</div><div class="path">av_bhead_f</div><div class="btns"><button class="copy" type="button" data-copy="V63 Feminine head">Copy ID</button><a class="copy dl" href="dl/V63_av_bhead_f.glb" download>Download .glb</a></div></div></article></div><h3>Presets <small>V64&ndash;V77</small></h3><p class="sub">Ready-made looks in the builder (PRESET row).</p><div class="grid avgrid"><article class="card av" data-search="v64 grid runner (preset) builder preset 1. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V64.jpg" alt="Grid Runner (preset)" loading="lazy"></div><div class="meta"><div class="id">V64</div><div class="name">Grid Runner (preset)</div><div class="desc">Builder preset 1.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V64 Grid Runner (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v65 rookie (preset) builder preset 2. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V65.jpg" alt="Rookie (preset)" loading="lazy"></div><div class="meta"><div class="id">V65</div><div class="name">Rookie (preset)</div><div class="desc">Builder preset 2.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V65 Rookie (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v66 vanguard (preset) builder preset 3. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V66.jpg" alt="Vanguard (preset)" loading="lazy"></div><div class="meta"><div class="id">V66</div><div class="name">Vanguard (preset)</div><div class="desc">Builder preset 3.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V66 Vanguard (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v67 night rider (preset) builder preset 4. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V67.jpg" alt="Night Rider (preset)" loading="lazy"></div><div class="meta"><div class="id">V67</div><div class="name">Night Rider (preset)</div><div class="desc">Builder preset 4.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V67 Night Rider (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v68 echo (preset) builder preset 5. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V68.jpg" alt="Echo (preset)" loading="lazy"></div><div class="meta"><div class="id">V68</div><div class="name">Echo (preset)</div><div class="desc">Builder preset 5.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V68 Echo (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v69 sky pilot (preset) builder preset 6. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V69.jpg" alt="Sky Pilot (preset)" loading="lazy"></div><div class="meta"><div class="id">V69</div><div class="name">Sky Pilot (preset)</div><div class="desc">Builder preset 6.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V69 Sky Pilot (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v70 ghost (preset) builder preset 7. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V70.jpg" alt="Ghost (preset)" loading="lazy"></div><div class="meta"><div class="id">V70</div><div class="name">Ghost (preset)</div><div class="desc">Builder preset 7.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V70 Ghost (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v71 striker (preset) builder preset 8. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V71.jpg" alt="Striker (preset)" loading="lazy"></div><div class="meta"><div class="id">V71</div><div class="name">Striker (preset)</div><div class="desc">Builder preset 8.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V71 Striker (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v72 chrome (preset) builder preset 9. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V72.jpg" alt="Chrome (preset)" loading="lazy"></div><div class="meta"><div class="id">V72</div><div class="name">Chrome (preset)</div><div class="desc">Builder preset 9.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V72 Chrome (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v73 racer (preset) builder preset 10. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V73.jpg" alt="Racer (preset)" loading="lazy"></div><div class="meta"><div class="id">V73</div><div class="name">Racer (preset)</div><div class="desc">Builder preset 10.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V73 Racer (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v74 circuit (preset) builder preset 11. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V74.jpg" alt="Circuit (preset)" loading="lazy"></div><div class="meta"><div class="id">V74</div><div class="name">Circuit (preset)</div><div class="desc">Builder preset 11.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V74 Circuit (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v75 trainer (preset) builder preset 12. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V75.jpg" alt="Trainer (preset)" loading="lazy"></div><div class="meta"><div class="id">V75</div><div class="name">Trainer (preset)</div><div class="desc">Builder preset 12.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V75 Trainer (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v76 tank and shorts (preset) builder preset 13. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V76.jpg" alt="Tank And Shorts (preset)" loading="lazy"></div><div class="meta"><div class="id">V76</div><div class="name">Tank And Shorts (preset)</div><div class="desc">Builder preset 13.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V76 Tank And Shorts (preset)">Copy ID</button></div></div></article><article class="card av" data-search="v77 training kit (preset) builder preset 14. app/src/avatar.cpp kpresets"><div class="img"><img src="img/V77.jpg" alt="Training Kit (preset)" loading="lazy"></div><div class="meta"><div class="id">V77</div><div class="name">Training Kit (preset)</div><div class="desc">Builder preset 14.</div><div class="path">app/src/avatar.cpp kPresets</div><div class="btns"><button class="copy" type="button" data-copy="V77 Training Kit (preset)">Copy ID</button></div></div></article></div><h3>Colour options</h3><p class="sub">TEAM follows your team colour (blue or orange). Swatches are approximate.</p><div class="pal"><div class="pname">MAIN COLOR</div><div class="sws"><span class="sw"><i style="background:#343840"></i>GRAPHITE</span><span class="sw"><i style="background:#a8aeb8"></i>SILVER</span><span class="sw"><i style="background:#e2e6ec"></i>WHITE</span><span class="sw"><i style="background:#161e3e"></i>MIDNIGHT</span><span class="sw"><i style="background:#1e52c4"></i>COBALT</span><span class="sw"><i style="background:#12969c"></i>TEAL</span><span class="sw"><i style="background:#169654"></i>EMERALD</span><span class="sw"><i style="background:#96d228"></i>LIME</span><span class="sw"><i style="background:#d6a834"></i>GOLD</span><span class="sw"><i style="background:#e87018"></i>ORANGE</span><span class="sw"><i style="background:#b0162c"></i>CRIMSON</span><span class="sw"><i style="background:#c41e96"></i>MAGENTA</span><span class="sw"><i style="background:#6834be"></i>VIOLET</span><span class="sw"><i style="background:#101013"></i>BLACK</span><span class="sw"><i style="background:#5c3824"></i>BROWN</span><span class="sw"><i style="background:#5c5f68"></i>GREY</span></div></div><div class="pal"><div class="pname">TRIM COLOR</div><div class="sws"><span class="sw"><i style="background:#343840"></i>GRAPHITE</span><span class="sw"><i style="background:#a8aeb8"></i>SILVER</span><span class="sw"><i style="background:#e2e6ec"></i>WHITE</span><span class="sw"><i style="background:#161e3e"></i>MIDNIGHT</span><span class="sw"><i style="background:#1e52c4"></i>COBALT</span><span class="sw"><i style="background:#12969c"></i>TEAL</span><span class="sw"><i style="background:#169654"></i>EMERALD</span><span class="sw"><i style="background:#96d228"></i>LIME</span><span class="sw"><i style="background:#d6a834"></i>GOLD</span><span class="sw"><i style="background:#e87018"></i>ORANGE</span><span class="sw"><i style="background:#b0162c"></i>CRIMSON</span><span class="sw"><i style="background:#c41e96"></i>MAGENTA</span><span class="sw"><i style="background:#6834be"></i>VIOLET</span><span class="sw"><i style="background:#101013"></i>BLACK</span><span class="sw"><i style="background:#5c3824"></i>BROWN</span><span class="sw"><i style="background:#5c5f68"></i>GREY</span></div></div><div class="pal"><div class="pname">GLOW</div><div class="sws"><span class="sw"><i style="background:#5ad9ff"></i>TEAM</span><span class="sw"><i style="background:#ebf5ff"></i>WHITE</span><span class="sw"><i style="background:#28e6ff"></i>CYAN</span><span class="sw"><i style="background:#326eff"></i>BLUE</span><span class="sw"><i style="background:#9646ff"></i>VIOLET</span><span class="sw"><i style="background:#ff28c8"></i>MAGENTA</span><span class="sw"><i style="background:#ff2832"></i>RED</span><span class="sw"><i style="background:#ff7814"></i>ORANGE</span><span class="sw"><i style="background:#ffc828"></i>GOLD</span><span class="sw"><i style="background:#aaff28"></i>LIME</span><span class="sw"><i style="background:#28ff78"></i>GREEN</span><span class="sw"><i style="background:#ff78be"></i>PINK</span></div></div><div class="pal"><div class="pname">HAIR COLOR</div><div class="sws"><span class="sw"><i style="background:#161414"></i>BLACK</span><span class="sw"><i style="background:#36241a"></i>DARK BROWN</span><span class="sw"><i style="background:#624028"></i>BROWN</span><span class="sw"><i style="background:#80341e"></i>AUBURN</span><span class="sw"><i style="background:#b85e2c"></i>COPPER</span><span class="sw"><i style="background:#d6b46e"></i>BLONDE</span><span class="sw"><i style="background:#e8e0c8"></i>PLATINUM</span><span class="sw"><i style="background:#aab0b8"></i>SILVER</span><span class="sw"><i style="background:#aa1424"></i>CRIMSON</span><span class="sw"><i style="background:#224ac8"></i>COBALT</span><span class="sw"><i style="background:#6e32be"></i>VIOLET</span><span class="sw"><i style="background:#f06eaa"></i>PINK</span><span class="sw"><i style="background:#5ad9ff"></i>NEON</span></div></div><div class="pal"><div class="pname">SHIELD TINT</div><div class="sws"><span class="sw"><i style="background:#1e222a"></i>SMOKE</span><span class="sw"><i style="background:#96a0af"></i>MIRROR</span><span class="sw"><i style="background:#c89632"></i>GOLD</span><span class="sw"><i style="background:#5aaae6"></i>ICE</span><span class="sw"><i style="background:#be2896"></i>MAGENTA</span><span class="sw"><i style="background:#e6821e"></i>AMBER</span><span class="sw"><i style="background:#28aa64"></i>EMERALD</span><span class="sw"><i style="background:#5ad9ff"></i>TEAM</span></div></div><div class="pal"><div class="pname">SKIN</div><div class="sws"><span class="sw"><i style="background:#f6dece"></i>PORCELAIN</span><span class="sw"><i style="background:#eec8b0"></i>FAIR</span><span class="sw"><i style="background:#e2b496"></i>LIGHT</span><span class="sw"><i style="background:#cc9670"></i>TAN</span><span class="sw"><i style="background:#b0865c"></i>OLIVE</span><span class="sw"><i style="background:#8c5e3e"></i>BROWN</span><span class="sw"><i style="background:#64402a"></i>DEEP</span><span class="sw"><i style="background:#3e281c"></i>EBONY</span><span class="sw"><i style="background:#b4bac4"></i>CHROME</span><span class="sw"><i style="background:#96c8f0"></i>ICE</span><span class="sw"><i style="background:#e6ecf5"></i>GHOST</span><span class="sw"><i style="background:#1a1a20"></i>OBSIDIAN</span></div></div></section>
-<section id="textures"><h2>Textures <small>T01 to T14</small></h2>
-<p class="sub">Procedural textures from tools/gen_open_textures.py, plus the two baked lightmaps.</p>
-<div class="grid"><article class="card tex" data-search="t01 soft strip gaussian band used for every halo and glow line. app/assets_open/tex/open_soft_strip.tex  |  tools/gen_open_textures.py: soft_strip()"><div class="img contain"><img src="img/T01.jpg" alt="Soft strip" loading="lazy"></div><div class="meta"><div class="id">T01</div><div class="name">Soft strip</div><div class="desc">Gaussian band used for every halo and glow line.</div><div class="path">app/assets_open/tex/open_soft_strip.tex  |  tools/gen_open_textures.py: soft_strip()</div><div class="btns"><button class="copy" type="button" data-copy="T01 Soft strip">Copy ID</button><a class="copy dl" href="dl/T01_soft_strip.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t02 soft dot round glow sprite. app/assets_open/tex/open_soft_dot.tex  |  tools/gen_open_textures.py: soft_dot()"><div class="img contain"><img src="img/T02.jpg" alt="Soft dot" loading="lazy"></div><div class="meta"><div class="id">T02</div><div class="name">Soft dot</div><div class="desc">Round glow sprite.</div><div class="path">app/assets_open/tex/open_soft_dot.tex  |  tools/gen_open_textures.py: soft_dot()</div><div class="btns"><button class="copy" type="button" data-copy="T02 Soft dot">Copy ID</button><a class="copy dl" href="dl/T02_soft_dot.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t03 holo ring back-wall targets and the strike ring. app/assets_open/tex/open_holo_ring.tex  |  tools/gen_open_textures.py: holo_ring()"><div class="img contain"><img src="img/T03.jpg" alt="Holo ring" loading="lazy"></div><div class="meta"><div class="id">T03</div><div class="name">Holo ring</div><div class="desc">Back-wall targets and the strike ring.</div><div class="path">app/assets_open/tex/open_holo_ring.tex  |  tools/gen_open_textures.py: holo_ring()</div><div class="btns"><button class="copy" type="button" data-copy="T03 Holo ring">Copy ID</button><a class="copy dl" href="dl/T03_holo_ring.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t04 hex grid end-zone energy and the shield. app/assets_open/tex/open_hex.tex  |  tools/gen_open_textures.py: hex()"><div class="img contain"><img src="img/T04.jpg" alt="Hex grid" loading="lazy"></div><div class="meta"><div class="id">T04</div><div class="name">Hex grid</div><div class="desc">End-zone energy and the shield.</div><div class="path">app/assets_open/tex/open_hex.tex  |  tools/gen_open_textures.py: hex()</div><div class="btns"><button class="copy" type="button" data-copy="T04 Hex grid">Copy ID</button><a class="copy dl" href="dl/T04_hex.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t05 light slats the stadium light galleries. app/assets_open/tex/open_slats.tex  |  tools/gen_open_textures.py: slats()"><div class="img contain"><img src="img/T05.jpg" alt="Light slats" loading="lazy"></div><div class="meta"><div class="id">T05</div><div class="name">Light slats</div><div class="desc">The stadium light galleries.</div><div class="path">app/assets_open/tex/open_slats.tex  |  tools/gen_open_textures.py: slats()</div><div class="btns"><button class="copy" type="button" data-copy="T05 Light slats">Copy ID</button><a class="copy dl" href="dl/T05_slats.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t06 night sky starfield and violet nebula on the sky dome. shown 2.5x brighter. app/assets_open/tex/open_sky.tex  |  tools/gen_open_textures.py: sky()"><div class="img contain"><img src="img/T06.jpg" alt="Night sky" loading="lazy"></div><div class="meta"><div class="id">T06</div><div class="name">Night sky</div><div class="desc">Starfield and violet nebula on the sky dome. Shown 2.5x brighter.</div><div class="path">app/assets_open/tex/open_sky.tex  |  tools/gen_open_textures.py: sky()</div><div class="btns"><button class="copy" type="button" data-copy="T06 Night sky">Copy ID</button><a class="copy dl" href="dl/T06_sky.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t07 twinkle strip crowd light brightness over time. app/assets_open/tex/open_twinkle.tex  |  tools/gen_open_textures.py: twinkle()"><div class="img contain"><img src="img/T07.jpg" alt="Twinkle strip" loading="lazy"></div><div class="meta"><div class="id">T07</div><div class="name">Twinkle strip</div><div class="desc">Crowd light brightness over time.</div><div class="path">app/assets_open/tex/open_twinkle.tex  |  tools/gen_open_textures.py: twinkle()</div><div class="btns"><button class="copy" type="button" data-copy="T07 Twinkle strip">Copy ID</button><a class="copy dl" href="dl/T07_twinkle.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t08 plasma veins energy veins on the ball. app/assets_open/tex/open_veins.tex  |  tools/gen_open_textures.py: veins()"><div class="img contain"><img src="img/T08.jpg" alt="Plasma veins" loading="lazy"></div><div class="meta"><div class="id">T08</div><div class="name">Plasma veins</div><div class="desc">Energy veins on the ball.</div><div class="path">app/assets_open/tex/open_veins.tex  |  tools/gen_open_textures.py: veins()</div><div class="btns"><button class="copy" type="button" data-copy="T08 Plasma veins">Copy ID</button><a class="copy dl" href="dl/T08_veins.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t09 project arena emblem centre-court logo, screens. app/assets_open/tex/open_emblem.tex  |  tools/gen_open_textures.py: emblem()"><div class="img contain"><img src="img/T09.jpg" alt="Project Arena emblem" loading="lazy"></div><div class="meta"><div class="id">T09</div><div class="name">Project Arena emblem</div><div class="desc">Centre-court logo, screens.</div><div class="path">app/assets_open/tex/open_emblem.tex  |  tools/gen_open_textures.py: emblem()</div><div class="btns"><button class="copy" type="button" data-copy="T09 Project Arena emblem">Copy ID</button><a class="copy dl" href="dl/T09_emblem.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t10 screen face the hanging screen block. app/assets_open/tex/open_screen.tex  |  tools/gen_open_textures.py: screen()"><div class="img contain"><img src="img/T10.jpg" alt="Screen face" loading="lazy"></div><div class="meta"><div class="id">T10</div><div class="name">Screen face</div><div class="desc">The hanging screen block.</div><div class="path">app/assets_open/tex/open_screen.tex  |  tools/gen_open_textures.py: screen()</div><div class="btns"><button class="copy" type="button" data-copy="T10 Screen face">Copy ID</button><a class="copy dl" href="dl/T10_screen.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t11 stroke font every letter in the scoreboard, menu and hub. app/assets_open/tex/open_font.tex  |  tools/gen_open_textures.py: font()"><div class="img contain"><img src="img/T11.jpg" alt="Stroke font" loading="lazy"></div><div class="meta"><div class="id">T11</div><div class="name">Stroke font</div><div class="desc">Every letter in the scoreboard, menu and hub.</div><div class="path">app/assets_open/tex/open_font.tex  |  tools/gen_open_textures.py: font()</div><div class="btns"><button class="copy" type="button" data-copy="T11 Stroke font">Copy ID</button><a class="copy dl" href="dl/T11_font.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t12 energy pulse pulses racing along the neon tubes. app/assets_open/tex/open_pulse.tex  |  tools/gen_open_textures.py: pulse()"><div class="img contain"><img src="img/T12.jpg" alt="Energy pulse" loading="lazy"></div><div class="meta"><div class="id">T12</div><div class="name">Energy pulse</div><div class="desc">Pulses racing along the neon tubes.</div><div class="path">app/assets_open/tex/open_pulse.tex  |  tools/gen_open_textures.py: pulse()</div><div class="btns"><button class="copy" type="button" data-copy="T12 Energy pulse">Copy ID</button><a class="copy dl" href="dl/T12_pulse.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t13 court lightmap cycles-baked light on the floor (from the neon, galleries and rig). shown 3x brighter. app/assets_open/tex/open_court_lm.tex  |  cycles bake in make_arena.py"><div class="img contain"><img src="img/T13.jpg" alt="Court lightmap" loading="lazy"></div><div class="meta"><div class="id">T13</div><div class="name">Court lightmap</div><div class="desc">Cycles-baked light on the floor (from the neon, galleries and rig). Shown 3x brighter.</div><div class="path">app/assets_open/tex/open_court_lm.tex  |  Cycles bake in make_arena.py</div><div class="btns"><button class="copy" type="button" data-copy="T13 Court lightmap">Copy ID</button><a class="copy dl" href="dl/T13_open_court_lm.png" download>Download .png</a></div></div></article><article class="card tex" data-search="t14 stadium lightmap cycles-baked light on the stands, dais and rig. shown 3x brighter. app/assets_open/tex/open_env_lm.tex  |  cycles bake in make_arena.py"><div class="img contain"><img src="img/T14.jpg" alt="Stadium lightmap" loading="lazy"></div><div class="meta"><div class="id">T14</div><div class="name">Stadium lightmap</div><div class="desc">Cycles-baked light on the stands, dais and rig. Shown 3x brighter.</div><div class="path">app/assets_open/tex/open_env_lm.tex  |  Cycles bake in make_arena.py</div><div class="btns"><button class="copy" type="button" data-copy="T14 Stadium lightmap">Copy ID</button><a class="copy dl" href="dl/T14_open_env_lm.png" download>Download .png</a></div></div></article></div></section>
-<section id="sounds"><h2>Sounds <small>S01 to S27</small></h2>
-<p class="sub">All synthesized by tools/gen_open_audio.py (no samples). Press play to listen; starting one stops the others.</p>
-<div class="sounds"><div class="snd" data-search="s01 ball appears a small soft bloom with a faint glint as a new ball appears on its launcher. spawn"><div class="id">S01</div><div><div class="name">Ball appears</div><div class="len">oa_Spawn.wav &middot; 1.0 s</div></div><div class="desc d">A small soft bloom with a faint glint as a new ball appears on its launcher.</div><audio controls preload="none" src="snd/S01.mp3"></audio></div><div class="snd" data-search="s02 launcher rises a gentle airy swell as the launcher lifts out of the floor. spawnrise"><div class="id">S02</div><div><div class="name">Launcher rises</div><div class="len">oa_SpawnRise.wav &middot; 1.6 s</div></div><div class="desc d">A gentle airy swell as the launcher lifts out of the floor.</div><audio controls preload="none" src="snd/S02.mp3"></audio></div><div class="snd" data-search="s03 grab a muted thump and a brief warm hum when you take the ball. grab"><div class="id">S03</div><div><div class="name">Grab</div><div class="len">oa_Grab.wav &middot; 0.5 s</div></div><div class="desc d">A muted thump and a brief warm hum when you take the ball.</div><audio controls preload="none" src="snd/S03.mp3"></audio></div><div class="snd" data-search="s04 catch a padded catch with a quick soft rise. caught"><div class="id">S04</div><div><div class="name">Catch</div><div class="len">oa_Caught.wav &middot; 0.6 s</div></div><div class="desc d">A padded catch with a quick soft rise.</div><audio controls preload="none" src="snd/S04.mp3"></audio></div><div class="snd" data-search="s05 throw (slow) a soft low whoosh, the gentlest throw. throwslow"><div class="id">S05</div><div><div class="name">Throw (slow)</div><div class="len">oa_ThrowSlow.wav &middot; 0.7 s</div></div><div class="desc d">A soft low whoosh, the gentlest throw.</div><audio controls preload="none" src="snd/S05.mp3"></audio></div><div class="snd" data-search="s06 throw (medium) a clean whoosh, a little brighter. throwmed"><div class="id">S06</div><div><div class="name">Throw (medium)</div><div class="len">oa_ThrowMed.wav &middot; 0.7 s</div></div><div class="desc d">A clean whoosh, a little brighter.</div><audio controls preload="none" src="snd/S06.mp3"></audio></div><div class="snd" data-search="s07 throw (fast) a quicker, brighter whoosh with a faint streak. throwfast"><div class="id">S07</div><div><div class="name">Throw (fast)</div><div class="len">oa_ThrowFast.wav &middot; 0.7 s</div></div><div class="desc d">A quicker, brighter whoosh with a faint streak.</div><audio controls preload="none" src="snd/S07.mp3"></audio></div><div class="snd" data-search="s08 throw (full power) the fullest whoosh with a soft low push. throwfull"><div class="id">S08</div><div><div class="name">Throw (full power)</div><div class="len">oa_ThrowFull.wav &middot; 0.8 s</div></div><div class="desc d">The fullest whoosh with a soft low push.</div><audio controls preload="none" src="snd/S08.mp3"></audio></div><div class="snd" data-search="s09 dropped throw a soft falling tone and faint fizzle when a release is too slow. throwfail"><div class="id">S09</div><div><div class="name">Dropped throw</div><div class="len">oa_ThrowFail.wav &middot; 0.7 s</div></div><div class="desc d">A soft falling tone and faint fizzle when a release is too slow.</div><audio controls preload="none" src="snd/S09.mp3"></audio></div><div class="snd" data-search="s10 wall bounce a short soft tok off the glass (the quietest sound: it plays most). bounce"><div class="id">S10</div><div><div class="name">Wall bounce</div><div class="len">oa_Bounce.wav &middot; 0.5 s</div></div><div class="desc d">A short soft tok off the glass (the quietest sound: it plays most).</div><audio controls preload="none" src="snd/S10.mp3"></audio></div><div class="snd" data-search="s11 shield block a resonant soft thoom with a short glassy shimmer. shieldblock"><div class="id">S11</div><div><div class="name">Shield block</div><div class="len">oa_ShieldBlock.wav &middot; 1.2 s</div></div><div class="desc d">A resonant soft thoom with a short glassy shimmer.</div><audio controls preload="none" src="snd/S11.mp3"></audio></div><div class="snd" data-search="s12 shield break a soft crystalline crack fading into glitter. shieldbreak"><div class="id">S12</div><div><div class="name">Shield break</div><div class="len">oa_ShieldBreak.wav &middot; 1.4 s</div></div><div class="desc d">A soft crystalline crack fading into glitter.</div><audio controls preload="none" src="snd/S12.mp3"></audio></div><div class="snd" data-search="s13 knuckle punch a tight padded metallic knock. knuckleblock"><div class="id">S13</div><div><div class="name">Knuckle punch</div><div class="len">oa_KnuckleBlock.wav &middot; 0.5 s</div></div><div class="desc d">A tight padded metallic knock.</div><audio controls preload="none" src="snd/S13.mp3"></audio></div><div class="snd" data-search="s14 you scored a soft deep thud, a gentle discharge and a small rising two-note chime. hitplayeropponent"><div class="id">S14</div><div><div class="name">You scored</div><div class="len">oa_HitPlayerOpponent.wav &middot; 1.6 s</div></div><div class="desc d">A soft deep thud, a gentle discharge and a small rising two-note chime.</div><audio controls preload="none" src="snd/S14.mp3"></audio></div><div class="snd" data-search="s15 you were hit a muffled heavy thud with a low downward wobble. hitplayerself"><div class="id">S15</div><div><div class="name">You were hit</div><div class="len">oa_HitPlayerSelf.wav &middot; 1.3 s</div></div><div class="desc d">A muffled heavy thud with a low downward wobble.</div><audio controls preload="none" src="snd/S15.mp3"></audio></div><div class="snd" data-search="s16 ball returns an airy whoosh moving away as the ball flies home. returned"><div class="id">S16</div><div><div class="name">Ball returns</div><div class="len">oa_Returned.wav &middot; 1.2 s</div></div><div class="desc d">An airy whoosh moving away as the ball flies home.</div><audio controls preload="none" src="snd/S16.mp3"></audio></div><div class="snd" data-search="s17 foul two rounded falling notes. foul"><div class="id">S17</div><div><div class="name">Foul</div><div class="len">oa_Foul.wav &middot; 1.0 s</div></div><div class="desc d">Two rounded falling notes.</div><audio controls preload="none" src="snd/S17.mp3"></audio></div><div class="snd" data-search="s18 countdown beep one calm low beep for each count. countdown"><div class="id">S18</div><div><div class="name">Countdown beep</div><div class="len">oa_Countdown.wav &middot; 0.6 s</div></div><div class="desc d">One calm low beep for each count.</div><audio controls preload="none" src="snd/S18.mp3"></audio></div><div class="snd" data-search="s19 round start a short bright swell landing on a soft chord. roundstart"><div class="id">S19</div><div><div class="name">Round start</div><div class="len">oa_RoundStart.wav &middot; 1.8 s</div></div><div class="desc d">A short bright swell landing on a soft chord.</div><audio controls preload="none" src="snd/S19.mp3"></audio></div><div class="snd" data-search="s20 round won a small crowd cheering and clapping. roundendwin"><div class="id">S20</div><div><div class="name">Round won</div><div class="len">oa_RoundEndWin.wav &middot; 4.2 s</div></div><div class="desc d">A small crowd cheering and clapping.</div><audio controls preload="none" src="snd/S20.mp3"></audio></div><div class="snd" data-search="s21 round lost a small crowd &quot;ohh&quot; with a few claps. roundendlose"><div class="id">S21</div><div><div class="name">Round lost</div><div class="len">oa_RoundEndLose.wav &middot; 3.8 s</div></div><div class="desc d">A small crowd &quot;ohh&quot; with a few claps.</div><audio controls preload="none" src="snd/S21.mp3"></audio></div><div class="snd" data-search="s22 match won crowd cheers and applause over a soft major chord. matchendwin"><div class="id">S22</div><div><div class="name">Match won</div><div class="len">oa_MatchEndWin.wav &middot; 7.1 s</div></div><div class="desc d">Crowd cheers and applause over a soft major chord.</div><audio controls preload="none" src="snd/S22.mp3"></audio></div><div class="snd" data-search="s23 match lost warm applause over a gentle falling chord. matchendlose"><div class="id">S23</div><div><div class="name">Match lost</div><div class="len">oa_MatchEndLose.wav &middot; 6.4 s</div></div><div class="desc d">Warm applause over a gentle falling chord.</div><audio controls preload="none" src="snd/S23.mp3"></audio></div><div class="snd" data-search="s24 recharge a short soft rise and a gentle ding when your ball recharges. recharge"><div class="id">S24</div><div><div class="name">Recharge</div><div class="len">oa_Recharge.wav &middot; 1.0 s</div></div><div class="desc d">A short soft rise and a gentle ding when your ball recharges.</div><audio controls preload="none" src="snd/S24.mp3"></audio></div><div class="snd" data-search="s25 strike a clear two-note ding-ding over a soft swell. strike"><div class="id">S25</div><div><div class="name">Strike</div><div class="len">oa_Strike.wav &middot; 1.6 s</div></div><div class="desc d">A clear two-note ding-ding over a soft swell.</div><audio controls preload="none" src="snd/S25.mp3"></audio></div><div class="snd" data-search="s26 sudden death a deep pulsing swell with two heartbeat thumps. overtime"><div class="id">S26</div><div><div class="name">Sudden death</div><div class="len">oa_Overtime.wav &middot; 2.5 s</div></div><div class="desc d">A deep pulsing swell with two heartbeat thumps.</div><audio controls preload="none" src="snd/S26.mp3"></audio></div><div class="snd" data-search="s27 arena ambience a quiet 30-second loop: low hum, air and a distant crowd. ambience"><div class="id">S27</div><div><div class="name">Arena ambience</div><div class="len">oa_Ambience.wav &middot; 32.0 s</div></div><div class="desc d">A quiet 30-second loop: low hum, air and a distant crowd.</div><audio controls preload="none" src="snd/S27.mp3"></audio></div><div class="snd" data-search="s28 fist bump a friendly metallic knock and a warm pulse when two players bump fists to start. fistbump"><div class="id">S28</div><div><div class="name">Fist bump</div><div class="len">oa_FistBump.wav &middot; 0.9 s</div></div><div class="desc d">A friendly metallic knock and a warm pulse when two players bump fists to start.</div><audio controls preload="none" src="snd/S28.mp3"></audio></div></div></section>
-<section id="code"><h2>Code effects <small>C01 to C10 &middot; drawn by the game, no files</small></h2>
-<p class="sub">These are generated live by the game engine, so there is no file to swap; describe changes by ID.</p>
-<div class="fx"><article class="card" data-search="c01 hit plasma burst flash, shock ring, swirling plasma puffs, curling wisps and lingering sparks in the scorer&#x27;s colour; a colour wash for the player who was hit."><div class="id">C01</div><div class="name">Hit plasma burst</div><div class="desc">Flash, shock ring, swirling plasma puffs, curling wisps and lingering sparks in the scorer&#x27;s colour; a colour wash for the player who was hit.</div><div class="path">app/src/main.cpp: drawHitFx</div></article><article class="card" data-search="c02 spawn glow and rise glow gathers on the pad, then the ball floats up with twisting tracers."><div class="id">C02</div><div class="name">Spawn glow and rise</div><div class="desc">Glow gathers on the pad, then the ball floats up with twisting tracers.</div><div class="path">main.cpp: drawSpawnFx</div></article><article class="card" data-search="c03 electric arcs jagged arcs crackling over the ball surface, re-rolled 18 times a second."><div class="id">C03</div><div class="name">Electric arcs</div><div class="desc">Jagged arcs crackling over the ball surface, re-rolled 18 times a second.</div><div class="path">main.cpp: drawWorld (ball)</div></article><article class="card" data-search="c04 ball trails soft-edged trail plus two helix streaks that show the spin."><div class="id">C04</div><div class="name">Ball trails</div><div class="desc">Soft-edged trail plus two helix streaks that show the spin.</div><div class="path">main.cpp: trail ribbons</div></article><article class="card" data-search="c05 ball light pool and reflection coloured light on the floor under the ball and its reflection in the floor."><div class="id">C05</div><div class="name">Ball light pool and reflection</div><div class="desc">Coloured light on the floor under the ball and its reflection in the floor.</div><div class="path">main.cpp: drawWorld (floor)</div></article><article class="card" data-search="c06 holographic scoreboard translucent board over centre court with team-coloured scores, clock, strikes and charge."><div class="id">C06</div><div class="name">Holographic scoreboard</div><div class="desc">Translucent board over centre court with team-coloured scores, clock, strikes and charge.</div><div class="path">main.cpp: HUD</div></article><article class="card" data-search="c07 multiplayer menu floating panel with the laser pointer: host, join, spectate, rules, tuning."><div class="id">C07</div><div class="name">Multiplayer menu</div><div class="desc">Floating panel with the laser pointer: host, join, spectate, rules, tuning.</div><div class="path">main.cpp: drawMenu</div></article><article class="card" data-search="c08 spectator hub live miniature arenas on pedestals; point and pull the trigger to watch one."><div class="id">C08</div><div class="name">Spectator hub</div><div class="desc">Live miniature arenas on pedestals; point and pull the trigger to watch one.</div><div class="path">main.cpp: drawHub</div></article><article class="card" data-search="c09 avatar builder a mirror that copies your movements, with a pointer panel beside it: suit, build, pattern, colours, hair, headgear, face shield, mask, skin, presets, random."><div class="id">C09</div><div class="name">Avatar builder</div><div class="desc">A mirror that copies your movements, with a pointer panel beside it: suit, build, pattern, colours, hair, headgear, face shield, mask, skin, presets, random.</div><div class="path">main.cpp: drawBuilder</div></article><article class="card" data-search="c10 avatar rig and rim light torso hung below the neck, two-bone arms reaching your real hands, the team-colour rim light and the waist energy fade."><div class="id">C10</div><div class="name">Avatar rig and rim light</div><div class="desc">Torso hung below the neck, two-bone arms reaching your real hands, the team-colour rim light and the waist energy fade.</div><div class="path">app/src/avatar.cpp: solveRig; render.cpp: uRim</div></article></div></section>
-<dialog id="lb" aria-label="Enlarged picture"><div class="stage"><img alt=""><div class="cap"></div></div>
-<a class="open" href="#" target="_blank" rel="noopener">Open full size</a>
-<button class="close" type="button" aria-label="Close">&times;</button>
-<button class="prev" type="button" aria-label="Previous picture">&lsaquo;</button>
-<button class="next" type="button" aria-label="Next picture">&rsaquo;</button></dialog>
-<footer>Regenerate this page with <span class="path">python -I tools/gen_catalog.py</span>. Thumbnails come from the offline preview renderer and are close to, but not exactly, what the headset shows.</footer>
-</div>
-<script>
-document.querySelectorAll('.copy').forEach(b => b.addEventListener('click', () => {
-  const t = b.dataset.copy;
-  const done = () => { const o = b.textContent; b.textContent = 'Copied'; setTimeout(() => b.textContent = o, 1200); };
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(t).then(done).catch(() => window.getSelection().selectAllChildren(b.previousElementSibling));
-  } else { window.getSelection().selectAllChildren(b.previousElementSibling); }
-}));
-const q = document.getElementById('search');
-q.addEventListener('input', () => {
-  const s = q.value.trim().toLowerCase();
-  document.querySelectorAll('[data-search]').forEach(el => { el.hidden = s && !el.dataset.search.includes(s); });
-});
-const lb = document.getElementById('lb');
-const lbImg = lb.querySelector('img'), lbCap = lb.querySelector('.cap'), lbOpen = lb.querySelector('.open');
-const PICS = '.hero img, .card .img img';
-let lbList = [], lbIdx = 0;
-function lbShow(i) {
-  lbIdx = (i + lbList.length) % lbList.length;
-  const im = lbList[lbIdx], card = im.closest('.card');
-  lbImg.src = im.src; lbImg.alt = im.alt; lbOpen.href = im.src;
-  const id = card && card.querySelector('.id') ? card.querySelector('.id').textContent : '';
-  const name = card && card.querySelector('.name') ? card.querySelector('.name').textContent : im.alt;
-  const desc = card && card.querySelector('.desc') ? card.querySelector('.desc').textContent : '';
-  lbCap.innerHTML = '';
-  if (id) { const b = document.createElement('b'); b.textContent = id; lbCap.append(b); }
-  lbCap.append(name + '  (' + (lbIdx + 1) + ' of ' + lbList.length + ')');
-  if (desc) { const s = document.createElement('small'); s.textContent = desc; lbCap.append(s); }
+<main>
+  <aside id="side">
+    <section>
+      <div class="row"><label for="section">Section</label>
+        <select id="section">
+          <option value="avatar">Avatar builder (V)</option>
+          <option value="props">Props and gauntlets (P)</option>
+          <option value="arena">Arena and stadium (A)</option>
+          <option value="tex">Textures (T)</option>
+          <option value="snd">Sounds (S)</option>
+          <option value="code">Effects drawn in code (C)</option>
+        </select></div>
+      <div class="row"><label for="find">Go to an ID</label><input id="find" type="text" placeholder="V12, P04, S12 ..." autocomplete="off" spellcheck="false"></div>
+    </section>
+    <section id="pMake">
+      <h2>Make your own</h2>
+      <ol class="steps">
+        <li>Find the part here and download it (below the view settings: each ID has its own).</li>
+        <li>Make yours in Blender on the <a id="tplLink" href="dl/project-arena-templates.zip" download>template pack</a>
+          <span class="hint" id="tplMeta"></span>: the game's bodies and heads, the glove, examples, and a README that
+          says what goes where.</li>
+        <li>Send it with the ID it replaces or adds to: a <a href="https://github.com/jendoebelin/ProjectArena-public/blob/main/CONTRIBUTING.md"
+          target="_blank" rel="noopener">pull request</a> or the <a href="https://discord.gg/KuNkSbVHzh" target="_blank" rel="noopener">Discord</a>.
+          Sounds: try yours in the game's SOUND STUDIO first.</li>
+      </ol>
+    </section>
+    <section id="pAvatar">
+      <div class="row"><label for="preset">Preset</label><select id="preset"></select></div>
+      <div id="avFields" style="display:flex;flex-direction:column;gap:10px"></div>
+      <div class="row"><label for="pose">Pose (the game's rig)</label>
+        <select id="pose"><option value="rest">Rest, hands lowered</option><option value="ready" selected>Ready</option>
+          <option value="guard">Guard</option><option value="throw">Throw</option><option value="reach">Reach for a far block</option></select></div>
+      <div class="row"><label for="team">Team</label><select id="team"><option value="0">Blue end</option><option value="1">Orange end</option></select></div>
+      <div class="btns"><button id="random" type="button">Random look</button></div>
+      <div id="avColors" style="display:flex;flex-direction:column;gap:10px"></div>
+    </section>
+    <section id="pList" hidden><h2 id="listTitle">Items</h2><div class="list" id="list"></div></section>
+    <section id="pView">
+      <h2>View</h2>
+      <div class="row"><label for="surface">Surface</label>
+        <select id="surface"><option value="0">Game look</option><option value="1">Neutral clay</option><option value="2">Colour channels</option></select></div>
+      <div class="legend" id="legend" hidden></div>
+      <label class="check"><input type="checkbox" id="wire"> Wireframe</label>
+      <label class="check"><input type="checkbox" id="ghost"> Transparent surface</label>
+      <label class="check" id="bonesRow"><input type="checkbox" id="bones"> Joint and bone overlay</label>
+      <label class="check"><input type="checkbox" id="grid" checked> Floor grid</label>
+      <div class="btns" id="views">
+        <button type="button" data-v="front">Front</button><button type="button" data-v="side">Side</button>
+        <button type="button" data-v="back">Back</button><button type="button" data-v="top">Top</button>
+      </div>
+      <div class="btns" id="focus">
+        <button type="button" data-f="full">Whole</button><button type="button" data-f="head">Head</button>
+        <button type="button" data-f="hands">Hands</button><button type="button" data-f="fit">Fit</button>
+      </div>
+      <p class="hint">Drag to turn. Scroll or pinch to zoom. Right-drag or two fingers to pan.</p>
+    </section>
+    <section id="pDl"><h2>Download</h2><div id="dlBox"></div></section>
+    <section id="pParts"><h2>In view</h2><div class="parts" id="parts"></div></section>
+    <section>
+      <p>The models are the game's own files (<code>app/assets_open</code>), read as they ship. Animation, cloth swing,
+        the trails and the arena's moving lights are left out; everything else is drawn the way the game draws it.
+        The AVATAR IDs were renumbered for 0.3.21 (new suits, lower bodies, faces and helmets).</p>
+      <p>Rebuild this page with <code>python -I tools/gen_viewer.py</code>.</p>
+    </section>
+  </aside>
+  <div id="stage">
+    <canvas id="view" aria-label="3D view of the selected asset"></canvas>
+    <div id="flat" hidden></div>
+    <div id="busy" hidden>loading</div>
+    <div id="note"></div>
+    <div id="err" hidden></div>
+  </div>
+</main>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+// Project Arena asset viewer (tools/gen_viewer.py puts this inside tools/viewer/index.html).
+// The game's own files (models/*.mdl.gz, tex/*.png, snd/*.wav, data.json), drawn with a copy of the game's shader
+// (app/src/render.cpp), its part selection (app/src/avatar.cpp drawList) and its rig (tools/avatar_pose.cpp, in data.json).
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const $ = (id) => document.getElementById(id);
+const SH = { LIT: 0, COURT: 1, ADD: 2, UNLIT: 3, TRANS: 4, GLASS: 5 };
+const MAT_TWOSIDED = 1, MAT_PATTERN = 16, MAT_DESIGN = 32, MAT_CLOTH = 64;
+const CHANNEL = ['none', 'main colour', 'trim colour', 'glow', 'skin', 'shield tint', 'hair', 'metal trim'];
+const CHANNEL_SHOW = [[0.30, 0.30, 0.32], [0.05, 0.25, 0.95], [0.95, 0.35, 0.05], [0.10, 0.95, 0.95], [0.95, 0.55, 0.60],
+  [0.55, 0.20, 0.85], [0.35, 0.18, 0.05], [0.95, 0.85, 0.15]];
+const PATTERNS = ['', 'circuit', 'stripes', 'chevron', 'hex', 'split', 'pixel', 'bands'];
+const FIELD_ORDER = ['BODY TYPE', 'FACE', 'SUIT', 'BUILD', 'LOWER BODY', 'GAUNTLET', 'PATTERN', 'HAIR', 'HEADGEAR', 'FACE SHIELD', 'MASK'];
+const COLOR_FIELDS = [['MAIN COLOR', 'primary'], ['TRIM COLOR', 'secondary'], ['GLOW', 'glow'], ['HAIR COLOR', 'haircolor'],
+  ['SHIELD TINT', 'visortint'], ['SKIN', 'skin']];
+const KEY = { 'BODY TYPE': 'body', FACE: 'face', SUIT: 'suit', BUILD: 'build', 'LOWER BODY': 'lower', GAUNTLET: 'gauntlet',
+  PATTERN: 'pattern', HAIR: 'hair', HEADGEAR: 'headgear', 'FACE SHIELD': 'visor', MASK: 'mask' };
+
+let D = null;                      // data.json
+const state = { section: 'avatar', look: null, pose: 'ready', team: 0, surface: 0, wire: false, ghost: false, bones: false,
+  grid: true, item: null, focus: 'full' };
+
+// ---------------------------------------------------------------- loading the game's files
+async function gunzip(buf) {
+  const b = new Uint8Array(buf);
+  if (b[0] !== 0x1f || b[1] !== 0x8b) return buf;   // (the host may have unpacked it already)
+  const s = new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return await new Response(s).arrayBuffer();
 }
-document.addEventListener('click', e => {
-  const im = e.target.closest(PICS);
-  if (!im || lb.open) return;
-  lbList = [...document.querySelectorAll(PICS)].filter(x => !x.closest('[hidden]'));
-  lbShow(lbList.indexOf(im));
-  lb.showModal();
-});
-lb.querySelector('.close').addEventListener('click', () => lb.close());
-lb.querySelector('.prev').addEventListener('click', () => lbShow(lbIdx - 1));
-lb.querySelector('.next').addEventListener('click', () => lbShow(lbIdx + 1));
-lb.addEventListener('click', e => { if (e.target === lb || e.target.classList.contains('stage')) lb.close(); });
-document.addEventListener('keydown', e => {
-  if (!lb.open) return;
-  if (e.key === 'ArrowLeft') lbShow(lbIdx - 1);
-  else if (e.key === 'ArrowRight') lbShow(lbIdx + 1);
-});
-let lbX = null;
-lb.addEventListener('touchstart', e => { lbX = e.touches[0].clientX; }, {passive: true});
-lb.addEventListener('touchend', e => {
-  if (lbX === null) return;
-  const dx = e.changedTouches[0].clientX - lbX;
-  if (Math.abs(dx) > 50) lbShow(lbIdx + (dx < 0 ? 1 : -1));
-  lbX = null;
-});
-document.addEventListener('play', e => {
-  document.querySelectorAll('audio').forEach(a => { if (a !== e.target) a.pause(); });
-}, true);
+
+function parseMdl(buf) {
+  const dv = new DataView(buf);
+  const ver = dv.getUint32(4, true), nv = dv.getUint32(8, true), ni = dv.getUint32(12, true);
+  const ns = dv.getUint32(16, true), nm = dv.getUint32(20, true);
+  const stride = ver >= 3 ? 52 : 44;
+  const pos = new Float32Array(nv * 3), nrm = new Float32Array(nv * 3), uv0 = new Float32Array(nv * 2), uv1 = new Float32Array(nv * 2);
+  const col = new Uint8Array(nv * 4), bi = new Uint8Array(nv * 4), bw = new Uint8Array(nv * 4);
+  let o = 24;
+  for (let i = 0; i < nv; i++, o += stride) {
+    for (let k = 0; k < 3; k++) { pos[i * 3 + k] = dv.getFloat32(o + k * 4, true); nrm[i * 3 + k] = dv.getFloat32(o + 12 + k * 4, true); }
+    uv0[i * 2] = dv.getFloat32(o + 24, true); uv0[i * 2 + 1] = dv.getFloat32(o + 28, true);
+    uv1[i * 2] = dv.getFloat32(o + 32, true); uv1[i * 2 + 1] = dv.getFloat32(o + 36, true);
+    for (let k = 0; k < 4; k++) col[i * 4 + k] = dv.getUint8(o + 40 + k);
+    if (ver >= 3) for (let k = 0; k < 4; k++) { bi[i * 4 + k] = dv.getUint8(o + 44 + k); bw[i * 4 + k] = dv.getUint8(o + 48 + k); }
+  }
+  const idx = new Uint32Array(buf.slice(o, o + ni * 4));
+  o += ni * 4;
+  const secs = [];
+  for (let s = 0; s < ns; s++, o += 12) secs.push([dv.getUint32(o, true), dv.getUint32(o + 4, true), dv.getUint32(o + 8, true)]);
+  const str = (at) => { let t = ''; for (let k = 0; k < 64; k++) { const c = dv.getUint8(at + k); if (!c) break; t += String.fromCharCode(c); } return t; };
+  const mats = [];
+  for (let m = 0; m < nm; m++) {
+    const f = (k) => dv.getFloat32(o + 4 + k * 4, true);
+    mats.push({ shader: dv.getUint32(o, true), tint: [f(0), f(1), f(2), f(3)], em: [f(4), f(5), f(6), f(7)],
+      uv: dv.getUint32(o + 36, true), flags: dv.getUint32(o + 40, true), diffuse: str(o + 44).replace(/\//g, '_'), mask: str(o + 108).replace(/\//g, '_') });
+    o += 44 + 128;
+  }
+  return { ver, nv, pos, nrm, uv0, uv1, col, bi, bw, idx, secs, mats };
+}
+
+const mdlCache = new Map();
+function loadModel(name) {
+  if (!mdlCache.has(name)) {
+    const ext = D.modelExt || '.mdl.gz';
+    mdlCache.set(name, fetch('models/' + name + ext).then((r) => {
+      if (!r.ok) throw new Error(name + ': ' + r.status);
+      if (ext !== '.txt') return r.arrayBuffer();
+      return r.text().then((t) => {   // (base64 of the gzipped file: for hosts that serve only web types)
+        const bin = atob(t.trim()), b = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+        return b.buffer;
+      });
+    }).then(gunzip).then(parseMdl));
+  }
+  return mdlCache.get(name);
+}
+
+const texLoader = new THREE.TextureLoader();
+const texCache = new Map();
+const white = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+white.needsUpdate = true;
+function tex(name, srgb) {
+  if (!name || !D.textures[name]) return null;
+  const key = name + (srgb ? '#s' : '#l');
+  if (!texCache.has(key)) {
+    const t = texLoader.load('tex/' + name + '.png', () => { dirty = true; });
+    t.flipY = false;   // (the game uploads row 0 at v = 0)
+    t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = 4;
+    texCache.set(key, t);
+  }
+  return texCache.get(key);
+}
+
+// ---------------------------------------------------------------- the game's shader (render.cpp kFS), for three.js
+const VS = `
+in vec2 aUV0;
+in vec2 aUV1;
+in vec4 aCol;
+uniform int uUV;
+out vec3 vN;
+out vec3 vW;
+out vec2 vUV;
+out vec4 vCol;
+void main() {
+  vec4 w = modelMatrix * vec4(position, 1.0);
+  vW = w.xyz;
+  vN = mat3(modelMatrix) * normal;
+  vUV = uUV == 1 ? aUV1 : aUV0;
+  vCol = aCol;
+  gl_Position = projectionMatrix * viewMatrix * w;
+}`;
+const FS = `
+in vec3 vN;
+in vec3 vW;
+in vec2 vUV;
+in vec4 vCol;
+uniform int uShader;
+uniform vec4 uTint;
+uniform vec4 uEmissive;
+uniform int uHasDiffuse;
+uniform int uHasMask;
+uniform sampler2D uDiffuse;
+uniform sampler2D uMask;
+uniform vec4 uTeam0;
+uniform vec4 uTeam1;
+uniform vec3 uLightDir;
+uniform vec4 uRim;
+uniform int uPattern;
+uniform sampler2D uPatternTex;
+uniform vec4 uPatCol;
+uniform vec4 uPatGlow;
+uniform int uDesign;
+uniform vec4 uDesCol;
+uniform vec4 uDesGlow;
+uniform int uChar;
+uniform int uCloth;
+uniform sampler2D uFabric;
+uniform int uMode;      // the viewer's SURFACE: 0 the game's look, 1 neutral clay, 2 colour channels
+uniform vec3 uFlat;     // (2: this material's channel colour)
+out vec4 oColor;
+vec3 arenaEnv(vec3 r) {
+  float band = exp(-pow((r.y - 0.10) / 0.09, 2.0));
+  float cols = pow(0.5 + 0.5 * sin(atan(r.z, r.x) * 26.0), 6.0);
+  vec3 c = mix(vec3(0.004, 0.006, 0.012), vec3(0.04, 0.055, 0.08), smoothstep(-0.2, 1.0, r.y));
+  float sides = smoothstep(0.35, 0.85, abs(r.z));
+  return c + vec3(0.42, 0.47, 0.55) * band * sides * (0.15 + 0.85 * cols);
+}
+void main() {
+  vec3 n = normalize(vN);
+  if (!gl_FrontFacing) n = -n;
+  vec3 v = normalize(cameraPosition - vW);
+  if (uMode != 0 && (uShader == 0 || uShader == 1 || uShader == 4 || uShader == 5)) {
+    // clay or colour channels: one colour, the avatar's wrapped key light and a fill from the viewer
+    vec3 alb = uMode == 1 ? vec3(0.62) : uFlat;
+    float hemi = 0.5 + 0.5 * n.y;
+    float wrap = clamp((dot(n, -uLightDir) + 0.5) / 1.5, 0.0, 1.0);
+    float fill = max(dot(n, v), 0.0);
+    float a = uShader == 4 ? max(uTint.a, 0.35) : uTint.a;
+    oColor = vec4(alb * (0.10 + 0.12 * hemi + 0.42 * wrap + 0.36 * fill), a);
+    return;
+  }
+  vec4 base = uTint;
+  if (uHasDiffuse == 1) base *= texture(uDiffuse, vUV);
+  if (uShader == 5) {
+    vec3 r = reflect(-v, n);
+    float fres = pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    vec3 F = uEmissive.rgb + (vec3(1.0) - uEmissive.rgb) * fres * 0.6;
+    oColor = vec4(base.rgb + arenaEnv(r) * F * uEmissive.a, base.a);
+    return;
+  }
+  if (uShader == 1) {
+    vec4 m;
+    if (uHasMask == 1) m = texture(uMask, vUV);
+    else {
+      float inside = step(abs(vW.z), 2.7) * step(abs(vW.x), 9.7) * step(vW.y, 4.2);
+      inside *= abs(vW.x) > 9.4 ? 0.35 : 1.0;
+      m = vec4(clamp((-vW.x - 4.6) / 4.9, 0.0, 1.0) * inside, vCol.a, clamp((vW.x - 4.6) / 4.9, 0.0, 1.0) * inside, 1.0);
+    }
+    vec3 alb = base.rgb * vCol.rgb * vCol.rgb;
+    float metal = clamp(uEmissive.a, 0.0, 1.0);
+    vec3 r = reflect(-v, n);
+    vec3 env = mix(vec3(0.010, 0.014, 0.026), vec3(0.16, 0.24, 0.34), smoothstep(-0.2, 0.9, r.y));
+    float fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    vec3 spec = env * mix(vec3(0.04 + fres * 0.3), alb * 1.1 + 0.03, metal);
+    vec3 diff = alb * (1.0 - 0.85 * metal) * (0.05 + 0.85 * m.g * m.g);
+    vec3 glow = (uTeam0.rgb * m.r * m.r * uTeam0.a + uTeam1.rgb * m.b * m.b * uTeam1.a) * 0.30;
+    oColor = vec4(diff + spec + glow + uEmissive.rgb, base.a);
+  } else if (uShader == 2) {
+    vec4 tx = uHasDiffuse == 1 ? texture(uDiffuse, vUV) : vec4(1.0);
+    oColor = vec4(uTint.rgb * tx.rgb * uTint.a + uEmissive.rgb, 1.0);
+  } else if (uShader == 3) {
+    oColor = vec4(base.rgb + uEmissive.rgb, base.a);
+  } else {
+    vec3 alb = base.rgb, glowAdd = vec3(0.0);
+    if (uDesign == 1) {
+      vec4 dm = texture(uMask, vUV);
+      alb = mix(alb, uDesCol.rgb, dm.r);
+      alb = mix(alb, vec3(0.80), dm.b);
+      glowAdd += uDesGlow.rgb * dm.g;
+    }
+    alb *= vCol.r;
+    if (uPattern == 1) {
+      vec4 pt = texture(uPatternTex, vUV);
+      alb = mix(alb, uPatCol.rgb, pt.r);
+      glowAdd += uPatGlow.rgb * pt.g;
+    }
+    float hemi = 0.5 + 0.5 * n.y;
+    float ndl = max(dot(n, -uLightDir), 0.0);
+    vec3 h = normalize(v - uLightDir);
+    float nv = max(dot(n, v), 0.0);
+    float matte = uEmissive.a < 0.0 ? -uEmissive.a : 0.0;
+    float spec = pow(max(dot(n, h), 0.0), 32.0) * 0.25 * (1.0 - matte);
+    vec3 c = alb * (0.10 + 0.18 * hemi + 0.80 * ndl) + spec + uEmissive.rgb + glowAdd;
+    if (uChar == 1) {
+      float wrap = clamp((dot(n, -uLightDir) + 0.5) / 1.5, 0.0, 1.0);
+      float fill = max(dot(n, v), 0.0);
+      float diff = 0.10 + 0.12 * hemi + 0.42 * wrap + 0.36 * fill;
+      if (uCloth == 1) {
+        float fab = texture(uFabric, vUV * 28.0).r;
+        alb *= 0.82 + 0.36 * fab;
+        float sheen = pow(1.0 - nv, 3.0);
+        c = alb * (diff + 0.45 * sheen) + vec3(0.025) * sheen + uEmissive.rgb + glowAdd;
+      } else {
+        c = alb * diff + spec + uEmissive.rgb + glowAdd;
+      }
+    }
+    if (uEmissive.a > 0.0 && uCloth == 0) {
+      float fres = 0.04 + 0.96 * pow(1.0 - nv, 5.0);
+      c += arenaEnv(reflect(-v, n)) * (0.25 + fres) * (uEmissive.a * 1.5) + pow(max(dot(n, h), 0.0), 96.0) * uEmissive.a * 0.8;
+    }
+    c += uRim.rgb * (uRim.a * pow(1.0 - nv, 2.5) * (1.0 - 0.75 * matte));
+    oColor = vec4(c, base.a);
+  }
+}`;
+const LIGHT = new THREE.Vector3(0.3, -1.0, 0.2).normalize();
+
+// a section's material as render.cpp draw() sets it up; ctx: channels (8 rgb), rim (rgba), pattern (texture),
+// tintMul, alphaMul, emAdd (rgb)
+function material(mt, ctx) {
+  const sh = ctx.forceShader ?? mt.shader;
+  const alphaMul = (ctx.alphaMul ?? 1) * (state.ghost && (sh === SH.LIT || sh === SH.COURT || sh === SH.GLASS) ? 0.35 : 1);
+  const blended = sh === SH.ADD || sh === SH.TRANS || alphaMul < 0.999;
+  const tm = ctx.tintMul || [1, 1, 1, 1];
+  const tint = [mt.tint[0] * tm[0], mt.tint[1] * tm[1], mt.tint[2] * tm[2], mt.tint[3] * (tm[3] ?? 1) * alphaMul];
+  const em = [mt.em[0], mt.em[1], mt.em[2], mt.em[3]];
+  if (ctx.emAdd) for (let k = 0; k < 3; k++) em[k] += ctx.emAdd[k];
+  const ch = (mt.flags >> 8) & 0xff;
+  const C = ctx.channels;
+  if (C && ch && ch < 8) for (let k = 0; k < 3; k++) tint[k] *= C[ch][k];
+  const pat = !!(C && ctx.pattern && (mt.flags & MAT_PATTERN) && sh === SH.LIT);
+  const maskTex = tex(mt.mask, false);
+  const design = !!(C && (mt.flags & MAT_DESIGN) && maskTex && sh === SH.LIT);
+  const rim = ctx.rim || [0, 0, 0, 0];
+  const chr = rim[3] > 0 && sh === SH.LIT;
+  const fabric = tex('open_fabric', false);
+  const cloth = chr && (mt.flags & MAT_CLOTH) && !!fabric;
+  const diffuse = tex(mt.diffuse, true);
+  const v4 = (a) => new THREE.Vector4(a[0], a[1], a[2], a[3] ?? 1);
+  const flat = CHANNEL_SHOW[ch < 8 ? ch : 0];
+  const u = {
+    uShader: { value: sh }, uTint: { value: v4(tint) }, uEmissive: { value: v4(em) },
+    uHasDiffuse: { value: diffuse ? 1 : 0 }, uDiffuse: { value: diffuse || white },
+    uHasMask: { value: maskTex ? 1 : 0 }, uMask: { value: maskTex || white },
+    uTeam0: { value: v4(D.teams[0]) }, uTeam1: { value: v4(D.teams[1]) }, uLightDir: { value: LIGHT },
+    uRim: { value: v4(rim) }, uPattern: { value: pat ? 1 : 0 }, uPatternTex: { value: (pat && ctx.pattern) || white },
+    uPatCol: { value: C ? v4([mt.tint[0] * tm[0] * C[2][0], mt.tint[1] * tm[1] * C[2][1], mt.tint[2] * tm[2] * C[2][2], 1]) : v4([1, 1, 1, 1]) },
+    uPatGlow: { value: C ? v4(C[3]) : v4([0, 0, 0, 0]) }, uDesign: { value: design ? 1 : 0 },
+    uDesCol: { value: C ? v4(C[2]) : v4([1, 1, 1, 1]) }, uDesGlow: { value: C ? v4(C[3]) : v4([0, 0, 0, 0]) },
+    uChar: { value: chr ? 1 : 0 }, uCloth: { value: cloth ? 1 : 0 }, uFabric: { value: fabric || white },
+    uUV: { value: mt.uv === 1 ? 1 : 0 }, uMode: { value: state.surface }, uFlat: { value: new THREE.Vector3(...flat) },
+  };
+  const m = new THREE.ShaderMaterial({ uniforms: u, vertexShader: VS, fragmentShader: FS, glslVersion: THREE.GLSL3,
+    wireframe: state.wire });
+  if (sh === SH.ADD) {
+    m.blending = THREE.CustomBlending; m.blendEquation = THREE.AddEquation;
+    m.blendSrc = THREE.OneFactor; m.blendDst = THREE.OneFactor; m.blendSrcAlpha = THREE.ZeroFactor; m.blendDstAlpha = THREE.OneFactor;
+    m.transparent = true; m.depthWrite = false;
+  } else if (blended) {
+    m.blending = THREE.CustomBlending; m.blendEquation = THREE.AddEquation;
+    m.blendSrc = THREE.SrcAlphaFactor; m.blendDst = THREE.OneMinusSrcAlphaFactor;
+    m.blendSrcAlpha = THREE.OneFactor; m.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+    m.transparent = true; m.depthWrite = false;
+  } else {
+    m.blending = THREE.NoBlending; m.transparent = false;
+  }
+  m.side = (mt.flags & MAT_TWOSIDED) || blended ? THREE.DoubleSide : THREE.FrontSide;
+  m.userData.channel = ch;
+  return m;
+}
+
+// ---------------------------------------------------------------- the rig: linear blend skinning as render.cpp's vertex shader
+function mul4(A, B, out) {   // column-major 4x4: out = A * B
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    out[c * 4 + r] = A[r] * B[c * 4] + A[4 + r] * B[c * 4 + 1] + A[8 + r] * B[c * 4 + 2] + A[12 + r] * B[c * 4 + 3];
+  }
+  return out;
+}
+
+function skin(M, rig) {
+  const nv = M.nv, P = M.pos, N = M.nrm, BI = M.bi, BW = M.bw;
+  const op = new Float32Array(nv * 3), on = new Float32Array(nv * 3);
+  const B = rig.skin.map((a) => Float64Array.from(a));
+  const pel = rig.pelvis ? Float64Array.from(rig.pelvis) : null;
+  const tw = rig.twist || null;
+  const S = new Float64Array(16), T = new Float64Array(16), Rt = new Float64Array(16), TB = new Float64Array(16);
+  const twG = [0, 0, 0, 0];
+  for (let v = 0; v < nv; v++) {
+    const px = P[v * 3], py = P[v * 3 + 1], pz = P[v * 3 + 2];
+    S.fill(0);
+    for (let i = 0; i < 4; i++) {
+      twG[i] = 0;
+      const w = BW[v * 4 + i] / 255;
+      if (w === 0) continue;
+      const b = BI[v * 4 + i];
+      let Mb = B[b] || B[0];
+      if (pel && b === 0) {
+        const x = Math.min(1, Math.max(0, (py + 0.50) / 0.24)), t = x * x * (3 - 2 * x);
+        for (let k = 0; k < 16; k++) T[k] = pel[k] * (1 - t) + B[0][k] * t;
+        Mb = T;
+      }
+      if (tw && (b === 5 || b === 6)) {
+        const k = b - 5, e0 = 4 * k, d = 4 * (2 + k), E = 4 * (4 + k), A = 4 * (6 + k);
+        let s = ((px - tw[e0]) * tw[d] + (py - tw[e0 + 1]) * tw[d + 1] + (pz - tw[e0 + 2]) * tw[d + 2]) * tw[e0 + 3];
+        s = Math.min(1, Math.max(0, s));
+        const th = -tw[d + 3] * (1 - s * s * (3 - 2 * s));
+        const ax = tw[A], ay = tw[A + 1], az = tw[A + 2], c = Math.cos(th), sn = Math.sin(th), ic = 1 - c;
+        // R = c I + sn [a]x + (1 - c) a a^T, column-major; Rt = R with the translation E - R E
+        const R = [c + ic * ax * ax, sn * az + ic * ax * ay, -sn * ay + ic * ax * az,
+          -sn * az + ic * ay * ax, c + ic * ay * ay, sn * ax + ic * ay * az,
+          sn * ay + ic * az * ax, -sn * ax + ic * az * ay, c + ic * az * az];
+        const ex = tw[E], ey = tw[E + 1], ez = tw[E + 2];
+        Rt.fill(0);
+        for (let cc = 0; cc < 3; cc++) for (let r = 0; r < 3; r++) Rt[cc * 4 + r] = R[cc * 3 + r];
+        Rt[12] = ex - (R[0] * ex + R[3] * ey + R[6] * ez);
+        Rt[13] = ey - (R[1] * ex + R[4] * ey + R[7] * ez);
+        Rt[14] = ez - (R[2] * ex + R[5] * ey + R[8] * ez);
+        Rt[15] = 1;
+        Mb = mul4(Rt, Mb, TB).slice();
+        twG[i] = tw[d + 3] * 6 * s * (1 - s) * tw[E + 3];
+      }
+      for (let k = 0; k < 16; k++) S[k] += Mb[k] * w;
+    }
+    const x = S[0] * px + S[4] * py + S[8] * pz + S[12], y = S[1] * px + S[5] * py + S[9] * pz + S[13], z = S[2] * px + S[6] * py + S[10] * pz + S[14];
+    const nx0 = N[v * 3], ny0 = N[v * 3 + 1], nz0 = N[v * 3 + 2];
+    let nx = S[0] * nx0 + S[4] * ny0 + S[8] * nz0, ny = S[1] * nx0 + S[5] * ny0 + S[9] * nz0, nz = S[2] * nx0 + S[6] * ny0 + S[10] * nz0;
+    if (tw) {
+      for (let i = 0; i < 4; i++) {
+        if (!twG[i]) continue;
+        const k = BI[v * 4 + i] - 5, A = 4 * (6 + k), E = 4 * (4 + k);
+        const ax = tw[A], ay = tw[A + 1], az = tw[A + 2];
+        const qx = x - tw[E], qy = y - tw[E + 1], qz = z - tw[E + 2];
+        const cx = ay * qz - az * qy, cy = az * qx - ax * qz, cz = ax * qy - ay * qx;
+        const f = (BW[v * 4 + i] / 255) * twG[i] * (cx * nx + cy * ny + cz * nz);
+        nx -= f * ax; ny -= f * ay; nz -= f * az;
+      }
+    }
+    op[v * 3] = x; op[v * 3 + 1] = y; op[v * 3 + 2] = z;
+    on[v * 3] = nx; on[v * 3 + 1] = ny; on[v * 3 + 2] = nz;
+  }
+  return [op, on];
+}
+
+// hair under headgear and face shields, kept inside them (render.cpp uTuck; main.cpp hairTuck: the two maps combined)
+function tucked(M, maps) {
+  const T = maps[0];
+  const nv = M.nv, P = M.pos, out = new Float32Array(P);
+  const val = (u, t) => {
+    const x = u * T.w - 0.5, y = Math.min(T.h - 1, Math.max(0, t * T.h - 0.5));
+    const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+    const at = (i, j) => {
+      i = ((i % T.w) + T.w) % T.w; j = Math.min(T.h - 1, Math.max(0, j));
+      let m = 255;
+      for (const Q of maps) m = Math.min(m, Q.v[j * T.w + i]);
+      return m;
+    };
+    return ((at(x0, y0) * (1 - fx) + at(x0 + 1, y0) * fx) * (1 - fy) + (at(x0, y0 + 1) * (1 - fx) + at(x0 + 1, y0 + 1) * fx) * fy) / 255;
+  };
+  const [cx, cy, cz] = T.c;
+  for (let v = 0; v < nv; v++) {
+    const dx = P[v * 3] - cx, dy = P[v * 3 + 1] - cy, dz = P[v * 3 + 2] - cz;
+    const r = Math.max(Math.hypot(dx, dy, dz), 1e-4);
+    const u = Math.atan2(dx, dz) * 0.1591549 + 0.5, t = Math.asin(Math.min(1, Math.max(-1, dy / r))) * 0.3183099 + 0.5;
+    const lim = 0.05 + 0.5 * val(u, t);
+    const x = r - (lim - 0.006);
+    if (x > 0) {
+      const k = (lim - 0.006 + 0.006 * (1 - Math.exp(-x / 0.006))) / r;
+      out[v * 3] = cx + dx * k; out[v * 3 + 1] = cy + dy * k; out[v * 3 + 2] = cz + dz * k;
+    }
+  }
+  return out;
+}
+
+const tuckMaps = new Map();
+function tuckMap(name) {
+  if (!D.tuck[name]) return null;
+  if (!tuckMaps.has(name)) {
+    const t = D.tuck[name], bin = atob(t.v), v = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) v[i] = bin.charCodeAt(i);
+    tuckMaps.set(name, { w: t.w, h: t.h, c: t.c, v });
+  }
+  return tuckMaps.get(name);
+}
+
+// a model as a mesh: one geometry, a group and a material per section
+function meshOf(name, M, ctx, positions, normals) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(positions || M.pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(normals || M.nrm, 3));
+  g.setAttribute('aUV0', new THREE.BufferAttribute(M.uv0, 2));
+  g.setAttribute('aUV1', new THREE.BufferAttribute(M.uv1, 2));
+  g.setAttribute('aCol', new THREE.BufferAttribute(M.col, 4, true));
+  g.setIndex(new THREE.BufferAttribute(M.idx, 1));
+  const mats = [];
+  M.secs.forEach(([first, count, mi], si) => { g.addGroup(first, count, si); mats.push(material(M.mats[mi], ctx)); });
+  g.computeBoundingSphere();
+  g.computeBoundingBox();
+  const mesh = new THREE.Mesh(g, mats);
+  mesh.name = name;
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+// ---------------------------------------------------------------- the avatar: avatar.cpp channelColors and drawList
+function field(name) { return D.fields.find((f) => f.name === name); }
+function optRGB(name, i) { const o = field(name).options[i]; return o ? o.rgb.slice() : [0.5, 0.5, 0.5]; }
+
+function channels(look, team) {
+  const tc = D.teams[team];
+  const out = [];
+  for (let c = 0; c < 8; c++) out.push([1, 1, 1]);
+  out[1] = optRGB('MAIN COLOR', look.primary);
+  out[2] = optRGB('TRIM COLOR', look.secondary);
+  out[3] = look.glow === 0 ? tc.slice() : optRGB('GLOW', look.glow);
+  out[4] = optRGB('SKIN', look.skin);
+  const nT = field('SHIELD TINT').options.length, nH = field('HAIR COLOR').options.length;
+  out[5] = look.visortint === nT - 1 ? tc.map((x) => x * 0.45) : optRGB('SHIELD TINT', look.visortint);
+  out[6] = look.haircolor === nH - 1 ? out[3].slice() : optRGB('HAIR COLOR', look.haircolor);
+  const metal = [0.50, 0.52, 0.56];
+  out[7] = metal.map((m, k) => m * 0.7 + out[2][k] * 0.3);
+  out[3] = out[3].map((x) => x * 1.15);
+  return out;
+}
+
+function has(name) { return !!D.models[name]; }
+
+// the parts drawList adds for a look: { model, at: 'skin' | 'head' | 'hand', hand, field, extra }
+function partsOf(look) {
+  const b = look.body ? 'f' : 'm', face = look.face | 0, fk = b + (face ? face : '');
+  const out = [];
+  const add = (model, at, fieldName, extra = {}) => {
+    if (!has(model) && /\d$/.test(model) && has(model.replace(/\d$/, ''))) model = model.replace(/\d$/, '');   // (the base head's)
+    if (has(model)) out.push(Object.assign({ model, at, field: fieldName }, extra));
+  };
+  add(`av_top_${look.suit}_${b}`, 'skin', 'SUIT');
+  add(`av_bhead_${fk}`, 'skin', 'FACE');
+  if (look.lower >= 1 && look.lower <= 4 && look.suit >= 14) add(`av_sbottom_${look.suit}_${look.lower}_${b}`, 'skin', 'LOWER BODY');
+  else if (look.lower) add(`av_bottom_${look.lower}_${b}`, 'skin', 'LOWER BODY');
+  else add(`av_wfade_${b}`, 'skin', 'LOWER BODY');
+  if (look.headgear) add(`av_gear_${look.headgear}_${b}`, 'head', 'HEADGEAR');
+  if (look.suit >= 10 && look.suit <= 13) add(`av_tpulse_${look.suit}_${b}`, 'skin', 'SUIT');
+  const neon = look.haircolor === field('HAIR COLOR').options.length - 1;
+  if (look.hair) {
+    add(`av_hair_${look.hair}_${b}`, 'head', 'HAIR', { hair: true, neon });
+    if (look.hair === 3 || look.hair === 7) add(`av_hair_${look.hair}t_${b}`, 'head', 'HAIR', { hair: true, neon });
+  }
+  if (look.visor) add(`av_visor_${look.visor}_${fk}`, 'head', 'FACE SHIELD');
+  if (look.mask) add(`av_mask_${look.mask}_${fk}`, 'head', 'MASK');
+  for (let h = 0; h < 2; h++) {
+    if (look.gauntlet < 3) {
+      add(`gauntlet_${look.gauntlet}_hand`, 'hand', 'GAUNTLET', { hand: h, slot: 'fist' });
+      add(`gauntlet_${look.gauntlet}_cuff`, 'hand', 'GAUNTLET', { hand: h, slot: 'cuff' });
+    } else add('lancer', 'hand', 'GAUNTLET', { hand: h, slot: 'lancer' });
+    add('knuckleguard', 'hand', 'GAUNTLET', { hand: h, slot: 'knuckle', knuckle: true });
+  }
+  return out;
+}
+
+function idFor(fieldName, value) {
+  const e = D.avatar.find((a) => a.field === fieldName && a.value === value);
+  return e ? e.id : '';
+}
+
+function defaultLook() {
+  const p = D.presets[1] || D.presets[0];
+  const look = { suit: 0, build: 1, pattern: 0, primary: 0, secondary: 1, glow: 0, hair: 0, haircolor: 0, headgear: 0, visor: 0,
+    visortint: 0, mask: 0, skin: 2, lower: 0, body: 0, gauntlet: 0, face: 0 };
+  return Object.assign(look, p.look);
+}
+
+// ---------------------------------------------------------------- three.js
+const canvas = $('view'), stage = $('stage');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.sortObjects = false;   // (the game's order: everything opaque, then the blended layers as listed)
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05070c);
+const camera = new THREE.PerspectiveCamera(32, 1, 0.02, 600);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.12;
+const rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4 });
+const composer = new EffectComposer(renderer, rt);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new OutputPass());
+const root = new THREE.Group();
+scene.add(root);
+const overlay = new THREE.Group();
+scene.add(overlay);
+const grid = new THREE.GridHelper(6, 24, 0x3a4a5c, 0x1d2733);
+grid.material.transparent = true;
+grid.material.opacity = 0.6;
+scene.add(grid);
+let dirty = true;
+controls.addEventListener('change', () => { dirty = true; });
+
+function resize() {
+  const r = stage.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(r.width)), h = Math.max(1, Math.floor(r.height));
+  renderer.setSize(w, h, false);
+  composer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  dirty = true;
+}
+new ResizeObserver(resize).observe(stage);
+function frame() {
+  requestAnimationFrame(frame);
+  if (document.hidden) return;
+  if (controls.update()) dirty = true;
+  if (!dirty || !$('flat').hidden) return;
+  dirty = false;
+  composer.render();
+}
+
+function clear() {
+  for (const g of [root, overlay]) {
+    while (g.children.length) {
+      const o = g.children.pop();
+      o.traverse((x) => { if (x.geometry) x.geometry.dispose(); (Array.isArray(x.material) ? x.material : [x.material]).forEach((m) => m && m.dispose && m.dispose()); });
+    }
+  }
+}
+
+function setCamera(target, dist, dir) {
+  const d = new THREE.Vector3(...dir).normalize();
+  camera.fov = state.section === 'arena' ? 50 : 32;
+  controls.target.set(...target);
+  camera.position.copy(controls.target).addScaledVector(d, dist);
+  camera.near = Math.max(0.01, dist / 200);
+  camera.far = Math.max(50, dist * 40);
+  camera.updateProjectionMatrix();
+  controls.update();
+  dirty = true;
+}
+
+function viewDir(v) {
+  return { front: [0.08, 0.12, 1], side: [1, 0.12, 0.02], back: [-0.08, 0.12, -1], top: [0.001, 1, 0.25] }[v] || [0.08, 0.12, 1];
+}
+
+let lastBox = null;
+function fitBox(box, dir) {
+  const s = box.getBoundingSphere(new THREE.Sphere());
+  const dist = s.radius / Math.sin((camera.fov * Math.PI) / 360) * 1.05;
+  setCamera([s.center.x, s.center.y, s.center.z], dist, dir);
+}
+
+// ---------------------------------------------------------------- the sections
+let token = 0;   // (a newer choice cancels an older load)
+function busy(on, text) { $('busy').hidden = !on; if (text) $('busy').textContent = text; }
+
+async function showAvatar(keepCamera) {
+  const my = ++token;
+  const look = state.look;
+  const rigKey = `${look.body ? 1 : 0}${look.build}_${state.pose}`;
+  const rig = D.rig[rigKey];
+  const parts = partsOf(look);
+  busy(true, 'loading ' + parts.length + ' parts');
+  let models;
+  try { models = await Promise.all(parts.map((p) => loadModel(p.model))); } catch (e) { return fail(e); }
+  if (my !== token) return;
+  clear();
+  const C = channels(look, state.team);
+  const rim = [...D.teams[state.team], 0.5];
+  const b = look.body ? 'f' : 'm';
+  const pattern = look.pattern ? tex(`open_pat_${PATTERNS[look.pattern]}_${b}`, false) : null;
+  const ctx = { channels: C, rim, pattern };
+  const head = new THREE.Matrix4().fromArray(rig.head);
+  // hair under the headgear and the face shield: their tuck maps (main.cpp hairTuck)
+  const maps = [];
+  if (look.headgear && tuckMap(`av_gear_${look.headgear}_${b}`)) maps.push(tuckMap(`av_gear_${look.headgear}_${b}`));
+  if (look.visor && tuckMap(`av_visor_${look.visor}_${b}`)) {
+    const V = tuckMap(`av_visor_${look.visor}_${b}`);
+    if (!maps.length || (maps[0].w === V.w && maps[0].h === V.h)) maps.push(V);
+  }
+  let verts = 0, tris = 0;
+  const rows = [];
+  parts.forEach((p, i) => {
+    const M = models[i];
+    let mesh;
+    if (p.at === 'skin') {
+      const [pos, nrm] = skin(M, rig);
+      mesh = meshOf(p.model, M, ctx, pos, nrm);
+    } else if (p.at === 'head') {
+      const c = Object.assign({}, ctx);
+      if (p.neon) c.emAdd = C[3].map((x) => x * 0.35);
+      mesh = meshOf(p.model, M, c, p.hair && maps.length ? tucked(M, maps) : null, null);
+      mesh.matrixAutoUpdate = false;
+      mesh.matrix.copy(head);
+    } else {
+      const c = Object.assign({}, ctx);
+      if (p.knuckle) {
+        const t = D.teams[state.team];
+        c.alphaMul = 0.35; c.tintMul = t.map((x) => 0.75 + 0.25 * x); c.forceShader = SH.TRANS;   // (main.cpp kp)
+        c.channels = null; c.rim = null;
+      }
+      mesh = meshOf(p.model, M, c);
+      mesh.matrixAutoUpdate = false;
+      mesh.matrix.fromArray(rig.hands[p.hand][p.slot]);
+    }
+    root.add(mesh);
+    if (!(p.at === 'hand' && p.hand === 0)) {
+      verts += M.nv; tris += M.idx.length / 3;
+      rows.push({ id: p.field === 'SUIT' && p.model.startsWith('av_tpulse') ? idFor('SUIT', look.suit) : idFor(p.field, KEY[p.field] ? look[KEY[p.field]] : 0),
+        file: p.model, v: M.nv, t: M.idx.length / 3, note: p.hair && maps.length ? 'kept inside the headgear' : (p.at === 'hand' ? 'each hand' : '') });
+    }
+  });
+  if (state.bones) drawBones(rig);
+  root.updateMatrixWorld(true);
+  grid.visible = state.grid;
+  grid.position.y = 0;
+  busy(false);
+  partsList(rows, `${look.pattern ? idFor('PATTERN', look.pattern) + ' pattern ' + PATTERNS[look.pattern] + ' · ' : ''}${idFor('BUILD', look.build)} build`);
+  const headP = new THREE.Vector3().setFromMatrixPosition(head);
+  state.headP = headP;
+  const hp = rig.hands.map((h) => new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().fromArray(h.fist)));
+  state.handsP = hp[0].clone().add(hp[1]).multiplyScalar(0.5);
+  if (!keepCamera) focus(state.focus);
+  const e = state.item && D.avatar.find((a) => a.id === state.item);
+  title(e ? e.id : '', e ? e.name : 'Avatar builder');
+  note(`${verts.toLocaleString()} vertices · ${Math.round(tris).toLocaleString()} triangles · ${$('pose').selectedOptions[0].text.toLowerCase()} pose · `
+    + `${['blue', 'orange'][state.team]} end · ${$('surface').selectedOptions[0].text.toLowerCase()}`);
+  dirty = true;
+}
+
+function drawBones(rig) {
+  const pts = [];
+  for (const s of rig.bones) pts.push(s[0], s[1], s[2], s[3], s[4], s[5]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const lines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xf8bd5c, depthTest: false, transparent: true }));
+  lines.renderOrder = 10;
+  overlay.add(lines);
+  const dots = new THREE.Points(g.clone(), new THREE.PointsMaterial({ color: 0xffe2a8, size: 7, sizeAttenuation: false, depthTest: false, transparent: true }));
+  dots.renderOrder = 11;
+  overlay.add(dots);
+}
+
+function focus(f) {
+  state.focus = f;
+  const dir = viewDir('front');
+  if (state.section === 'avatar') {
+    if (f === 'head' && state.headP) return setCamera([state.headP.x, state.headP.y - 0.02, state.headP.z], 0.85, dir);
+    if (f === 'hands' && state.handsP) return setCamera([state.handsP.x, state.handsP.y, state.handsP.z], 1.0, [0.25, 0.35, 1]);
+    if (f === 'full' || f === 'fit') return setCamera([0, 1.12, 0], 3.1, dir);
+  }
+  if (state.section === 'arena') return setCamera([1.5, 0.6, 0], 15.5, [-0.92, 0.30, 0.27]);   // (above the blue end, inside the stadium)
+  const box = new THREE.Box3().setFromObject(root);
+  if (!box.isEmpty()) fitBox(box, [0.9, 0.35, 0.6]);
+}
+
+function turn(v) {
+  const d = new THREE.Vector3(...viewDir(v)).normalize();
+  const dist = camera.position.distanceTo(controls.target);
+  camera.position.copy(controls.target).addScaledVector(d, dist);
+  controls.update();
+  dirty = true;
+}
+
+async function showModels(names, place, keepCamera, extraRows) {
+  const my = ++token;
+  busy(true, 'loading ' + names.length + (names.length > 1 ? ' models' : ' model'));
+  let models;
+  try { models = await Promise.all(names.map(loadModel)); } catch (e) { return fail(e); }
+  if (my !== token) return;
+  clear();
+  const look = state.look;
+  const ctx = { channels: channels(look, state.team), rim: [0, 0, 0, 0] };
+  let verts = 0, tris = 0;
+  const rows = [];
+  names.forEach((n, i) => {
+    const M = models[i];
+    const mesh = meshOf(n, M, place && place.ctx ? Object.assign({}, ctx, place.ctx(n)) : ctx);
+    const m = place && place.matrix && place.matrix(n);
+    if (m) { mesh.matrixAutoUpdate = false; mesh.matrix.fromArray(m); }
+    root.add(mesh);
+    verts += M.nv; tris += M.idx.length / 3;
+    rows.push({ id: (extraRows && extraRows[n]) || '', file: n, v: M.nv, t: M.idx.length / 3, note: '' });
+  });
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  grid.visible = state.grid && state.section !== 'arena';
+  if (!box.isEmpty()) grid.position.y = state.section === 'arena' ? 0 : box.min.y;
+  busy(false);
+  partsList(rows);
+  if (!keepCamera) focus('fit');
+  note(`${verts.toLocaleString()} vertices · ${Math.round(tris).toLocaleString()} triangles · ${$('surface').selectedOptions[0].text.toLowerCase()}`);
+  dirty = true;
+}
+
+function fail(e) {
+  busy(false);
+  $('err').hidden = false;
+  $('err').textContent = 'This part could not be loaded (' + (e && e.message ? e.message : e) + '). Reload the page to try again.';
+}
+
+function partsList(rows, footer) {
+  const el = $('parts');
+  el.replaceChildren();
+  for (const r of rows) {
+    const d = document.createElement('div');
+    d.className = 'part';
+    d.innerHTML = '<span class="iid"></span><span class="file"></span><span class="meta"></span>';
+    d.children[0].textContent = r.id;
+    d.children[1].textContent = r.file;
+    d.children[2].textContent = `${r.v.toLocaleString()} v · ${Math.round(r.t).toLocaleString()} tris${r.note ? ' · ' + r.note : ''}`;
+    el.append(d);
+  }
+  if (footer) { const p = document.createElement('p'); p.textContent = footer; el.append(p); }
+}
+
+function title(id, name) {
+  const h = $('title');
+  h.replaceChildren();
+  if (id) { const s = document.createElement('span'); s.className = 'id'; s.textContent = id; h.append(s); }
+  h.append(document.createTextNode(name));
+}
+function note(t) { $('note').textContent = t; }
+
+// ---------------------------------------------------------------- the sidebar
+function el(tag, attrs = {}, text) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text != null) e.textContent = text;
+  return e;
+}
+const toSRGB = (c) => Math.round(255 * Math.min(1, Math.pow(Math.max(0, c), 1 / 2.2)));
+const css = (rgb) => `rgb(${toSRGB(rgb[0])},${toSRGB(rgb[1])},${toSRGB(rgb[2])})`;
+
+function buildAvatarPanel() {
+  const ps = $('preset');
+  ps.append(el('option', { value: '-1' }, 'Your own choices'));
+  D.presets.forEach((p, i) => ps.append(el('option', { value: String(i) }, p.name)));
+  const box = $('avFields');
+  for (const fname of FIELD_ORDER) {
+    const f = field(fname);
+    const id = 'f_' + KEY[fname];
+    const row = el('div', { class: 'row' });
+    row.append(el('label', { for: id }, fname.charAt(0) + fname.slice(1).toLowerCase()));
+    const s = el('select', { id });
+    f.options.forEach((o, i) => {
+      const vid = idFor(fname, i);
+      s.append(el('option', { value: String(i) }, (vid ? vid + '  ' : '') + o.name));
+    });
+    s.addEventListener('change', () => {
+      state.look[KEY[fname]] = +s.value;
+      $('preset').value = '-1';
+      state.item = idFor(fname, +s.value) || null;
+      const e = D.avatar.find((a) => a.id === state.item);
+      route(state.item, { keepCamera: !e || e.view === state.focus, fromPanel: true });
+    });
+    row.append(s);
+    box.append(row);
+  }
+  const cbox = $('avColors');
+  for (const [fname, key] of COLOR_FIELDS) {
+    const f = field(fname);
+    const row = el('div', { class: 'row' });
+    row.append(el('label', {}, fname.charAt(0) + fname.slice(1).toLowerCase()));
+    const sw = el('div', { class: 'swatches', role: 'group', 'aria-label': fname.toLowerCase() });
+    f.options.forEach((o, i) => {
+      const team = (fname === 'GLOW' && i === 0) || (fname === 'SHIELD TINT' && i === f.options.length - 1) || (fname === 'HAIR COLOR' && i === f.options.length - 1);
+      const b = el('button', { type: 'button', class: 'swatch' + (team ? ' team' : ''), title: o.name + (team ? ' (the team colour)' : ''),
+        'aria-label': o.name, 'data-k': key, 'data-i': String(i) });
+      b.style.background = css(team ? D.teams[state.team] : o.rgb);
+      b.addEventListener('click', () => { state.look[key] = i; $('preset').value = '-1'; syncAvatarPanel(); showAvatar(true); });
+      sw.append(b);
+    });
+    row.append(sw);
+    cbox.append(row);
+  }
+  ps.addEventListener('change', () => {
+    if (+ps.value < 0) return;
+    state.look = Object.assign(defaultLook(), D.presets[+ps.value].look);
+    state.item = null;
+    syncAvatarPanel();
+    showAvatar(true);
+    setHash('');
+  });
+  $('pose').addEventListener('change', () => { state.pose = $('pose').value; showAvatar(true); });
+  $('team').addEventListener('change', () => { state.team = +$('team').value; syncAvatarPanel(); rebuild(true); });
+  $('random').addEventListener('click', () => {
+    const L = {};
+    for (const fname of FIELD_ORDER) L[KEY[fname]] = Math.floor(Math.random() * field(fname).options.length);
+    for (const [fname, key] of COLOR_FIELDS) L[key] = Math.floor(Math.random() * field(fname).options.length);
+    if (Math.random() < 0.5) L.headgear = 0;
+    if (Math.random() < 0.6) L.mask = 0;
+    if (Math.random() < 0.4) L.visor = 0;
+    state.look = Object.assign(defaultLook(), L);
+    state.item = null;
+    $('preset').value = '-1';
+    syncAvatarPanel();
+    showAvatar(true);
+    setHash('');
+  });
+}
+
+function syncAvatarPanel() {
+  for (const fname of FIELD_ORDER) $('f_' + KEY[fname]).value = String(state.look[KEY[fname]]);
+  document.querySelectorAll('.swatch').forEach((b) => {
+    b.setAttribute('aria-pressed', String(state.look[b.dataset.k] === +b.dataset.i));
+    if (b.classList.contains('team')) b.style.background = css(D.teams[state.team]);
+  });
+}
+
+function itemButton(id, name, meta, onClick) {
+  const b = el('button', { type: 'button', class: 'item', 'data-id': id });
+  b.append(el('span', { class: 'iid' }, id), el('span', { class: 'nm' }, name), el('span', { class: 'meta' }, meta || ''));
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function buildList() {
+  const L = $('list');
+  L.replaceChildren();
+  const s = state.section;
+  $('pList').hidden = s === 'avatar';
+  $('pAvatar').hidden = s !== 'avatar';
+  $('pView').hidden = s === 'tex' || s === 'snd' || s === 'code';
+  $('bonesRow').hidden = s !== 'avatar';
+  $('focus').querySelectorAll('[data-f="head"],[data-f="hands"],[data-f="full"]').forEach((b) => { b.hidden = s !== 'avatar'; });
+  if (s === 'props') {
+    $('listTitle').textContent = 'Props and gauntlets';
+    for (const p of D.props) L.append(itemButton(p.id, p.name, kv(p.models), () => route(p.id)));
+  } else if (s === 'arena') {
+    $('listTitle').textContent = 'Arena layers (tick to show)';
+    const all = itemButton('A', 'Everything together', '', () => route('A'));
+    L.append(all);
+    for (const a of D.arena) {
+      const row = el('div', { style: 'display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px;align-items:center' });
+      const cb = el('input', { type: 'checkbox', id: 'lay_' + a.id, 'aria-label': 'Show ' + a.name });
+      cb.checked = state.layers.has(a.id);
+      cb.addEventListener('change', () => { if (cb.checked) state.layers.add(a.id); else state.layers.delete(a.id); state.item = 'A'; showArena(true); });
+      row.append(cb, itemButton(a.id, a.name, kv([a.model]), () => route(a.id)));
+      L.append(row);
+    }
+  } else if (s === 'tex') {
+    $('listTitle').textContent = 'Textures';
+    for (const t of D.tex) if (D.textures[t.file]) L.append(itemButton(t.id, t.name, D.textures[t.file].join('×'), () => route(t.id)));
+    L.append(el('h2', { style: 'margin-top:10px' }, 'Every texture file'));
+    for (const f of Object.keys(D.textures).sort()) {
+      if (D.tex.some((t) => t.file === f)) continue;
+      L.append(itemButton('', f, D.textures[f].join('×'), () => route('tex:' + f)));
+    }
+  } else if (s === 'snd') {
+    $('listTitle').textContent = 'Sounds (press to play)';
+    for (const x of D.sounds) L.append(itemButton(x.id, x.name, x.licensed ? 'open set' : '', () => route(x.id)));
+  } else if (s === 'code') {
+    $('listTitle').textContent = 'Effects drawn in code';
+    for (const c of D.code) L.append(itemButton(c.id, c.name, '', () => route(c.id)));
+  }
+  markCurrent();
+}
+function kv(models) {
+  const n = models.reduce((a, m) => a + (D.models[m] ? D.models[m].kb : 0), 0);
+  return n > 1024 ? (n / 1024).toFixed(1) + ' MB' : n + ' kB';
+}
+function markCurrent() {
+  document.querySelectorAll('.item').forEach((b) => b.setAttribute('aria-current', String(!!state.item && b.dataset.id === state.item)));
+  showDownload();
+}
+
+// ---------------------------------------------------------------- downloads (the GitHub page; the Claude artifact's frame
+// refuses downloads, so there it links to that page)
+const size = (kb) => (kb >= 1024 ? (kb / 1024).toFixed(1) + ' MB' : kb + ' kB');
+function showDownload() {
+  const box = $('dlBox');
+  if (!box || !D) return;
+  box.replaceChildren();
+  const id = state.item;
+  if (!D.dl) {
+    const p = el('p', { class: 'hint' }, 'Downloads are on the GitHub page: ');
+    p.append(el('a', { href: D.dlHome + (id && !id.startsWith('tex:') ? '#' + id : ''), target: '_blank', rel: 'noopener' }, 'open it there'));
+    box.append(p);
+    return;
+  }
+  const d = id && D.dl[id];
+  if (d) {
+    box.append(el('a', { class: 'dlbtn', href: d.f, download: d.name }, 'Download ' + (id.startsWith('tex:') ? id.slice(4) : id)));
+    box.append(el('p', { class: 'hint' }, `${d.name} · ${d.what} · ${size(d.kb)}`));
+    return;
+  }
+  const a = state.section === 'avatar' && D.avatar.find((x) => x.id === id);
+  const why = a && a.field === 'BUILD' ? 'A build sizes the body: it has no file of its own. The template pack has the bodies.'
+    : state.section === 'avatar' ? 'Pick a part in the list (its V ID) to download it.'
+    : state.section === 'arena' ? 'Pick one layer (A01 to A10) to download it.'
+    : state.section === 'code' ? 'Drawn by the game\'s code: there is no file to download.'
+    : 'Pick an item to download it.';
+  box.append(el('p', { class: 'hint' }, why));
+}
+function setupDownloads() {
+  const t = D.dl && D.dl.templates;
+  if (t) {
+    $('tplMeta').textContent = `(${size(t.kb)}, made from the game ${t.version}'s bodies)`;
+  } else {
+    $('tplLink').removeAttribute('download');
+    $('tplLink').setAttribute('href', D.dlHome);
+    $('tplLink').setAttribute('target', '_blank');
+    $('tplLink').setAttribute('rel', 'noopener');
+    $('tplMeta').textContent = '(on the GitHub page)';
+  }
+}
+
+// ---------------------------------------------------------------- props, arena, textures, sounds, code effects
+function showProp(p, keep) {
+  title(p.id, p.name);
+  showFlat(false);
+  const gl = D.gauntletLocal;
+  const place = {
+    matrix: (n) => (n.endsWith('_hand') ? gl.fist : n.endsWith('_cuff') ? gl.cuff : null),
+    ctx: (n) => (n === 'knuckleguard' ? { channels: null, alphaMul: 0.35, forceShader: SH.TRANS, tintMul: D.teams[state.team].map((x) => 0.75 + 0.25 * x) } : {}),
+  };
+  const ids = {};
+  p.models.forEach((m) => { ids[m] = p.id; });
+  showModels(p.models, place, keep, ids).then(() => describe(p.desc, p.made));
+}
+
+function showArena(keep) {
+  const list = state.item && state.item !== 'A' ? D.arena.filter((a) => a.id === state.item) : D.arena.filter((a) => state.layers.has(a.id));
+  const one = state.item && state.item !== 'A' ? list[0] : null;
+  title(one ? one.id : 'A01–A10', one ? one.name : 'Arena and stadium');
+  showFlat(false);
+  const ids = {};
+  list.forEach((a) => { ids[a.model] = a.id; });
+  showModels(list.map((a) => a.model), null, keep, ids).then(() => describe(one ? one.desc : 'The square room as the game draws it, every layer at once. Tick the layers to show or hide them; choose one to see it alone.', one ? one.made : ''));
+}
+
+function describe(desc, made) {
+  const el2 = $('parts');
+  const p = document.createElement('p');
+  p.textContent = desc;
+  el2.prepend(p);
+  if (made) { const m = document.createElement('p'); m.textContent = 'Made by ' + made; el2.append(m); }
+}
+
+function showFlat(on) {
+  $('flat').hidden = !on;
+  canvas.style.visibility = on ? 'hidden' : 'visible';
+  if (!on) dirty = true;
+}
+
+function showTexture(file, t) {
+  ++token;
+  showFlat(true);
+  const f = $('flat');
+  f.replaceChildren();
+  const img = el('img', { class: 'tex', alt: (t ? t.name : file) + ' texture', src: 'tex/' + file + '.png' });
+  f.append(img);
+  const used = Object.entries(D.texUse).filter(([, ts]) => ts.includes(file)).map(([m]) => m);
+  f.append(el('div', { class: 'info' }, `${file}.png · ${D.textures[file].join(' × ')} px${used.length ? ' · used by ' + used.slice(0, 8).join(', ') + (used.length > 8 ? ` and ${used.length - 8} more` : '') : ''}`));
+  title(t ? t.id : '', t ? t.name : file);
+  partsList([]);
+  if (t) describe(t.desc, 'tools/gen_open_textures.py');
+  note('');
+}
+
+let audio = null;
+async function showSound(x) {
+  ++token;
+  showFlat(true);
+  const f = $('flat');
+  f.replaceChildren();
+  const card = el('div', { class: 'card' });
+  const h = el('h3');
+  h.append(el('span', { class: 'iid' }, x.id), document.createTextNode(x.name));
+  card.append(h, el('p', {}, x.desc));
+  if (x.licensed) card.append(el('p', {}, `This is the open set's sound (${x.file}). The store game plays ${x.licensed} here instead; licensed sounds are listed in NOTICE.txt and are not in the public files.`));
+  const play = el('button', { type: 'button' }, 'Play ' + x.id);
+  card.append(play);
+  const cv = el('canvas', { width: '900', height: '180', 'aria-label': 'Waveform of ' + x.name });
+  f.append(card, cv);
+  play.addEventListener('click', () => {
+    if (audio) audio.pause();
+    audio = new Audio('snd/' + x.file);
+    audio.play().catch(() => {});
+  });
+  title(x.id, x.name);
+  partsList([{ id: x.id, file: 'audio/' + x.file, v: 0, t: 0, note: '' }].map((r) => Object.assign(r, { v: 0 })));
+  $('parts').replaceChildren(el('p', {}, `app/assets_open/audio/${x.file} · the event "${x.event}"`));
+  note('');
+  try {
+    const buf = await (await fetch('snd/' + x.file)).arrayBuffer();
+    const ac = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 44100, 44100);
+    const ab = await ac.decodeAudioData(buf);
+    const d = ab.getChannelData(0), g = cv.getContext('2d'), W = cv.width, H = cv.height;
+    g.fillStyle = '#0a1018'; g.fillRect(0, 0, W, H);
+    g.strokeStyle = '#33404d'; g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
+    g.fillStyle = '#f8bd5c';
+    for (let x2 = 0; x2 < W; x2++) {
+      const a = Math.floor((x2 / W) * d.length), b = Math.floor(((x2 + 1) / W) * d.length);
+      let lo = 0, hi = 0;
+      for (let i = a; i < b; i++) { if (d[i] < lo) lo = d[i]; if (d[i] > hi) hi = d[i]; }
+      g.fillRect(x2, H / 2 - hi * H * 0.46, 1, Math.max(1, (hi - lo) * H * 0.46));
+    }
+    g.fillStyle = '#aabac9'; g.font = '12px system-ui'; g.fillText(ab.duration.toFixed(2) + ' s', 8, 16);
+  } catch (e) { /* (the waveform is optional) */ }
+}
+
+function showCode(c) {
+  ++token;
+  showFlat(true);
+  const f = $('flat');
+  f.replaceChildren();
+  const card = el('div', { class: 'card' });
+  const h = el('h3');
+  h.append(el('span', { class: 'iid' }, c.id), document.createTextNode(c.name));
+  card.append(h, el('p', {}, c.desc), el('p', {}, 'There is no file to swap: the game draws this itself. Describe a change by its ID.'));
+  const code = el('code', {}, c.where);
+  card.append(code);
+  f.append(card);
+  title(c.id, c.name);
+  $('parts').replaceChildren(el('p', {}, c.where));
+  note('');
+}
+
+// ---------------------------------------------------------------- routing: a section, or an ID (#V12, #P04, #S12)
+function setHash(id) {
+  try { history.replaceState(null, '', id ? '#' + id : location.pathname + location.search); } catch (e) { /* (some hosts refuse it) */ }
+}
+
+function sectionOf(id) {
+  if (!id) return null;
+  if (id.startsWith('tex:')) return 'tex';
+  return { V: 'avatar', P: 'props', A: 'arena', T: 'tex', S: 'snd', C: 'code' }[id[0]] || null;
+}
+
+function route(id, opts = {}) {
+  $('err').hidden = true;
+  id = (id || '').trim();
+  if (/^[vpatsc]\d+$/i.test(id)) id = id[0].toUpperCase() + id.slice(1).padStart(2, '0');
+  const sec = sectionOf(id);
+  if (sec && sec !== state.section) { state.section = sec; $('section').value = sec; buildList(); }
+  state.item = id || null;
+  markCurrent();
+  if (id && !id.startsWith('tex:') && id !== 'A') setHash(id);
+  const s = state.section;
+  if (s === 'avatar') {
+    const e = D.avatar.find((a) => a.id === id);
+    if (e && !opts.fromPanel) { Object.assign(state.look, e.look); syncAvatarPanel(); }
+    if (e && !opts.keepCamera) state.focus = e.view;
+    showFlat(false);
+    return showAvatar(!!opts.keepCamera);
+  }
+  if (s === 'props') { const p = D.props.find((x) => x.id === id) || D.props[0]; state.item = p.id; markCurrent(); return showProp(p, opts.keepCamera); }
+  if (s === 'arena') {
+    if (!D.arena.some((a) => a.id === id)) state.item = 'A';
+    markCurrent();
+    return showArena(opts.keepCamera);
+  }
+  if (s === 'tex') {
+    if (id.startsWith('tex:')) return showTexture(id.slice(4), null);
+    const t = D.tex.find((x) => x.id === id) || D.tex[0];
+    state.item = t.id; markCurrent();
+    return showTexture(t.file, t);
+  }
+  if (s === 'snd') { const x = D.sounds.find((y) => y.id === id) || D.sounds[0]; state.item = x.id; markCurrent(); return showSound(x); }
+  if (s === 'code') { const c = D.code.find((y) => y.id === id) || D.code[0]; state.item = c.id; markCurrent(); return showCode(c); }
+}
+
+function rebuild(keep) {   // the view's settings changed: draw the same thing again
+  if (state.section === 'avatar') return showAvatar(keep);
+  if (state.section === 'props' || state.section === 'arena') return route(state.item, { keepCamera: keep });
+}
+
+// ---------------------------------------------------------------- start
+async function start() {
+  try {
+    D = await (await fetch('data.json')).json();
+  } catch (e) {
+    $('err').hidden = false;
+    $('err').textContent = 'The catalog (data.json) did not load. Reload the page to try again.';
+    return;
+  }
+  state.look = defaultLook();
+  state.layers = new Set(D.arena.filter((a) => a.id !== 'A10').map((a) => a.id));
+  buildAvatarPanel();
+  syncAvatarPanel();
+  setupDownloads();
+  const legend = $('legend');
+  CHANNEL.forEach((c, i) => { const s = el('span', {}, c); s.style.setProperty('--c', css(CHANNEL_SHOW[i])); legend.append(s); });
+  $('section').addEventListener('change', () => {
+    state.section = $('section').value;
+    buildList();
+    const first = { avatar: '', props: 'P01', arena: 'A', tex: 'T01', snd: 'S01', code: 'C01' }[state.section];
+    route(first);
+  });
+  $('find').addEventListener('keydown', (e) => { if (e.key === 'Enter') { route($('find').value); $('find').select(); } });
+  $('surface').addEventListener('change', () => { state.surface = +$('surface').value; $('legend').hidden = state.surface !== 2; rebuild(true); });
+  $('wire').addEventListener('change', () => { state.wire = $('wire').checked; rebuild(true); });
+  $('ghost').addEventListener('change', () => { state.ghost = $('ghost').checked; rebuild(true); });
+  $('bones').addEventListener('change', () => { state.bones = $('bones').checked; rebuild(true); });
+  $('grid').addEventListener('change', () => { state.grid = $('grid').checked; grid.visible = state.grid && state.section !== 'arena'; dirty = true; });
+  $('views').addEventListener('click', (e) => { const v = e.target.closest('[data-v]'); if (v) turn(v.dataset.v); });
+  $('focus').addEventListener('click', (e) => { const f = e.target.closest('[data-f]'); if (f) focus(f.dataset.f); });
+  window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (h && h !== state.item) route(h); });
+  buildList();
+  resize();
+  frame();
+  const h = location.hash.slice(1);
+  route(h && sectionOf(h) ? h : '');
+}
+start();
+
 </script>
