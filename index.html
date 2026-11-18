@@ -71,6 +71,10 @@ p b { color: var(--fg); font-weight: 600; }
 #flat .card .iid { color: var(--accent); margin-right: 8px; }
 #flat .card code { font: 13px var(--mono); color: var(--link); }
 #flat .info { color: var(--muted); font-size: 13px; text-align: center; max-width: 80ch; }
+#flat .tex.flag { width: min(576px, 100%); height: auto; max-height: none; aspect-ratio: 3 / 2; border-radius: 4px; }
+#flat .kit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#flat .kit span { width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--line); }
+#flat .kit em { color: var(--muted); font-style: normal; font-size: 13px; margin-left: 8px; }
 #busy { position: absolute; top: 12px; right: max(16px, env(safe-area-inset-right, 0px)); font: 12px var(--mono); color: var(--accent); background: #000a;
   border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
 #err { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--fg); }
@@ -112,8 +116,9 @@ a { color: var(--link); }
           <option value="tex">Textures (T)</option>
           <option value="snd">Sounds (S)</option>
           <option value="code">Effects drawn in code (C)</option>
+          <option value="flags">Country flags (F)</option>
         </select></div>
-      <div class="row"><label for="find">Go to an ID</label><input id="find" type="text" placeholder="V12, P04, S12 ..." autocomplete="off" spellcheck="false"></div>
+      <div class="row"><label for="find">Go to an ID</label><input id="find" type="text" placeholder="V12, P04, S12, F001 ..." autocomplete="off" spellcheck="false"></div>
     </section>
     <section id="pMake">
       <h2>Make your own</h2>
@@ -195,11 +200,12 @@ const CHANNEL = ['none', 'main colour', 'trim colour', 'glow', 'skin', 'shield t
 const CHANNEL_SHOW = [[0.30, 0.30, 0.32], [0.05, 0.25, 0.95], [0.95, 0.35, 0.05], [0.10, 0.95, 0.95], [0.95, 0.55, 0.60],
   [0.55, 0.20, 0.85], [0.35, 0.18, 0.05], [0.95, 0.85, 0.15]];
 const PATTERNS = ['', 'circuit', 'stripes', 'chevron', 'hex', 'split', 'pixel', 'bands'];
-const FIELD_ORDER = ['BODY TYPE', 'FACE', 'SUIT', 'BUILD', 'LOWER BODY', 'GAUNTLET', 'PATTERN', 'HAIR', 'HEADGEAR', 'FACE SHIELD', 'MASK'];
+const FIELD_ORDER = ['BODY TYPE', 'FACE', 'SUIT', 'BUILD', 'LOWER BODY', 'GAUNTLET', 'PATTERN', 'HAIR', 'HEADGEAR', 'FACE SHIELD', 'MASK',
+  'COUNTRY'];
 const COLOR_FIELDS = [['MAIN COLOR', 'primary'], ['TRIM COLOR', 'secondary'], ['GLOW', 'glow'], ['HAIR COLOR', 'haircolor'],
   ['SHIELD TINT', 'visortint'], ['SKIN', 'skin']];
 const KEY = { 'BODY TYPE': 'body', FACE: 'face', SUIT: 'suit', BUILD: 'build', 'LOWER BODY': 'lower', GAUNTLET: 'gauntlet',
-  PATTERN: 'pattern', HAIR: 'hair', HEADGEAR: 'headgear', 'FACE SHIELD': 'visor', MASK: 'mask' };
+  PATTERN: 'pattern', HAIR: 'hair', HEADGEAR: 'headgear', 'FACE SHIELD': 'visor', MASK: 'mask', COUNTRY: 'nation' };
 
 let D = null;                      // data.json
 const state = { section: 'avatar', look: null, pose: 'ready', team: 0, surface: 0, wire: false, ghost: false, bones: false,
@@ -243,19 +249,30 @@ function parseMdl(buf) {
   return { ver, nv, pos, nrm, uv0, uv1, col, bi, bw, idx, secs, mats };
 }
 
-const mdlCache = new Map();
+const mdlCache = new Map(), bundleCache = new Map();
+function fromBase64(t) {
+  const bin = atob(t.trim()), b = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+  return b.buffer;
+}
 function loadModel(name) {
   if (!mdlCache.has(name)) {
-    const ext = D.modelExt || '.mdl.gz';
-    mdlCache.set(name, fetch('models/' + name + ext).then((r) => {
-      if (!r.ok) throw new Error(name + ': ' + r.status);
-      if (ext !== '.txt') return r.arrayBuffer();
-      return r.text().then((t) => {   // (base64 of the gzipped file: for hosts that serve only web types)
-        const bin = atob(t.trim()), b = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
-        return b.buffer;
+    let got;
+    if (D.modelBundle) {   // (base64 of the gzipped files, a few to a bundle: for hosts that serve only web types and few files)
+      const k = D.modelBundle[name];
+      if (k === undefined) return Promise.reject(new Error(name + ': not in the viewer'));
+      if (!bundleCache.has(k)) bundleCache.set(k, fetch(`models/bundle_${k}.json`).then((r) => {
+        if (!r.ok) throw new Error('bundle ' + k + ': ' + r.status);
+        return r.json();
+      }));
+      got = bundleCache.get(k).then((B) => fromBase64(B[name]));
+    } else {
+      got = fetch('models/' + name + (D.modelExt || '.mdl.gz')).then((r) => {
+        if (!r.ok) throw new Error(name + ': ' + r.status);
+        return r.arrayBuffer();
       });
-    }).then(gunzip).then(parseMdl));
+    }
+    mdlCache.set(name, got.then(gunzip).then(parseMdl));
   }
   return mdlCache.get(name);
 }
@@ -283,17 +300,24 @@ const VS = `
 in vec2 aUV0;
 in vec2 aUV1;
 in vec4 aCol;
+in vec3 aDec0;   // (NATIONS: where the point lies in each print's box, bind space: worked out before skinning, as the game)
+in vec3 aDec1;
+in vec2 aDecN;
 uniform int uUV;
 out vec3 vN;
 out vec3 vW;
 out vec2 vUV;
 out vec4 vCol;
+out vec3 vDec0;
+out vec3 vDec1;
+out vec2 vDecN;
 void main() {
   vec4 w = modelMatrix * vec4(position, 1.0);
   vW = w.xyz;
   vN = mat3(modelMatrix) * normal;
   vUV = uUV == 1 ? aUV1 : aUV0;
   vCol = aCol;
+  vDec0 = aDec0; vDec1 = aDec1; vDecN = aDecN;
   gl_Position = projectionMatrix * viewMatrix * w;
 }`;
 const FS = `
@@ -324,7 +348,17 @@ uniform int uCloth;
 uniform sampler2D uFabric;
 uniform int uMode;      // the viewer's SURFACE: 0 the game's look, 1 neutral clay, 2 colour channels
 uniform vec3 uFlat;     // (2: this material's channel colour)
+uniform int uDecals;    // NATIONS: the flags printed on the jersey (two: the back, the chest)
+uniform sampler2D uDecalTex;
+in vec3 vDec0;
+in vec3 vDec1;
+in vec2 vDecN;
 out vec4 oColor;
+vec3 printed(vec3 alb, vec3 d, float facing) {   // a print where this point lies in its box, facing out (render.cpp)
+  if (facing <= 0.0 || abs(d.x) > 0.5 || abs(d.y) > 0.5 || abs(d.z) > 0.5) return alb;
+  vec4 t = texture(uDecalTex, vec2(d.x + 0.5, 0.5 - d.y));
+  return mix(alb, t.rgb, t.a);
+}
 vec3 arenaEnv(vec3 r) {
   float band = exp(-pow((r.y - 0.10) / 0.09, 2.0));
   float cols = pow(0.5 + 0.5 * sin(atan(r.z, r.x) * 26.0), 6.0);
@@ -391,6 +425,10 @@ void main() {
       alb = mix(alb, uPatCol.rgb, pt.r);
       glowAdd += uPatGlow.rgb * pt.g;
     }
+    if (uDecals > 0) {   // NATIONS: the flags printed on the jersey (lit and knit like the rest of it)
+      alb = printed(alb, vDec0, vDecN.x);
+      if (uDecals > 1) alb = printed(alb, vDec1, vDecN.y);
+    }
     float hemi = 0.5 + 0.5 * n.y;
     float ndl = max(dot(n, -uLightDir), 0.0);
     vec3 h = normalize(v - uLightDir);
@@ -455,6 +493,7 @@ function material(mt, ctx) {
     uDesCol: { value: C ? v4(C[2]) : v4([1, 1, 1, 1]) }, uDesGlow: { value: C ? v4(C[3]) : v4([0, 0, 0, 0]) },
     uChar: { value: chr ? 1 : 0 }, uCloth: { value: cloth ? 1 : 0 }, uFabric: { value: fabric || white },
     uUV: { value: mt.uv === 1 ? 1 : 0 }, uMode: { value: state.surface }, uFlat: { value: new THREE.Vector3(...flat) },
+    uDecals: { value: ctx.decalTex && sh === SH.LIT ? 2 : 0 }, uDecalTex: { value: ctx.decalTex || white },
   };
   const m = new THREE.ShaderMaterial({ uniforms: u, vertexShader: VS, fragmentShader: FS, glslVersion: THREE.GLSL3,
     wireframe: state.wire });
@@ -589,13 +628,18 @@ function tuckMap(name) {
 }
 
 // a model as a mesh: one geometry, a group and a material per section
-function meshOf(name, M, ctx, positions, normals) {
+function meshOf(name, M, ctx, positions, normals, decals) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(positions || M.pos, 3));
   g.setAttribute('normal', new THREE.BufferAttribute(normals || M.nrm, 3));
   g.setAttribute('aUV0', new THREE.BufferAttribute(M.uv0, 2));
   g.setAttribute('aUV1', new THREE.BufferAttribute(M.uv1, 2));
   g.setAttribute('aCol', new THREE.BufferAttribute(M.col, 4, true));
+  if (decals) {   // (NATIONS: the jersey's prints, decalCoords)
+    g.setAttribute('aDec0', new THREE.BufferAttribute(decals[0], 3));
+    g.setAttribute('aDec1', new THREE.BufferAttribute(decals[1], 3));
+    g.setAttribute('aDecN', new THREE.BufferAttribute(decals[2], 2));
+  }
   g.setIndex(new THREE.BufferAttribute(M.idx, 1));
   const mats = [];
   M.secs.forEach(([first, count, mi], si) => { g.addGroup(first, count, si); mats.push(material(M.mats[mi], ctx)); });
@@ -611,13 +655,68 @@ function meshOf(name, M, ctx, positions, normals) {
 function field(name) { return D.fields.find((f) => f.name === name); }
 function optRGB(name, i) { const o = field(name).options[i]; return o ? o.rgb.slice() : [0.5, 0.5, 0.5]; }
 
+// NATIONS (COUNTRY, F IDs): the look's country (null: none)
+function nationOf(look) { return (look.nation && D.nations && D.nations[look.nation - 1]) || null; }
+const lin = (c) => Math.pow(c / 255, 2.2);   // (avatar.cpp lin)
+function kitTrim(N) {   // the kit's trim: the flag's accent colour, or its second when the accent is the jersey's own
+  let d = 0;
+  for (let k = 0; k < 3; k++) d += Math.abs(N.kit[2][k] - N.kit[0][k]);
+  return d > 90 ? 2 : 1;
+}
+function glowOf(c, fallback) {   // a kit colour as a glow (brightest 1)
+  const v = c.map(lin), m = Math.max(...v);
+  return m < 0.02 ? fallback.slice() : v.map((x) => x / m);
+}
+// the colour of the wearer's end of the court: blue / orange, or the country's (avatar.cpp sideColors, one player)
+function teamColor(look, team) { const N = nationOf(look); return N ? N.team[0].slice() : D.teams[team].slice(); }
+// with a country, the team kit: the ARENA JERSEY, no pattern, ATHLETIC SHORTS (bike and long shorts and the skirts stay)
+function uniformLook(look) {
+  if (!nationOf(look)) return look;
+  const d = Object.assign({}, look);
+  d.suit = 1; d.pattern = 0;
+  if (d.lower === 0 || d.lower === 2) d.lower = 1;
+  return d;
+}
+// main.cpp's two prints: a box in bind space each (bind space -> the unit box at the pose: x, y across, z through the
+// cloth), the flag high on the back just under the collar and small on the left chest
+const DEG = Math.PI / 180;
+function printBoxes(fem) {
+  const qx = (a) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), a);
+  const qy = (a) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), a);
+  return [
+    { q: qx(15 * DEG), p: fem ? [0, -0.11, 0.090] : [0, -0.12, 0.125], size: [0.13, 0.13 / 1.5, 0.16] },
+    { q: qy(Math.PI).multiply(qx(-(fem ? 45 : 18) * DEG)), p: fem ? [-0.08, -0.118, -0.147] : [-0.08, -0.150, -0.131],
+      size: [0.055, 0.055 / 1.5, 0.10] },
+  ];
+}
+function decalCoords(M, fem) {   // each vertex's place in both boxes, and which way its normal faces through them
+  const boxes = printBoxes(fem).map((b) => ({ inv: b.q.clone().invert(), p: new THREE.Vector3(...b.p), size: b.size }));
+  const d0 = new Float32Array(M.nv * 3), d1 = new Float32Array(M.nv * 3), dn = new Float32Array(M.nv * 2);
+  const v = new THREE.Vector3(), n = new THREE.Vector3();
+  for (let i = 0; i < M.nv; i++) {
+    boxes.forEach((b, k) => {
+      v.set(M.pos[i * 3], M.pos[i * 3 + 1], M.pos[i * 3 + 2]).sub(b.p).applyQuaternion(b.inv);
+      const out = k ? d1 : d0;
+      out[i * 3] = v.x / b.size[0]; out[i * 3 + 1] = v.y / b.size[1]; out[i * 3 + 2] = v.z / b.size[2];
+      n.set(M.nrm[i * 3], M.nrm[i * 3 + 1], M.nrm[i * 3 + 2]).applyQuaternion(b.inv);
+      dn[i * 2 + k] = n.z / b.size[2];
+    });
+  }
+  return [d0, d1, dn];
+}
+
 function channels(look, team) {
-  const tc = D.teams[team];
+  const tc = teamColor(look, team);
   const out = [];
   for (let c = 0; c < 8; c++) out.push([1, 1, 1]);
   out[1] = optRGB('MAIN COLOR', look.primary);
   out[2] = optRGB('TRIM COLOR', look.secondary);
   out[3] = look.glow === 0 ? tc.slice() : optRGB('GLOW', look.glow);
+  const N = nationOf(look);
+  if (N) {   // the team kit in the flag's own colours
+    const t = kitTrim(N);
+    out[1] = N.kit[0].map(lin); out[2] = N.kit[t].map(lin); out[3] = glowOf(N.kit[2], N.team[0]);
+  }
   out[4] = optRGB('SKIN', look.skin);
   const nT = field('SHIELD TINT').options.length, nH = field('HAIR COLOR').options.length;
   out[5] = look.visortint === nT - 1 ? tc.map((x) => x * 0.45) : optRGB('SHIELD TINT', look.visortint);
@@ -670,7 +769,7 @@ function idFor(fieldName, value) {
 function defaultLook() {
   const p = D.presets[1] || D.presets[0];
   const look = { suit: 0, build: 1, pattern: 0, primary: 0, secondary: 1, glow: 0, hair: 0, haircolor: 0, headgear: 0, visor: 0,
-    visortint: 0, mask: 0, skin: 2, lower: 0, body: 0, gauntlet: 0, face: 0 };
+    visortint: 0, mask: 0, skin: 2, lower: 0, body: 0, gauntlet: 0, face: 0, nation: 0 };
   return Object.assign(look, p.look);
 }
 
@@ -758,7 +857,8 @@ function busy(on, text) { $('busy').hidden = !on; if (text) $('busy').textConten
 
 async function showAvatar(keepCamera) {
   const my = ++token;
-  const look = state.look;
+  const look = uniformLook(state.look);   // (a country: its team kit)
+  const N = nationOf(look);
   const rigKey = `${look.body ? 1 : 0}${look.build}_${state.pose}`;
   const rig = D.rig[rigKey];
   const parts = partsOf(look);
@@ -768,10 +868,11 @@ async function showAvatar(keepCamera) {
   if (my !== token) return;
   clear();
   const C = channels(look, state.team);
-  const rim = [...D.teams[state.team], 0.5];
+  const rim = [...teamColor(look, state.team), 0.5];
   const b = look.body ? 'f' : 'm';
   const pattern = look.pattern ? tex(`open_pat_${PATTERNS[look.pattern]}_${b}`, false) : null;
   const ctx = { channels: C, rim, pattern };
+  const flagTex = N ? tex(N.flag, true) : null;
   const head = new THREE.Matrix4().fromArray(rig.head);
   // hair under the headgear and the face shield: their tuck maps (main.cpp hairTuck)
   const maps = [];
@@ -787,7 +888,9 @@ async function showAvatar(keepCamera) {
     let mesh;
     if (p.at === 'skin') {
       const [pos, nrm] = skin(M, rig);
-      mesh = meshOf(p.model, M, ctx, pos, nrm);
+      const jersey = flagTex && p.model.startsWith('av_top_');   // (main.cpp: the prints on the jersey)
+      mesh = meshOf(p.model, M, jersey ? Object.assign({}, ctx, { decalTex: flagTex }) : ctx, pos, nrm,
+        jersey ? decalCoords(M, !!look.body) : null);
     } else if (p.at === 'head') {
       const c = Object.assign({}, ctx);
       if (p.neon) c.emAdd = C[3].map((x) => x * 0.35);
@@ -797,7 +900,7 @@ async function showAvatar(keepCamera) {
     } else {
       const c = Object.assign({}, ctx);
       if (p.knuckle) {
-        const t = D.teams[state.team];
+        const t = teamColor(look, state.team);
         c.alphaMul = 0.35; c.tintMul = t.map((x) => 0.75 + 0.25 * x); c.forceShader = SH.TRANS;   // (main.cpp kp)
         c.channels = null; c.rim = null;
       }
@@ -817,7 +920,8 @@ async function showAvatar(keepCamera) {
   grid.visible = state.grid;
   grid.position.y = 0;
   busy(false);
-  partsList(rows, `${look.pattern ? idFor('PATTERN', look.pattern) + ' pattern ' + PATTERNS[look.pattern] + ' · ' : ''}${idFor('BUILD', look.build)} build`);
+  partsList(rows, `${N ? N.id + ' ' + titleCase(N.name) + ': the team kit, the flag on the back and the chest · ' : ''}`
+    + `${look.pattern ? idFor('PATTERN', look.pattern) + ' pattern ' + PATTERNS[look.pattern] + ' · ' : ''}${idFor('BUILD', look.build)} build`);
   const headP = new THREE.Vector3().setFromMatrixPosition(head);
   state.headP = headP;
   const hp = rig.hands.map((h) => new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().fromArray(h.fist)));
@@ -826,7 +930,7 @@ async function showAvatar(keepCamera) {
   const e = state.item && D.avatar.find((a) => a.id === state.item);
   title(e ? e.id : '', e ? e.name : 'Avatar builder');
   note(`${verts.toLocaleString()} vertices · ${Math.round(tris).toLocaleString()} triangles · ${$('pose').selectedOptions[0].text.toLowerCase()} pose · `
-    + `${['blue', 'orange'][state.team]} end · ${$('surface').selectedOptions[0].text.toLowerCase()}`);
+    + `${N ? titleCase(N.name) + "'s colours" : ['blue', 'orange'][state.team] + ' end'} · ${$('surface').selectedOptions[0].text.toLowerCase()}`);
   dirty = true;
 }
 
@@ -858,7 +962,11 @@ function focus(f) {
 
 function turn(v) {
   const d = new THREE.Vector3(...viewDir(v)).normalize();
-  const dist = camera.position.distanceTo(controls.target);
+  // (no view yet, the camera on its target: a turn by nothing left the orbit controls without a number for good, and the
+  // view black; the item's own view first)
+  let dist = camera.position.distanceTo(controls.target);
+  if (!(dist > 1e-3)) { focus(state.focus); dist = camera.position.distanceTo(controls.target); }
+  if (!(dist > 1e-3)) return;
   camera.position.copy(controls.target).addScaledVector(d, dist);
   controls.update();
   dirty = true;
@@ -946,7 +1054,7 @@ function buildAvatarPanel() {
     row.append(el('label', { for: id }, fname.charAt(0) + fname.slice(1).toLowerCase()));
     const s = el('select', { id });
     f.options.forEach((o, i) => {
-      const vid = idFor(fname, i);
+      const vid = fname === 'COUNTRY' ? (i && D.nations[i - 1] ? D.nations[i - 1].id : '') : idFor(fname, i);
       s.append(el('option', { value: String(i) }, (vid ? vid + '  ' : '') + o.name));
     });
     s.addEventListener('change', () => {
@@ -969,7 +1077,7 @@ function buildAvatarPanel() {
       const team = (fname === 'GLOW' && i === 0) || (fname === 'SHIELD TINT' && i === f.options.length - 1) || (fname === 'HAIR COLOR' && i === f.options.length - 1);
       const b = el('button', { type: 'button', class: 'swatch' + (team ? ' team' : ''), title: o.name + (team ? ' (the team colour)' : ''),
         'aria-label': o.name, 'data-k': key, 'data-i': String(i) });
-      b.style.background = css(team ? D.teams[state.team] : o.rgb);
+      b.style.background = css(team ? teamColor(state.look, state.team) : o.rgb);
       b.addEventListener('click', () => { state.look[key] = i; $('preset').value = '-1'; syncAvatarPanel(); showAvatar(true); });
       sw.append(b);
     });
@@ -993,6 +1101,7 @@ function buildAvatarPanel() {
     if (Math.random() < 0.5) L.headgear = 0;
     if (Math.random() < 0.6) L.mask = 0;
     if (Math.random() < 0.4) L.visor = 0;
+    if (Math.random() < 0.85) L.nation = 0;   // (a country now and then: its kit covers the suit)
     state.look = Object.assign(defaultLook(), L);
     state.item = null;
     $('preset').value = '-1';
@@ -1006,7 +1115,7 @@ function syncAvatarPanel() {
   for (const fname of FIELD_ORDER) $('f_' + KEY[fname]).value = String(state.look[KEY[fname]]);
   document.querySelectorAll('.swatch').forEach((b) => {
     b.setAttribute('aria-pressed', String(state.look[b.dataset.k] === +b.dataset.i));
-    if (b.classList.contains('team')) b.style.background = css(D.teams[state.team]);
+    if (b.classList.contains('team')) b.style.background = css(teamColor(state.look, state.team));
   });
 }
 
@@ -1023,7 +1132,7 @@ function buildList() {
   const s = state.section;
   $('pList').hidden = s === 'avatar';
   $('pAvatar').hidden = s !== 'avatar';
-  $('pView').hidden = s === 'tex' || s === 'snd' || s === 'code';
+  $('pView').hidden = s === 'tex' || s === 'snd' || s === 'code' || s === 'flags';
   $('bonesRow').hidden = s !== 'avatar';
   $('focus').querySelectorAll('[data-f="head"],[data-f="hands"],[data-f="full"]').forEach((b) => { b.hidden = s !== 'avatar'; });
   if (s === 'props') {
@@ -1055,6 +1164,9 @@ function buildList() {
   } else if (s === 'code') {
     $('listTitle').textContent = 'Effects drawn in code';
     for (const c of D.code) L.append(itemButton(c.id, c.name, '', () => route(c.id)));
+  } else if (s === 'flags') {
+    $('listTitle').textContent = 'Country flags (the team kits)';
+    for (const N of D.nations) L.append(itemButton(N.id, titleCase(N.name), N.code, () => route(N.id)));
   }
   markCurrent();
 }
@@ -1203,6 +1315,43 @@ async function showSound(x) {
   } catch (e) { /* (the waveform is optional) */ }
 }
 
+function titleCase(s) { return s.toLowerCase().replace(/(^|[\s-])\S/g, (m) => m.toUpperCase()); }
+const KIT_PART = ['jersey', 'trim', 'accent'];
+function showFlag(N) {
+  ++token;
+  showFlat(true);
+  const f = $('flat');
+  f.replaceChildren();
+  f.append(el('img', { class: 'tex flag', alt: 'The flag of ' + titleCase(N.name), src: 'tex/' + N.flag + '.png' }));
+  const card = el('div', { class: 'card' });
+  const h = el('h3');
+  h.append(el('span', { class: 'iid' }, N.id), document.createTextNode(titleCase(N.name)));
+  card.append(h, el('p', {}, `${N.code} · country ${N.n} of ${D.nations.length} in the game's table. With it, a player wears the `
+    + 'team kit in its colours, with this flag printed high on the back and small on the chest; their end of the court, its '
+    + 'strike zone and the balls take its colour, and their fans\' flags in the stands are this one.'));
+  const kit = el('div', { class: 'kit', role: 'group', 'aria-label': 'the team kit colours' });
+  N.kit.forEach((c, i) => { const sw = el('span', { title: KIT_PART[i] + ` rgb(${c.join(', ')})` }); sw.style.background = `rgb(${c.join(',')})`; kit.append(sw); });
+  const end = el('span', { title: 'its end of the court' });
+  end.style.background = css(N.team[0]);
+  kit.append(el('em', {}, 'end'), end);
+  card.append(kit);
+  const wear = el('button', { type: 'button' }, 'See the kit on the avatar');
+  wear.addEventListener('click', () => {
+    state.look.nation = N.n;
+    state.section = 'avatar';
+    $('section').value = 'avatar';
+    buildList();
+    syncAvatarPanel();
+    state.focus = 'full';
+    route('');
+  });
+  card.append(wear);
+  f.append(card);
+  title(N.id, titleCase(N.name));
+  $('parts').replaceChildren(el('p', {}, `app/assets_open/tex/${N.flag}.tex · 192 × 128 px · drawn from simple shapes by tools/gen_flags.py`));
+  note('');
+}
+
 function showCode(c) {
   ++token;
   showFlat(true);
@@ -1228,13 +1377,14 @@ function setHash(id) {
 function sectionOf(id) {
   if (!id) return null;
   if (id.startsWith('tex:')) return 'tex';
-  return { V: 'avatar', P: 'props', A: 'arena', T: 'tex', S: 'snd', C: 'code' }[id[0]] || null;
+  return { V: 'avatar', P: 'props', A: 'arena', T: 'tex', S: 'snd', C: 'code', F: 'flags' }[id[0]] || null;
 }
 
 function route(id, opts = {}) {
   $('err').hidden = true;
   id = (id || '').trim();
   if (/^[vpatsc]\d+$/i.test(id)) id = id[0].toUpperCase() + id.slice(1).padStart(2, '0');
+  else if (/^f\d+$/i.test(id)) id = 'F' + id.slice(1).padStart(3, '0');
   const sec = sectionOf(id);
   if (sec && sec !== state.section) { state.section = sec; $('section').value = sec; buildList(); }
   state.item = id || null;
@@ -1262,6 +1412,7 @@ function route(id, opts = {}) {
   }
   if (s === 'snd') { const x = D.sounds.find((y) => y.id === id) || D.sounds[0]; state.item = x.id; markCurrent(); return showSound(x); }
   if (s === 'code') { const c = D.code.find((y) => y.id === id) || D.code[0]; state.item = c.id; markCurrent(); return showCode(c); }
+  if (s === 'flags') { const N = D.nations.find((y) => y.id === id) || D.nations[0]; state.item = N.id; markCurrent(); return showFlag(N); }
 }
 
 function rebuild(keep) {   // the view's settings changed: draw the same thing again
@@ -1288,7 +1439,7 @@ async function start() {
   $('section').addEventListener('change', () => {
     state.section = $('section').value;
     buildList();
-    const first = { avatar: '', props: 'P01', arena: 'A', tex: 'T01', snd: 'S01', code: 'C01' }[state.section];
+    const first = { avatar: '', props: 'P01', arena: 'A', tex: 'T01', snd: 'S01', code: 'C01', flags: 'F001' }[state.section];
     route(first);
   });
   $('find').addEventListener('keydown', (e) => { if (e.key === 'Enter') { route($('find').value); $('find').select(); } });
