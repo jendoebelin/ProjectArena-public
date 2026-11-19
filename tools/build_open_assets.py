@@ -713,6 +713,7 @@ def main():
     with zipfile.ZipFile(os.path.join(ROOT, 'experiments', 'avatar_anatomy', 'clothing', 'assets.zip')) as z:
         z.extractall(pr25)
     subprocess.run([sys.executable, '-I', os.path.join(ROOT, 'tools', 'import_pr25.py'), pr25], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run([sys.executable, "-I", os.path.join(ROOT, "tools", "build_peluru.py")], check=True)
     # parts of the old formula-built avatars (before the MPFB bodies)
     old = ('av_head.', 'av_neck.', 'av_torso_', 'av_upper_', 'av_fore_', 'av_waist', 'av_lower_')
     for f in os.listdir(OUT):

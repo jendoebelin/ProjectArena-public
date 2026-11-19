@@ -14,7 +14,7 @@ struct Swatch { const char* name; uint8_t r, g, b; };   // sRGB
 const char* kSuit[] = {"GRID RUNNER", "ARENA JERSEY", "VANGUARD", "STREET JACKET", "HOODIE", "ECHO SUIT", "TANK TOP", "PILOT",
                        "CIRCUIT VEST", "TRAINING TEE", "CIRCUIT RUNNER",   // 10: modelled traces with moving pulses
                        "GRID RUNNER LIVE", "ECHO SUIT LIVE", "CIRCUIT VEST LIVE",   // 11-13: their glow lines raised, pulsing
-                       "VECTOR", "NIGHTFORGE"};   // 14, 15: PR #25 (their own LOWER BODY 1-4; older versions: GRID RUNNER)
+                       "VECTOR", "NIGHTFORGE", "PELURU TUXEDO", "PELURU LAYERED DRESS"};   // 14, 15: PR #25 (their own LOWER BODY 1-4; older versions: GRID RUNNER)
 const char* kLower[] = {"NONE", "ATHLETIC SHORTS", "CIRCUIT SHORTS", "BIKE SHORTS",
                         "LONG SHORTS", "TENNIS SKIRT", "KILT"};   // 4-6: PR #25 (the skirts sway; older versions: NONE)
 const char* kBody[] = {"MASCULINE", "FEMININE"};
@@ -1409,6 +1409,7 @@ void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& din, std::v
     const Mat4 I = Mat4::identity();
     std::snprintf(name, sizeof name, "av_top_%d_%c", d.suit, bk);
     add(name, I, false, PART_SKINNED);
+    if (d.suit == 16 || d.suit == 17) return;   // Complete costumes include their own head, hat and lower body.
     std::snprintf(name, sizeof name, "av_bhead_%s", fk);
     add(name, I, false, PART_SKINNED);
     if (d.lower >= 1 && d.lower <= 4 && d.suit >= 14)   // VECTOR and NIGHTFORGE: their own shorts

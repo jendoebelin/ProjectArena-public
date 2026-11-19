@@ -1510,7 +1510,7 @@ static bool initContent(App& a) {
         for (const char bk : {'m', 'f'}) {   // the skinned MPFB bodies (tools/build_body_parts.py)
             snprintf(n, sizeof n, "av_bhead_%c", bk); part(n);
             snprintf(n, sizeof n, "av_wfade_%c", bk); part(n);
-            for (int k = 0; k < 16; ++k) { snprintf(n, sizeof n, "av_top_%d_%c", k, bk); part(n); }
+            for (int k = 0; k < avatar::fieldCount(avatar::F_SUIT); ++k) { snprintf(n, sizeof n, "av_top_%d_%c", k, bk); part(n); }
             for (int s = 14; s < 16; ++s)   // VECTOR and NIGHTFORGE: their own LOWER BODY 1-4
                 for (int k = 1; k <= 4; ++k) { snprintf(n, sizeof n, "av_sbottom_%d_%d_%c", s, k, bk); part(n); }
             for (int k = 10; k < 14; ++k) { snprintf(n, sizeof n, "av_tpulse_%d_%c", k, bk); part(n); }   // the moving pulses
