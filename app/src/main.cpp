@@ -1511,6 +1511,9 @@ static bool initContent(App& a) {
             snprintf(n, sizeof n, "av_bhead_%c", bk); part(n);
             snprintf(n, sizeof n, "av_wfade_%c", bk); part(n);
             for (int k = 0; k < avatar::fieldCount(avatar::F_SUIT); ++k) { snprintf(n, sizeof n, "av_top_%d_%c", k, bk); part(n); }
+            snprintf(n, sizeof n, "av_top_17_%c", bk); loadSwish(a, n);
+            snprintf(n, sizeof n, "av_peluru_hair_%c", bk); part(n); loadSwing(a, n);
+            snprintf(n, sizeof n, "av_peluru_hoops_%c", bk); part(n); loadSwing(a, n);
             for (int s = 14; s < 16; ++s)   // VECTOR and NIGHTFORGE: their own LOWER BODY 1-4
                 for (int k = 1; k <= 4; ++k) { snprintf(n, sizeof n, "av_sbottom_%d_%d_%c", s, k, bk); part(n); }
             for (int k = 10; k < 14; ++k) { snprintf(n, sizeof n, "av_tpulse_%d_%c", k, bk); part(n); }   // the moving pulses
@@ -5368,7 +5371,7 @@ static void drawAvatarBody(App& a, const PlayerInput& in, int team, int pass, co
                 dp.pelvis = nullptr;   // (a hair rig's bone 0 is the head: no waist)
                 dp.twist = nullptr;    // (nor forearms)
             }
-            hairTuck(a, in.avatar, dp);
+            if (in.avatar.suit != 17) hairTuck(a, in.avatar, dp);   // The dress uses its fitted sombrero.
             dp.tuckC[0] -= off.x; dp.tuckC[1] -= off.y; dp.tuckC[2] -= off.z;   // (the tuck map is in head space)
         }
         a.gfx.draw(it->second, model, dp, pass);

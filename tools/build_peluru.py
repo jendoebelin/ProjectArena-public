@@ -7,7 +7,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 import numpy as np
 from PIL import Image, ImageDraw
 import preview_render as reader
-from build_open_assets import mdl_bytes, write_model
+from build_open_assets import mdl_bytes, write_model, write_rig_text
 
 ASSETS = Path(__file__).resolve().parents[1] / 'app/assets_open'
 INK, SHADOW, GOLD, LIGHT = '#23202d', '#130f20', '#e9a734', '#ffde88'
@@ -56,6 +56,13 @@ def atlas(dress):
         if dress:
             d.polygon([(151,54),(256,95),(361,54),(334,103),(256,144),(178,103)],fill=JADE)
             d.line([(150,62),(256,111),(362,62)],fill=GOLD,width=7)
+            # Bare shoulders meet a sweetheart bodice with stitched boning.
+            d.polygon([(0,0),(512,0),(512,171),(355,146),(296,132),(256,159),(218,132),(156,146),(0,171)],fill=SKIN)
+            for x in (179,210,302,333):
+                d.line([(x,160),((x+256)//2,306),(x,421)],fill='#b37956',width=3)
+            for x in (199,313):
+                for y in (206,256,306):
+                    sprig(d,x,y,14)
             d.rectangle((110,362,402,423),fill=PINK)
             d.line((110,375,402,375), fill=GOLD,width=5)
         else:
@@ -96,6 +103,18 @@ def atlas(dress):
         y=367-.0038*(x-256)**2
         d.line((x-3,y-12,x+3,y+13),fill=SHADOW,width=4)
     sprig(d,256,143,17)
+    if dress:
+        for side in (-1,1):
+            x=256+side*82
+            for j in range(11):
+                t=TAU*j/11
+                a=x+56*math.cos(t); b=235+44*math.sin(t)
+                d.ellipse((a-7,b-7,a+7,b+7),fill='#d54047',outline=GOLD,width=2)
+            d.line([(256+side*46,360),(256+side*70,357),(256+side*91,344)],
+                   fill=SHADOW,width=5)
+            sprig(d,256+side*125,299,13)
+        d.polygon([(256,281),(240,310),(249,321),(256,313),(264,321),(272,310)],fill=SHADOW)
+        flower(d,256,150,21,RED)
     im.paste(face,(0,512))
     trim_colors=[INK,JADE,PINK,IVORY,GOLD,RED,SKIN,SHADOW,LEAF,'#592542','#47312c',LIGHT,'#d85637','#34323c','#e4b98e','#83334e']
     for k,col in enumerate(trim_colors):
@@ -138,6 +157,12 @@ def atlas(dress):
             d.line((58,0,58,128),fill=GOLD,width=3)
             for y in (24,64,104):
                 sprig(d,64,y,9)
+        if dress and k in (1,2,5,9,14):
+            base={1:'#159e9e',2:'#bb2269',5:'#dd4285',9:'#b51d67',14:'#187f80'}[k]
+            tile=Image.new('RGB',(128,128),base)
+            d=ImageDraw.Draw(tile)
+            if k in (1,9):
+                for y in (8,118): d.line((0,y,128,y),fill=GOLD,width=2)
         im.paste(tile,(512+k%4*128,512+k//4*128))
     return im
 
@@ -173,7 +198,7 @@ class Costume:
                 region=np.zeros(len(group),int)
                 if not head:
                     region[abs(x)>.204]=1
-                    if self.dress: region[abs(x)>.30]=2
+                    if self.dress: region[abs(x)>.23]=2
                     region[(y>.018)&(abs(x)<.083)]=2
                 for zone in np.unique(region):
                     ids,inv=np.unique(group[region==zone],return_inverse=True)
@@ -188,6 +213,8 @@ class Costume:
                     else:
                         u=np.clip(.5+(x if not back else -x)/.56,.004,.996)
                         uv=np.stack([.5*(u+back),.5*np.clip((.035-y)/.50,.004,.996)],axis=1)
+                    if self.dress:
+                        part['u1']=0  # Reserved for skirt motion on this model.
                     part['u0']=uv
                     self.add(part,inv)
 
@@ -264,52 +291,101 @@ class Costume:
             self.fabric(leaf,8,2,4,bone)
 
     def dress_panels(self):
-        # The waist gathers at one hip. The lifted front exposes the boots and the train hangs behind.
-        for layer, (length,width,depth,tile) in enumerate([
-                (.83,.33,.30,2),(.73,.34,.29,9),(.62,.35,.285,2),(.52,.36,.28,14)]):
-            def drape(u,v,lace=False):
-                t = TAU*u
-                lift = ((1+math.cos(t-.43))/2)**1.85
-                span = length - (.40 if layer<3 else .29)*lift
-                hem = -.39-span
-                # Use the same fold phase at the same physical height on all tiers.
-                # Radial spacing keeps the outer skirt in front throughout the sweep.
-                fall = span*v
-                fullness = math.sin(min(1,fall/.83)*math.pi/2)
-                fold = fullness*(.012*math.cos(15*t+2.4*fall)+.017*math.sin(8*t-2*fall))
-                radius = .146+(.195+layer*.010)*fullness+layer*.006+fold
-                rz = .116+(.16+layer*.010)*fullness+layer*.006+fold
-                y = -.39-fall + .009*fullness*math.cos(15*t+2.4*fall)
-                if lace:
-                    y -= .017*(.55+.45*math.cos(36*t))
-                    radius += .003
-                    rz += .003
-                return (radius*math.sin(t)+.038*fall*fall,y,-.036-rz*math.cos(t)+.07*fall*fall)
-            self.fabric(drape,tile,8,5,repeat=12)
-            if layer in (2,3):
-                def edge(u,v):
-                    a=np.array(drape(u,.983))
-                    b=np.array(drape(u,1,True))
-                    return a+(b-a)*v
-                self.fabric(edge,3,10,2,repeat=12)
+        # A fuchsia lining sweeps down one hip inside the stock skirt envelope.
+        # The teal wrap is a separate open pattern, gathered at the right hip.
+        waist_mesh_start = len(self.verts)
+        def skirt_point(t,y,offset):
+            fall=max(0,-.345-y)
+            bias=(1-math.cos(t))*.5
+            release=min(1.,fall/.14)
+            gathering=(.25+.75*release)*(math.sin(11*t+3*fall)+.40*math.sin(17*t-4*fall))
+            depth=.178+.193*fall+(.010+.027*fall)*gathering+offset
+            width=.172+.253*fall+(.010+.032*fall)*gathering+offset
+            return (width*math.sin(t)-.095*fall**1.4,y,
+                    -.045-depth*math.cos(t)+.18*fall**1.7*bias)
+        def lining_hem(t):
+            return -.645+.157*math.sin(t+.28)+.013*math.cos(11*t)
+        for lower,upper,tile in [(1,.68,2),(.73,0,5)]:
+            def lining(u,v):
+                t=TAU*u
+                f=upper+(lower-upper)*v
+                return skirt_point(t,-.345+(lining_hem(t)+.345)*f,.008*(1-upper))
+            self.fabric(lining,tile,8,6,repeat=12)
+        def underside(u,v):
+            t=TAU*u
+            x,y,z=skirt_point(t,lining_hem(t),.0025)
+            return (x*(1-v),y+(-.467-y)*v,-.045+(z+.045)*(1-v))
+        self.fabric(underside,9,8,2,repeat=12)
+        # Both wrap edges rise toward the gathered hip and clear the hands.
+        for start,arc,drop,tile,offset in [(-1.1,5.65,.82,2,.014),(1.20,5.95,.66,14,.026)]:
+            def wrap(u,v):
+                t=start+arc*u+.42*v*math.sin(math.pi*u)
+                top=-.355-.030*math.sin(math.pi*u)**2
+                span=(top-lining_hem(t))*(drop+.09*math.sin(TAU*u))
+                y=top-span*v+.007*v*math.cos(8*t-1.7*v)
+                return skirt_point(t,y,offset*(.5+.5*v))
+            self.fabric(wrap,tile,7,8,repeat=12)
+            def border(u,v):
+                x,y,z=wrap(u,.78+.215*v)
+                return (x*1.010,y,z*1.012)
+            if tile==14:
+                self.fabric(border,0,8,3,repeat=15)
+            def lace(u,v):
+                x,y,z=wrap(u,.975+.025*v)
+                return (x*1.003,y-.024*v*(.45+.55*abs(math.sin(48*math.pi*u))),z*1.003)
+            self.fabric(lace,3,10,2,repeat=12)
+        # Silk swags run across the front into a rosette. Their angle and
+        # curvature are independent of the skirt hem.
+        def swag(u,v):
+            t=-1.45+2.62*u
+            y=-.351-.102*(1-u)-.024*math.sin(math.pi*u)-(.018+.038*math.sin(math.pi*u))*v
+            return skirt_point(t,y,.029+.003*math.sin(math.pi*u)*math.sin(3*math.pi*v))
+        self.fabric(swag,1,32,8)
         def sash(u,v):
-            t = TAU*u
-            squeeze=(1+math.sin(t+.2))/2
-            pleat=.007*math.cos(v*5*math.pi+2*math.sin(t))
-            return ((.167+pleat)*math.sin(t),-.325-.075*v+.026*math.sin(t)+.019*v*squeeze,
-                    -.042-(.136+pleat)*math.cos(t))
+            t=TAU*u
+            return ((.173+.003*math.sin(4*math.pi*v))*math.sin(t),
+                    -.30-.083*v+.025*math.sin(t),
+                    -.04-(.149+.003*math.sin(4*math.pi*v))*math.cos(t))
         self.fabric(sash,9,8,10,repeat=8)
+        for x,y,z,r,c in [(.138,-.352,-.141,.055,12),(.18,-.369,-.117,.039,2),
+                           (.117,-.378,-.174,.028,5)]:
+            self.bloom(x,y,z,r,0,c)
         for sign in (-1,1):
             def bow(u,v):
-                swell=math.sin(math.pi*v)
-                return (.11+sign*(.009+.081*v),-.362+.035*v+(u-.5)*(.013+.079*swell),
-                        -.153-.026*swell+.009*math.cos(TAU*u))
-            self.fabric(bow,2,5,7)
-            def ribbon(u,v):
-                return (.112+.074*sign*v+(u-.5)*.043,-.372-.224*v+.014*u*v,
-                        -.155-.074*v+.014*math.sin(2*TAU*v+u))
-            self.fabric(ribbon,2,4,9)
-        self.bloom(.11,-.359,-.173,.034,0,12)
+                return (.008+sign*.13*v,-.361+.07*v+(u-.5)*(.023+.105*math.sin(math.pi*v)),
+                        .124+.077*math.sin(math.pi*v)+.019*math.cos(TAU*u))
+            self.fabric(bow,2,8,8)
+            def tail(u,v):
+                return (.018+sign*(.07*v+.041*math.sin(4*v))+(u-.5)*.072,
+                        -.377-.18*v+.020*u*v,.125+.089*v+.026*math.sin(5*v+u))
+            self.fabric(tail,2,6,10)
+        # Take in the waistband, pleats and attached trim together. Release the
+        # alteration above the high-side hem so the diagonal cut stays intact.
+        for mesh in self.verts[waist_mesh_start:]:
+            pos = mesh['p']
+            fit = np.clip((pos[:, 1] + .485) / .115, 0, 1)
+            fit = fit * fit * (3 - 2 * fit)
+            pos[:, 0] *= 1 - .140 * fit
+            pos[:, 2] = -.04 + (pos[:, 2] + .04) * (1 - .100 * fit)
+        waist_y, hem_y = -.390, -.806
+        for mesh in self.verts[waist_mesh_start:]:
+            hang = np.clip((waist_y-mesh['p'][:,1])/(waist_y-hem_y),0,1)
+            mesh['u1'][:,0] = hang * hang * (3 - 2 * hang)
+        # The footless avatar has no legs inside the skirt. Only the upper hip
+        # needs radial clearance; the profile tapers away below the bodice.
+        profile=np.repeat(np.array([[0.0],[0.0],[0.0],[.105]],dtype='<f4'),16,axis=1)
+        header=struct.pack('<I7f2I',0,waist_y,hem_y,0.,-.04,.055,hem_y,
+                           (waist_y-hem_y)/3,4,16)
+        (ASSETS/f'av_top_17_{self.sex}.swish').write_bytes(b'SWSH'+header+profile.tobytes())
+        # Wide flounced neckline spanning the chest, back and upper arms.
+        for tile,offset,lip in [(3,.011,.055),(0,.015,.027)]:
+            def neckline(u,v):
+                t=TAU*u
+                pleat=.015*math.sin(18*t+.8*v)*v
+                return ((.183+offset+.039*v+pleat)*math.sin(t),
+                        -.047-.049*math.cos(t)**2-(.043+lip)*v+.012*v*math.cos(18*t),
+                        -.033-(.132+offset+.035*v+pleat)*math.cos(t))
+            self.fabric(neckline,tile,7,4,repeat=12)
 
     def tailoring(self):
         vertices,indices,_,_=reader.load_mdl('av_top_0_'+self.sex)
@@ -342,10 +418,61 @@ class Costume:
             self.fabric(tail,0,18,6)
         self.bloom(-.088,-.089,front(-.088,-.089)-.019,.026,0,12)
 
+    def pigtails(self):
+        # Hair springs operate in tracked-head space, whose origin is the
+        # neutral rig's eye midpoint (avatar_bodies.inc).
+        eye=np.array((0,.17797,-.11099) if self.sex=='m' else (0,.17103,-.10375))
+        hair=Costume(self.sex,True)
+        hair.dtype=self.dtype
+        chains=[]
+        for index,side in enumerate((-1,1)):
+            def spine(v):
+                return np.array((side*(.085+.014*math.sin(8*v)),
+                                 .21-.212*v,-.014+.022*math.sin(7*v)))-eye
+            def curl(u,v):
+                t=TAU*u
+                r=.021*(1-.69*v)
+                return spine(v)+np.array((r*math.cos(t),0,r*math.sin(t)))
+            hair.fabric(curl,10,12,24)
+            mesh=hair.verts[-1]
+            for row,v in enumerate(np.linspace(0,1,25)):
+                # Bone 0 anchors the root; the three links share each joint.
+                blend=min(3,v*3+.5) if row else 0.
+                lo=int(blend)
+                ids=[0,1+index*3,2+index*3,3+index*3]
+                weight=round(255*(blend-lo))
+                ring=slice(row*13,(row+1)*13)
+                mesh['bi'][ring,:2]=[ids[lo],ids[min(3,lo+1)]]
+                mesh['bw'][ring,:2]=[255-weight,weight]
+            chains.append(((130,9,.45,38),[spine(v) for v in np.linspace(0,1,4)]))
+        hair.write_headpiece('hair',eye,chains)
+        hoops=Costume(self.sex,True)
+        hoops.dtype=self.dtype
+        chains=[]
+        for index,side in enumerate((-1,1)):
+            pivot=np.array((side*.084,.106,-.055))-eye
+            def hoop(u,v):
+                a,b=TAU*u,TAU*v
+                return pivot+np.array(((.022+.003*math.cos(b))*math.cos(a),
+                                       (.031+.003*math.cos(b))*math.sin(a)-.031,
+                                       .003*math.sin(b)))
+            hoops.fabric(hoop,4,24,6,index+1)
+            chains.append(((180,11,.12,30),[pivot,pivot+np.array((0,-.062,0))]))
+        hoops.write_headpiece('hoops',eye,chains)
+
+    def write_headpiece(self,name,eye,chains):
+        base=str(ASSETS/f'av_peluru_{name}_{self.sex}')
+        verts=np.concatenate(self.verts)
+        indices=np.concatenate(self.indices).astype('<u4')
+        write_model(base+'.mdl',mdl_bytes(3,verts,indices,[(0,len(indices),0)],
+                    [(0,(1,1,1,1),(0,0,0,0),0,1,'peluru_vestido')]))
+        write_rig_text(base,np.array((0,.19,-.024))-eye,chains)
+
     def build(self):
         self.surface('av_top_0_'+self.sex,False)
         self.surface('av_bhead_'+self.sex,True)
         # Embroidered brim above the eyes, crown and raised flower cluster follow the head.
+        hat_start=len(self.verts)
         z=-.029; h=.246 if self.sex=='m' else .241
         self.loft([(h+.127,.008,.008),(h+.119,.067,.062),(h+.086,.078,.075),(h+.035,.094,.088),(h+.012,.103,.096),(h+.018,.17,.15),(h+.044,.229,.192),(h+.035,.226,.19),(h+.007,.17,.15),(h+.002,.095,.09)],7,2,48,8,(0,z))
         self.loft([(h+.045,.230,.193),(h+.035,.23,.193),(h+.029,.222,.187)],0,2,48,12,(0,z))
@@ -354,7 +481,22 @@ class Costume:
         self.loft([(h+.027,.083,.082),(h-.018,.085,.091),(h-.063,.080,.085)],7,2,32,4,(0,.014))
         for x,y,zz,r,k in [(-.062,.050,-.065,.029,2),(-.018,.052,-.084,.027,12),(.026,.042,-.088,.023,5),(-.09,.037,-.04,.018,4)]:
             self.bloom(x,h+y+.043,z+zz-.014,r*1.42,2,k)
-        waist=-.405; center=(0,-.039)
+        if self.dress:
+            # Tilt the complete headpiece as a milliner would fit it.
+            angle=.18
+            for mesh in self.verts[hat_start:]:
+                x=mesh['p'][:,0].copy()
+                y=mesh['p'][:,1].copy()-h
+                mesh['p'][:,0]=1.17*(x*math.cos(angle)-y*math.sin(angle))
+                mesh['p'][:,1]=h+x*math.sin(angle)+y*math.cos(angle)-.005
+                mesh['p'][:,2]*=1.10
+                nx=mesh['n'][:,0].copy()
+                ny=mesh['n'][:,1].copy()
+                mesh['n'][:,0]=nx*math.cos(angle)-ny*math.sin(angle)
+                mesh['n'][:,1]=nx*math.sin(angle)+ny*math.cos(angle)
+            self.loft([(.289,.045,.038),(.266,.078,.070),(.232,.088,.083),
+                       (.211,.084,.081)],10,2,36,4,(0,-.021))
+            self.pigtails()
         if self.dress:
             self.dress_panels()
             for sign in (-1,1):
@@ -363,19 +505,9 @@ class Costume:
                     self.loft([(-.045+drop,.046,.055),(-.087+drop,r,.084),(-.103+drop,r*1.03,.088)],k,3 if sign<0 else 4,36,6,(sign*shoulder,.008),wave=.06)
         else:
             self.tailoring()
-        for s in (-1,1):
-            leg=(s*.088,-.037)
-            self.loft([(-.434,.091,.107),(-.57,.092,.100),(-.81,.070,.078),(-.98,.061,.067),(-1.19,.049,.052)],6 if self.dress else 'trousers',slices=24,repeats=3,center=leg)
-            self.loft([(-1.008 if self.dress else -1.15,.057,.06),(-1.175,.050,.054),(-1.206,.051,.064)],13,slices=24,repeats=3,center=leg)
-            def vamp(u,v):
-                angle=TAU*u
-                profile=math.sin(math.pi*v/2)
-                length=.061+.067*profile
-                tip=(1+math.cos(angle))/2
-                x=leg[0]+(.050+.009*profile)*(1-.29*tip)*math.sin(angle)
-                return (x,-1.177-.073*v-.014*tip,leg[1]-.040*profile-length*math.cos(angle))
-            self.fabric(vamp,0,6,5,repeat=4)
-            self.loft([(-1.237,.041,.039),(-1.271,.036,.032)],10,slices=16,repeats=2,center=(leg[0],-.004))
+            # A closed, tapered waist sits inside the open charro jacket tails.
+            self.loft([(-.408,.154,.124),(-.470,.144,.110),(-.507,.116,.084),
+                       (-.531,.067,.048),(-.536,.001,.001)],7,center=(0,-.04))
         v=np.concatenate(self.verts);i=np.concatenate(self.indices).astype('<u4')
         assert np.all(v['bw'].sum(1)==255) and i.max()<len(v) and np.all(np.isfinite(v['p']))
         name='av_top_%d_%s'%((17 if self.dress else 16),self.sex)

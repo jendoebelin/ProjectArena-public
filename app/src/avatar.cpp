@@ -1222,7 +1222,7 @@ const SwishStyle kSwish[2] = {{11.f, 0.61f, 0.065f, 0.23f, 0.025f, 0.007f, 0.10f
                               {8.f, 0.72f, 0.05f, 0.17f, 0.020f, 0.006f, 0.12f}};      // the kilt
 }  // namespace
 
-int swishKind(const AvatarDesc& d) { return d.lower == 5 ? 0 : d.lower == 6 ? 1 : -1; }
+int swishKind(const AvatarDesc& d) { return d.suit == 17 || d.lower == 5 ? 0 : d.lower == 6 ? 1 : -1; }
 
 void stepSwish(Swish& s, int kind, float px, float pz, float yaw, double now) {
     auto afresh = [&] {
@@ -1409,6 +1409,12 @@ void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& din, std::v
     const Mat4 I = Mat4::identity();
     std::snprintf(name, sizeof name, "av_top_%d_%c", d.suit, bk);
     add(name, I, false, PART_SKINNED);
+    if (d.suit == 17) {
+        std::snprintf(name, sizeof name, "av_peluru_hair_%c", bk);
+        add(name, head, false, PART_HAIR);
+        std::snprintf(name, sizeof name, "av_peluru_hoops_%c", bk);
+        add(name, head, false, PART_HAIR);
+    }
     if (d.suit == 16 || d.suit == 17) return;   // Complete costumes include their own head, hat and lower body.
     std::snprintf(name, sizeof name, "av_bhead_%s", fk);
     add(name, I, false, PART_SKINNED);
