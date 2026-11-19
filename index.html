@@ -694,7 +694,8 @@ function uniformLook(look) {
 // cloth), the flag high on the back just under the collar and small on the left chest
 const DEG = Math.PI / 180;
 // (COUNTRY KIT: on a suit whose own design is in those places, main.cpp moves them: ECHO SUIT's back print over its
-// identity disc, VECTOR's and NIGHTFORGE's on the left shoulder blade, VANGUARD's feminine crest on the chest plate)
+// identity disc, VECTOR's and NIGHTFORGE's on the left shoulder blade, VANGUARD's feminine crest on the chest plate,
+// PELURU LAYERED DRESS's lying on its flounced neckline along the hem)
 function printBoxes(fem, suit) {
   const qx = (a) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), a);
   const qy = (a) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), a);
@@ -704,9 +705,15 @@ function printBoxes(fem, suit) {
   if (suit === 5 || suit === 12) { back.p = along(back, 0, fem ? -0.033 : -0.015); back.size = 0.21; }
   if (suit === 14 || suit === 15) { back.p = along(back, fem ? -0.077 : -0.090, 0); back.size = fem ? 0.09 : 0.10; }
   if (suit === 2 && fem) { crest.q = qy(Math.PI).multiply(qx(-10 * DEG)); crest.p = [-0.08, -0.150, -0.186]; }
+  crest.depth = 0.10; back.depth = 0.16;
+  if (suit === 18) {   // PELURU LAYERED DRESS: each on the upper flounce, its bottom edge along the hem
+    const qz = (a) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), a);
+    crest.q = qy(-167.7 * DEG).multiply(qx(-26.5 * DEG)).multiply(qz(10.1 * DEG)); crest.p = [-0.0816, -0.1273, -0.1871]; crest.depth = 0.04;
+    back.q = qx(-26.6 * DEG); back.p = [0, -0.1281, 0.1300]; back.size = 0.075; back.depth = 0.04;
+  }
   return [
-    { q: back.q, p: back.p, size: [back.size, back.size / 1.5, 0.16] },
-    { q: crest.q, p: crest.p, size: [0.055, 0.055 / 1.5, 0.10] },
+    { q: back.q, p: back.p, size: [back.size, back.size / 1.5, back.depth] },
+    { q: crest.q, p: crest.p, size: [0.055, 0.055 / 1.5, crest.depth] },
   ];
 }
 function decalCoords(M, fem, suit) {   // each vertex's place in both boxes, and which way its normal faces through them
