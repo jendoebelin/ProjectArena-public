@@ -759,7 +759,8 @@ function partsOf(look) {
   };
   add(`av_top_${look.suit}_${b}`, 'skin', 'SUIT');
   add(`av_bhead_${fk}`, 'skin', 'FACE');
-  if (look.lower >= 1 && look.lower <= 4 && look.suit >= 14) add(`av_sbottom_${look.suit}_${look.lower}_${b}`, 'skin', 'LOWER BODY');
+  if (look.suit === 18) {}   // (PELURU LAYERED DRESS: its skirt takes the LOWER BODY's place)
+  else if (look.lower >= 1 && look.lower <= 4 && (look.suit === 14 || look.suit === 15)) add(`av_sbottom_${look.suit}_${look.lower}_${b}`, 'skin', 'LOWER BODY');
   else if (look.lower) add(`av_bottom_${look.lower}_${b}`, 'skin', 'LOWER BODY');
   else add(`av_wfade_${b}`, 'skin', 'LOWER BODY');
   if (look.headgear) add(`av_gear_${look.headgear}_${b}`, 'head', 'HEADGEAR');
@@ -767,13 +768,16 @@ function partsOf(look) {
   const neon = look.haircolor === field('HAIR COLOR').options.length - 1;
   if (look.hair) {
     add(`av_hair_${look.hair}_${b}`, 'head', 'HAIR', { hair: true, neon });
-    if (look.hair === 3 || look.hair === 7) add(`av_hair_${look.hair}t_${b}`, 'head', 'HAIR', { hair: true, neon });
+    if (look.hair === 3 || look.hair === 7 || look.hair === 9) add(`av_hair_${look.hair}t_${b}`, 'head', 'HAIR', { hair: true, neon });
   }
   if (look.visor) add(`av_visor_${look.visor}_${fk}`, 'head', 'FACE SHIELD');
   if (look.mask) add(`av_mask_${look.mask}_${fk}`, 'head', 'MASK');
+  if (look.mask === 4) add(`av_mask_4t_${b}`, 'head', 'MASK', { hair: true });   // (the BANDANA's tails)
+  if (look.suit === 18) add(`av_top_18e_${b}`, 'head', 'SUIT', { hair: true });  // (the dress's hoop earrings)
   for (let h = 0; h < 2; h++) {
-    if (look.gauntlet < 3) {
+    if (look.gauntlet !== 3) {   // (plate gauntlets: 0-2, and 4-6 whose fingers open on the trigger: shown closed)
       add(`gauntlet_${look.gauntlet}_hand`, 'hand', 'GAUNTLET', { hand: h, slot: 'fist' });
+      if (look.gauntlet >= 4) add(`gauntlet_${look.gauntlet}_fist`, 'hand', 'GAUNTLET', { hand: h, slot: 'fist' });
       add(`gauntlet_${look.gauntlet}_cuff`, 'hand', 'GAUNTLET', { hand: h, slot: 'cuff' });
     } else add('lancer', 'hand', 'GAUNTLET', { hand: h, slot: 'lancer' });
     add('knuckleguard', 'hand', 'GAUNTLET', { hand: h, slot: 'knuckle', knuckle: true });
@@ -781,6 +785,8 @@ function partsOf(look) {
   return out;
 }
 
+// a part or preset the release doesn't have yet says so (data.json 'since', as Country kit does)
+const since = (x) => (x && x.since ? `  (from ${x.since})` : '');
 function idFor(fieldName, value) {
   const e = D.avatar.find((a) => a.field === fieldName && a.value === value);
   return e ? e.id : '';
@@ -949,7 +955,7 @@ async function showAvatar(keepCamera) {
   state.handsP = hp[0].clone().add(hp[1]).multiplyScalar(0.5);
   if (!keepCamera) focus(state.focus);
   const e = state.item && D.avatar.find((a) => a.id === state.item);
-  title(e ? e.id : '', e ? e.name : 'Avatar builder');
+  title(e ? e.id : '', e ? e.name + since(e) : 'Avatar builder');
   note(`${verts.toLocaleString()} vertices · ${Math.round(tris).toLocaleString()} triangles · ${$('pose').selectedOptions[0].text.toLowerCase()} pose · `
     + `${N ? titleCase(N.name) + "'s colours" : ['blue', 'orange'][state.team] + ' end'} · ${$('surface').selectedOptions[0].text.toLowerCase()}`);
   dirty = true;
@@ -1066,7 +1072,7 @@ const css = (rgb) => `rgb(${toSRGB(rgb[0])},${toSRGB(rgb[1])},${toSRGB(rgb[2])})
 function buildAvatarPanel() {
   const ps = $('preset');
   ps.append(el('option', { value: '-1' }, 'Your own choices'));
-  D.presets.forEach((p, i) => ps.append(el('option', { value: String(i) }, p.name)));
+  D.presets.forEach((p, i) => ps.append(el('option', { value: String(i) }, p.name + since(p))));
   const box = $('avFields');
   for (const fname of FIELD_ORDER) {
     const f = field(fname);
@@ -1076,7 +1082,7 @@ function buildAvatarPanel() {
     const s = el('select', { id });
     f.options.forEach((o, i) => {
       const vid = fname === 'COUNTRY' ? (i && D.nations[i - 1] ? D.nations[i - 1].id : '') : idFor(fname, i);
-      s.append(el('option', { value: String(i) }, (vid ? vid + '  ' : '') + o.name));
+      s.append(el('option', { value: String(i) }, (vid ? vid + '  ' : '') + o.name + since(D.avatar.find((a) => a.id === vid))));
     });
     s.addEventListener('change', () => {
       state.look[KEY[fname]] = +s.value;
