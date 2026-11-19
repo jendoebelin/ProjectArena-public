@@ -310,6 +310,8 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         CHECK(under, "the chosen hair is drawn under every headgear (the game tucks it in), the cap too");
         CHECK(hairParts(3, 2) == "av_hair_3_m av_hair_3t_m ", "a ponytail under a helmet keeps its tail");
         CHECK(hairParts(7, 0) == "av_hair_7_m av_hair_7t_m ", "the top knot's loose ends are a part of their own");
+        CHECK(hairParts(9, 2) == "av_hair_9_m av_hair_9t_m ", "the high pigtails' tails are a part of their own, under a helmet too");
+        CHECK(hairParts(10, 0) == "av_hair_10_m ", "the dreadlocks are one part (their locs swing by region)");
         CHECK(hairParts(0, 1).empty(), "no hair: nothing drawn under the helmet");
         bool tails = true;
         for (int face = 0; face < avatar::kFaces; ++face) {   // the BANDANA's tails: one part per body, for every face
@@ -321,9 +323,19 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
             int n = 0;
             for (const avatar::PartDraw& p : list)
                 if (!std::strcmp(p.model, "av_mask_4t_m")) n += (p.flags & avatar::PART_HAIR) ? 1 : 100;
-            tails &= n == 1;
+                else if (!std::strncmp(p.model, "av_mask_4_m", 11)) n += (p.flags & avatar::PART_HAIR) ? 10 : 100;   // (its point swings)
+            tails &= n == 11;
         }
-        CHECK(tails, "the bandana's tails are a swinging part of their own, on every face");
+        CHECK(tails, "the bandana's tails are a swinging part of their own, and its point swings too, on every face");
+        bool grapples = avatar::fieldCount(avatar::F_GAUNTLET) == avatar::kGauntletStyles;
+        for (int k = 4; k < avatar::kGauntletStyles; ++k) {   // GRAPPLER, ARC CLAW, REGALIA: kept, and drawn as plate gauntlets
+            AvatarDesc d;
+            d.gauntlet = (uint8_t)k;
+            avatar::sanitize(d);
+            grapples &= avatar::gauntletOf(d) == k && avatar::plateGauntlet(k) && avatar::grappleGauntlet(k);
+        }
+        grapples &= !avatar::plateGauntlet(3) && !avatar::grappleGauntlet(2);   // (the CONTROLLER is no plate gauntlet)
+        CHECK(grapples, "the grapple gauntlets are GAUNTLET 4-6, plate gauntlets that open");
     }
     {
         std::printf("[avatar: looks and avatar.cfg]\n");

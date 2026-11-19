@@ -310,6 +310,8 @@ PROP_FRAMES = {
     'gauntlet_1': lambda p, n: frames.to_model(frames.LANCER, p, n),
     'gauntlet_2': lambda p, n: frames.to_model(frames.LANCER, p, n),
     **{'gauntlet_%d_%s' % (k, part): (lambda p, n: frames.to_model(frames.LANCER, p, n)) for k in range(3) for part in ('hand', 'cuff')},
+    **{'gauntlet_%d_%s' % (k, part): (lambda p, n: frames.to_model(frames.LANCER, p, n))   # the grapple gauntlets
+       for k in (4, 5, 6) for part in ('hand', 'cuff', 'f0', 'f1', 'f2', 'f3', 'f4', 'fist')},
     'knuckleguard': lambda p, n: frames.to_model(frames.KNUCKLE, p, n),
     'shield': lambda p, n: frames.to_model(frames.PLATE, p, n),
     'head': frames.head_to_model,
@@ -326,6 +328,12 @@ def build_props(name='props.npz'):
     obj_of = [str(n) for n in d['objects']]
     built = set()
     head = head_frame(d, names, obj_of)   # a head-parts file: the scalp and the centre the hair rigs and gear maps use
+    mask_head = head
+    fm = re.match(r'avatar_head_([mf])\d+\.npz$', os.path.basename(name))
+    if mask_head is None and fm and os.path.exists(os.path.join(SRC, 'avatar_head_%s.npz' % fm.group(1))):
+        # FACE 2-4 (masks and face shields only): the swinging masks use their body's head frame
+        d2 = np.load(os.path.join(SRC, 'avatar_head_%s.npz' % fm.group(1)))
+        mask_head = head_frame(d2, [str(n) for n in d2['names']], [str(n) for n in d2['objects']])
     for model in sorted(set(obj_of)):
         groups = {}
         for mi, full in enumerate(names):
@@ -346,17 +354,51 @@ def build_props(name='props.npz'):
         for g in groups.values():
             for k in g:
                 g[k] = np.concatenate(g[k]).astype(np.float32)
+        if re.match(r'gauntlet_\d+_rig$', model):   # the grapple gauntlets' hinges and emitter (not a model)
+            write_hinge(os.path.join(OUT, model[:-4] + '.hinge'), groups)
+            built.add(model)
+            continue
         hk = re.match(r'av_hair_(\d+)_[mf]$', model)
+        mk = re.match(r'av_mask_(\d+)_[mf]\d?$', model)
         if re.match(r'av_(hair|mask)_\d+t_[mf]$', model):   # swinging ends (the ponytail's tail, the top knot's ends, the bandana's tails)
             write_tail(os.path.join(OUT, model), groups, head)
         elif hk and head and int(hk.group(1)) in HAIR_RIGS:   # a style whose free hair moves
             write_hair_rig(os.path.join(OUT, model), groups, head, HAIR_RIGS[int(hk.group(1))])
+        elif mk and mask_head and int(mk.group(1)) in MASK_RIGS:   # a mask whose cloth hangs free (every face's)
+            write_hair_rig(os.path.join(OUT, model), groups, mask_head, MASK_RIGS[int(mk.group(1))])
         else:
             write_mdl(os.path.join(OUT, model + '.mdl'), groups)
         if head and re.match(r'av_(gear|visor)_\d+_[mf]$', model):   # what hair under it has to stay inside
             write_tuck(os.path.join(OUT, model + '.tuck'), groups, head)
         built.add(model)
     return built
+
+
+# ---------------------------------------------------------------- the grapple gauntlets' hinges
+# <gauntlet_K>.hinge (tools/blender/make_props.py grapple(); the game: app/src/main.cpp loadHinge), in the grip frame
+# the fist is drawn in (before avatar::fistPose): per finger (0-3, then the thumb) its hinge point, a direction off
+# it at rest and the same direction opened all the way; then the plasma emitter's point and forward direction.
+#   finger k  px py pz  rx ry rz  ox oy oz
+#   emit  ex ey ez  dx dy dz
+def write_hinge(path, groups):
+    P = np.concatenate([g['pos'] for g in groups.values()]).astype(np.float64).reshape(-1, 3, 3)
+    tag = np.concatenate([g['uv0'][:, 0] for g in groups.values()]).reshape(-1, 3)[:, 0]
+    fingers, emit = {}, None
+    for tri, t in zip(P, tag):
+        if t > 0.9:
+            emit = (tri[0], (tri[1] - tri[0]) / np.linalg.norm(tri[1] - tri[0]))
+        else:
+            fingers[int(round(t * 10 - 0.5))] = tri
+    with open(path, 'w', newline='\n') as f:
+        f.write('# %s: grapple gauntlet hinges, grip frame (tools/build_open_assets.py; the game: app/src/main.cpp loadHinge)\n'
+                % os.path.basename(path))
+        for k in sorted(fingers):
+            a, b, c = fingers[k]
+            r, o = (b - a) / np.linalg.norm(b - a), (c - a) / np.linalg.norm(c - a)
+            f.write('finger %d %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f\n' % ((k,) + tuple(a) + tuple(r) + tuple(o)))
+        if emit is not None:
+            f.write('emit %.5f %.5f %.5f %.5f %.5f %.5f\n' % (tuple(emit[0]) + tuple(emit[1])))
+    print('  %-18s %d fingers, emitter %s' % (os.path.basename(path), len(fingers), 'yes' if emit is not None else 'no'))
 
 
 # ---------------------------------------------------------------- hair that moves, hair under headgear
@@ -436,6 +478,7 @@ def write_rig_text(base, C, chains, exits=False):
 
 
 TAIL_SPRING = {'av_hair_3t': (110, 7, 0.35, 75), 'av_hair_7t': (150, 6, 0.35, 70),   # the ponytail, the top knot's ends
+               'av_hair_9t': (140, 6, 0.35, 55),   # the pigtails: bouncy, never over the head
                'av_mask_4t': (125, 5.5, 0.30, 60)}   # the bandana's tails: cloth, a little looser than the top knot's ends
 
 
@@ -461,7 +504,7 @@ def write_tail(base, groups, head):
             pts.append(allp[sel].mean(0))
         chains.append((spring, pts))
     C = head['C'] if head else np.zeros(3)
-    write_rig_text(base, C, chains, exits=style == 'av_hair_3t')
+    write_rig_text(base, C, chains, exits=style in ('av_hair_3t', 'av_hair_9t'))   # (under a helmet: out under its rim)
 
     def weights(pos, uv1):
         e = np.clip(np.round(uv1[:, 1]).astype(int) - 1, 0, ends - 1)
@@ -502,6 +545,15 @@ HAIR_RIGS = {
     7: dict(free=[('scalp', 0.008, 0.035)], regions=(_TOP,), width=1.0, pivot='base', spring=(200, 5, 1.0, 18)),  # TOP KNOT
     8: dict(free=[('scalp', 0.006, 0.020)], regions=(_FRONT, _LEFT, _RIGHT, _BACK), width=0.7, pivot='centre',
             spring=(170, 8, 0.9, 8)),                                                                             # TOUSLED
+    10: dict(free=[('hang', 0.01, -0.13)], regions=(_LEFT, _RIGHT, _BACK, (-0.8, 0.1, 0.8), (0.8, 0.1, 0.8)),
+             width=0.55, pivot='hang', hang_y=0.01, spring=(95, 6.5, 0.5, 28)),                                  # DREADLOCKS
+}
+
+
+# Masks with cloth that hangs free: the BANDANA's point below the chin (the game swings it like hair: app/src/avatar.cpp)
+MASK_RIGS = {
+    4: dict(free=[('hang', -0.080, -0.165)], regions=(_FRONT,), width=1.0, pivot='hang', hang_y=-0.080,
+            spring=(110, 5.5, 0.55, 30)),                                                                         # BANDANA
 }
 
 

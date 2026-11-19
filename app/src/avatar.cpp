@@ -18,13 +18,15 @@ const char* kSuit[] = {"GRID RUNNER", "ARENA JERSEY", "VANGUARD", "STREET JACKET
 const char* kLower[] = {"NONE", "ATHLETIC SHORTS", "CIRCUIT SHORTS", "BIKE SHORTS",
                         "LONG SHORTS", "TENNIS SKIRT", "KILT"};   // 4-6: PR #25 (the skirts sway; older versions: NONE)
 const char* kBody[] = {"MASCULINE", "FEMININE"};
-const char* kGauntlet[] = {"STRIKER", "TITAN", "PHANTOM", "CONTROLLER"};
+const char* kGauntlet[] = {"STRIKER", "TITAN", "PHANTOM", "CONTROLLER",
+                           "GRAPPLER", "ARC CLAW", "REGALIA"};   // 4-6: the trigger opens them (older versions: STRIKER)
 const char* kFace[] = {"FACE 1", "FACE 2", "FACE 3", "FACE 4"};   // tools/blender/make_body.py FACES (FACE 1 = the base)
 const char* kBuild[] = {"SLIM", "STANDARD", "BROAD", "ATHLETIC"};
 const char* kPattern[] = {"NONE", "CIRCUIT", "STRIPES", "CHEVRON", "HEX", "SPLIT", "PIXEL", "BANDS"};
 const char* kPatternTex[] = {nullptr, "open_pat_circuit", "open_pat_stripes", "open_pat_chevron", "open_pat_hex",
                              "open_pat_split", "open_pat_pixel", "open_pat_bands"};
-const char* kHair[] = {"NONE", "BUZZ CUT", "SWEPT", "PONYTAIL", "MOHAWK", "SPIKES", "BOB", "TOP KNOT", "TOUSLED"};
+const char* kHair[] = {"NONE", "BUZZ CUT", "SWEPT", "PONYTAIL", "MOHAWK", "SPIKES", "BOB", "TOP KNOT", "TOUSLED",
+                       "HIGH PIGTAILS", "DREADLOCKS"};   // 9, 10: their tails and locs swing (older versions: NONE)
 const char* kHeadgear[] = {"NONE", "GRID HELMET", "RACER HELMET", "HOOD", "CREST HELMET", "HEADPHONES", "CAP",
                            "HORNED HELMET", "VECTOR HELMET"};   // 7, 8: PR #25 (older versions: NONE)
 const char* kVisor[] = {"NONE", "BAND VISOR", "FULL SHIELD", "SHADES", "GOGGLES", "HEADSET", "HALO", "SLIT VISOR"};
@@ -939,7 +941,7 @@ RigFrame frameOf(const PlayerInput& in, const AvatarDesc& d) {
         // the forearm ends inside the gauntlet's bracer or cuff (RigTuning forearmEnd, carried with the cuff when the
         // tuning tool moves it; the classic lancer's wrist ring, tools/blender/make_props.py)
         const Vec3 fe{side * T.forearmEnd.x, T.forearmEnd.y, T.forearmEnd.z};
-        F.W[k] = in.hand[k].grip.transform(gauntletOf(in.avatar) < 3 ? cuffPose(k == 0).transform(fe) : Vec3{side * 0.004f, -0.042f, 0.105f});
+        F.W[k] = in.hand[k].grip.transform(plateGauntlet(gauntletOf(in.avatar)) ? cuffPose(k == 0).transform(fe) : Vec3{side * 0.004f, -0.042f, 0.105f});
         F.natural[k] = length(K.elbow[k] - K.shoulder[k]) * T.upperLen + length(K.wrist[k] - K.elbow[k]) * T.foreLen;
     }
     return F;
@@ -1428,14 +1430,15 @@ void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& din, std::v
         const uint8_t hf = uint8_t(PART_HAIR | (neonHair(d) ? PART_NEON : 0));
         std::snprintf(name, sizeof name, "av_hair_%d_%c", d.hair, bk);
         add(name, head, false, hf);
-        if (d.hair == 3 || d.hair == 7) {   // PONYTAIL's tail, TOP KNOT's loose ends: parts of their own (they swing)
+        if (d.hair == 3 || d.hair == 7 || d.hair == 9) {   // PONYTAIL's tail, TOP KNOT's ends, HIGH PIGTAILS: parts of their own (they swing)
             std::snprintf(name, sizeof name, "av_hair_%dt_%c", d.hair, bk);
             add(name, head, false, hf);
         }
     }
     // face shields and masks are fitted to each face (the game falls back to the base head's if one is missing)
     if (d.visor) { std::snprintf(name, sizeof name, "av_visor_%d_%s", d.visor, fk); add(name, head, false); }
-    if (d.mask) { std::snprintf(name, sizeof name, "av_mask_%d_%s", d.mask, fk); add(name, head, false); }
+    // (the BANDANA's point below the chin swings, its cloth drawn as hair is: av_mask_4_*.swing)
+    if (d.mask) { std::snprintf(name, sizeof name, "av_mask_%d_%s", d.mask, fk); add(name, head, false, d.mask == 4 ? PART_HAIR : 0); }
     if (d.mask == 4) {   // BANDANA: its two tails, a part of their own (one per body, every face): they swing as hair does
         std::snprintf(name, sizeof name, "av_mask_4t_%c", bk);
         add(name, head, false, PART_HAIR);

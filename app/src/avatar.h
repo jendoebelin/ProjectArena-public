@@ -41,6 +41,11 @@ int nationCount();
 const Nation* nation(int n);                   // nullptr for 0 (none) or out of range
 inline int nationOf(const AvatarDesc& d) { return ((d.body >> 3) & 31) | ((d.gauntlet >> 5) << 5); }
 inline int gauntletOf(const AvatarDesc& d) { return d.gauntlet & 31; }
+// GAUNTLET: 0-2 the plate gauntlets (STRIKER, TITAN, PHANTOM), 3 the CONTROLLER (the lancer in a glove), 4-6 the
+// grapple gauntlets (GRAPPLER, ARC CLAW, REGALIA: plate gauntlets whose fingers open on the trigger)
+constexpr int kGauntletStyles = 7;
+inline bool plateGauntlet(int k) { return k != 3 && k >= 0 && k < kGauntletStyles; }
+inline bool grappleGauntlet(int k) { return k >= 4 && k < kGauntletStyles; }
 void setNation(AvatarDesc& d, int n);
 // with a country: the team kit (ARENA JERSEY, no pattern, athletic shorts, the nearest colour swatches, so builds
 // that don't know countries still show a jersey in about the right colours); without: unchanged

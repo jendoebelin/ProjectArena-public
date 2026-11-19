@@ -277,11 +277,18 @@ struct App {
     Renderer gfx;
     Model arena, environment, projectile, shell, spawner, shield, lancer, knuckle, head, torso, strikezone;
     Model gauntlets[3];   // GAUNTLET styles 0..2 (STRIKER, TITAN, PHANTOM); 3 = CONTROLLER (the lancer)
-    Model gauntletHand[3], gauntletCuff[3];   // the same, split at the wrist (the cuff can be moved: TUNING)
+    // the plate styles (0-2, 4-6) split at the wrist (the cuff can be moved: TUNING)
+    Model gauntletHand[avatar::kGauntletStyles], gauntletCuff[avatar::kGauntletStyles];
+    // the grapple gauntlets (4-6): their fingers (and the thumb), each turned open about its hinge by the trigger
+    // (<gauntlet_K>.hinge, in the grip frame the fist is drawn in), the plasma emitter, and the tether's models
+    struct GrappleRig { bool ok = false; Vec3 piv[5], rest[5], open[5]; Vec3 emit{0, 0, 0}; };
+    Model gauntletFinger[avatar::kGauntletStyles][5];
+    GrappleRig grapple[avatar::kGauntletStyles];
+    Model grappleBeam, grappleFlare;
     // HANDS APART: those fists and cuffs as shapes ([k][0] the fist, [k][1] the cuff; [3][0] the classic lancer), so a
     // player's two hands are drawn apart where their gauntlets would cross (avatar.h): built on a thread at start-up,
     // used once handShapesReady; noApart: pictures, --noapart
-    avatar::HandShape handShape[4][2];
+    avatar::HandShape handShape[avatar::kGauntletStyles][2];
     std::atomic<bool> handShapesReady{false};
     bool noApart = false;
     bool noTwist = false;   // pictures, --notwist: FOREARM TWIST off
@@ -1429,6 +1436,41 @@ static void loadSwing(App& a, const char* model) {
     a.swingRigs[model] = rig;
 }
 
+// <gauntlet_K>.hinge (tools/build_open_assets.py write_hinge): 'finger k  pivot  rest  open' (the hinge point, a
+// direction off it at rest and opened all the way, the grip frame the fist is drawn in) for the four fingers and
+// the thumb, then 'emit  point  forward' (the plasma emitter). All five fingers and the emitter, or none of it
+static void loadHinge(App& a, int k) {
+    std::vector<uint8_t> raw;
+    char name[32];
+    std::snprintf(name, sizeof name, "gauntlet_%d.hinge", k);
+    if (!assetRead(name, raw)) return;
+    const std::string txt(raw.begin(), raw.end());
+    App::GrappleRig g;
+    int got = 0;
+    bool emit = false;
+    for (size_t i = 0; i < txt.size();) {
+        size_t e = txt.find('\n', i);
+        if (e == std::string::npos) e = txt.size();
+        const std::string ln = txt.substr(i, e - i);
+        i = e + 1;
+        int f;
+        float v[9];
+        if (std::sscanf(ln.c_str(), "finger %d %f %f %f %f %f %f %f %f %f", &f, v, v + 1, v + 2, v + 3, v + 4, v + 5, v + 6,
+                        v + 7, v + 8) == 10 && f >= 0 && f < 5) {
+            g.piv[f] = {v[0], v[1], v[2]};
+            g.rest[f] = normalize(Vec3{v[3], v[4], v[5]});
+            g.open[f] = normalize(Vec3{v[6], v[7], v[8]});
+            got |= 1 << f;
+        } else if (std::sscanf(ln.c_str(), "emit %f %f %f", v, v + 1, v + 2) == 3) {
+            g.emit = {v[0], v[1], v[2]};
+            emit = true;
+        }
+    }
+    if (got != 31 || !emit) { LOGW("%s: incomplete, the gauntlet's fingers stay closed", name); return; }
+    g.ok = true;
+    a.grapple[k] = g;
+}
+
 // <model>.tuck: 'TUCK', u32 w, h, f32 centre xyz, w*h radius bytes
 static void loadTuck(const char* model, App::Tuck& t) {
     std::vector<uint8_t> d;
@@ -1478,11 +1520,17 @@ static bool initContent(App& a) {
     a.gfx.loadModel("lancer", a.lancer);
     a.gfx.loadModel("knuckleguard", a.knuckle);
     for (int k = 0; k < 3; ++k) { char gn[16]; snprintf(gn, sizeof gn, "gauntlet_%d", k); a.gfx.loadModel(gn, a.gauntlets[k]); }
-    for (int k = 0; k < 3; ++k) {   // optional (the open asset set has them)
+    for (int k = 0; k < avatar::kGauntletStyles; ++k) {   // optional (the open asset set has them)
+        if (!avatar::plateGauntlet(k)) continue;
         char gn[24];
         snprintf(gn, sizeof gn, "gauntlet_%d_hand", k); a.gfx.loadModel(gn, a.gauntletHand[k]);
         snprintf(gn, sizeof gn, "gauntlet_%d_cuff", k); a.gfx.loadModel(gn, a.gauntletCuff[k]);
+        if (!avatar::grappleGauntlet(k)) continue;
+        for (int f = 0; f < 5; ++f) { snprintf(gn, sizeof gn, "gauntlet_%d_f%d", k, f); a.gfx.loadModel(gn, a.gauntletFinger[k][f]); }
+        loadHinge(a, k);
     }
+    a.gfx.loadModel("grapple_beam", a.grappleBeam);
+    a.gfx.loadModel("grapple_flare", a.grappleFlare);
     a.gfx.loadModel("head", a.head);
     a.gfx.loadModel("torso", a.torso);
     if (assetExists("floor.mdl")) {
@@ -1517,18 +1565,18 @@ static bool initContent(App& a) {
             for (int k = 1; k <= 6; ++k) { snprintf(n, sizeof n, "av_bottom_%d_%c", k, bk); part(n); if (k >= 5) loadSwish(a, n); }
             // head parts fitted to this body's head (tools/blender/make_avatar.py --head)
             const int bi = bk == 'f' ? 1 : 0;
-            for (int k = 1; k <= 8; ++k) { snprintf(n, sizeof n, "av_hair_%d_%c", k, bk); part(n); loadSwing(a, n); }
-            for (int k : {3, 7}) { snprintf(n, sizeof n, "av_hair_%dt_%c", k, bk); part(n); loadSwing(a, n); }   // tail, loose ends
+            for (int k = 1; k <= 10; ++k) { snprintf(n, sizeof n, "av_hair_%d_%c", k, bk); part(n); loadSwing(a, n); }
+            for (int k : {3, 7, 9}) { snprintf(n, sizeof n, "av_hair_%dt_%c", k, bk); part(n); loadSwing(a, n); }   // tail, ends, pigtails
             for (int k = 1; k <= 7; ++k) { snprintf(n, sizeof n, "av_visor_%d_%c", k, bk); part(n); loadTuck(n, a.tuckVisor[bi][k]); }
             for (int k = 1; k <= 8; ++k) { snprintf(n, sizeof n, "av_gear_%d_%c", k, bk); part(n); loadTuck(n, a.tuckGear[bi][k]); }
-            for (int k = 1; k <= 5; ++k) { snprintf(n, sizeof n, "av_mask_%d_%c", k, bk); part(n); }
+            for (int k = 1; k <= 5; ++k) { snprintf(n, sizeof n, "av_mask_%d_%c", k, bk); part(n); if (k == 4) loadSwing(a, n); }
             snprintf(n, sizeof n, "av_mask_4t_%c", bk); part(n); loadSwing(a, n);   // the BANDANA's tails (they swing)
             for (int f = 1; f < avatar::kFaces; ++f) {   // FACE 2..4: their heads, and face shields / masks fitted to them
                 snprintf(n, sizeof n, "av_bhead_%c%d.mdl", bk, f);
                 if (!assetExists(n)) continue;   // (the PR #25 bodies have one face each: FACE 2..4 draw the base head's)
                 snprintf(n, sizeof n, "av_bhead_%c%d", bk, f); part(n);
                 for (int k = 1; k <= 7; ++k) { snprintf(n, sizeof n, "av_visor_%d_%c%d", k, bk, f); part(n); }
-                for (int k = 1; k <= 5; ++k) { snprintf(n, sizeof n, "av_mask_%d_%c%d", k, bk, f); part(n); }
+                for (int k = 1; k <= 5; ++k) { snprintf(n, sizeof n, "av_mask_%d_%c%d", k, bk, f); part(n); if (k == 4) loadSwing(a, n); }
             }
         }
         for (int k = 1; k < 8; ++k)
@@ -1555,8 +1603,10 @@ static bool initContent(App& a) {
             std::vector<uint8_t> d;
             if (assetRead(name + ".mdl", d)) jobs->push_back({std::move(d), k, part, sides});
         };
-        for (int k = 0; k < 3; ++k) {
-            add("gauntlet_" + std::to_string(k) + "_hand", k, 0, 5);
+        for (int k = 0; k < avatar::kGauntletStyles; ++k) {
+            if (!avatar::plateGauntlet(k)) continue;
+            // (a grapple gauntlet's fist: its hand and its fingers closed, in one model)
+            add("gauntlet_" + std::to_string(k) + (avatar::grappleGauntlet(k) ? "_fist" : "_hand"), k, 0, 5);
             add("gauntlet_" + std::to_string(k) + "_cuff", k, 1, 4);   // (open at both ends)
         }
         add("lancer", 3, 0, 5);
@@ -5214,10 +5264,11 @@ static void hairTuck(App& a, const AvatarDesc& d, DrawParams& dp) {
 }
 
 // A ponytail under a helmet that covers its tie comes out under the helmet's rim instead: the offset (head space) that
-// moves its root straight down the back of the head to just inside the rim (zero when nothing covers the root).
-static Vec3 tailExit(const App& a, const AvatarDesc& d, const App::SwingRig& rig) {
+// moves its root (chain `chain`'s: each of the HIGH PIGTAILS' tails its own) straight down the head to just inside the
+// rim (zero when nothing covers the root).
+static Vec3 tailExit(const App& a, const AvatarDesc& d, const App::SwingRig& rig, int chain = 0) {
     const int b = avatar::bodyType(d), g = d.headgear < 9 ? d.headgear : 0;
-    if (!g || !a.tuckGear[b][g].ok || rig.chains.empty()) return {0, 0, 0};
+    if (!g || !a.tuckGear[b][g].ok || chain >= (int)rig.chains.size()) return {0, 0, 0};
     const App::Tuck& T = a.tuckGear[b][g];
     const Vec3 C{T.c[0], T.c[1], T.c[2]};
     auto radius = [&](float az, float el) {   // nearest cell
@@ -5225,7 +5276,7 @@ static Vec3 tailExit(const App& a, const AvatarDesc& d, const App::SwingRig& rig
         const int j = std::max(0, std::min(T.h - 1, (int)std::floor((el + kPi / 2) / kPi * T.h)));
         return 0.05f + 0.5f * T.v[(size_t)j * T.w + i] / 255.f;
     };
-    const Vec3 root = rig.chains[0].R[0], dr = root - C;
+    const Vec3 root = rig.chains[chain].R[0], dr = root - C;
     const float r = length(dr);
     if (r < 1e-4f) return {0, 0, 0};
     const float az = std::atan2(dr.x, dr.z);
@@ -5240,6 +5291,7 @@ static Vec3 tailExit(const App& a, const AvatarDesc& d, const App::SwingRig& rig
 
 // selftests: the hair of the avatar drawn as `key` stepped through a head turn (`deg` degrees in `turn` s, then `hold`
 // s still), so the picture shows it mid-swing
+static bool g_swingNod = false;   // --swingnod: the swing pictures nod the head (about its own X) instead of turning it
 static void preSwing(App& a, int key, const PlayerInput& in, float deg, float turn, float hold) {
     avatar::Rig rig = avatar::solveRig(in, in.avatar);
     std::vector<avatar::PartDraw> list;
@@ -5252,7 +5304,8 @@ static void preSwing(App& a, int key, const PlayerInput& in, float deg, float tu
         for (int f = 0; f <= steps; ++f) {
             const float t = f / 100.f, k = std::min(1.f, t / turn);
             Pose h = in.head;
-            h.q = Quat::axisAngle({0, 1, 0}, deg2rad(deg * (1.f - k))) * in.head.q;
+            h.q = g_swingNod ? in.head.q * Quat::axisAngle({1, 0, 0}, deg2rad(deg * (1.f - k)))
+                             : Quat::axisAngle({0, 1, 0}, deg2rad(deg * (1.f - k))) * in.head.q;
             swingBones(a, rg->second, key, h, bones, 1000.0 + t);
         }
         a.swings[int64_t(key) * 1024 + rg->second.id].t = nowSeconds();   // (the picture then draws this state)
@@ -5341,19 +5394,31 @@ static void drawAvatarBody(App& a, const PlayerInput& in, int team, int pass, co
         if (p.flags & avatar::PART_HAIR) {   // hair: a style that moves swings (its chains per drawn avatar); under headgear, tucked in
             auto rg = a.swingRigs.find(it->first);
             Vec3 off{0, 0, 0};
+            bool tuckFree = false;
             if (rg != a.swingRigs.end()) {
                 const App::SwingRig* rig = &rg->second;
-                if (rig->exits) off = tailExit(a, in.avatar, *rig);
+                // several tails (HIGH PIGTAILS): each out under the rim below its own tie, by its own bones
+                const int nc = (int)rig->chains.size();
+                Vec3 offs[6];
+                bool each = false;
+                if (rig->exits && nc > 1) {
+                    for (int c = 0; c < nc && c < 6; ++c) { offs[c] = tailExit(a, in.avatar, *rig, c); each |= length(offs[c]) > 1e-4f; }
+                } else if (rig->exits) {
+                    off = tailExit(a, in.avatar, *rig);
+                }
                 const bool moved = length(off) > 1e-4f;
-                if (moved) {   // out under the helmet's rim: the rig moved there (made once per helmet)
+                if (moved || each) {   // out under the helmet's rim: the rig moved there (made once per helmet)
                     char k[48];
                     std::snprintf(k, sizeof k, "%s@%d", it->first.c_str(), (int)in.avatar.headgear);
                     auto sr = a.swingRigs.find(k);
                     if (sr == a.swingRigs.end()) {
                         App::SwingRig m = *rig;
                         m.exits = false;
-                        for (App::SwingChain& c : m.chains)
-                            for (int j = 0; j < c.n; ++j) { c.R[j] += off; c.rmin[j] = 0.97f * length(c.R[j] - m.centre); }
+                        for (int ci = 0; ci < nc; ++ci) {
+                            App::SwingChain& c = m.chains[ci];
+                            const Vec3 o = each ? (ci < 6 ? offs[ci] : Vec3{0, 0, 0}) : off;
+                            for (int j = 0; j < c.n; ++j) { c.R[j] += o; c.rmin[j] = 0.97f * length(c.R[j] - m.centre); }
+                        }
                         m.id = (int)a.swingRigs.size();
                         sr = a.swingRigs.emplace(k, m).first;
                     }
@@ -5364,13 +5429,22 @@ static void drawAvatarBody(App& a, const PlayerInput& in, int team, int pass, co
                     const Mat4 to = Mat4::fromPose({Quat{}, off}), back = Mat4::fromPose({Quat{}, -off});
                     for (Mat4& b : swing) b = back * b * to;
                     model = model * to;
+                } else if (each) {   // each tail's bones carry its own move (the vertices are all on its bones, none on the head)
+                    for (int ci = 0; ci < nc && ci < 6; ++ci) {
+                        const App::SwingChain& c = rig->chains[ci];
+                        const Mat4 to = Mat4::fromPose({Quat{}, offs[ci]});
+                        for (int j = 0; j + 1 < c.n; ++j) swing[c.bone0 + j] = swing[c.bone0 + j] * to;
+                    }
+                    tuckFree = true;   // (out under the rim: not pulled back in under the helmet)
                 }
                 dp.bones = swing;
                 dp.pelvis = nullptr;   // (a hair rig's bone 0 is the head: no waist)
                 dp.twist = nullptr;    // (nor forearms)
             }
-            hairTuck(a, in.avatar, dp);
-            dp.tuckC[0] -= off.x; dp.tuckC[1] -= off.y; dp.tuckC[2] -= off.z;   // (the tuck map is in head space)
+            if (!tuckFree) {
+                hairTuck(a, in.avatar, dp);
+                dp.tuckC[0] -= off.x; dp.tuckC[1] -= off.y; dp.tuckC[2] -= off.z;   // (the tuck map is in head space)
+            }
         }
         a.gfx.draw(it->second, model, dp, pass);
     }
@@ -5557,21 +5631,64 @@ static void updateBuilder(App& a, PlayerInput& in) {
 // the player's GAUNTLET style (the classic controller-in-glove when the style is missing)
 static const Model& gauntletOf(const App& a, const AvatarDesc& d) {
     const int k = avatar::gauntletOf(d);
-    return k < 3 && a.gauntlets[k].valid() ? a.gauntlets[k] : a.lancer;
+    return k < 3 && a.gauntlets[k].valid() ? a.gauntlets[k] : a.lancer;   // (4-6: hand and cuff only, else the lancer)
 }
 
-// a gauntlet: gm = (pre *) grip * the hand's mirror. Plate gauntlets are drawn as the hand and the cuff, the cuff in
-// its tuned pose against the hand (avatar::cuffPose; identity unless the TUNING tool moved it)
-static void drawGauntlet(App& a, const AvatarDesc& d, const Mat4& gm, const DrawParams& dp, int pass) {
+// GRAPPLER, ARC CLAW, REGALIA: the trigger opens the fingers, each about its hinge (in the grip frame the fist is
+// drawn in: fist = gm * fistPose), and while it is pulled a plasma tether in the glow colour runs from the emitter in
+// the front of the fist to where the ball is held (Tunables::launcherOffset), a flare at each end. Drawing only: the
+// throw, the catch and what is sent are as they were (every player's trigger travels already)
+static float grappleOpen(float trigger) {
+    const float t = clampf((trigger - 0.05f) / 0.80f, 0.f, 1.f);
+    return t * t * (3.f - 2.f * t);
+}
+static void drawGrapple(App& a, int k, const Mat4& gm, const Mat4& fist, const DrawParams& dp, int pass, float trigger,
+                        bool left) {
+    const App::GrappleRig& G = a.grapple[k];
+    const float t = grappleOpen(trigger);
+    for (int f = 0; f < 5; ++f) {
+        if (!a.gauntletFinger[k][f].valid()) continue;
+        const Quat q = nlerp(Quat{}, fromTo(G.rest[f], G.open[f]), t);
+        const Mat4 H = Mat4::fromPose({q, G.piv[f] - q.rotate(G.piv[f])});
+        a.gfx.draw(a.gauntletFinger[k][f], fist * H * g_lancerLocal, dp, pass);
+    }
+    if (pass != 1 || t < 0.02f || !a.grappleBeam.valid()) return;
+    static const float white[4] = {1, 1, 1, 1};
+    const float* glow = dp.channels ? dp.channels[avatar::CH_GLOW] : white;
+    DrawParams pp;
+    pp.mirrored = dp.mirrored;
+    for (int c = 0; c < 3; ++c) pp.tintMul[c] = glow[c] * (0.7f + 0.6f * t);
+    pp.uvOff[1] = wrapUV(-(nowSeconds() - a.startTime) * 2.4);   // the plasma running out along the tether
+    const Vec3 E = avatar::fistPose().transform(G.emit);            // in gm's frame (the left hand's mirrored)
+    Vec3 B = a.game.tun.launcherOffset;
+    if (left) B.x = -B.x;
+    const Vec3 D = B - E;
+    const float L = length(D);
+    if (L < 0.02f) return;
+    const float w = 0.020f * t;
+    a.gfx.draw(a.grappleBeam, gm * Mat4::fromPose({fromTo({0, 0, -1}, D / L), E}, {w, w, L}), pp, pass);
+    if (!a.grappleFlare.valid()) return;
+    a.gfx.draw(a.grappleFlare, gm * Mat4::fromPose({Quat{}, E}, {0.013f * t, 0.013f * t, 0.013f * t}), pp, pass);
+    pp.alphaMul = 0.8f;
+    a.gfx.draw(a.grappleFlare, gm * Mat4::fromPose({Quat{}, B}, {0.056f * t, 0.056f * t, 0.056f * t}), pp, pass);
+}
+
+// a gauntlet: gm = (pre *) grip * the hand's mirror (h: 0 left, mirrored). Plate gauntlets are drawn as the hand and
+// the cuff, the cuff in its tuned pose against the hand (avatar::cuffPose; identity unless the TUNING tool moved it);
+// the grapple gauntlets open with that hand's trigger
+static void drawGauntlet(App& a, const AvatarDesc& d, const Mat4& gm, const DrawParams& dp, int pass, float trigger = 0.f,
+                         int h = 1) {
     const int k = avatar::gauntletOf(d);
-    if (k < 3 && a.gauntletHand[k].valid() && a.gauntletCuff[k].valid()) {
+    if (avatar::plateGauntlet(k) && a.gauntletHand[k].valid() && a.gauntletCuff[k].valid()) {
         // the fist turned 30 degrees about the knuckles, in line with the cuff and the forearm like the hands (owner,
         // 2026-11-16: "make the fist line up like the hands"; the controller's tilt had turned it 30 degrees outward
         // from the cuff, seen from above with the palm down), about the knuckle bumper (Tunables::knuckleOffset); then
         // 2 cm toward the thumb and 2.5 cm back into the cuff's opening (her marks: no gap between fist and cuff), the
         // cuff's tuning moving the rest of the way (avatar.h). Drawn only: the bumper stays where it was
-        a.gfx.draw(a.gauntletHand[k], gm * Mat4::fromPose(avatar::fistPose()) * g_lancerLocal, dp, pass);
+        const Mat4 fist = gm * Mat4::fromPose(avatar::fistPose());
+        a.gfx.draw(a.gauntletHand[k], fist * g_lancerLocal, dp, pass);
         a.gfx.draw(a.gauntletCuff[k], gm * Mat4::fromPose(avatar::cuffPose(false)) * g_lancerLocal, dp, pass);
+        if (a.grapple[k].ok) drawGrapple(a, k, gm, fist, dp, pass, trigger, h == 0);
         return;
     }
     a.gfx.draw(gauntletOf(a, d), gm * g_lancerLocal, dp, pass);
@@ -5586,7 +5703,7 @@ static PlayerInput handsApart(const App& a, const PlayerInput& in, const AvatarD
         length(in.hand[0].grip.p - in.hand[1].grip.p) > 0.40f)
         return in;
     const int k = avatar::gauntletOf(look);
-    const bool plate = k < 3 && a.gauntletHand[k].valid() && a.gauntletCuff[k].valid();
+    const bool plate = avatar::plateGauntlet(k) && a.gauntletHand[k].valid() && a.gauntletCuff[k].valid();
     if (!plate && k < 3 && a.gauntlets[k].valid()) return in;   // (a whole plate gauntlet: no shape for it)
     const avatar::HandShape* fist = plate ? &a.handShape[k][0] : &a.handShape[3][0];
     const avatar::HandShape* cuff = plate ? &a.handShape[k][1] : nullptr;
@@ -5627,13 +5744,13 @@ static PlayerInput handsApart(const App& a, const PlayerInput& in, const AvatarD
 }
 
 static void drawLancerAt(App& a, const Mat4& grip, int h, const AvatarLook& L, int pass, const Mat4& pre, bool preMirror,
-                         const AvatarDesc& d) {
+                         const AvatarDesc& d, float trigger = 0.f) {
     Mat4 mirror = Mat4::identity();
     if (h == 0) mirror.m[0] = -1;
     DrawParams dp;
     applyLook(dp, L);
     dp.mirrored = (h == 0) != preMirror;
-    drawGauntlet(a, d, pre * grip * mirror, dp, pass);
+    drawGauntlet(a, d, pre * grip * mirror, dp, pass, trigger, h);
 }
 
 // main menu: your avatar on a slowly turning pedestal to the right of the menu, your name above it
@@ -5686,7 +5803,7 @@ static AvatarLook drawMirror(App& a, int pass) {
     }
     const AvatarLook look = lookOf(a, in.avatar, L);
     for (int h = 0; h < 2; ++h)
-        if (in.hand[h].tracked) drawLancerAt(a, Mat4::fromPose(in.hand[h].grip), h, look, pass, R, true, in.avatar);
+        if (in.hand[h].tracked) drawLancerAt(a, Mat4::fromPose(in.hand[h].grip), h, look, pass, R, true, in.avatar, in.hand[h].trigger);
     if (pass != 1) return look;
     // the mirror: a faint glass pane with a glowing frame, a light ring where the reflection stands
     const Vec3 n = a.mirrorNormal;
@@ -6729,7 +6846,7 @@ static void drawOwnAvatar(App& a, int pass) {   // the spectator's avatar as the
         DrawParams hp;
         hp.mirrored = (h == 0);
         if (!a.avModels.empty()) applyLook(hp, lk);
-        drawGauntlet(a, in.avatar, Mat4::fromPose(in.hand[h].grip) * mirror, hp, pass);
+        drawGauntlet(a, in.avatar, Mat4::fromPose(in.hand[h].grip) * mirror, hp, pass, in.hand[h].trigger, h);
     }
 }
 static void headSelfieRender(App& a) {
@@ -7068,7 +7185,7 @@ static void drawLobby(App& a, int pass) {
     const PlayerInput mine = handsApart(a, a.localIn, a.myAvatar);
     for (int h = 0; h < 2; ++h)
         if (mine.hand[h].tracked)
-            drawLancerAt(a, Mat4::fromPose(mine.hand[h].grip), h, look, pass, Mat4::identity(), false, a.myAvatar);
+            drawLancerAt(a, Mat4::fromPose(mine.hand[h].grip), h, look, pass, Mat4::identity(), false, a.myAvatar, mine.hand[h].trigger);
     if (pass != 1) return;
     const float cyan[4] = {0.3f, 0.85f, 1.0f, 1}, white[4] = {1, 1, 1, 1}, grey[4] = {0.62f, 0.68f, 0.76f, 1};
     const float deck[4] = {0.02f, 0.03f, 0.05f, 0.92f}, glow[4] = {0.10f, 0.55f, 0.85f, 1};
@@ -7283,7 +7400,8 @@ static void drawRoomPeople(App& a, int pass) {
             const AvatarLook look = lookOf(a, m.in.avatar, 2);
             for (int h = 0; h < 2; ++h)
                 if (shown.hand[h].tracked && !insideTank(m.in.hand[h].grip.p))
-                    drawLancerAt(a, Mat4::fromPose(shown.hand[h].grip), h, look, pass, Mat4::identity(), false, m.in.avatar);
+                    drawLancerAt(a, Mat4::fromPose(shown.hand[h].grip), h, look, pass, Mat4::identity(), false, m.in.avatar,
+                                 shown.hand[h].trigger);
             if (pass == 1 && m.queuePos >= 0) {
                 Vec3 f = normalize(Vec3{a.viewHead.p.x - m.in.head.p.x, 0, a.viewHead.p.z - m.in.head.p.z});
                 static const char* kPlace[4] = {"NEXT", "2ND", "3RD", "4TH"};
@@ -7311,7 +7429,7 @@ static void drawRoomPeople(App& a, int pass) {
         const PlayerInput mine = handsApart(a, a.localIn, a.myAvatar);
         for (int h = 0; h < 2; ++h)
             if (mine.hand[h].tracked)
-                drawLancerAt(a, Mat4::fromPose(mine.hand[h].grip), h, look, pass, Mat4::identity(), false, a.myAvatar);
+                drawLancerAt(a, Mat4::fromPose(mine.hand[h].grip), h, look, pass, Mat4::identity(), false, a.myAvatar, mine.hand[h].trigger);
     }
     if (pass == 1 && a.showNames) {   // PLAYERS' NAMES: the players in the match, not yourself
         const int L = a.watchIp != 0 ? -1 : a.net.localSlot();
@@ -7438,7 +7556,7 @@ static void drawMiniMatch(App& a, const Game& g, const Vec3& at0, const Quat& q,
             DrawParams hp2 = bp;
             if (!a.avModels.empty()) { hp2 = DrawParams(); applyLook(hp2, look); }
             hp2.mirrored = (h == 0);
-            drawGauntlet(a, ps.in.avatar, M(Mat4::fromPose(pin.hand[h].grip) * mirror), hp2, pass);
+            drawGauntlet(a, ps.in.avatar, M(Mat4::fromPose(pin.hand[h].grip) * mirror), hp2, pass, pin.hand[h].trigger, h);
         }
         const Ball& b = ps.ball;
         if (pass == 1 && b.state != BallState::Dead && b.pos.y > 0.f && (rmini == nullptr || rmini->slot[p] || rmini->isBot(p))) {
@@ -8761,7 +8879,7 @@ static void drawWorld(App& a, int pass) {
             hp.mirrored = (h == 0);
             if (!a.avModels.empty()) applyLook(hp, lk);
             else { hp.tintMul[0] = 0.6f + 0.4f * teamCol[p][0]; hp.tintMul[1] = 0.6f + 0.4f * teamCol[p][1]; hp.tintMul[2] = 0.6f + 0.4f * teamCol[p][2]; }
-            drawGauntlet(a, look, grip * mirror, hp, pass);
+            drawGauntlet(a, look, grip * mirror, hp, pass, vin.hand[h].trigger, h);
             if (ps.hands[h].shieldUp) {
                 DrawParams sp;
                 sp.tintMul[0] = teamCol[p][0]; sp.tintMul[1] = teamCol[p][1]; sp.tintMul[2] = teamCol[p][2];
@@ -10358,6 +10476,7 @@ struct ShotView {
     bool depthOut = false;   // --depth: also OUT.depth (float32 depth, W x H rows bottom-up) for the AO mock-up
     int winStyle = 0;           // --winscreen split|winner|camera (or 0-2): its WIN SCREEN
     bool handsOut = false;   // --handsout: blue's hands held straight out in front, palms down (the gauntlets' wrists)
+    float trigger = -1.f;    // --trigger T: blue's triggers pulled T (0..1; the grapple gauntlets open)
     // --handstouch N: blue's two hands held together (HANDS APART): 0 the tops (palms down and in), 1 the palms, 2 the
     // knuckles, 3 the wrists crossed; 4 at the chest, 5 at the belly, 6 the arms crossed (ELBOWS OUT OF THE BODY); 7
     // issue #24's far reach (THE REACH); 8 a long reach; 9 the arms out, palms turned up, 10 turned down (FOREARM TWIST);
@@ -10710,6 +10829,8 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
                     in.hand[h].grip = {flat * Quat::axisAngle({0, 0, 1}, h == 1 ? kPi * 0.5f : -kPi * 0.5f),
                                        in.head.p + flat.rotate({h == 1 ? 0.20f : -0.20f, -0.30f, -0.45f})};
             }
+            if (p == 0 && v.trigger >= 0.f)
+                for (int h = 0; h < 2; ++h) in.hand[h].trigger = clampf(v.trigger, 0.f, 1.f);
             a.viewIn[p] = in;
             a.viewInValid[p] = true;
             g.pl[p].in = in;
@@ -12587,7 +12708,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--suit") && i + 1 < argc) view.suit = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--hair") && i + 1 < argc) view.hair = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--swingtest")) view.swingTest = true;
+        else if (!strcmp(argv[i], "--swingnod")) { view.swingTest = true; g_swingNod = true; }   // (a nod: the BANDANA's point)
         else if (!strcmp(argv[i], "--handsout")) view.handsOut = true;   // (blue's hands straight out, palms down)
+        else if (!strcmp(argv[i], "--trigger") && i + 1 < argc) view.trigger = (float)atof(argv[++i]);   // (blue's triggers)
         else if (!strcmp(argv[i], "--handstouch") && i + 1 < argc) view.handsTouch = atoi(argv[++i]);   // (HANDS APART)
         else if (!strcmp(argv[i], "--touchgap") && i + 1 < argc) view.touchGap = (float)atof(argv[++i]);
         else if (!strcmp(argv[i], "--noapart")) view.noApart = true;
