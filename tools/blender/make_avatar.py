@@ -6,6 +6,7 @@ Human, waist-up or (LOWER BODY) down to mid-thigh; never feet. Built from smooth
   av_gear_1..6                  GRID HELMET, RACER HELMET, HOOD, CREST HELMET, HEADPHONES, CAP
   av_visor_1..7                 BAND VISOR, FULL SHIELD, SHADES, GOGGLES, HEADSET, HALO, SLIT VISOR
   av_mask_1..5                  MOUTH GUARD, CYBER JAW, BREATHER, BANDANA, FACEPLATE
+  av_mask_4t                    (--head m|f) the BANDANA's two tails: a part of their own, the game swings them
   av_torso_N / av_torso_Nc      suit N torso, straight / curved build (N = 0..9, see app/src/avatar.cpp)
   av_upper_N, av_fore_N         suit N upper arm and forearm (bone meshes)
   av_waist / av_waist_c         the energy fade where a waist-up body ends (drawn when LOWER BODY = NONE)
@@ -1199,15 +1200,43 @@ def make_mask(k):
         def kn(b):
             b.sphere('av_cloth', tuple(knot), 0.0100, segs=14, rings=8, scale=(1.35, 0.8, 1.0))
         p.builder(kn)
-        kd = (knot - HEAD_C) / np.linalg.norm(knot - HEAD_C)
-        k_th = math.atan2(kd[1], kd[0])
-        k_el = math.asin(kd[2])
-        u = np.linspace(0, 1, 12)
-        for s_ in (-1, 1):   # two short tails hanging from the knot
-            TH = np.full(12, k_th) + s_ * np.radians(3 + 6 * u)
-            EL = k_el - np.radians(3 + 17 * u)
-            w = (0.0070 + 0.0025 * u) * np.where(u > 0.8, 1 - (u - 0.8) / 0.2 * 0.6, 1.0)
-            lock(p, dirs(TH, EL), 0.0080 + 0.004 * u, w, mat='av_cloth', arch=0.0012, nx=4)
+        if HEAD_KEY:   # the game's heads: two long tails of their own part (av_mask_4t): the game swings them
+            ends = Part('av_mask_4t')   # (uv1 = how far down its tail, which tail; drawn for every face of the body)
+            ends.lines = []
+            p.extra = ends
+            u = np.linspace(0, 1, 16)
+            neck = 0.85 if HEAD_KEY[0] == 'f' else 1.0   # (the feminine neck is shorter: the tails clear the collar)
+            for e, (s_, ln, tw) in enumerate(((-1, 0.112 * neck, 0.35), (1, 0.096 * neck, -0.25))):   # one a little longer
+                C = (knot[None] + np.array([0.0, 0.0, -1.0]) * (ln * u)[:, None]                     # down the nape
+                     + np.array([0.0, -1.0, 0.0]) * (0.004 + 0.016 * u + 0.006 * np.sin(math.pi * u))[:, None]   # off it
+                     + np.array([s_, 0.0, 0.0]) * (0.004 + 0.020 * u ** 1.3)[:, None])               # fanning apart
+                ends.lines.append(C)
+                T = np.gradient(C, axis=0)
+                T /= np.linalg.norm(T, axis=-1, keepdims=True)
+                B = np.cross(T, np.array([0.0, -1.0, 0.0]))   # across the tail, turning a little down its length
+                B /= np.linalg.norm(B, axis=-1, keepdims=True)
+                Nn = np.cross(B, T)
+                a_ = tw * u
+                B = B * np.cos(a_)[:, None] + Nn * np.sin(a_)[:, None]
+                Nn = np.cross(B, T)
+                w = (0.0105 + 0.0040 * u) * np.where(u > 0.78, 1 - (u - 0.78) / 0.22 * 0.88, 1.0)   # a cut point
+                xs = np.linspace(-1, 1, 5)
+                P = (C[:, None] + B[:, None] * (w[:, None] * xs[None])[..., None]
+                     + Nn[:, None] * (0.0014 * (1 - xs[None] ** 2) * np.ones((len(u), 1)))[..., None])
+                P[:, :, 2] -= (0.010 * s_ * xs[None] * np.clip((u[:, None] - 0.78) / 0.22, 0, 1))   # the cut slants
+                flip = float(np.mean(np.sum(np.cross(np.gradient(P, axis=1), np.gradient(P, axis=0)) * Nn[:, None], -1))) < 0
+                mats = np.where((np.arange(len(u) - 1) >= len(u) - 3)[:, None], 'av_cloth_dk', 'av_cloth')
+                ends.grid(np.broadcast_to(mats, (len(u) - 1, 4)).astype(object), P, flip=flip)
+        else:
+            kd = (knot - HEAD_C) / np.linalg.norm(knot - HEAD_C)
+            k_th = math.atan2(kd[1], kd[0])
+            k_el = math.asin(kd[2])
+            u = np.linspace(0, 1, 12)
+            for s_ in (-1, 1):   # two short tails hanging from the knot
+                TH = np.full(12, k_th) + s_ * np.radians(3 + 6 * u)
+                EL = k_el - np.radians(3 + 17 * u)
+                w = (0.0070 + 0.0025 * u) * np.where(u > 0.8, 1 - (u - 0.8) / 0.2 * 0.6, 1.0)
+                lock(p, dirs(TH, EL), 0.0080 + 0.004 * u, w, mat='av_cloth', arch=0.0012, nx=4)
         PROJ[0] = keep
     elif k == 5:    # FACEPLATE: smooth full-face plate with glowing eye slits
         A = 78.0
@@ -1808,6 +1837,8 @@ def main():
         for k in range(1, 6):
             if want('av_mask_%d' % k):
                 parts.append(make_mask(k))
+                if getattr(parts[-1], 'extra', None) is not None and len(HEAD_KEY) == 1:
+                    parts.append(parts[-1].extra)   # the bandana's tails: they swing (one per body, for every face)
         for p_ in parts:
             p_.name += '_' + HEAD_KEY
         export(parts, out)

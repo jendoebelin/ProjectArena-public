@@ -311,6 +311,19 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         CHECK(hairParts(3, 2) == "av_hair_3_m av_hair_3t_m ", "a ponytail under a helmet keeps its tail");
         CHECK(hairParts(7, 0) == "av_hair_7_m av_hair_7t_m ", "the top knot's loose ends are a part of their own");
         CHECK(hairParts(0, 1).empty(), "no hair: nothing drawn under the helmet");
+        bool tails = true;
+        for (int face = 0; face < avatar::kFaces; ++face) {   // the BANDANA's tails: one part per body, for every face
+            AvatarDesc d;
+            d.mask = 4;
+            d.body = (uint8_t)(face << 1);   // (masculine; the face in bits 1-2)
+            std::vector<avatar::PartDraw> list;
+            avatar::drawList(avatar::solveRig(in, d), in, d, list);
+            int n = 0;
+            for (const avatar::PartDraw& p : list)
+                if (!std::strcmp(p.model, "av_mask_4t_m")) n += (p.flags & avatar::PART_HAIR) ? 1 : 100;
+            tails &= n == 1;
+        }
+        CHECK(tails, "the bandana's tails are a swinging part of their own, on every face");
     }
     {
         std::printf("[avatar: looks and avatar.cfg]\n");

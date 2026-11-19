@@ -1522,6 +1522,7 @@ static bool initContent(App& a) {
             for (int k = 1; k <= 7; ++k) { snprintf(n, sizeof n, "av_visor_%d_%c", k, bk); part(n); loadTuck(n, a.tuckVisor[bi][k]); }
             for (int k = 1; k <= 8; ++k) { snprintf(n, sizeof n, "av_gear_%d_%c", k, bk); part(n); loadTuck(n, a.tuckGear[bi][k]); }
             for (int k = 1; k <= 5; ++k) { snprintf(n, sizeof n, "av_mask_%d_%c", k, bk); part(n); }
+            snprintf(n, sizeof n, "av_mask_4t_%c", bk); part(n); loadSwing(a, n);   // the BANDANA's tails (they swing)
             for (int f = 1; f < avatar::kFaces; ++f) {   // FACE 2..4: their heads, and face shields / masks fitted to them
                 snprintf(n, sizeof n, "av_bhead_%c%d.mdl", bk, f);
                 if (!assetExists(n)) continue;   // (the PR #25 bodies have one face each: FACE 2..4 draw the base head's)

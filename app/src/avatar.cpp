@@ -1436,6 +1436,10 @@ void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& din, std::v
     // face shields and masks are fitted to each face (the game falls back to the base head's if one is missing)
     if (d.visor) { std::snprintf(name, sizeof name, "av_visor_%d_%s", d.visor, fk); add(name, head, false); }
     if (d.mask) { std::snprintf(name, sizeof name, "av_mask_%d_%s", d.mask, fk); add(name, head, false); }
+    if (d.mask == 4) {   // BANDANA: its two tails, a part of their own (one per body, every face): they swing as hair does
+        std::snprintf(name, sizeof name, "av_mask_4t_%c", bk);
+        add(name, head, false, PART_HAIR);
+    }
 }
 
 }  // namespace avatar

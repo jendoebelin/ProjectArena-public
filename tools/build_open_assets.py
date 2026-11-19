@@ -347,7 +347,7 @@ def build_props(name='props.npz'):
             for k in g:
                 g[k] = np.concatenate(g[k]).astype(np.float32)
         hk = re.match(r'av_hair_(\d+)_[mf]$', model)
-        if re.match(r'av_hair_\d+t_[mf]$', model):   # swinging ends (the ponytail's tail, the top knot's ends)
+        if re.match(r'av_(hair|mask)_\d+t_[mf]$', model):   # swinging ends (the ponytail's tail, the top knot's ends, the bandana's tails)
             write_tail(os.path.join(OUT, model), groups, head)
         elif hk and head and int(hk.group(1)) in HAIR_RIGS:   # a style whose free hair moves
             write_hair_rig(os.path.join(OUT, model), groups, head, HAIR_RIGS[int(hk.group(1))])
@@ -435,7 +435,8 @@ def write_rig_text(base, C, chains, exits=False):
                 f.write('%.5f %.5f %.5f\n' % tuple(q))
 
 
-TAIL_SPRING = {'3': (110, 7, 0.35, 75), '7': (150, 6, 0.35, 70)}   # the ponytail, the top knot's ends
+TAIL_SPRING = {'av_hair_3t': (110, 7, 0.35, 75), 'av_hair_7t': (150, 6, 0.35, 70),   # the ponytail, the top knot's ends
+               'av_mask_4t': (125, 5.5, 0.30, 60)}   # the bandana's tails: cloth, a little looser than the top knot's ends
 
 
 def write_tail(base, groups, head):
@@ -447,8 +448,8 @@ def write_tail(base, groups, head):
     alle = np.concatenate([np.round(g['uv1'][:, 1]) for g in groups.values()]).astype(int) - 1
     ends = int(alle.max()) + 1
     nseg = SWING_BONES if ends == 1 else 2
-    style = re.match(r'av_hair_(\d+)t_', os.path.basename(base)).group(1)
-    spring = TAIL_SPRING.get(style, TAIL_SPRING['3'])
+    style = re.match(r'(av_(?:hair|mask)_\d+t)_', os.path.basename(base)).group(1)
+    spring = TAIL_SPRING.get(style, TAIL_SPRING['av_hair_3t'])
     chains = []
     for e in range(ends):
         pts = []
@@ -460,7 +461,7 @@ def write_tail(base, groups, head):
             pts.append(allp[sel].mean(0))
         chains.append((spring, pts))
     C = head['C'] if head else np.zeros(3)
-    write_rig_text(base, C, chains, exits=style == '3')
+    write_rig_text(base, C, chains, exits=style == 'av_hair_3t')
 
     def weights(pos, uv1):
         e = np.clip(np.round(uv1[:, 1]).astype(int) - 1, 0, ends - 1)
