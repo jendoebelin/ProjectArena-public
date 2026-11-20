@@ -6,7 +6,8 @@ Usage: python -I tools/export_glb.py OUT_DIR [model ...]      (no model names: e
 - Materials are named after the palette (tools/blender/palette.py: av_primary, av_glow, gaunt_shell, ...); keep the
   names when you edit a model, they tell the game how to colour and light each part. Colour channels (primary,
   secondary, glow, skin, hair, trim, visor) are shown in a sample colour; the player's choice replaces it in game.
-- Skinned avatar parts (body, outfits) carry the 7-bone avatar rig in its bind pose and their vertex weights.
+- Skinned avatar parts (body, outfits) carry the 9-bone avatar rig (the game's: torso, neck, head, the upper arms,
+  forearms and collarbones) in its bind pose and their vertex weights.
 - Head parts (hair, headgear, face shields, masks) are in head space: origin between the eyes, facing -Z.
 - Arena models show their baked lighting (lightmap on the second UV set).
 """
@@ -29,8 +30,9 @@ TWOSIDED, PATTERN, DESIGN, CLOTH = 1, 16, 32, 64
 CHANNELS = {1: ('primary', (0.12, 0.32, 0.80)), 2: ('secondary', (0.22, 0.23, 0.27)), 3: ('glow', (0.15, 0.90, 1.00)),
             4: ('skin', (0.62, 0.43, 0.33)), 5: ('visor', (0.30, 0.42, 0.55)), 6: ('hair', (0.24, 0.14, 0.08)),
             7: ('trim', (0.72, 0.74, 0.78))}
-BONES = ['torso', 'neck', 'head', 'upper_arm.L', 'upper_arm.R', 'forearm.L', 'forearm.R']
-PARENTS = [-1, 0, 1, 0, 0, 3, 4]
+# (the game's order, avatar.h BONE_*: the collarbones last, 0.3.21; each upper arm hangs from its collarbone)
+BONES = ['torso', 'neck', 'head', 'upper_arm.L', 'upper_arm.R', 'forearm.L', 'forearm.R', 'clavicle.L', 'clavicle.R']
+PARENTS = [-1, 0, 1, 7, 8, 3, 4, 0, 0]
 
 
 def prop_material(name):
@@ -50,10 +52,26 @@ for _n, _d in palette.P.items():
         LOOSE.setdefault(_k + (_f & ~(TWOSIDED | DESIGN | CLOTH),), _n)
 
 
+def nearest_name(m):
+    """the palette entry nearest a material the palette doesn't list exactly (the same shader and colour channel; its
+    gloss and tint the closest): pull request #25's outfits carry their own values"""
+    ch, best = (m['flags'] >> 8) & 0xFF, None
+    for n, d in palette.P.items():
+        if d.get('kind') != 'prop':
+            continue
+        sh, t, g, f = prop_material(n)
+        if sh != m['shader'] or (f >> 8) & 0xFF != ch:
+            continue
+        score = abs(g - m['em'][3]) + sum(abs(a - b) for a, b in zip(t, m['tint']))
+        if best is None or score < best[0]:
+            best = (score, n)
+    return best[1] if best else None
+
+
 def name_of(m, model, i):
     k = (m['shader'], tuple(round(x, 3) for x in m['tint']), round(m['em'][3], 3))
     return (LOOKUP.get(k + (m['flags'] & ~(DESIGN | CLOTH),)) or LOOSE.get(k + (m['flags'] & ~(TWOSIDED | DESIGN | CLOTH),))
-            or '%s_mat%d' % (model, i))
+            or nearest_name(m) or '%s_mat%d' % (model, i))
 
 
 def read_tex(rel):
@@ -98,7 +116,9 @@ def bind_joints(body):
     rows = [l for l in src.splitlines() if l.strip().startswith('{{')]
     nums = [float(x) for x in re.findall(r'-?\d+\.\d+', rows[body])]
     P = np.array(nums).reshape(-1, 3)   # eye, head, shoulder L/R, elbow L/R, wrist L/R, thumb L/R
-    return [np.array([0.0, (P[2][1] + P[6][1]) * 0.5, 0.0]), np.zeros(3), P[1], P[2], P[3], P[4], P[5]]
+    # (a collarbone's root: 5 cm out from the middle at the shoulder's height, as avatar.cpp shoulderOf has it)
+    clav = [np.array([-0.05, P[2][1], P[2][2]]), np.array([0.05, P[3][1], P[3][2]])]
+    return [np.array([0.0, (P[2][1] + P[6][1]) * 0.5, 0.0]), np.zeros(3), P[1], P[2], P[3], P[4], P[5]] + clav
 
 
 def body_of(model):
@@ -131,7 +151,12 @@ def export(model, out_path, glb=None, offset=None, save=True, rigid=False):
         extras = {'projectArena': {'palette': name if name in palette.P else None, 'channel': CHANNELS.get(ch, ('none',))[0],
                                    'shader': ['lit', 'court', 'additive', 'unlit', 'translucent', 'lightmapped'][sh],
                                    'twoSided': bool(m['flags'] & TWOSIDED), 'cloth': bool(m['flags'] & CLOTH),
-                                   'design': m['mask'] or None}}
+                                   'design': m['mask'] or None,
+                                   # (the game's own values, so a model brought back with tools/import_glb.py is as it was,
+                                   # even where the palette has no exact entry for them)
+                                   'exact': {'shader': int(sh), 'tint': [float(x) for x in m['tint']],
+                                             'em': [float(x) for x in m['em']], 'flags': int(m['flags']),
+                                             'diffuse': m['diffuse'] or '', 'mask': m['mask'] or ''}}}
         gloss = m['em'][3]
         mat = g.material(name, color=tuple(col) + (m['tint'][3] if sh == SH_TRANS else 1.0,), emissive=tuple(emissive),
                          roughness=0.9 if gloss <= 0 else max(0.15, 0.8 - 0.6 * min(1.0, gloss)),

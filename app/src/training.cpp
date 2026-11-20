@@ -340,6 +340,14 @@ static void makeCoach(Game& g, int p, bool watch, const Vec3& from, float speed)
     s.coach.dir = {p == 0 ? 1.f : -1.f, 0, 0};
 }
 
+void lessonOptions(Tunables& t, const Tunables& own, bool custom) {
+    const Tunables std_;   // (the rules' own: a fresh install's)
+    const Tunables& o = custom ? own : std_;
+    t.strikeSpeed = o.strikeSpeed; t.maiden = o.maiden; t.aimAssist = o.aimAssist; t.strikeZone = o.strikeZone;
+    t.ballGrowth = o.ballGrowth; t.shieldSize = o.shieldSize;
+    t.wallsLively = o.wallsLively; t.wallGrip = o.wallGrip; t.bankAssist = o.bankAssist;   // (BOUNCES, 0.3.22)
+}
+
 void Trainer::setRules(Game& g, bool atFar) const {
     Tunables& t = g.tun;
     t = saved_;
@@ -349,6 +357,7 @@ void Trainer::setRules(Game& g, bool atFar) const {
     t.basicMatchTime = 0;   // (no clock: the lesson keeps its own)
     t.useShotClock = false;
     t.foulShift = 0;        // (the lessons' line where the arena has it)
+    lessonOptions(t, saved_, custom);   // (the room's options: the rules' own, or MY OPTIONS in custom training)
     t.meetTime = 0;
     t.botMeet = false;
     t.botAdapt = false;

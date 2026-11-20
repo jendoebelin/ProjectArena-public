@@ -13,15 +13,17 @@
 namespace autorot {
 
 struct Item {
-    bool mine = false;   // one of MY CAMERAS (id: its number from 0), or a preset (id: the view, 1-7)
+    bool mine = false;   // one of MY CAMERAS (id: its number from 0), or a preset (id: the view, 1-9)
     int id = 1;
     bool on = true;      // IN AUTO
     float hold = 9.f;    // a preset's seconds (a camera of yours keeps its own hold, shared with the headset)
 };
 
 // the presets in the order AUTO played them (1 side, 6 blue's eyes, 3 blue end, 2 high, 7 orange's eyes, 4 orange end),
-// then 5 TOP, which it never played
-static const int kPresets[7] = {1, 6, 3, 2, 7, 4, 5};
+// then 5 TOP, which it never played; then 8 CORNER and 9 COURTSIDE (2026-11-19), in AUTO, and unticked in a list the
+// streamer had made before them
+static const int kPresets[9] = {1, 6, 3, 2, 7, 4, 5, 8, 9};
+static const int kTopPreset = 5;   // (the one AUTO leaves out)
 static const float kPresetHolds[4] = {2, 4, 9, 15};
 
 inline bool same(const std::vector<Item>& a, const std::vector<Item>& b) {
@@ -44,13 +46,13 @@ inline bool sync(std::vector<Item>& L, bool custom, const std::vector<uint8_t>& 
     const std::vector<Item> before = L;
     std::vector<Item> kept;
     for (const Item& it : L) {
-        if (it.mine ? it.id < 0 || it.id >= (int)trig.size() || trig[it.id] == 1 : it.id < 1 || it.id > 7) continue;
+        if (it.mine ? it.id < 0 || it.id >= (int)trig.size() || trig[it.id] == 1 : it.id < 1 || it.id > 9) continue;
         if (rowOf(kept, it.mine, it.id) >= 0) continue;   // (once each)
         kept.push_back(it);
     }
     L = kept;
     for (int p : kPresets)
-        if (rowOf(L, false, p) < 0) { Item it; it.id = p; it.on = p != 5; L.push_back(it); }
+        if (rowOf(L, false, p) < 0) { Item it; it.id = p; it.on = p != kTopPreset && !custom; L.push_back(it); }
     for (int i = 0; i < (int)trig.size(); ++i)
         if (trig[i] != 1 && rowOf(L, true, i) < 0) { Item it; it.mine = true; it.id = i; L.push_back(it); }
     if (!custom) {
@@ -58,7 +60,7 @@ inline bool sync(std::vector<Item>& L, bool custom, const std::vector<uint8_t>& 
         for (uint8_t t : trig) anyMine |= t != 1;
         std::vector<Item> presets, mine;
         for (Item& it : L) {
-            it.on = it.mine || (!anyMine && it.id != 5);
+            it.on = it.mine || (!anyMine && it.id != kTopPreset);
             (it.mine ? mine : presets).push_back(it);
         }
         for (size_t i = 1; i < mine.size(); ++i)   // (by number, as AUTO went round them)

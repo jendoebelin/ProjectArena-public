@@ -126,6 +126,11 @@ private:
     float vh_ = 5.f, ta_ = 0.1f, tc_ = 0.18f;
 };
 
+// the room options of a lesson's rules: STANDARD the rules' own, for every board (the owner, 2026-11-18); CUSTOM
+// TRAINING the player's own (own: their rules), the options a lesson can take: AIM ASSIST, SHIELD SIZE, MAIDEN, STRIKE
+// ZONE, STRIKE SPEED, BALL GROWTH and BOUNCES (shields, knuckle guards, the clock and the foul line stay the lesson's)
+void lessonOptions(Tunables& t, const Tunables& own, bool custom);
+
 enum class Phase : uint8_t { Off, Card, Countdown, Play, Done };
 
 class Trainer {
@@ -139,6 +144,10 @@ public:
     std::vector<CueEvent> cues;   // this step's (sounds, flashes)
     std::string line;             // the coach's word now ("TAKE YOUR BALL")
     bool endless = false;         // SOUND STUDIO: the lesson never ends and has no result (set after begin)
+    // CUSTOM TRAINING (0.3.22; the owner, 2026-11-18: "custom training that keeps local score but nothing globally but
+    // opens the options for them ... so they can train on the config that they play in competing"): the lesson played
+    // with the player's own room options (MY OPTIONS: lessonOptions), its bests kept on the headset. Set before begin
+    bool custom = false;
 
     const Lesson& L() const { return lessons()[lesson]; }
     // the lesson set up (its card), the coach showing it; `saved` keeps the rules the game had, for stop()
@@ -148,6 +157,7 @@ public:
     void step(Game& g, float dt, PlayerInput* in);   // steps g (and the coach's game while it shows the lesson)
     bool active() const { return phase != Phase::Off; }
     const Tunables& savedRules() const { return saved_; }   // the game's rules before the lesson (what is saved)
+    Tunables& ownRules() { return saved_; }   // (while training: the player's own rules, MY OPTIONS changed there)
     bool coachThere() const;      // the coach at the far end of the real game (drawn from it)
 
 private:

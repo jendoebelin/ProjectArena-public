@@ -6,6 +6,7 @@
 #include "../src/record.h"
 #include "../src/training.h"
 #include "../src/controls.h"
+#include <chrono>
 #include <functional>
 #include <string>
 #include <cstdio>
@@ -269,6 +270,49 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         AvatarDesc plain = avatar::preset(3);
         const AvatarDesc up = avatar::uniform(plain);
         CHECK(up.suit == plain.suit && up.pattern == plain.pattern && up.primary == plain.primary, "no country: the look is unchanged");
+        // COUNTRY KIT (0.3.22): TEAM JERSEY as before; MY OUTFIT keeps your suit, pattern and lower body in the colours
+        CHECK(!avatar::ownKit(small) && avatar::sentLook(small).suit == 1 && avatar::sentLook(small).pattern == 0,
+              "a country's kit is the TEAM JERSEY unless chosen");
+        AvatarDesc none = plain;
+        avatar::setOwnKit(none, true);
+        CHECK(!avatar::ownKit(none) && none.pattern == plain.pattern, "MY OUTFIT needs a country");
+        AvatarDesc mine = avatar::preset(2);   // VANGUARD (its own pattern), waist up
+        avatar::set(mine, avatar::F_NATION, 7);
+        avatar::setOwnKit(mine, true);
+        CHECK(avatar::ownKit(mine) && avatar::get(mine, avatar::F_PATTERN) == avatar::preset(2).pattern, "MY OUTFIT: the pattern row reads as before");
+        avatar::set(mine, avatar::F_PATTERN, 1);
+        CHECK(avatar::ownKit(mine) && avatar::get(mine, avatar::F_PATTERN) == 1, "changing the pattern keeps MY OUTFIT");
+        avatar::set(mine, avatar::F_PATTERN, avatar::preset(2).pattern);
+        const AvatarDesc mu = avatar::uniform(mine);
+        CHECK(mu.suit == 2 && mu.pattern == avatar::preset(2).pattern && mu.lower == 0 && avatar::nationOf(mu) == 7,
+              "MY OUTFIT is drawn in your own suit, pattern and lower body");
+        CHECK(mu.primary == u.primary && mu.secondary == u.secondary && mu.glow == u.glow, "... in the country's colours");
+        AvatarDesc mt;
+        CHECK(avatar::fromText(avatar::toText(mine), mt) && avatar::ownKit(mt) && mt.suit == 2, "avatar.cfg keeps MY OUTFIT");
+        std::string jersey = avatar::toText(mine);
+        jersey.erase(jersey.find("kit=1\n"), 6);
+        CHECK(avatar::fromText(jersey, mt) && !avatar::ownKit(mt), "an avatar.cfg without it: the TEAM JERSEY");
+        AvatarDesc ms = mine;
+        avatar::sanitize(ms);
+        CHECK(avatar::ownKit(ms) && ms.pattern == mine.pattern, "sanitize (network) keeps MY OUTFIT");
+        avatar::setNation(ms, 0);
+        avatar::sanitize(ms);
+        CHECK(!avatar::ownKit(ms) && ms.pattern == avatar::preset(2).pattern, "... and clears it without a country");
+        const AvatarDesc sent = avatar::sentLook(mine);
+        AvatarDesc back = sent;
+        avatar::sanitize(back);
+        CHECK(avatar::ownKit(back) && avatar::uniform(back).suit == 2, "sent: 0.3.22 shows MY OUTFIT");
+        AvatarDesc older = sent;   // what 0.3.21 and older make of it: an unknown pattern (cleared), then the team jersey
+        if (older.pattern >= avatar::fieldCount(avatar::F_PATTERN)) older.pattern = 0;
+        const AvatarDesc ou = avatar::uniform(older);
+        CHECK(sent.pattern >= avatar::fieldCount(avatar::F_PATTERN) && ou.suit == 1 && ou.pattern == 0 && avatar::nationOf(ou) == 7,
+              "sent: older builds show the team jersey");
+        float chm[avatar::CH_COUNT][4], chj[avatar::CH_COUNT][4];
+        const float tw[3] = {1, 1, 1};
+        avatar::channelColors(mine, tw, chm);
+        avatar::channelColors(small, tw, chj);
+        CHECK(std::fabs(chm[avatar::CH_PRIMARY][0] - chj[avatar::CH_PRIMARY][0]) < 1e-6f &&
+              std::fabs(chm[avatar::CH_GLOW][1] - chj[avatar::CH_GLOW][1]) < 1e-6f, "MY OUTFIT takes the kit's exact colours");
         float ch[avatar::CH_COUNT][4];
         const float team[3] = {1, 1, 1};
         avatar::channelColors(small, team, ch);
@@ -310,7 +354,128 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         CHECK(under, "the chosen hair is drawn under every headgear (the game tucks it in), the cap too");
         CHECK(hairParts(3, 2) == "av_hair_3_m av_hair_3t_m ", "a ponytail under a helmet keeps its tail");
         CHECK(hairParts(7, 0) == "av_hair_7_m av_hair_7t_m ", "the top knot's loose ends are a part of their own");
+        CHECK(hairParts(9, 2) == "av_hair_9_m av_hair_9t_m ", "the high pigtails' tails are a part of their own, under a helmet too");
+        CHECK(hairParts(10, 0) == "av_hair_10_m ", "the dreadlocks are one part (their locs swing by region)");
         CHECK(hairParts(0, 1).empty(), "no hair: nothing drawn under the helmet");
+        bool tails = true;
+        for (int face = 0; face < avatar::kFaces; ++face) {   // the BANDANA's tails: one part per body, for every face
+            AvatarDesc d;
+            d.mask = 4;
+            d.body = (uint8_t)(face << 1);   // (masculine; the face in bits 1-2)
+            std::vector<avatar::PartDraw> list;
+            avatar::drawList(avatar::solveRig(in, d), in, d, list);
+            int n = 0;
+            for (const avatar::PartDraw& p : list)
+                if (!std::strcmp(p.model, "av_mask_4t_m")) n += (p.flags & avatar::PART_HAIR) ? 1 : 100;
+                else if (!std::strncmp(p.model, "av_mask_4_m", 11)) n += (p.flags & avatar::PART_HAIR) ? 10 : 100;   // (its point swings)
+            tails &= n == 11;
+        }
+        CHECK(tails, "the bandana's tails are a swinging part of their own, and its point swings too, on every face");
+        bool grapples = avatar::fieldCount(avatar::F_GAUNTLET) == avatar::kGauntletStyles;
+        for (int k = 4; k < avatar::kGauntletStyles; ++k) {   // GRAPPLER, ARC CLAW, REGALIA: kept, and drawn as plate gauntlets
+            AvatarDesc d;
+            d.gauntlet = (uint8_t)k;
+            avatar::sanitize(d);
+            grapples &= avatar::gauntletOf(d) == k && avatar::plateGauntlet(k) && avatar::grappleGauntlet(k);
+        }
+        grapples &= !avatar::plateGauntlet(3) && !avatar::grappleGauntlet(2);   // (the CONTROLLER is no plate gauntlet)
+        CHECK(grapples, "the grapple gauntlets are GAUNTLET 4-6, plate gauntlets that open");
+        {   // RONIN WRAP (PR #27, 0.3.22): suit 16, its own top over the usual shorts (none of its own, unlike 14 and 15)
+            AvatarDesc d;
+            d.suit = 16;
+            d.lower = 1;
+            avatar::sanitize(d);
+            std::vector<avatar::PartDraw> list;
+            avatar::drawList(avatar::solveRig(in, d), in, d, list);
+            bool top = false, shorts = false, own = false;
+            for (const avatar::PartDraw& p : list) {
+                top |= !std::strcmp(p.model, "av_top_16_m");
+                shorts |= !std::strcmp(p.model, "av_bottom_1_m");
+                own |= !std::strncmp(p.model, "av_sbottom_", 11);
+            }
+            CHECK(avatar::fieldCount(avatar::F_SUIT) > 16 && !std::strcmp(avatar::optionName(avatar::F_SUIT, 16), "RONIN WRAP") &&
+                      d.suit == 16, "RONIN WRAP is suit 16 (games before 0.3.22 read it as GRID RUNNER)");
+            CHECK(top && shorts && !own, "RONIN WRAP: its own top over the usual shorts");
+        }
+        {   // RONIN KABUTO (PR #27, 0.3.22): headgear 9, a helmet drawn on the head like the others, on both bodies
+            bool drawn = true;
+            for (int body = 0; body < 2; ++body) {
+                AvatarDesc d;
+                d.headgear = 9;
+                d.body = (uint8_t)body;
+                avatar::sanitize(d);
+                std::vector<avatar::PartDraw> list;
+                avatar::drawList(avatar::solveRig(in, d), in, d, list);
+                int n = 0;
+                for (const avatar::PartDraw& p : list) n += !std::strcmp(p.model, body ? "av_gear_9_f" : "av_gear_9_m");
+                drawn &= d.headgear == 9 && n == 1;
+            }
+            CHECK(avatar::fieldCount(avatar::F_HEADGEAR) > 9 && !std::strcmp(avatar::optionName(avatar::F_HEADGEAR, 9), "RONIN KABUTO") &&
+                      drawn, "RONIN KABUTO is headgear 9, drawn on both bodies (games before 0.3.22 read it as NONE)");
+        }
+        {   // PELURU (PR #30, 0.3.22): SUIT 17 TUXEDO and 18 LAYERED DRESS, HEADGEAR 10 SOMBRERO, MASK 6 SUGAR SKULL
+            CHECK(avatar::fieldCount(avatar::F_SUIT) == 19 && !std::strcmp(avatar::optionName(avatar::F_SUIT, 17), "PELURU TUXEDO") &&
+                      !std::strcmp(avatar::optionName(avatar::F_SUIT, 18), "PELURU LAYERED DRESS") &&
+                      avatar::fieldCount(avatar::F_HEADGEAR) == 11 && !std::strcmp(avatar::optionName(avatar::F_HEADGEAR, 10), "SOMBRERO") &&
+                      avatar::fieldCount(avatar::F_MASK) == 7 && !std::strcmp(avatar::optionName(avatar::F_MASK, 6), "SUGAR SKULL"),
+                  "PELURU: suits 17 and 18, headgear 10 SOMBRERO, mask 6 SUGAR SKULL (games before 0.3.22: GRID RUNNER, NONE, NONE)");
+            auto has = [](const std::vector<avatar::PartDraw>& list, const char* prefix, uint8_t flags = 0) {
+                int n = 0;
+                for (const avatar::PartDraw& p : list)
+                    if (!std::strncmp(p.model, prefix, std::strlen(prefix)) && (p.flags & flags) == flags) ++n;
+                return n;
+            };
+            bool dress = true, tux = true, worn = true;
+            for (int body = 0; body < 2; ++body) {
+                const char bk = body ? 'f' : 'm';
+                char top[24], ears[24], shorts[24];
+                std::snprintf(top, sizeof top, "av_top_18_%c", bk);
+                std::snprintf(ears, sizeof ears, "av_top_18e_%c", bk);
+                std::snprintf(shorts, sizeof shorts, "av_bottom_1_%c", bk);
+                AvatarDesc d;
+                d.suit = 18; d.lower = 1; d.body = (uint8_t)body;
+                avatar::sanitize(d);
+                std::vector<avatar::PartDraw> list;
+                avatar::drawList(avatar::solveRig(in, d), in, d, list);
+                // the dress: its own skirt in the LOWER BODY's place (no shorts, no waist fade), it sways, its earrings swing
+                dress &= d.suit == 18 && has(list, top) == 1 && !has(list, "av_bottom_") && !has(list, "av_wfade_") &&
+                         has(list, ears, avatar::PART_HAIR) == 1 && avatar::swishKind(d) == 0;
+                d.suit = 17;
+                list.clear();
+                avatar::drawList(avatar::solveRig(in, d), in, d, list);
+                std::snprintf(top, sizeof top, "av_top_17_%c", bk);
+                tux &= has(list, top) == 1 && has(list, shorts) == 1 && !has(list, ears) && avatar::swishKind(d) == -1;
+                for (int face = 0; face < avatar::kFaces; ++face) {   // the hat on the body, the mask fitted to each face
+                    d.headgear = 10; d.mask = 6;
+                    d.body = (uint8_t)(body | (face << 1));
+                    list.clear();
+                    avatar::drawList(avatar::solveRig(in, d), in, d, list);
+                    char gear[24], mask[24];
+                    std::snprintf(gear, sizeof gear, "av_gear_10_%c", bk);
+                    if (face) std::snprintf(mask, sizeof mask, "av_mask_6_%c%d", bk, face);
+                    else std::snprintf(mask, sizeof mask, "av_mask_6_%c", bk);
+                    int m = 0;
+                    for (const avatar::PartDraw& p : list) m += !std::strcmp(p.model, mask);
+                    worn &= has(list, gear) == 1 && m == 1;
+                }
+            }
+            CHECK(dress, "PELURU LAYERED DRESS: its skirt takes the LOWER BODY's place and sways; its earrings swing as hair");
+            CHECK(tux, "PELURU TUXEDO: over the LOWER BODY, no earrings");
+            CHECK(worn, "the SOMBRERO on both bodies, the SUGAR SKULL fitted to every face");
+        }
+        {   // the full sets as presets (the owner, 2026-11-19), after the fourteen there were (bots and pictures use those)
+            struct Set { const char* name; int suit, headgear, mask; };
+            const Set sets[] = {{"RONIN", 16, 9, 4}, {"PELURU TUXEDO", 17, 10, 6}, {"PELURU DRESS", 18, 10, 6},
+                                {"VECTOR", 14, 8, 0}, {"NIGHTFORGE", 15, 7, 0}};
+            bool ok = avatar::presetCount() == 19 && !std::strcmp(avatar::presetName(13), "TRAINING KIT");
+            for (int i = 0; i < 5; ++i) {
+                AvatarDesc d = avatar::preset(14 + i), c = d;
+                avatar::sanitize(c);
+                ok &= !std::strcmp(avatar::presetName(14 + i), sets[i].name) && d.suit == sets[i].suit &&
+                      d.headgear == sets[i].headgear && d.mask == sets[i].mask && std::memcmp(&c, &d, sizeof d) == 0;
+            }
+            CHECK(ok, "the full sets are presets: RONIN, PELURU TUXEDO, PELURU DRESS, VECTOR, NIGHTFORGE (each its own pieces)");
+        }
     }
     {
         std::printf("[avatar: looks and avatar.cfg]\n");
@@ -454,7 +619,7 @@ static void botTests(const std::vector<CollisionTri>& tris) {
                         for (int h = 0; h < 2; ++h) {
                             const Vec3 gp = s.in.hand[h].grip.p;
                             finite = finite && std::isfinite(gp.x) && std::isfinite(gp.y) && std::isfinite(gp.z);
-                            if (length(g.botWrist(h, s.in.hand[h].grip) - g.botShoulder(p, h)) > g.tun.botArm + 1e-3f) reach = false;
+                            if (length(g.botWrist(h, g.handPose(p, h)) - g.botShoulder(p, h)) > g.tun.botArm + 1e-3f) reach = false;   // (the rules' hand: drawn arms below)
                             if (i > 0) {   // its own move, plus the body carrying the arm along
                                 const float lim = std::max(sk.handSpeed, sk.throwHand) + sk.bodySpeed;
                                 const float v = length(gp - lastGrip[p][h]) * 72;
@@ -953,7 +1118,7 @@ static void stanceTests(const std::vector<CollisionTri>& tris) {
             run(g, in, 2.f);
             const PlayerState& s = g.pl[1];
             for (int h = 0; h < 2; ++h) {
-                if (length(g.botWrist(h, s.in.hand[h].grip) - g.botShoulder(1, h)) > g.tun.botArm + 1e-3f) reach = false;
+                if (length(g.botWrist(h, g.handPose(1, h)) - g.botShoulder(1, h)) > g.tun.botArm + 1e-3f) reach = false;
                 if (length(s.botHandVel[h]) > 0.5f) held = false;
             }
             const avatar::Rig r = avatar::solveRig(s.in, look);
@@ -1059,6 +1224,35 @@ static void trainingTests(const std::vector<CollisionTri>& tris) {
                         cueN[(int)Cue::Punched], cueN[(int)Cue::Dodged], cueN[(int)Cue::Hit], cueN[(int)Cue::Dropped], cueN[(int)Cue::BodyHit]);
         return tr;
     };
+    {   // CUSTOM TRAINING (0.3.22): a lesson with MY OPTIONS plays your room options; STANDARD the rules' own; out of
+        // training, your rules as they were
+        auto lessonRules = [&](bool mine, Tunables& during, Tunables& after) {
+            Game g; g.setArena(tris);
+            g.tun.aimAssist = 3; g.tun.shieldSize = 2; g.tun.maiden = true; g.tun.strikeZone = 2; g.tun.strikeSpeed = 1;
+            g.tun.ballGrowth = 1; g.tun.wallsLively = true; g.tun.wallGrip = true; g.tun.bankAssist = 2;
+            g.tun.foulShift = 2; g.tun.basicMatchTime = 300.f;   // (not the lessons': the foul line and the clock stay theirs)
+            Trainer tr;
+            tr.custom = mine;
+            tr.begin(g, lessonById(21), tris);   // (BLOCKING 1: SHIELD)
+            during = g.tun;
+            tr.stop(g);
+            after = g.tun;
+        };
+        Tunables d0, a0, d1, a1;
+        lessonRules(false, d0, a0);
+        lessonRules(true, d1, a1);
+        const Tunables std_;
+        const bool standard = d0.aimAssistNow() == 2 && d0.shieldSizeNow() == 0 && !d0.maidenNow() && d0.strikeZoneNow() == 1 &&
+                              d0.strikeSpeedNow() == 0 && d0.ballGrowthNow() == 3 && d0.bouncesStandard();
+        const bool mine = d1.aimAssistNow() == 3 && d1.shieldSizeNow() == 2 && d1.maidenNow() && d1.strikeZoneNow() == 2 &&
+                          d1.strikeSpeedNow() == 1 && d1.ballGrowthNow() == 1 && d1.wallsLivelyNow() && d1.wallGripNow() &&
+                          d1.bankAssistNow() == 2;
+        const bool lessonsOwn = d1.foulShiftNow() == 0 && d1.basicMatchTime == 0.f && d1.shields && d1.knuckleMode == 0;
+        const bool back = a0.aimAssist == 3 && a1.aimAssist == 3 && a1.wallGrip && a1.foulShift == 2 && a1.basicMatchTime == 300.f;
+        CHECK(standard && mine && lessonsOwn && back,
+              "CUSTOM TRAINING: STANDARD plays the rules' options; MY OPTIONS your own (aim assist, shield size, MAIDEN, strike zone and "
+              "speed, ball growth, BOUNCES); the lesson's shields, foul line and clock stay its own; afterwards your rules as they were");
+    }
     const Vec3 hand{-6.6f, 1.35f, 0.1f};   // where a person's throw leaves
     int planned = 0, plannedOk = 0;
     for (int i = 0; i < (int)lessons().size(); ++i) {
@@ -2145,6 +2339,17 @@ int main(int argc, char** argv) {
         CHECK(diamond && corners && blitz, "DIAMOND has them; FOUR CORNERS and FIREBALL BLITZ keep their own for now");
         f = Tunables(); f.maiden = true; f.shields = false;
         CHECK(!f.maidenNow() && f.statsMode() == 1, "MAIDEN needs shields: with SHIELDS OFF it's HOTDOG");
+        {   // THE BALL IN THE LEFT PALM (a player's report, 11-19): the left hand's ball on its palm side, as the right's is
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            const Vec3 r = g.holdLocal(1), l = g.holdLocal(0);
+            const bool mirrored = r.x < 0 && l.x == -r.x && l.y == r.y && l.z == r.z;
+            g.tun.matchVersion = 3021;
+            const bool older = g.holdLocal(0).x == r.x && g.holdLocal(1).x == r.x;
+            g.tun.matchVersion = Tunables::kVerAll; g.tun.palmHold = false;
+            const bool guest = g.holdLocal(0).x == r.x;
+            CHECK(mirrored && older && guest, "the left hand's ball in its palm (grip +X) as the right's (-X); with a player on "
+                                              "0.3.21, or a host that doesn't say so: where it was");
+        }
         {   // SHIELD SIZE (the owner, 11-17): a ball 35 cm out from the plate's middle: past a regulation shield, blocked by +50%
             auto blocks = [&](int size) {
                 PlayerInput in[2]; Game g = makeGame(tris, in);
@@ -2172,6 +2377,106 @@ int main(int argc, char** argv) {
             bool same = f.ballFeel == (BALL_TRUE | BALL_SPIN | BALL_WEIGHT);
             for (int bits = 0; bits <= BALL_FEEL_ALL; ++bits) { f.ballFeel = bits; same &= f.statsMode() == std0; }
             CHECK(same, "BALL FEEL: the standard ball is glow core, true size, visible spin, heavy; any ball feel leaves the stats as they are");
+        }
+        {   // BOUNCES (0.3.22; pull request #26's ideas, as the host's options): a ball served at 10 m/s, 30 degrees into the
+            // +z side wall, no spin; its speed and spin after that bounce
+            auto bank = [&](bool lively, bool grip, int version, float& speed, float& spin, float& outDeg) {
+                PlayerInput in[2]; Game g = makeGame(tris, in);
+                g.tun.wallsLively = lively; g.tun.wallGrip = grip; g.tun.matchVersion = version;
+                const float a = deg2rad(30.f);
+                g.serve(0, g.tun.start[0] + Vec3{3.f, 1.3f, 0}, Vec3{std::cos(a), 0, std::sin(a)}, 10.f, {}, false);
+                speed = spin = outDeg = -1.f;
+                for (int i = 0; i < 72 * 2; ++i) {
+                    stepCopy(g, in);
+                    const Ball& b = g.pl[0].ball;
+                    if (hasEvent(g.events, EventType::Bounce, 0)) {
+                        speed = b.speedLimit; spin = length(b.spin);
+                        outDeg = rad2deg(std::atan2(-b.vel.z, b.vel.x));
+                        break;
+                    }
+                }
+            };
+            float s0, w0, d0, s1, w1, d1, s2, w2, d2, s3, w3, d3;
+            bank(false, false, Tunables::kVerAll, s0, w0, d0);
+            bank(true, false, Tunables::kVerAll, s1, w1, d1);
+            bank(false, true, Tunables::kVerAll, s2, w2, d2);
+            bank(true, true, 3021, s3, w3, d3);
+            std::printf("       (a 30 degree bank at 10 m/s: STANDARD %.2f m/s out at %.1f deg; LIVELY %.2f at %.1f; GRIP %.2f at %.1f, "
+                        "spinning %.1f rad/s)\n", s0, d0, s1, d1, s2, d2, w2);
+            CHECK(std::fabs(s0 - 9.f) < 0.02f && std::fabs(d0 - 30.f) < 0.5f && w0 < 0.01f,
+                  "BOUNCES STANDARD: a side wall mirrors the ball and keeps 90% of its speed, as before");
+            // (LIVELY: the 5 m/s into the wall cut to 97%, the 8.66 along it kept: sqrt(8.66^2 + 4.85^2) = 9.93)
+            CHECK(std::fabs(s1 - 9.926f) < 0.02f && d1 > 29.f && d1 < 30.f,
+                  "WALLS: LIVELY: only the speed into the side wall is cut (97%): 9.93 m/s of 10 kept");
+            // (GRIP: the normal impulse 1.9 x 5 = 9.5; the grip needed (2/7 of 8.66, 2.47) is more than the friction allows
+            // (0.10 x 9.5 = 0.95): 8.66 - 0.95 along, 4.5 out: 8.93 m/s; spin 0.95 x 5 / (2 x 0.1) = 23.8 rad/s)
+            CHECK(std::fabs(s2 - 8.93f) < 0.03f && std::fabs(w2 - 23.75f) < 0.6f && d2 > 30.f,
+                  "WALL GRIP: the wall grips the ball as a solid sphere: 8.93 m/s kept, spinning 23.8 rad/s, a little steeper out");
+            CHECK(std::fabs(s3 - 9.f) < 0.02f && w3 < 0.01f, "BOUNCES FAIR MATCHES: a player on 0.3.21 in the match: STANDARD, for both");
+            // BANK ASSIST: a bank set to cross the other player's plane half a metre wide of their chest
+            auto banked = [&](int level, int version, float& closest, float& turnDeg) {
+                PlayerInput in[2]; Game g = makeGame(tris, in);
+                g.tun.aimAssist = 0;   // (AIM ASSIST off: the throw goes where it's sent)
+                g.tun.bankAssist = level; g.tun.matchVersion = version;
+                const Vec3 from = g.tun.start[0] + Vec3{0.6f, 1.3f, 0}, chest = g.chestPoint(1);
+                const float wall = 2.5f - g.ballRadius(0);
+                const Vec3 mirror{chest.x, chest.y, 2.f * wall - (chest.z + 0.5f)};   // (the far end, seen in the wall)
+                g.serve(0, from, normalize(mirror - from), 10.f, {}, true);
+                closest = 1e9f; turnDeg = 0.f;
+                bool bounced = false;
+                for (int i = 0; i < 72 * 3; ++i) {
+                    stepCopy(g, in);
+                    const Ball& b = g.pl[0].ball;
+                    if (!bounced && hasEvent(g.events, EventType::Bounce, 0)) { bounced = true; turnDeg = rad2deg(length(b.bankTurn)); }
+                    if (b.state != BallState::Flying) break;
+                    if (bounced) closest = std::min(closest, length(b.pos - chest));
+                }
+            };
+            float c0, t0, c3, t3, cOld, tOld;
+            banked(0, Tunables::kVerAll, c0, t0);
+            banked(3, Tunables::kVerAll, c3, t3);
+            banked(3, 3021, cOld, tOld);
+            std::printf("       (a bank 0.5 m wide of the chest: OFF passes %.2f m from it; HIGH turns it %.2f deg and passes %.2f m)\n", c0, t3, c3);
+            CHECK(t0 == 0.f && t3 > 0.5f && t3 <= 2.4f + 1e-3f && c3 < c0 - 0.1f,
+                  "BANK ASSIST HIGH: the leg after the bounce is turned toward the other player (at most 2.4 degrees) and passes nearer");
+            CHECK(tOld == 0.f && std::fabs(cOld - c0) < 1e-3f, "BANK ASSIST FAIR MATCHES: a player on 0.3.21 in the match: none");
+            Tunables f;
+            f.wallGrip = true;
+            const int gripMode = f.statsMode();
+            f.wallGrip = false; f.bankAssist = 1;
+            const int bankMode = f.statsMode();
+            f.experimental = true; f.expRoom = ROOM_CORNERS; f.wallsLively = true; f.wallGrip = true;
+            const bool corners = f.bouncesStandard();
+            CHECK(gripMode == 2 && bankMode == 2 && corners && Tunables().statsMode() == 0,
+                  "BOUNCES: any of them makes the match custom in the stats; FOUR CORNERS keeps STANDARD for now");
+            // (what BANK ASSIST costs a bot reading your banks: its reads and tryouts fly the turn too; the PC's time a step)
+            double avg[2] = {0, 0}, worst[2] = {0, 0};
+            for (int k = 0; k < 2; ++k) {
+                Game g; g.setArena(tris); g.tun.meetTime = 0; g.tun.basicMatchTime = 0; g.tun.botLevel = kBotLevels - 1;
+                g.tun.bankAssist = k ? 3 : 0; g.tun.aimAssist = 0; g.tun.wallGrip = k == 1;
+                g.reset(true);
+                PlayerInput in[2] = {standing(g, 0), {}};
+                for (int i = 0; i < 72 * 4 && g.match != MatchState::InProgress; ++i) stepCopy(g, in);
+                int steps = 0;
+                double total = 0;
+                for (int n = 0; n < 16; ++n) {
+                    const Vec3 from = g.tun.start[0] + Vec3{0.6f, 1.3f, 0}, chest = g.chestPoint(1);
+                    const float side = n % 2 ? -1.f : 1.f, wall = 2.5f - g.ballRadius(0);
+                    const Vec3 mirror{chest.x, chest.y, side * (2.f * wall - 0.5f) - chest.z};
+                    g.serve(0, from, normalize(mirror - from), 11.f, {}, true);
+                    for (int i = 0; i < 72 * 3 && g.pl[0].ball.state == BallState::Flying; ++i) {
+                        in[0] = standing(g, 0);
+                        const auto t0 = std::chrono::steady_clock::now();
+                        stepCopy(g, in);
+                        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                        total += ms; ++steps; worst[k] = std::max(worst[k], ms);
+                    }
+                    for (int i = 0; i < 72 * 2; ++i) { in[0] = standing(g, 0); stepCopy(g, in); }
+                }
+                avg[k] = steps ? total / steps : 0;
+            }
+            std::printf("       (UNBEATABLE reading 16 banks, a step on this PC: STANDARD %.3f ms (at most %.2f); WALL GRIP and BANK ASSIST HIGH "
+                        "%.3f ms (at most %.2f))\n", avg[0], worst[0], avg[1], worst[1]);
         }
         {   // ROUNDS: BEST OF 5 is three rounds won (5 s rounds here: the one ahead at time takes each)
             PlayerInput in[2];

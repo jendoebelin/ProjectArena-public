@@ -34,6 +34,11 @@ struct Model {
     Vec3 bmin, bmax;
     std::vector<Vec3> secMin, secMax;   // each section's bounds (model space; the court's foul lines are found by them)
     bool skinned = false;   // v3 model: per-vertex bone indices / weights (avatar bodies)
+    // FAR AWAY (0.3.22; <model>.lod, tools/make_lods.cpp): the same vertices, about a quarter of the triangles, each
+    // section's own; DrawParams::distant draws them. lodType: GL_UNSIGNED_SHORT or GL_UNSIGNED_INT; 0: none
+    GLuint vaoLod = 0, iboLod = 0;
+    std::vector<Section> lodSections;
+    GLenum lodType = 0;
     bool valid() const { return vao != 0; }
 };
 
@@ -75,6 +80,7 @@ struct DrawParams {
     int decals = 0;
     Mat4 decal[2];
     GLuint decalTex = 0;
+    bool distant = false;   // the model's lighter triangles if it has them (Model::vaoLod: an avatar far away)
 };
 
 class Renderer {
@@ -121,6 +127,28 @@ public:
     // uv: a part of the texture (scale u, scale v, offset u, offset v; for loaded images), e.g. one strip of a flag
     void drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba[4], bool flipV = true, const float* uv = nullptr);
 
+    // GRAPHICS (0.3.22). COLOR GRADING: the filmic grade at the end of every surface's shading, from the next beginEye
+    void setGrade(bool on) { grade_ = on; }
+    // THE CUTAWAY (the PC spectator's preset cameras, 2026-11-19): until set again with n = 0, what the main shader draws
+    // within w of any of n planes (n.xyz, d: the points where dot(n, p) = d; up to 4) is left out, where (y - y0) * sign
+    // > 0 (sign -1: below y0, the floor's mirror image); roof (null: none): its height, footprint and shape (as uRoof in
+    // the shader), what lies within w of it inside the footprint left out too. Nothing is left out while n = 0 and no
+    // roof (the default)
+    void setCut(int n, const float (*planes)[4], float y0, float sign, float w, const float* roof = nullptr);
+    const Vec3& eyePos() const { return eye_; }
+    // FAR AWAY off for everything (pictures: --nofar, to compare), or on (the default)
+    void setFarOff(bool off) { lodOff_ = off; }
+    // a mesh of the game's own making (v: position, normal, uv a vertex; one section, one material: set m.mats[0])
+    void buildMesh(Model& m, const std::vector<float>& v, const std::vector<uint32_t>& idx) { buildPrimitive(m, v, idx); }
+    // BLOOM: the bright parts of a finished frame (`src`, an sRGB texture w x h) blurred and their light added to
+    // `dst` (a framebuffer holding that frame); `overAlpha`: only over what is drawn (passthrough's room, a keyed
+    // background). Leaves `dst` bound, the viewport the frame's
+    void bloom(GLuint src, int w, int h, GLuint dst, float threshold, float strength, bool overAlpha);
+    // AMBIENT OCCLUSION and VIGNETTE (the PC spectator): `dst` (holding the frame `col`, its depth `depth`) darkened
+    // where the depth says it is enclosed (ao: how much, 0 none; px, py the projection's x and y scale) and toward the
+    // edges (vignette: how much at the corners). Leaves `dst` bound, the viewport the frame's
+    void darken(GLuint col, GLuint depth, int w, int h, GLuint dst, float px, float py, float nearZ, float farZ, float ao, float vignette);
+
     Model sphere, box, quad, cylinder;   // cylinder: radius 1, from y = -1 up to its top at y = 0 (the experimental platforms)
 
 private:
@@ -142,4 +170,18 @@ private:
     float team0_[4] = {0.1f, 0.7f, 1, 1}, team1_[4] = {1, 0.4f, 0.1f, 1};
     std::map<std::string, GLuint> texCache_;
     void buildPrimitive(Model& m, const std::vector<float>& v, const std::vector<uint32_t>& idx);
+    // GRAPHICS' passes (their programs made when first used) and their pictures
+    enum { PP_BLOOM_PRE, PP_BLOOM_DOWN, PP_BLOOM_UP, PP_BLOOM_OUT, PP_AO, PP_AO_BLUR, PP_DARKEN, kPostProgs };
+    static constexpr int kBloomLevels = 5;   // (a quarter of the frame, then halved four times)
+    GLuint postProgram(int k);
+    void samplers();
+    GLuint postProg_[kPostProgs] = {};
+    GLuint bloomTex_[kBloomLevels] = {}, bloomFbo_[kBloomLevels] = {};
+    int bloomLW_[kBloomLevels] = {}, bloomLH_[kBloomLevels] = {};
+    int bloomW_ = 0, bloomH_ = 0;
+    GLuint aoTex_[2] = {}, aoFbo_[2] = {};
+    int aoW_ = 0, aoH_ = 0;
+    GLuint linear_ = 0, nearest_ = 0;
+    bool grade_ = false, lodOff_ = false;
+    GLint uGrade_ = -1, uCutN_ = -1, uCut_ = -1, uCutY_ = -1, uRoof_ = -1;
 };

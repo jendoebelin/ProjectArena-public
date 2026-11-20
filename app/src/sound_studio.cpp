@@ -25,8 +25,8 @@ const std::vector<Section>& sections() {
          "THROW AT THE TARGETS, SLOW TO FULL SPEED; A THROW TOO WEAK TO FLY IS THE FAIL"},
         {"BALL", {"Spawn", "SpawnRise", "Grab", "Caught", "Bounce", "Returned"}, 8,
          "THROW AT THE FAR WALL AND CATCH YOUR BALL AS IT COMES BACK"},
-        {"HITS", {"KnuckleBlock", "HitPlayerSelf", "HitPlayerOpponent", "Strike", "Foul"}, 23,
-         "THE COACH THROWS AT YOU: PUNCH IT AWAY, OR LET ONE HIT YOU"},
+        {"HITS", {"KnuckleBlock", "KnucklePunch", "HitPlayerSelf", "HitPlayerOpponent", "Strike", "Foul"}, 23,
+         "THE COACH THROWS AT YOU: PUNCH IT AWAY (HARD FOR THE HARD PUNCH), OR LET ONE HIT YOU"},
         {"MATCH", {"Countdown", "RoundStart", "RoundEndWin", "RoundEndLose", "MatchEndWin", "MatchEndLose", "Overtime", "FistBump",
                    "LeadChange", "ClockTick"}, 0, "PRESS PLAY TO HEAR EACH ONE"},
         {"CROWD", {"Ambience", "Crowd", "Cheer"}, 0, "PRESS PLAY TO HEAR EACH ONE"},
@@ -81,6 +81,7 @@ const Slot kSlots[] = {
         {"ClockTick", "S31", "CLOCK TICK"},
         {"LeadChange", "S32", "LEAD CHANGE"},
         {"TargetHit", "S33", "TARGET HIT"},
+        {"KnucklePunch", "S34", "HARD PUNCH"},   // (0.3.22: the punch that sends the ball back at 12 m/s or more)
 };
 const Slot* slotOf(const std::string& e) {
     for (const Slot& s : kSlots) if (e == s.event) return &s;
@@ -322,7 +323,7 @@ std::vector<Sound> mySounds(const std::string& folder) {
             "SOUND STUDIO: your own sounds, to try on this headset (or PC) only.\n"
             "Put .wav files in this folder (WAV format only: export as WAV from Audacity or any sound editor).\n"
             "Name a file after its sound slot to put it first in that slot: S12_glass.wav or ShieldBreak__glass.wav\n"
-            "(the slots S01-S33 are in docs/SOUND_STUDIO.md); any other name can be tried in every slot.\n"
+            "(the slots S01-S34 are in docs/SOUND_STUDIO.md); any other name can be tried in every slot.\n"
             "Open the SOUND STUDIO again to see new files. To share a sound, propose it on GitHub or Discord.\n";
         writeFile(folder + "/README.txt", std::vector<uint8_t>(note.begin(), note.end()));
     }

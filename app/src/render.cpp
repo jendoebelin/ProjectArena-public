@@ -1,6 +1,7 @@
 #include "render.h"
 #include "log.h"
 #include "platform.h"
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -177,10 +178,20 @@ in vec3 vDec0;
 in vec3 vDec1;
 in vec2 vDecN;
 out vec4 oColor;
-vec3 printed(vec3 alb, vec3 d, float facing) {   // a print (uDecalTex) where this point lies in its box, facing out
-    if (facing <= 0.0 || abs(d.x) > 0.5 || abs(d.y) > 0.5 || abs(d.z) > 0.5) return alb;
+vec3 printed(vec3 alb, vec3 d, float facing, inout float cover) {   // a print (uDecalTex) where this point lies in its
+    if (facing <= 0.0 || abs(d.x) > 0.5 || abs(d.y) > 0.5 || abs(d.z) > 0.5) return alb;   // box, facing out
     vec4 t = texture(uDecalTex, vec2(d.x + 0.5, 0.5 - d.y));
+    cover = max(cover, t.a);
     return mix(alb, t.rgb, t.a);
+}
+// COUNTRY KIT (MY OUTFIT): how much of a print lies over this point. Under one a suit's own glow gives way to it (its
+// glowing lines and its pulses), as the jersey has none there
+float printCover() {
+    float a = 0.0;
+    vec3 x = vec3(0.0);
+    if (uDecals > 0) x = printed(x, vDec0, vDecN.x, a);
+    if (uDecals > 1) x = printed(x, vDec1, vDecN.y, a);
+    return a;
 }
 // Stand-in for reflections of the arena: dark below, the bright band of stadium light slats around the horizon,
 // cool ceiling glow above.
@@ -192,7 +203,7 @@ vec3 arenaEnv(vec3 r) {
     float sides = smoothstep(0.35, 0.85, abs(r.z));   // the galleries run along the long sides (app z)
     return c + vec3(0.42, 0.47, 0.55) * band * sides * (0.15 + 0.85 * cols);
 }
-void main() {
+void shade() {
     vec3 n = normalize(vN);
     if (!gl_FrontFacing) n = -n;
     vec4 base = uTint;
@@ -227,6 +238,7 @@ void main() {
         oColor = vec4(diff + spec + glow + uEmissive.rgb, base.a);
     } else if (uShader == 2) {
         // additive; uErode > 0 dissolves the texture (FadeSubtractMask): only texels brighter than uErode survive
+        if (uDecals > 0 && printCover() > 0.5) discard;   // (a suit's pulses under a print)
         vec4 tx = uHasDiffuse == 1 ? texture(uDiffuse, vUV + uUVOff) : vec4(1.0);
         float k = 1.0;
         if (uErode > 0.0) {
@@ -252,9 +264,11 @@ void main() {
             alb = mix(alb, uPatCol.rgb, pt.r);
             glowAdd += uPatGlow.rgb * pt.g;
         }
-        if (uDecals > 0) {   // NATIONS: the flags printed on the jersey (lit and knit like the rest of it)
-            alb = printed(alb, vDec0, vDecN.x);
-            if (uDecals > 1) alb = printed(alb, vDec1, vDecN.y);
+        if (uDecals > 0) {   // NATIONS: the flags printed on the garment (lit and knit like the rest of it), over its glow
+            float cover = 0.0;
+            alb = printed(alb, vDec0, vDecN.x, cover);
+            if (uDecals > 1) alb = printed(alb, vDec1, vDecN.y, cover);
+            glowAdd *= 1.0 - cover;
         }
         float hemi = 0.5 + 0.5 * n.y;
         float ndl = max(dot(n, -uLightDir), 0.0);
@@ -285,6 +299,40 @@ void main() {
         }
         c += uRim.rgb * (uRim.a * pow(1.0 - nv, 2.5) * (1.0 - 0.75 * matte));   // team-colour rim light (avatars)
         oColor = vec4(c, base.a);
+    }
+}
+// COLOR GRADING (GRAPHICS, 0.3.22): the post-processing review's filmic grade (a filmic curve, Narkowicz's fit of ACES at
+// 1.35 exposure, then 12% more saturation), here at the end of each surface's shading instead of a pass over the
+// frame. Glows (additive) get the saturation only: the curve is for a whole surface, not light added on top. Menus,
+// text and screens (unlit) stay as they are
+uniform float uGrade;
+// THE CUTAWAY (Renderer::setCut): the walls between a preset camera and the court left out, their floor edge kept
+uniform int uCutN;
+uniform vec4 uCut[4];
+uniform vec3 uCutY;   // (y0, sign, half-width)
+uniform vec4 uRoof;   // (its height, its footprint's half-length (or apothem) and half-width, footprint: 1 a box, 2 a square
+                      // turned 45 degrees, 3 an octagon; 0 no roof)
+void main() {
+    if ((uCutN > 0 || uRoof.w > 0.5) && (vW.y - uCutY.x) * uCutY.y > 0.0) {
+        for (int i = 0; i < 4; ++i)
+            if (i < uCutN && abs(dot(uCut[i].xyz, vW) - uCut[i].w) < uCutY.z) discard;
+        if (uRoof.w > 0.5 && abs(vW.y - uRoof.x) < uCutY.z) {
+            vec2 q = abs(vW.xz);
+            bool inside = uRoof.w < 1.5 ? (q.x < uRoof.y && q.y < uRoof.z)
+                        : uRoof.w < 2.5 ? (q.x + q.y < uRoof.y)
+                        : (max(max(q.x, q.y), (q.x + q.y) * 0.70710678) < uRoof.y);
+            if (inside) discard;
+        }
+    }
+    shade();
+    if (uGrade > 0.5 && uShader != 3) {
+        vec3 c = max(oColor.rgb, vec3(0.0));
+        if (uShader != 2) {
+            vec3 x = c * 1.35;
+            c = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+        }
+        float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        oColor.rgb = max(vec3(y) + (c - vec3(y)) * 1.12, vec3(0.0));
     }
 }
 )";
@@ -419,17 +467,56 @@ bool Renderer::loadModel(const char* name, Model& m) {
     glGenBuffers(1, &m.ibo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, ni * 4, idx, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0); glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, vsz, (void*)0);
-    glEnableVertexAttribArray(1); glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, vsz, (void*)12);
-    glEnableVertexAttribArray(2); glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, vsz, (void*)24);
-    glEnableVertexAttribArray(3); glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, vsz, (void*)32);
-    glEnableVertexAttribArray(4); glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_TRUE, vsz, (void*)40);
-    if (m.skinned) {
-        glEnableVertexAttribArray(5); glVertexAttribPointer(5, 4, GL_UNSIGNED_BYTE, GL_FALSE, vsz, (void*)44);
-        glEnableVertexAttribArray(6); glVertexAttribPointer(6, 4, GL_UNSIGNED_BYTE, GL_TRUE, vsz, (void*)48);
-    }
+    auto attribs = [&]() {   // (the vertex layout, on whichever vertex array is bound)
+        glEnableVertexAttribArray(0); glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, vsz, (void*)0);
+        glEnableVertexAttribArray(1); glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, vsz, (void*)12);
+        glEnableVertexAttribArray(2); glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, vsz, (void*)24);
+        glEnableVertexAttribArray(3); glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, vsz, (void*)32);
+        glEnableVertexAttribArray(4); glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_TRUE, vsz, (void*)40);
+        if (m.skinned) {
+            glEnableVertexAttribArray(5); glVertexAttribPointer(5, 4, GL_UNSIGNED_BYTE, GL_FALSE, vsz, (void*)44);
+            glEnableVertexAttribArray(6); glVertexAttribPointer(6, 4, GL_UNSIGNED_BYTE, GL_TRUE, vsz, (void*)48);
+        }
+    };
+    attribs();
     glBindVertexArray(0);
-    LOGI("model %s: %u verts %u tris %u sections %u mats", name, nv, ni / 3, ns, nm);
+    // FAR AWAY: <model>.lod, the lighter triangles over the same vertices (a second vertex array, the same buffer)
+    std::vector<uint8_t> ld;
+    m.vaoLod = m.iboLod = 0;
+    m.lodSections.clear();
+    m.lodType = 0;
+    if (assetRead(std::string(name) + ".lod", ld) && ld.size() >= 16 && std::memcmp(ld.data(), "SLOD", 4) == 0) {
+        uint32_t lv = 0, lns = 0, lni = 0;
+        std::memcpy(&lv, ld.data() + 4, 4);
+        std::memcpy(&lns, ld.data() + 8, 4);
+        const size_t isz = lv == 2 ? 2 : 4, at = 12 + size_t(lns) * 8;
+        if (lns == ns && ld.size() >= at + 4) std::memcpy(&lni, ld.data() + at, 4);
+        if ((lv == 1 || lv == 2) && lns == ns && ld.size() >= at + 4 + size_t(lni) * isz) {
+            m.lodSections.resize(ns);
+            bool ok = true;
+            for (uint32_t s = 0; s < ns; ++s) {
+                uint32_t fc[2];
+                std::memcpy(fc, ld.data() + 12 + size_t(s) * 8, 8);
+                m.lodSections[s] = {fc[0], fc[1], m.sections[s].material};
+                ok &= size_t(fc[0]) + fc[1] <= lni;
+            }
+            if (ok) {
+                glGenVertexArrays(1, &m.vaoLod);
+                glBindVertexArray(m.vaoLod);
+                glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+                glGenBuffers(1, &m.iboLod);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.iboLod);
+                glBufferData(GL_ELEMENT_ARRAY_BUFFER, size_t(lni) * isz, ld.data() + at + 4, GL_STATIC_DRAW);
+                attribs();
+                glBindVertexArray(0);
+                m.lodType = isz == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+            } else {
+                m.lodSections.clear();
+                LOGE("model %s: its .lod doesn't fit it", name);
+            }
+        }
+    }
+    LOGI("model %s: %u verts %u tris %u sections %u mats%s", name, nv, ni / 3, ns, nm, m.vaoLod ? " (+ far)" : "");
     return true;
 }
 
@@ -519,6 +606,17 @@ bool Renderer::init() {
     uEye_ = glGetUniformLocation(prog_, "uEye");
     uLightDir_ = glGetUniformLocation(prog_, "uLightDir");
     g_uUVRect = glGetUniformLocation(prog_, "uUVRect");
+    uGrade_ = glGetUniformLocation(prog_, "uGrade");
+    uCutN_ = glGetUniformLocation(prog_, "uCutN");
+    uCut_ = glGetUniformLocation(prog_, "uCut");
+    uCutY_ = glGetUniformLocation(prog_, "uCutY");
+    uRoof_ = glGetUniformLocation(prog_, "uRoof");
+    for (GLuint& p : postProg_) p = 0;   // (a new context: the passes and their pictures made again when first used)
+    for (int i = 0; i < kBloomLevels; ++i) bloomTex_[i] = bloomFbo_[i] = 0;
+    bloomW_ = bloomH_ = 0;
+    aoTex_[0] = aoTex_[1] = aoFbo_[0] = aoFbo_[1] = 0;
+    aoW_ = aoH_ = 0;
+    linear_ = nearest_ = 0;
     uVColFade_ = glGetUniformLocation(prog_, "uVColFade");
     uUVOff_ = glGetUniformLocation(prog_, "uUVOff");
     uErode_ = glGetUniformLocation(prog_, "uErode");
@@ -664,6 +762,17 @@ void Renderer::beginEye(const Mat4& view, const Mat4& proj, const Vec3& eye) {
     glUniform3f(uLightDir_, l.x, l.y, l.z);
     glUniform4fv(uTeam0_, 1, team0_);
     glUniform4fv(uTeam1_, 1, team1_);
+    glUniform1f(uGrade_, grade_ ? 1.f : 0.f);
+}
+
+void Renderer::setCut(int n, const float (*planes)[4], float y0, float sign, float w, const float* roof) {
+    glUseProgram(prog_);
+    n = planes ? std::max(0, std::min(4, n)) : 0;
+    glUniform1i(uCutN_, n);
+    if (n > 0) glUniform4fv(uCut_, n, planes[0]);
+    const float none[4] = {0, 0, 0, 0};
+    glUniform4fv(uRoof_, 1, roof ? roof : none);
+    if (n > 0 || (roof && roof[3] > 0.5f)) glUniform3f(uCutY_, y0, sign, w);
 }
 
 void Renderer::setTeamColors(const float c0[4], const float c1[4], float glow0, float glow1) {
@@ -707,10 +816,13 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
         glUniform3fv(uTuckC_, 1, dp.tuckC);
         glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_2D, dp.tuck);
     }
-    glBindVertexArray(m.vao);
+    const bool lodNow = dp.distant && m.vaoLod && m.lodSections.size() == m.sections.size() && !lodOff_;   // (FAR AWAY)
+    glBindVertexArray(lodNow ? m.vaoLod : m.vao);
+    const GLenum itype = lodNow ? m.lodType : GL_UNSIGNED_INT;
+    const size_t isz = itype == GL_UNSIGNED_SHORT ? 2 : 4;
     glFrontFace(dp.mirrored ? GL_CW : GL_CCW);
     for (size_t si = 0; si < m.sections.size(); ++si) {
-        const Section& s = m.sections[si];
+        const Section& s = lodNow ? m.lodSections[si] : m.sections[si];
         if ((si < 64 && ((dp.skip >> si) & 1u)) || (dp.only >= 0 && (int)si != dp.only)) continue;
         const Material& mt = m.mats[s.material];
         uint32_t sh = dp.forceShader >= 0 ? uint32_t(dp.forceShader) : mt.shader;
@@ -761,7 +873,7 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
         glUniform1i(uHasMask_, mt.mask ? 1 : 0);
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, mt.diffuse ? mt.diffuse : 0);
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, mt.mask ? mt.mask : 0);
-        glDrawElements(GL_TRIANGLES, s.count, GL_UNSIGNED_INT, (void*)(uintptr_t)(s.first * 4));
+        glDrawElements(GL_TRIANGLES, s.count, itype, (void*)(uintptr_t)(s.first * isz));
         trisDrawn += s.count / 3;
     }
     glBindVertexArray(0);
@@ -1201,4 +1313,309 @@ void Renderer::drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba
     draw(quad, model, dp, 1);
     glUniform4f(g_uUVRect, 1, 1, 0, 0);
     quad.mats[0].diffuse = 0;
+}
+
+// ------------------------------------------------------------------ GRAPHICS: passes over a finished frame (0.3.22)
+// (the post-processing review, 2026-11-11, and the owner's go, 11-19: BLOOM on the headset and the PC spectator;
+// AMBIENT OCCLUSION and VIGNETTE on the PC spectator only, where they cost the players nothing)
+static const char* kPostVS = R"(#version 300 es
+out vec2 vUV;
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));   // one triangle over the view
+    vUV = p;
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+)";
+// BLOOM's bright part at a quarter of the frame's size: four filtered taps of 2 x 2 texels each, the light above the
+// threshold (a soft knee) taken from each tap before they are averaged, so a thin bright line far away still glows
+static const char* kBloomPreFS = R"(#version 300 es
+precision mediump float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uTexel;
+uniform float uThreshold;
+out vec4 oColor;
+vec3 bright(vec2 uv) {
+    vec3 c = texture(uTex, uv).rgb;
+    float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float k = clamp((y - uThreshold) / max(1e-3, 1.0 - uThreshold), 0.0, 1.0);
+    return c * k * k;
+}
+void main() {
+    vec3 s = bright(vUV + uTexel * vec2(-1.0, -1.0)) + bright(vUV + uTexel * vec2(1.0, -1.0)) +
+             bright(vUV + uTexel * vec2(-1.0, 1.0)) + bright(vUV + uTexel * vec2(1.0, 1.0));
+    oColor = vec4(s * 0.25, 1.0);
+}
+)";
+// halving it (the dual filter's down step): the middle and the four corners a source texel out
+static const char* kBloomDownFS = R"(#version 300 es
+precision mediump float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uTexel;
+out vec4 oColor;
+void main() {
+    vec3 s = texture(uTex, vUV).rgb * 4.0;
+    s += texture(uTex, vUV - uTexel).rgb + texture(uTex, vUV + uTexel).rgb;
+    s += texture(uTex, vUV + vec2(uTexel.x, -uTexel.y)).rgb + texture(uTex, vUV - vec2(uTexel.x, -uTexel.y)).rgb;
+    oColor = vec4(s * 0.125, 1.0);
+}
+)";
+// doubling it back (the dual filter's up step), weighted and added onto that size's own: each size a wider glow
+static const char* kBloomUpFS = R"(#version 300 es
+precision mediump float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uHalf;
+uniform float uWeight;
+out vec4 oColor;
+void main() {
+    vec3 s = texture(uTex, vUV + vec2(-2.0 * uHalf.x, 0.0)).rgb + texture(uTex, vUV + vec2(2.0 * uHalf.x, 0.0)).rgb +
+             texture(uTex, vUV + vec2(0.0, -2.0 * uHalf.y)).rgb + texture(uTex, vUV + vec2(0.0, 2.0 * uHalf.y)).rgb;
+    s += 2.0 * (texture(uTex, vUV + vec2(-uHalf.x, uHalf.y)).rgb + texture(uTex, vUV + uHalf).rgb +
+                texture(uTex, vUV + vec2(uHalf.x, -uHalf.y)).rgb + texture(uTex, vUV - uHalf).rgb);
+    oColor = vec4(s * (uWeight / 12.0), 1.0);
+}
+)";
+static const char* kBloomOutFS = R"(#version 300 es
+precision mediump float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform float uStrength;
+out vec4 oColor;
+void main() { oColor = vec4(texture(uTex, vUV).rgb * uStrength, 0.0); }
+)";
+// AMBIENT OCCLUSION at half size from the frame's depth, as the review's mock-up: 16 points in a 45 cm disc round each
+// pixel, those nearer the eye than the surface there counting (less the further in front), the disc turned at each
+// pixel (blurred out after); and how much that darkens here: nothing where the frame is bright (glowing lines, balls)
+static const char* kAoFS = R"(#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform highp sampler2D uDepth;
+uniform sampler2D uCol;
+uniform vec4 uProj;
+uniform float uStrength;
+out vec4 oColor;
+float viewZ(vec2 uv) {
+    float z = texture(uDepth, uv).r * 2.0 - 1.0;
+    return 2.0 * uProj.z * uProj.w / (uProj.w + uProj.z - z * (uProj.w - uProj.z));
+}
+void main() {
+    float z = viewZ(vUV);
+    float k = 1.0 - clamp(dot(texture(uCol, vUV).rgb, vec3(0.2126, 0.7152, 0.0722)) * 2.2, 0.0, 1.0);
+    if (z > 80.0 || k <= 0.0) { oColor = vec4(1.0); return; }
+    const float R = 0.45;
+    vec2 perM = 0.5 * uProj.xy / z;
+    float rot = 6.2831853 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    float occ = 0.0;
+    for (int i = 0; i < 16; ++i) {
+        float fi = float(i);
+        float r = R * sqrt((fi + 0.5) / 16.0);
+        float ang = rot + fi * 2.3999632;
+        float dz = z - viewZ(vUV + vec2(cos(ang), sin(ang)) * r * perM);
+        if (dz > 0.03 && dz < R * 2.5) occ += 1.0 - dz / (R * 2.5);
+    }
+    oColor = vec4(vec3(1.0 - uStrength * k * (occ / 16.0)), 1.0);
+}
+)";
+static const char* kAoBlurFS = R"(#version 300 es
+precision mediump float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uTexel;
+out vec4 oColor;
+void main() {
+    float s = 0.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) s += texture(uTex, vUV + vec2(float(x), float(y)) * 1.5 * uTexel).r;
+    oColor = vec4(vec3(s / 9.0), 1.0);
+}
+)";
+// the frame times the occlusion and the VIGNETTE (darker toward the edges, the review's)
+static const char* kDarkenFS = R"(#version 300 es
+precision mediump float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform float uUseAo;
+uniform float uVignette;
+out vec4 oColor;
+void main() {
+    float f = uUseAo > 0.5 ? texture(uTex, vUV).r : 1.0;
+    float e = clamp((length((vUV - 0.5) * 2.0) / 1.414 - 0.35) / 0.65, 0.0, 1.0);
+    f *= 1.0 - uVignette * e * e;
+    oColor = vec4(vec3(f), 1.0);
+}
+)";
+
+GLuint Renderer::postProgram(int k) {
+    static const char* fs[kPostProgs] = {kBloomPreFS, kBloomDownFS, kBloomUpFS, kBloomOutFS, kAoFS, kAoBlurFS, kDarkenFS};
+    if (!postProg_[k]) {
+        GLuint p = glCreateProgram();
+        glAttachShader(p, compile(GL_VERTEX_SHADER, kPostVS));
+        glAttachShader(p, compile(GL_FRAGMENT_SHADER, fs[k]));
+        glLinkProgram(p);
+        GLint ok = 0;
+        glGetProgramiv(p, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char buf[1024];
+            glGetProgramInfoLog(p, sizeof buf, nullptr, buf);
+            LOGE("graphics pass %d: link failed: %s", k, buf);
+        }
+        postProg_[k] = p;
+    }
+    glUseProgram(postProg_[k]);
+    return postProg_[k];
+}
+
+// (the frame's own textures are read through these: an eye's swapchain image or a window's picture has no mipmaps and
+// its own filter isn't ours to set)
+void Renderer::samplers() {
+    if (linear_) return;
+    glGenSamplers(1, &linear_);
+    glSamplerParameteri(linear_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glSamplerParameteri(linear_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glSamplerParameteri(linear_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glSamplerParameteri(linear_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenSamplers(1, &nearest_);
+    glSamplerParameteri(nearest_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glSamplerParameteri(nearest_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glSamplerParameteri(nearest_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glSamplerParameteri(nearest_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
+static void makeTarget(GLuint& tex, GLuint& fbo, GLenum fmt, int w, int h) {
+    if (tex) glDeleteTextures(1, &tex);
+    if (!fbo) glGenFramebuffers(1, &fbo);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, fmt, w, h);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+}
+
+static void postState() {
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_BLEND);
+}
+
+void Renderer::bloom(GLuint src, int w, int h, GLuint dst, float threshold, float strength, bool overAlpha) {
+    if (!src || w < 64 || h < 64 || strength <= 0) return;
+    const float kScatter = 0.85f;   // (each wider glow's share: the review's sizes were near even)
+    if (w != bloomW_ || h != bloomH_) {
+        for (int i = 0; i < kBloomLevels; ++i) {
+            bloomLW_[i] = std::max(1, w >> (2 + i));
+            bloomLH_[i] = std::max(1, h >> (2 + i));
+            makeTarget(bloomTex_[i], bloomFbo_[i], GL_SRGB8_ALPHA8, bloomLW_[i], bloomLH_[i]);
+        }
+        bloomW_ = w; bloomH_ = h;
+    }
+    samplers();
+    postState();
+    glBindVertexArray(quad.vao);
+    glActiveTexture(GL_TEXTURE0);
+    GLuint p = postProgram(PP_BLOOM_PRE);
+    glUniform1i(glGetUniformLocation(p, "uTex"), 0);
+    glUniform2f(glGetUniformLocation(p, "uTexel"), 1.f / w, 1.f / h);
+    glUniform1f(glGetUniformLocation(p, "uThreshold"), threshold);
+    glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[0]);
+    glViewport(0, 0, bloomLW_[0], bloomLH_[0]);
+    glBindTexture(GL_TEXTURE_2D, src);
+    glBindSampler(0, linear_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindSampler(0, 0);
+    p = postProgram(PP_BLOOM_DOWN);
+    glUniform1i(glGetUniformLocation(p, "uTex"), 0);
+    GLint u = glGetUniformLocation(p, "uTexel");
+    for (int i = 1; i < kBloomLevels; ++i) {
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[i]);
+        glViewport(0, 0, bloomLW_[i], bloomLH_[i]);
+        glUniform2f(u, 1.f / bloomLW_[i - 1], 1.f / bloomLH_[i - 1]);
+        glBindTexture(GL_TEXTURE_2D, bloomTex_[i - 1]);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    p = postProgram(PP_BLOOM_UP);
+    glUniform1i(glGetUniformLocation(p, "uTex"), 0);
+    glUniform1f(glGetUniformLocation(p, "uWeight"), kScatter);
+    u = glGetUniformLocation(p, "uHalf");
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE);
+    for (int i = kBloomLevels - 2; i >= 0; --i) {
+        glBindFramebuffer(GL_FRAMEBUFFER, bloomFbo_[i]);
+        glViewport(0, 0, bloomLW_[i], bloomLH_[i]);
+        glUniform2f(u, 0.5f / bloomLW_[i], 0.5f / bloomLH_[i]);
+        glBindTexture(GL_TEXTURE_2D, bloomTex_[i + 1]);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    float norm = 0, wk = 1;
+    for (int i = 0; i < kBloomLevels; ++i) { norm += wk; wk *= kScatter; }
+    p = postProgram(PP_BLOOM_OUT);
+    glUniform1i(glGetUniformLocation(p, "uTex"), 0);
+    glUniform1f(glGetUniformLocation(p, "uStrength"), strength / norm);
+    glBindFramebuffer(GL_FRAMEBUFFER, dst);
+    glViewport(0, 0, w, h);
+    // (light added, the coverage kept: over passthrough's room or a keyed background only over what is drawn)
+    glBlendFuncSeparate(overAlpha ? GL_DST_ALPHA : GL_ONE, GL_ONE, GL_ZERO, GL_ONE);
+    glBindTexture(GL_TEXTURE_2D, bloomTex_[0]);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(prog_);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+}
+
+void Renderer::darken(GLuint col, GLuint depth, int w, int h, GLuint dst, float px, float py, float nearZ, float farZ, float ao,
+                      float vignette) {
+    const bool useAo = ao > 0 && depth && col && w >= 64 && h >= 64;
+    if (!useAo && vignette <= 0) return;
+    samplers();
+    postState();
+    glBindVertexArray(quad.vao);
+    if (useAo) {
+        const int hw = std::max(1, w / 2), hh = std::max(1, h / 2);
+        if (hw != aoW_ || hh != aoH_) {
+            makeTarget(aoTex_[0], aoFbo_[0], GL_R8, hw, hh);
+            makeTarget(aoTex_[1], aoFbo_[1], GL_R8, hw, hh);
+            aoW_ = hw; aoH_ = hh;
+        }
+        GLuint p = postProgram(PP_AO);
+        glUniform1i(glGetUniformLocation(p, "uDepth"), 1);
+        glUniform1i(glGetUniformLocation(p, "uCol"), 2);
+        glUniform4f(glGetUniformLocation(p, "uProj"), px, py, nearZ, farZ);
+        glUniform1f(glGetUniformLocation(p, "uStrength"), ao);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, depth); glBindSampler(1, nearest_);
+        glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, col); glBindSampler(2, linear_);
+        glBindFramebuffer(GL_FRAMEBUFFER, aoFbo_[0]);
+        glViewport(0, 0, hw, hh);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindTexture(GL_TEXTURE_2D, 0); glBindSampler(2, 0);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, 0); glBindSampler(1, 0);
+        glActiveTexture(GL_TEXTURE0);
+        p = postProgram(PP_AO_BLUR);
+        glUniform1i(glGetUniformLocation(p, "uTex"), 0);
+        glUniform2f(glGetUniformLocation(p, "uTexel"), 1.f / hw, 1.f / hh);
+        glBindFramebuffer(GL_FRAMEBUFFER, aoFbo_[1]);
+        glBindTexture(GL_TEXTURE_2D, aoTex_[0]);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    GLuint p = postProgram(PP_DARKEN);
+    glUniform1i(glGetUniformLocation(p, "uTex"), 0);
+    glUniform1f(glGetUniformLocation(p, "uUseAo"), useAo ? 1.f : 0.f);
+    glUniform1f(glGetUniformLocation(p, "uVignette"), vignette);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, useAo ? aoTex_[1] : 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, dst);
+    glViewport(0, 0, w, h);
+    glEnable(GL_BLEND);
+    glBlendFuncSeparate(GL_ZERO, GL_SRC_COLOR, GL_ZERO, GL_ONE);   // (the colour times it; the coverage kept)
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glUseProgram(prog_);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
 }

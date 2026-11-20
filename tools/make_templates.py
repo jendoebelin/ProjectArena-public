@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(ROOT, 'tools'))
 import export_glb as E  # noqa: E402
 from glb import Glb  # noqa: E402
 
-BONE_COL = [(90, 110, 140), (120, 150, 120), (170, 140, 110), (150, 90, 90), (90, 90, 150), (190, 110, 110), (110, 110, 200)]
+BONE_COL = [(90, 110, 140), (120, 150, 120), (170, 140, 110), (150, 90, 90), (90, 90, 150), (190, 110, 110), (110, 110, 200), (150, 130, 170), (170, 130, 150)]   # (the last two: the collarbones)
 
 
 def load_body(key):
@@ -89,12 +89,12 @@ anyone may use it with credit to you.
 
 | You are making | Start from | Notes |
 |---|---|---|
-| A top / outfit / shorts | `body_masculine.glb` and `body_feminine.glb` | Model on the body in its bind pose (arms out). Keep the armature: the game bends the outfit with the same 7 bones, so every vertex needs weights (copy them from the body with Blender's Data Transfer modifier). Make one version per body. Max ~8,000 triangles each. |
-| (top: what it covers) | | The top **replaces the body from the waist up**: chest, back and both arms to the wrists (the gauntlets cover the hands, the game draws the head). Any skin it leaves bare is part of your file (material `av_skin`, follow the template body's surface). It ends at the waist: Y = -0.417 m (feminine) / -0.478 m (masculine). |
-| (shorts: what they cover) | | The shorts **replace the body from the waist down**: they start at the same waist line and carry the legs on to where the avatar's legs end, Y = -0.864 m (feminine) / -0.991 m (masculine), finished with the glowing fade ring (material `av_fade`). Bare leg below the hem is part of your file (`av_skin`). Without the legs the avatar stops at the hem. Copy the legs and the fade ring from `examples/av_bottom_1_f.glb` / `av_bottom_1_m.glb`. |
+| A top / outfit / shorts | `body_masculine.glb` and `body_feminine.glb` | Model on the body in its bind pose (arms out). Keep the armature: the game bends the outfit with the same 9 bones (torso, neck, head, both collarbones, upper arms and forearms), so every vertex needs weights (copy them from the body with Blender's Data Transfer modifier). Make one version per body. Max ~8,000 triangles each. |
+| (top: what it covers) | | The top **replaces the body from the waist up**: chest, back and both arms to the wrists (the gauntlets cover the hands, the game draws the head). Any skin it leaves bare is part of your file (material `av_skin`, follow the template body's surface). It ends at the waist: Y = @WAIST_F@ m (feminine) / @WAIST_M@ m (masculine). |
+| (shorts: what they cover) | | The shorts **replace the body from the waist down**: they start at the same waist line and carry the legs on to where the avatar's legs end, Y = @LEGS_F@ m (feminine) / @LEGS_M@ m (masculine), finished with the glowing fade ring (material `av_fade`). Bare leg below the hem is part of your file (`av_skin`). Without the legs the avatar stops at the hem. Copy the legs and the fade ring from `examples/av_bottom_1_f.glb` / `av_bottom_1_m.glb`. |
 | (fit) | | Cloth follows the body's surface closely (3-15 mm off the skin, shrinkwrap it); hard plates up to ~25 mm. Fit each version to its own body (the feminine and masculine bodies differ in shape, not only in size). Use the template's coordinates exactly as they are: numbers from the game's source code are in other spaces. |
 | A pattern or design on an outfit | `uv_layout_*.png` | Paint over the layout at 512 or 1024 px. Design masks use channels: **red** = the trim colour, **green** = glowing lines, **blue** = white accents. |
-| Hair, a helmet, a cap, glasses, a face shield, a mask | `head_masculine.glb` / `head_feminine.glb` | Head space: the origin is between the eyes. Leave 3-6 mm between the part and the skin so nothing pokes through. One version per head. Max ~8,000 triangles. |
+| Hair, a helmet, a cap, glasses, a face shield, a mask | `head_masculine.glb` / `head_feminine.glb` | Head space: the origin is between the eyes. Leave 3-6 mm between the part and the skin so nothing pokes through. One version per head (the four faces of a body share its skull: one fits them all). Max ~8,000 triangles. |
 | A gauntlet / glove | `gauntlet_grip.glb` | The controller held in a glove, in the hand frame. Your gauntlet must enclose the controller (players hold a real one there). Right hand only; the game mirrors it for the left. Max ~8,000 triangles. |
 
 The `examples/` folder has one finished game asset of each kind, exported from the game, so you can see how ours
@@ -110,13 +110,26 @@ the visor tint), `av_dark`, `av_armor`, `av_armor_white`, `av_piping`, `av_cloth
 
 Gauntlets: `gaunt_shell` (main colour plates), `gaunt_trim`, `gaunt_dark`, `gaunt_glow`, `glove`.
 
+Every game asset has an ID in the asset viewer (https://jendoebelin.github.io/ProjectArena-public/): V for the
+avatar builder's parts, P for props and gauntlets, T for textures, S for sounds. Look up the part you are changing or
+adding to; each one there has its own download.
+
 ## Submitting
 
-1. Export your model as **.glb** (File > Export > glTF 2.0, format "glTF Binary").
-2. Put it in `contrib/<kind>/<your-asset-name>/` with a short `README.md`: what it is, your name or handle for the
-   credit, and which bodies / heads it fits.
-3. Open a pull request. We check it in the headset; `tools/import_glb.py` turns it into a game model.
+1. Export your model as **.glb** (File > Export > glTF 2.0, format "glTF Binary", with Include > Custom Properties
+   ticked: a downloaded model's materials carry the game's exact settings there).
+2. Put it in `contrib/<kind>/<your-asset-name>/` with a short `README.md`: what it is, the ID it replaces or the
+   kind it adds to (from the viewer), your name or handle for the credit, and which bodies / heads it fits.
+3. Open a pull request, or post it in the Discord with the ID. We check it in the headset; `tools/import_glb.py` turns
+   it into a game model.
+
+(These numbers and files are made from the game's own bodies: this pack, version @VERSION@.)
 """
+
+
+def app_version():
+    m = re.search(r'kAppVersion = "([0-9.]+)"', open(os.path.join(ROOT, 'app', 'src', 'main.cpp'), encoding='utf-8').read())
+    return m.group(1) if m else '?'
 
 
 def main():
@@ -134,7 +147,18 @@ def main():
     for m in ('av_top_9_f', 'av_top_9_m', 'av_bottom_1_f', 'av_bottom_1_m', 'av_hair_8_m', 'av_gear_6_f', 'av_visor_4_m',
               'av_mask_4_f', 'gauntlet_0'):
         E.export(m, os.path.join(out, 'examples', m + '.glb'))
-    open(os.path.join(out, 'README.md'), 'w', encoding='utf-8', newline='\n').write(README)
+    # (the heights from the bodies and the shipped shorts, so the README is never out of date)
+    vals = {'VERSION': app_version()}
+    for key in ('m', 'f'):
+        b = load_body(key)
+        _, v, _, _, _ = E.read_mdl(os.path.join(E.ASSETS, 'av_bottom_1_%s.mdl' % key))
+        vals['WAIST_' + key.upper()] = '%.3f' % b.waist_y
+        vals['LEGS_' + key.upper()] = '%.3f' % float(v['p'][:, 1].min())
+    text = README
+    for k, x in vals.items():
+        text = text.replace('@%s@' % k, x)
+    assert not re.search(r'@[A-Z_]+@', text), 'a value left out of the README'
+    open(os.path.join(out, 'README.md'), 'w', encoding='utf-8', newline='\n').write(text)
     print('wrote', out)
 
 

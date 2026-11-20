@@ -214,6 +214,32 @@ int main() {
         CHECK(V.game.match == H.game.match, "the visitor's game follows");
         H.local = hostKeep; V.local = visKeep;
     }
+    std::printf("[COUNTRY KIT over the network]\n");
+    {
+        Node& V = *ns[1];
+        AvatarDesc mine = avatar::preset(2);   // VANGUARD, in CANADA's colours and flags (MY OUTFIT)
+        avatar::set(mine, avatar::F_NATION, 2);
+        avatar::setOwnKit(mine, true);
+        AvatarDesc jersey = avatar::preset(3);   // the host: NIGHT RIDER under CANADA's team jersey
+        avatar::set(jersey, avatar::F_NATION, 2);
+        const PlayerInput hostKeep = H.local, visKeep = V.local;
+        V.local.avatar = avatar::sentLook(mine);
+        H.local.avatar = avatar::sentLook(jersey);
+        pump(ns, 0.6);
+        const AvatarDesc& atHost = H.game.pl[1].in.avatar;
+        CHECK(avatar::ownKit(atHost) && avatar::uniform(atHost).suit == 2 && avatar::nationOf(atHost) == 2,
+              "a player's own outfit with their country (MY OUTFIT) reaches the host");
+        const AvatarDesc& atVisitor = V.game.pl[0].in.avatar;
+        CHECK(!avatar::ownKit(atVisitor) && avatar::uniform(atVisitor).suit == 1 && avatar::nationOf(atVisitor) == 2,
+              "and the host's team jersey reaches the player as the team jersey");
+        V.local.avatar = avatar::sentLook(jersey);
+        V.local.avatar.pattern = (uint8_t)(V.local.avatar.pattern | avatar::kOwnKitBit);
+        avatar::setNation(V.local.avatar, 0);   // (the bit with no country, which 0.3.22 never sends: cleared on arrival)
+        pump(ns, 0.4);
+        CHECK(!avatar::ownKit(H.game.pl[1].in.avatar) && H.game.pl[1].in.avatar.pattern < 0x80, "without a country the bit is cleared");
+        H.local = hostKeep; V.local = visKeep;
+        pump(ns, 0.2);
+    }
     for (int i = 2; i <= 6; ++i) ns[i]->net.join(hostIp, false);   // JOIN ROOM: wait outside
     pump(ns, 1.5);
     CHECK(waitingCount(H.net.room()) == 4, "four more wait outside the tank");
@@ -694,6 +720,21 @@ int main() {
               "... a player on 0.3.20 (the competition build) in the match: all as the rules say, for the host too");
         H.game.tun.maiden = false; H.game.tun.aimAssist = -1; H.game.tun.strikeZone = 1; H.game.tun.ballGrowth = 3;
         H.game.tun.advancedRoundsToWin = 2; H.game.tun.shieldSize = 0;
+        H.game.tun.matchVersion = Tunables::kVerAll;
+        pump(hs, 0.5);
+        // BOUNCES (0.3.22): the host's WALLS, WALL GRIP and BANK ASSIST reach the players (with each ball's turn still to
+        // come); a player on 0.3.21 in the match: STANDARD
+        H.game.tun.wallsLively = true; H.game.tun.wallGrip = true; H.game.tun.bankAssist = 2;
+        pump(hs, 0.5);
+        CHECK(B.game.tun.wallsLivelyNow() && B.game.tun.wallGripNow() && B.game.tun.bankAssistNow() == 2 &&
+                  std::fabs(B.game.tun.bankAssistDeg() - 1.6f) < 1e-4f,
+              "BOUNCES: the host's LIVELY WALLS, WALL GRIP and BANK ASSIST MEDIUM are the players' too");
+        H.game.tun.matchVersion = 3021;
+        pump(hs, 0.5);
+        CHECK(!B.game.tun.wallsLively && !B.game.tun.wallGrip && B.game.tun.bankAssist == 0 && H.game.tun.bouncesStandard() &&
+                  H.game.tun.wallGrip,
+              "... a player on 0.3.21 in the match: STANDARD, for the host too (its choice kept for the next match)");
+        H.game.tun.wallsLively = H.game.tun.wallGrip = false; H.game.tun.bankAssist = 0;
         H.game.tun.matchVersion = Tunables::kVerAll;
         pump(hs, 0.5);
         pump(hs, 2.0);   // (the shot clock has been running a while)

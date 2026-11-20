@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for making a sound! Every sound slot has a code (S01-S33); the asset catalog lets you hear the current
+        Thanks for making a sound! Every sound slot has a code (S01-S34); the asset catalog lets you hear the current
         one. Attach your sound below (WAV, OGG, MP3 or FLAC: drag it into the box; zip it if GitHub refuses the type),
         or link it. Format details: docs/SOUND_STUDIO.md. A pull request adding the file works too.
   - type: dropdown
@@ -46,6 +46,7 @@ body:
         - "S31 Clock tick"
         - "S32 Lead change"
         - "S33 Target hit"
+        - "S34 Hard punch"
     validations:
       required: true
   - type: input

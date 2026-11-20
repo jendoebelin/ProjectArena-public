@@ -815,6 +815,20 @@ static void writeState(Writer& w, const Game& g) {
     if (g.np == 2) w.put<uint8_t>((uint8_t)g.tun.roundsToWinNow());   // (0.3.21: ROUNDS, rounds to win: BEST OF 1 to 9)
     if (g.np == 2) w.put<uint8_t>((uint8_t)g.tun.shieldSizeNow());    // (0.3.21: SHIELD SIZE, 0 regulation .. 4 double)
     if (g.np == 2) w.put<uint8_t>((uint8_t)(g.tun.ballFeel & BALL_FEEL_ALL));   // (0.3.21: BALL FEEL, BALL_* bits)
+    // (0.3.22, BOUNCES: WALLS, WALL GRIP and BANK ASSIST as they play; with BANK ASSIST, each ball's turn still to come,
+    // so a player looking ahead turns it as the host will)
+    if (g.np == 2) {
+        const int bank = g.tun.bankAssistNow();
+        w.put<uint8_t>((uint8_t)((g.tun.wallsLivelyNow() ? 1 : 0) | (g.tun.wallGripNow() ? 2 : 0) | (bank << 2)));
+        if (bank > 0)
+            for (int p = 0; p < 2; ++p) {
+                const Ball& b = g.pl[p].ball;
+                w.put<uint8_t>(b.bankAimPending ? 1 : 0);
+                for (float v : {b.bankTurn.x, b.bankTurn.y, b.bankTurn.z})   // (ten-thousandths of a radian)
+                    w.put<int16_t>((int16_t)std::max(-32000L, std::min(32000L, std::lround(v * 10000.f))));
+            }
+    }
+    w.put<uint8_t>(g.tun.palmHoldNow() ? 1 : 0);   // (0.3.22, any room: THE BALL IN THE LEFT PALM, as this match plays it)
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -927,6 +941,27 @@ static bool readState(Reader& r, Game& g, int localIndex) {
     // (BALL FEEL, hosts from 0.3.21: the host's ball for everyone at its arena; an older host sends none, and a guest
     // keeps its own: only how the ball looks and feels)
     if (np == 2 && r.ok && r.e - r.p >= 1) g.tun.ballFeel = r.get<uint8_t>() & BALL_FEEL_ALL;
+    g.tun.wallsLively = g.tun.wallGrip = false; g.tun.bankAssist = 0;   // (BOUNCES, hosts from 0.3.22; older: STANDARD)
+    if (np == 2 && r.ok && r.e - r.p >= 1) {
+        const uint8_t o = r.get<uint8_t>();
+        g.tun.wallsLively = (o & 1) != 0;
+        g.tun.wallGrip = (o & 2) != 0;
+        g.tun.bankAssist = (o >> 2) & 3;
+    }
+    for (int p = 0; p < np && p < 2; ++p) {   // (BANK ASSIST: each ball's turn still to come, the host's)
+        Ball& b = g.pl[p].ball;
+        b.bankAimPending = false;
+        b.bankTurn = {};
+        if (np != 2 || g.tun.bankAssist == 0 || !r.ok) continue;
+        b.bankAimPending = r.get<uint8_t>() != 0;
+        b.bankTurn.x = r.get<int16_t>() * 0.0001f;
+        b.bankTurn.y = r.get<int16_t>() * 0.0001f;
+        b.bankTurn.z = r.get<int16_t>() * 0.0001f;
+        const float most = 2.4f * 0.017453293f, turn = length(b.bankTurn);   // (never more than HIGH's 2.4 degrees)
+        if (turn > most) b.bankTurn *= most / turn;
+    }
+    g.tun.palmHold = false;   // (THE BALL IN THE LEFT PALM, hosts from 0.3.22; older: the left hand's old point)
+    if (r.ok && r.e - r.p >= 1) g.tun.palmHold = (r.get<uint8_t>() & 1) != 0;
     return r.ok;
 }
 

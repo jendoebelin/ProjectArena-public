@@ -14,7 +14,7 @@ Submit for Review until the public launch (ROADMAP 4c).
 - **Name:** Project Arena
 - **Short description** (launch, 2026-11-08):
   > A free VR court sport: throw, curve and punch charged balls past your rival's shield. 1-v-1 or four players, online with Quest and PC VR.
-- **Description** (launch, 2026-11-08; Meta allows 1500 characters, this is 1406; the alpha text described only the 1-v-1 court):
+- **Description** (launch, 2026-11-08, live until 0.3.22; replaced by the block below; Meta allows 1500 characters, this is 1406; the alpha text described only the 1-v-1 court):
   > Project Arena is a free VR court sport. Stand at your end of a neon glass court and throw your ball at your opponent: bank it off the walls, curve it with a flick of the wrist, punch their shots away with your gauntlets, and raise your shield while you hold a charged ball. It's a real workout: you'll be ducking, leaning and sidestepping from the first point.
   >
   > - Real throwing physics: your hand speed, spin and aim decide the shot.
@@ -30,6 +30,26 @@ Submit for Review until the public launch (ROADMAP 4c).
   > - Voice chat: push-to-talk or open mic, with mutes for spectators, players or one person.
   > - Make it yours: body types, outfits, hair, headgear, masks, team colours and plate gauntlets.
   > - Play for your country: a team kit in your flag's colours, over 200 to choose from.
+  > - Career statistics in MY STATS. Delete them any time.
+  > - Free and open source: no ads, no accounts, no tracking.
+- **For 0.3.22: the whole description to paste** (2026-11-19; the owner: no Basic or Advanced on the store pages: the
+  game's rooms page has TIMED MATCH or ROUNDS since 0.3.21; DIAMOND no longer EXPERIMENTAL, as CHOOSE A ROOM names it;
+  the outfits and COUNTRY KIT lines for 0.3.22). Under 1500 (count it again after any change):
+  > Project Arena is a free VR court sport. Stand at your end of a neon glass court and throw your ball at your opponent: bank it off the walls, curve it with a flick of the wrist, punch their shots away with your gauntlets, and raise your shield while you hold a charged ball. It's a real workout: you'll be ducking, leaning and sidestepping from the first point.
+  >
+  > - Real throwing physics: your hand speed, spin and aim decide the shot.
+  > - The SQUARE: the classic 1-v-1 court, a timed match or rounds.
+  > - FIREBALL BLITZ: up to four players, bouncing fireballs, last one standing.
+  > - FOUR CORNERS: free-for-all, 2 v 2 or 3 v 1.
+  > - DIAMOND: the court rolled 45 degrees.
+  > - TRAINING: lessons with worldwide leaderboards.
+  > - Practice bots from ROOKIE to UNBEATABLE, even offline.
+  > - Online play: Quest and PC VR players meet in the same rooms, or play on your home Wi-Fi.
+  > - Spectate any live match with your own camera angles. Friends can cheer from their phones.
+  > - SOUND STUDIO: vote on the community's sounds or play your own.
+  > - Voice chat: push-to-talk or open mic, with mutes for spectators, players or one person.
+  > - Make it yours: body types, outfits and full sets made with the community, hair, headgear, masks, team colours and gauntlets.
+  > - Play for your country: a team kit or your own outfit in your flag's colours, over 200 to choose from.
   > - Career statistics in MY STATS. Delete them any time.
   > - Free and open source: no ads, no accounts, no tracking.
 
@@ -147,6 +167,8 @@ and wording, which Meta changes from time to time:
   hashed key; **not public**: only the player sees their own votes, the operator sees each sound's totals; deleted
   when taken back, with the statistics, or 24 months after the last change). MINE (the player's own .wav files)
   stays on the headset; nothing is uploaded.
+  0.3.22 collects nothing new: CUSTOM TRAINING's MY OPTIONS bests (training_mine.cfg) and the GRAPHICS settings stay
+  on the headset (the PC spectator's on that PC); nothing about them is sent.
 - **Diagnostics:** bug reports and player reports with the game's recent log, **only when the user sends one**.
   From 0.3.11: the game's version number is sent at each connection and written in the server's log next to the
   player name (to see who needs an update).

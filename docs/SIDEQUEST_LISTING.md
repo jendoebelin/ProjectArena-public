@@ -21,7 +21,7 @@ SideQuest installs the GitHub build, so its release doesn't depend on Meta's rev
   throw, curve, and punch energy balls in fast-paced competitive matches.
 - **Search tags** (unchanged): multiplayer, fitness, vr_sports, cross_platform.
 
-## Description (2026-11-08; the earlier text left out the modes added since and ended "currently in active development")
+## Description (2026-11-08; the earlier text left out the modes added since and ended "currently in active development"; 2026-11-19, live: the SQUARE and DIAMOND lines without Basic, Advanced or EXPERIMENTAL)
 
 ```
 Project Arena is a free, open-source VR court sport for Meta Quest and PC VR built around fast reactions, physical movement, and competitive play.
@@ -32,10 +32,10 @@ Play against bots from ROOKIE to UNBEATABLE, or against other people. Multiplaye
 
 ## GAME MODES
 
-- 1-v-1 on the classic court, with Advanced or Basic rules
+- The SQUARE: the classic 1-v-1 court, a timed match or rounds
 - FIREBALL BLITZ: up to four players, bouncing fireballs, health bars, last one standing
 - FOUR CORNERS: free-for-all, 2 v 2 or 3 v 1
-- EXPERIMENTAL DIAMOND: the court rolled 45 degrees
+- DIAMOND: the court rolled 45 degrees
 - TRAINING: throwing, blocking and dodging lessons with worldwide leaderboards
 - SOUND STUDIO: try the community's sounds, vote on them, or play your own
 

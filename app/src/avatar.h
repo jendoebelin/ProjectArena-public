@@ -41,15 +41,30 @@ int nationCount();
 const Nation* nation(int n);                   // nullptr for 0 (none) or out of range
 inline int nationOf(const AvatarDesc& d) { return ((d.body >> 3) & 31) | ((d.gauntlet >> 5) << 5); }
 inline int gauntletOf(const AvatarDesc& d) { return d.gauntlet & 31; }
+// GAUNTLET: 0-2 the plate gauntlets (STRIKER, TITAN, PHANTOM), 3 the CONTROLLER (the lancer in a glove), 4-6 the
+// grapple gauntlets (GRAPPLER, ARC CLAW, REGALIA: plate gauntlets whose fingers open on the trigger)
+constexpr int kGauntletStyles = 7;
+inline bool plateGauntlet(int k) { return k != 3 && k >= 0 && k < kGauntletStyles; }
+inline bool grappleGauntlet(int k) { return k >= 4 && k < kGauntletStyles; }
+// SUIT 18 PELURU LAYERED DRESS (PR #30): its skirt takes the LOWER BODY's place, and it has hoop earrings (av_top_18e)
+constexpr int kSuitDress = 18;
 void setNation(AvatarDesc& d, int n);
-// with a country: the team kit (ARENA JERSEY, no pattern, athletic shorts, the nearest colour swatches, so builds
-// that don't know countries still show a jersey in about the right colours); without: unchanged
+// COUNTRY KIT (0.3.22; the owner, 2026-11-18): with a country, TEAM JERSEY (as before, and the default) wears the team
+// kit below; MY OUTFIT keeps your own suit, pattern and lower body and puts the country on them: its colours and its
+// two prints. It rides in PATTERN's top bit, only with a country (sanitize clears it without one). Builds before 0.3.22
+// read that as an unknown pattern, clear it and put the team jersey on, so they show such a player as before.
+constexpr uint8_t kOwnKitBit = 0x80;
+inline bool ownKit(const AvatarDesc& d) { return (d.pattern & kOwnKitBit) != 0 && nationOf(d) != 0; }
+void setOwnKit(AvatarDesc& d, bool own);       // (only with a country)
+// the look as drawn. With a country: the team kit (ARENA JERSEY, no pattern, athletic shorts, the nearest colour
+// swatches, so builds that don't know countries still show a jersey in about the right colours), or with MY OUTFIT
+// your own outfit and the nearest swatches; the COUNTRY KIT bit cleared. Without: unchanged
 AvatarDesc uniform(const AvatarDesc& d);
+// the look as sent to the others: uniform(), with MY OUTFIT's bit (so 0.3.22 shows your outfit; older builds the jersey)
+AvatarDesc sentLook(const AvatarDesc& d);
 // the colours of the two ends of the court (linear, brightest channel 1): blue / orange, or the players' countries;
 // two close colours (FRANCE against the blue end, or the same country twice) move the second end to its other colour
 void sideColors(int nation0, int nation1, float out[2][3]);
-Field rowField(int row);                       // builder display order (BODY TYPE first; COUNTRY is not a row:
-constexpr int kRowCount = F_COUNT - 1;         //  the builder's PRESET > COUNTRY FLAG shows it as a sub-option)
 
 int fieldCount(Field f);                       // number of options
 const char* fieldName(Field f);

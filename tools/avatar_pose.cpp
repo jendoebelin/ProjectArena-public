@@ -91,10 +91,34 @@ int main(int argc, char** argv) {
         }
         std::printf("}");
     }
-    std::printf("],\"hands\":[");
+    std::printf("]");
+    // THE REACH's waist and the FOREARM TWIST, as main.cpp hands them to the shader (render.cpp uBend, uTwist)
+    if (r.bent) { std::printf(",\"pelvis\":"); printMat(r.pelvis); }
+    if (r.twisted) {
+        std::printf(",\"twist\":[");
+        for (int i = 0; i < 32; ++i) std::printf("%s%.6f", i ? "," : "", r.twist[i]);
+        std::printf("]");
+    }
+    // the rig's bones as segments (joint -> joint, world): the neck, each collarbone (neck base -> shoulder), upper arm
+    // and forearm, for the asset viewer's bone overlay
+    const Vec3 seg[7][2] = {{r.neck.a, r.neck.b}, {r.torso.p, r.upper[0].a}, {r.torso.p, r.upper[1].a}, {r.upper[0].a, r.upper[0].b},
+                            {r.upper[1].a, r.upper[1].b}, {r.fore[0].a, r.fore[0].b}, {r.fore[1].a, r.fore[1].b}};
+    std::printf(",\"bones\":[");
+    for (int i = 0; i < 7; ++i)
+        std::printf("%s[%.5f,%.5f,%.5f,%.5f,%.5f,%.5f]", i ? "," : "", seg[i][0].x, seg[i][0].y, seg[i][0].z, seg[i][1].x, seg[i][1].y,
+                    seg[i][1].z);
+    std::printf("]");
+    std::printf(",\"hands\":[");
     for (int h = 0; h < 2; ++h) {
         std::printf("%s{\"h\":%d,\"grip\":", h ? "," : "", h);
         printMat(Mat4::fromPose(in.hand[h].grip));
+        // a plate gauntlet as main.cpp drawGauntlet draws it: gm (the grip, mirrored for the left hand) times the fist's
+        // and the cuff's pose (g_lancerLocal, tools/frames.py LANCER, comes after)
+        const Mat4 gm = Mat4::fromPose(in.hand[h].grip) * Mat4::fromPose(Pose{}, {h == 0 ? -1.f : 1.f, 1, 1});
+        std::printf(",\"fist\":");
+        printMat(gm * Mat4::fromPose(avatar::fistPose()));
+        std::printf(",\"cuff\":");
+        printMat(gm * Mat4::fromPose(avatar::cuffPose(false)));
         std::printf("}");
     }
     std::printf("],\"channels\":[");

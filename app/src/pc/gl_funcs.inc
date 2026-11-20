@@ -65,3 +65,8 @@
     X(glGetIntegerv, PFNGLGETINTEGERVPROC) \
     X(glReadPixels, PFNGLREADPIXELSPROC) \
     X(glFinish, PFNGLFINISHPROC) \
+    X(glGenSamplers, PFNGLGENSAMPLERSPROC) \
+    X(glSamplerParameteri, PFNGLSAMPLERPARAMETERIPROC) \
+    X(glBindSampler, PFNGLBINDSAMPLERPROC) \
+    X(glRenderbufferStorageMultisample, PFNGLRENDERBUFFERSTORAGEMULTISAMPLEPROC) \
+    X(glInvalidateFramebuffer, PFNGLINVALIDATEFRAMEBUFFERPROC) \

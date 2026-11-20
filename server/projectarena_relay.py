@@ -116,6 +116,7 @@ import random
 import os
 import sqlite3
 import struct
+import sys
 import time
 
 MAGIC = 0x4C52414F          # 'OARL'
@@ -129,7 +130,8 @@ SOUNDVOTE = 21              # player -> server (0.3.16)  body: u8 length, the so
 SOUND_EVENTS = ('Spawn', 'SpawnRise', 'Grab', 'Caught', 'ThrowSlow', 'ThrowMed', 'ThrowFast', 'ThrowFull', 'ThrowFail',
                 'Bounce', 'ShieldBlock', 'ShieldBreak', 'KnuckleBlock', 'HitPlayerOpponent', 'HitPlayerSelf', 'Returned',
                 'Foul', 'Countdown', 'RoundStart', 'RoundEndWin', 'RoundEndLose', 'MatchEndWin', 'MatchEndLose', 'Recharge',
-                'Strike', 'Overtime', 'FistBump', 'Ambience', 'Crowd', 'Cheer', 'ClockTick', 'LeadChange', 'TargetHit')
+                'Strike', 'Overtime', 'FistBump', 'Ambience', 'Crowd', 'Cheer', 'ClockTick', 'LeadChange', 'TargetHit',
+                'KnucklePunch')   # (S34, 0.3.22)
 SOUND_MAX, SOUND_PER_EVENT = 40, 5
 SOUND_BYTES = 1300000       # (12 s of 48 kHz mono 16-bit: the longest a crowd loop may be)
 SOUND_FILE = re.compile(r'^([A-Za-z]+)__([a-z0-9_]{1,24})\.wav$')
@@ -1321,6 +1323,11 @@ async def main():
 
 
 if __name__ == '__main__':
+    if sys.platform == 'win32':
+        # (the tests' relay on Windows: there a game that has closed makes the next receive fail with "connection
+        # reset", and Python 3.10's default (proactor) loop then stops receiving for good; the selector loop carries on.
+        # The server runs on Linux, where this doesn't happen.)
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

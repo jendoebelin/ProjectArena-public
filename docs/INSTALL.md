@@ -31,8 +31,8 @@ Quest and PC players meet in the same rooms online.
 opens a spectator window: it finds a live match on the community server and shows it with names and the score.
 Keys:
 
-- **1-7** cameras (fixed views; **6** and **7** are the two players' own eyes), **A** auto camera, **Tab** next match,
-  **H** hub.
+- **1-9** cameras (fixed views; **6** and **7** are the two players' own eyes, **8** CORNER and **9** COURTSIDE), **A** auto
+  camera, **Tab** next match, **H** hub.
 - **F** (or **0**) free camera: **hold the right mouse button and move the mouse to look around**, **W A S D** to
   move, **Q / E** down and up, **Shift** faster. The fixed cameras don't turn; only the free camera does.
 - **Mouse wheel** zooms (in every camera).

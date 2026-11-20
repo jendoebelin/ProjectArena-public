@@ -18,7 +18,7 @@ namespace studio {
 struct Section { const char* name; std::vector<const char*> events; int lesson; const char* how; };
 const std::vector<Section>& sections();
 std::string prettyEvent(const std::string& event);   // "ShieldBreak" -> "SHIELD BREAK"
-// the asset catalog's code and name for an event's sound slot (tools/gen_catalog.py SOUNDS: S01-S33): "ShieldBreak" ->
+// the asset catalog's code and name for an event's sound slot (tools/gen_catalog.py SOUNDS: S01-S34): "ShieldBreak" ->
 // "S12", "SHIELD BREAK"; codeOf "" and the spaced event name for an event it doesn't know
 std::string codeOf(const std::string& event);
 std::string slotName(const std::string& event);      // "S12 SHIELD BREAK"

@@ -33,7 +33,7 @@ Before proposing a sound, you can try it in the studio on your own headset or PC
   40, and they're removed from the headset when they leave the library.)
 
 ## The sound slots
-Every sound in the game has a code (the asset catalog uses the same ones, so you can hear the current sound there).
+Every sound in the game has a code (the asset viewer uses the same ones: hear the current sound there and download it, https://jendoebelin.github.io/ProjectArena-public/#S12).
 
 | Code | Sound | Event | Studio section |
 |---|---|---|---|
@@ -70,6 +70,7 @@ Every sound in the game has a code (the asset catalog uses the same ones, so you
 | S31 | Clock tick | `ClockTick` | MATCH |
 | S32 | Lead change | `LeadChange` | MATCH |
 | S33 | Target hit | `TargetHit` | THROWS |
+| S34 | Hard punch | `KnucklePunch` | HITS |
 
 ## Proposing a sound
 - **GitHub:** open an issue with the **Sound proposal** form (it asks for the slot, a name, the file, how you would

@@ -7,7 +7,8 @@
 
 // collision tag bits (match tools/build_open_assets.py)
 enum : uint32_t { TAG_ARENA = 1, TAG_RETURN = 2, TAG_FOUL = 4, TAG_TEAM0 = 8, TAG_TEAM1 = 16,
-                  TAG_TEAM2 = 32, TAG_TEAM3 = 64 };   // (2, 3: the FOUR CORNERS players' zones)
+                  TAG_TEAM2 = 32, TAG_TEAM3 = 64,   // (2, 3: the FOUR CORNERS players' zones)
+                  TAG_SIDE_WALL = 128 };            // (0.3.22, BOUNCES: DIAMOND's side walls, diamondCollision())
 // up to four players (FOUR CORNERS, 0.3.12); every other mode is two (slots 0 and 1)
 constexpr int kMaxPlayers = 4;
 // FOUR CORNERS' teams: everyone for themselves; partners in opposite corners (0 with 1, 2 with 3); THE ONE alone
@@ -104,7 +105,7 @@ struct Tunables {
                           foulMove() == 0.f &&                       // (and the FOUL LINE moved)
                           !maidenNow() && aimAssistNow() == (advanced ? 1 : 2) &&   // (ROOMS AND THEIR OPTIONS)
                           strikeZoneNow() == 1 && ballGrowthNow() == 3 && (!advanced || roundsToWinNow() == 2) &&
-                          shieldSizeNow() == 0;
+                          shieldSizeNow() == 0 && bouncesStandard();   // (BOUNCES, 0.3.22)
         return std_ ? 0 : 2;
     }
 
@@ -207,6 +208,32 @@ struct Tunables {
     // 4 DOUBLE, its width and height (the plate drawn with it; SHIELDS: OFF is the way to none)
     int shieldSize = 0;
     int shieldSizeNow() const { return roomOptionsNow() ? std::max(0, std::min(4, shieldSize)) : 0; }
+    // BOUNCES (0.3.22; the ideas of ProjectArena-public pull request #26, as the host's options: the owner, 2026-11-18):
+    // how the ball comes off the court, in the two-player rooms (the SQUARE, DIAMOND), each through FAIR MATCHES.
+    // WALLS: LIVELY: a side wall cuts only the ball's speed into it, to sideWallElasticity (STANDARD: the whole speed to
+    //   elasticity, 90%). WALL GRIP: the floor, ceiling and side walls grip the ball as a solid sphere (friction
+    //   bankFriction) and the knuckle guards where they meet it (knuckleFriction): a bounce trades its sideways motion and
+    //   spin, and the spin curves it after. BANK ASSIST (OFF, LOW, MEDIUM, HIGH): after a bounce, a leg about to just miss
+    //   the opponent is turned toward them, bankAssistDeg() at most, bankTurnRate degrees a second, once (the players' own
+    //   throws; AIM ASSIST still turns the throw itself)
+    bool wallsLively = false, wallGrip = false;
+    int bankAssist = 0;
+    static constexpr int kVerBounces = 3022;
+    // THE BALL IN THE LEFT PALM (a player's report, 2026-11-19: in the right hand the ball sits "in my palm" under the shield, in
+    // the left "more like" a ring): holdOffset is the right hand's point, 8 cm out of the palm along grip -X; the left
+    // palm faces +X, so the left hand held it 8 cm off the back of the hand (the TUNING tool drew it mirrored, the game
+    // didn't). Mirrored for the left hand: where a held ball sits and where its throw starts, so it plays when everyone's
+    // game has it (FAIR MATCHES); a guest plays it as its host says (palmHold, in the snapshots; older hosts: not)
+    static constexpr int kVerPalm = 3022;
+    bool palmHold = true;
+    bool palmHoldNow() const { return palmHold && matchVersion >= kVerPalm; }
+    bool bouncesNow() const { return roomOptionsNow() && matchVersion >= kVerBounces; }
+    bool wallsLivelyNow() const { return bouncesNow() && wallsLively; }
+    bool wallGripNow() const { return bouncesNow() && wallGrip; }
+    int bankAssistNow() const { return bouncesNow() ? std::max(0, std::min(3, bankAssist)) : 0; }
+    float bankAssistDeg() const { static const float k[4] = {0.f, 0.8f, 1.6f, 2.4f}; return k[bankAssistNow()]; }
+    bool bouncesStandard() const { return !wallsLivelyNow() && !wallGripNow() && bankAssistNow() == 0; }
+    float sideWallElasticity = 0.97f, bankFriction = 0.10f, knuckleFriction = 0.14f, bankTurnRate = 24.f;
     float shieldScale() const { return 1.f + 0.25f * (float)shieldSizeNow(); }
     Vec3 shieldHalfNow() const { const float s = shieldScale(); return {shieldHalfExtents.x * s, shieldHalfExtents.y, shieldHalfExtents.z * s}; }
     // BALL FEEL (the owner, 2026-11-17, from the BALL FEEL (TEST) switches: a room option, the host's, and its pick the
@@ -462,6 +489,10 @@ private:
 struct Ball {
     BallState state = BallState::Spawning;
     Vec3 pos, vel, spin;        // spin: angular velocity (rad/s, world)
+    // BANK ASSIST (BOUNCES, 0.3.22): its turn still to come (the axis times the radians left), and whether a bounce
+    // may still plan one (a player's own throw, until one is planned)
+    Vec3 bankTurn;
+    bool bankAimPending = false;
 
     float speedLimit = 0;
     float timer = 0;
@@ -535,7 +566,10 @@ struct PlayerState {
     float botTimer = 0;         // until its next throw
     Vec3 botBody, botBodyVel;   // its head's offset from where it stands (steps, leans, ducks), and that offset's speed
     Vec3 botHand[2], botHandVel[2];   // its grips, moving at a person's speed
-    Quat botHandQ[2];
+    // its hands' turn: as drawn (botHandQ: what the game shows and sends, turned with the arm through a throw, the owner
+    // 2026-11-19), and as the rules have it (botPhysQ: catching, launching, holding, the shield and the knuckle guard,
+    // its own tryouts: as before, the guard's turn through a throw too; the two are the same but in a throw)
+    Quat botHandQ[2], botPhysQ[2];
     bool botHandSet = false;
     // the balls it watches: [0] the opponent's, [1] its own. Each read: the path (Game::predictBall, or a straight
     // line), when it noticed, whether it acts, and its answer (BOT_*)
@@ -675,7 +709,14 @@ public:
     } ahead;
 
     // helpers exposed for rendering / tests
+    Pose handPose(int p, int h) const;   // a hand as the rules have it (a bot's: PlayerState::botPhysQ)
     Vec3 launcherPoint(int p, int h) const;
+    // where a ball held in hand h sits, in its grip space (THE BALL IN THE LEFT PALM: holdOffset, mirrored for the left)
+    Vec3 holdLocal(int h) const {
+        Vec3 o = tun.holdOffset;
+        if (h == 0 && tun.palmHoldNow()) o.x = -o.x;
+        return o;
+    }
     Vec3 catcherPoint(int p, int h) const;
     Vec3 knucklePoint(int p, int h) const;
     Pose shieldPose(int p, int h) const;
@@ -769,7 +810,8 @@ public:
 private:
     void stepPlayer(int p, float dt);
     void recordHand(int p, int h);   // the hand's pose into its history (throw speed, spin, a shield's swing)
-    void stepBall(int p, float dt);
+    void stepBall(int p, float dt, int ignoredPlayer = -1);   // (ignoredPlayer: a bot's read of a ball, it can't be hit)
+    void planBankAim(Ball& b, const Vec3& from, float radius) const;   // BANK ASSIST: at a bounce, the turn of the leg after
     void stepBot(int p, float dt);
     void toFire(int p);                         // FIREBALL BLITZ: p's thrown ball becomes a fireball; its tee refills (or waits)
     void stepFire(int p, int k, float dt);
@@ -816,9 +858,12 @@ public:   // (BALL MARKS ask it which surface a bounce was on)
 private:
     bool hitsBody(int victim, const Vec3& pos, float r) const;
     bool hitsShield(int p, int h, const Vec3& from, const Vec3& to, float r, Vec3& n) const;
-    bool hitsBox(const Pose& box, const Vec3& half, const Vec3& from, const Vec3& to, float r, Vec3& n) const;
+    bool hitsBox(const Pose& box, const Vec3& half, const Vec3& from, const Vec3& to, float r, Vec3& n,
+                 float* entry = nullptr) const;   // (entry: how far along from -> to it met the box)
+    // (contactRadius > 0: WALL GRIP, the guard grips the ball where it meets it)
     void deflectMoving(Ball& b, const Vec3& n, const Vec3& surfaceVel, int deflector, float assistDeg, const Vec3& from,
-                       bool punch = false);
+                       bool punch = false, float contactRadius = 0.f);
+    bool gripsNow() const { return np == 2 && tun.wallGripNow(); }   // (BOUNCES: WALL GRIP, in a two-player room)
     void scorePoint(int scorer, int victim, const Vec3& where, int ball);
     int botThreat(int p) const;   // four players: whose ball read 0 watches (the most urgent attack); two: the other
     int botAim(int p) const { return np == 2 ? 1 - p : pl[p].botTarget >= 0 ? pl[p].botTarget : aimTarget(p, pl[p].in.head.p, facing(p)); }

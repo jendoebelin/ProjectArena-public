@@ -6,6 +6,8 @@
   lancer / knuckleguard          grip frame (+X right, +Z thumb up, +Y forward); the knuckle guard matches the
                                  bumper box (centre (-0.022, 0.137, 0.010), half (0.064, 0.029, 0.048) here)
   shield                         shield frame: plate in X (+-0.20) by Y (+-0.32), thin along Z
+  gauntlet_4..6_*                the grapple gauntlets, in the grip frame (see grapple())
+  grapple_beam / grapple_flare   the grapple's plasma, in their own unit frames
   head                           head frame: eyes at the origin, looking +Y
   torso                          body frame: origin on the floor under the head, facing +Y
 
@@ -289,7 +291,7 @@ WRIST_SWING_AXIS = (-0.502, 0.772, 0.390)
 WRIST_RAISE = 0.045
 
 
-def gauntlet(b_out, style, part='all'):
+def gauntlet(b_out, style, part='all', plate_mat=None, trim_mat=None):
     """A medieval plate gauntlet closed round the (hidden) controller, in the lancer's grip frame: overlapping lames
     on every finger with domed joint plates, a knuckle plate, a plate over the back of the hand and a flared bell cuff
     with rolled edges, over a leather glove. style: 0 STRIKER (gothic: fluted back plate, pointed finger tips and cuff,
@@ -307,7 +309,7 @@ def gauntlet(b_out, style, part='all'):
 
     def radial(q):   # away from the handle axis
         return (q - U * U.dot(q)).normalized()
-    plate, trim = 'gaunt_shell', 'gaunt_trim'
+    plate, trim = plate_mat or 'gaunt_shell', trim_mat or 'gaunt_trim'
     core = 'gaunt_dark' if style == 2 else 'glove'
     heavy = style == 1
     t_pl = (0.0016, 0.0024, 0.0012)[style]
@@ -480,6 +482,298 @@ def _gauntlet_part(style, part):
     return lambda b: gauntlet(b, style, part)
 
 
+# ---------------------------------------------------------------- the grapple gauntlets (GAUNTLET 4-6)
+# Plate gauntlets whose fingers open when the trigger is pulled, and a plasma tether from an emitter in the front of
+# the fist to the ball (app/src/main.cpp drawGauntlet). Built in the lancer's grip frame like gauntlet(), in parts:
+#   gauntlet_K_hand   what stays put: the glove, the grip, the knuckle and back plates, the thumb wing, the emitter
+#   gauntlet_K_f0..f4 the four fingers and the thumb, each turned open about its hinge by the game
+#   gauntlet_K_cuff   the wrist pieces (an existing style's cuff, dressed)
+#   gauntlet_K_fist   the hand and the fingers closed, in one: the game's HANDS APART shape
+#   gauntlet_K_rig    not drawn: per finger a triangle (hinge, hinge + rest direction, hinge + open direction), then
+#                     the emitter's (point, point + forward, point + up); uv0.x = (index + 0.5) / 10, 0.95 the emitter.
+#                     tools/build_open_assets.py writes it as gauntlet_K.hinge
+# style 4 GRAPPLER: heavy plates, hooked talons, hydraulic pistons along the back of the hand
+#       5 ARC CLAW: slim plates, pointed tips, glowing joint nodes and lines
+#       6 REGALIA: gilt-edged ornate plates with filigree, a faceted jewel on the back of the hand, smaller jewels
+GRAPPLE_OPEN = {4: (64, 20), 5: (72, 22), 6: (58, 18)}   # how far the fingers and the thumb open (degrees)
+GRAPPLE_SPLAY = (10, 3.5, -3.5, -10)                      # and how far the fingers fan apart as they open
+
+
+def _rot_about(q, pivot, axis, ang):
+    return pivot + Matrix.Rotation(ang, 3, axis) @ (q - pivot)
+
+
+def grapple(b_out, style, part):
+    dummy = common.Builder('_grapple_unused')
+    U = Vector((0, 0.5, 0.866))
+    F = Vector((0, 0.866, -0.5))
+    R = Vector((1, 0, 0))
+
+    def P(r, f, u):
+        return R * r + F * f + U * u
+
+    def radial(q):
+        return (q - U * U.dot(q)).normalized()
+
+    def axis_dist(q):   # distance from the handle's axis
+        return (q - U * U.dot(q)).length
+    want = part
+    hand = b_out if want in ('hand', 'fist') else dummy
+    fingers = [b_out if want in ('f%d' % k, 'fist') else dummy for k in range(5)]
+    rig = b_out if want == 'rig' else dummy
+    plate, trim = ('gaunt_trim', 'gaunt_dark') if style == 6 else ('gaunt_shell', 'gaunt_trim')   # REGALIA: gold, black enamel
+    core = 'gaunt_dark' if style == 5 else 'glove'
+    heavy = style == 4
+    t_pl = {4: 0.0026, 5: 0.0012, 6: 0.0018}[style]
+    edge = {4: 0.0020, 5: 0.0010, 6: 0.0015}[style]
+    fr = Matrix((R, F, U)).transposed()
+    open_f, open_t = GRAPPLE_OPEN[style]
+
+    def rig_tri(b, a_, c_, d_, idx):
+        tmp = bmesh.new()
+        lay = tmp.loops.layers.uv.new('UVMap')
+        vs = [tmp.verts.new(tuple(v)) for v in (a_, c_, d_)]
+        f = tmp.faces.new(vs)
+        for lp in f.loops:
+            lp[lay].uv = (idx, 0.0)
+        b.add_bmesh(tmp, 'gaunt_dark')
+
+    # ---- the palm and the grip (as gauntlet())
+    _shaped(hand, core, P(0.016, -0.014, -0.003), (0.020, 0.032, 0.027), fr, segs=20, rings=12)
+    _shaped(hand, 'gaunt_dark', P(0, 0, 0.000), (1, 1, 1), fr, kind='cone', segs=20, depth=0.068, r1=0.0160, r2=0.0160)
+    for uu in (-0.034, 0.034):
+        _shaped(hand, 'gaunt_dark', P(0, 0, uu), (1, 1, 1), fr, kind='cone', segs=20, depth=0.003, r1=0.0168, r2=0.0168)
+
+    # ---- the emitter: a lens in the front of the fist, inside the curled fingers (seen once they open)
+    E = P(-0.008, 0.044, 0.0)
+    fwd = Vector((0, 1, 0))      # toward the ball (the grip frame's -Z)
+    fq = fwd.to_track_quat('Z', 'X').to_matrix()
+    lens_r = {4: 0.0125, 5: 0.0105, 6: 0.0110}[style]
+    _shaped(hand, 'gaunt_dark', E - fwd * 0.004, (1, 1, 1), fq, kind='cone', segs=20, depth=0.008, r1=lens_r + 0.002,
+            r2=lens_r + 0.001)
+    _shaped(hand, 'gaunt_glow', E + fwd * 0.0004, (1, 1, 1), fq, kind='cone', segs=20, depth=0.0012, r1=lens_r * 0.62,
+            r2=lens_r * 0.55)
+    rim = [E + fq @ Vector((math.cos(a) * lens_r, math.sin(a) * lens_r, 0.0)) for a in np.linspace(0, 2 * math.pi, 21)]
+    _tube(hand, 'gaunt_glow' if style == 5 else trim, rim, edge * 1.1, segs=5, closed=True, up=fwd)
+    rig_tri(rig, E, E + fwd * 0.02, E + U * 0.02, 0.95)
+
+    # ---- the fingers: each its own part, opening about its knuckle (an axis along the handle)
+    us = (0.031, 0.011, -0.009, -0.027)
+    ws = (0.0185, 0.0192, 0.0180, 0.0158)
+    ls = (1.0, 1.06, 1.0, 0.86)
+    knuckles = []
+    for k in range(4):
+        fb = fingers[k]
+        u, w, sc = us[k], ws[k], ls[k]
+        mcp = Vector((0.034, 0.030))
+        pip = mcp + Vector((-0.036, 0.024)) * sc
+        dip = pip + Vector((-0.028, -0.016)) * sc
+        tip = dip + Vector((-0.004, -0.020)) * sc
+        pts = [P(q.x, q.y, u - 0.0015 * i) for i, q in enumerate((mcp, pip, dip, tip))]
+        knuckles.append(pts[0])
+        rc = w * (0.40 if style == 5 else 0.44)
+        rcs = (rc, rc * 0.95, rc * 0.88, rc * 0.80)
+        _tube(fb, core, pts, rcs, segs=8)
+        for i in range(3):
+            a_, c_ = pts[i], pts[i + 1]
+            out = radial((a_ + c_) / 2)
+            rr = rcs[i] + 0.0009 + (0.0007 if heavy else 0.0)
+            spans = (((0.06, 0.40), (0.34, 0.68), (0.62, 1.02)), ((0.02, 0.54), (0.47, 1.02)), ((0.02, 1.0),))[i]
+            for t0, t1 in spans:
+                tip_pt = 0.0075 if (i == 2 and style == 5) else 0.0
+                _lame(fb, plate, a_ + (c_ - a_) * t0, a_ + (c_ - a_) * t1, rr + 0.0017, math.radians(150), t_pl, out,
+                      n_arc=6, n_len=2, r_end=rr, point=tip_pt)
+            if style == 6:   # gilt edges on every lame's far end
+                ring = [a_ + (c_ - a_) * 0.98 + (Matrix.Rotation(ang, 3, (c_ - a_).normalized()) @ out) * (rr + 0.0019)
+                        for ang in np.linspace(-1.2, 1.2, 7)]
+                _tube(fb, trim, ring, 0.0007, segs=4)
+        if style == 4:   # a hooked talon over the finger tip
+            d0 = (pts[3] - pts[2]).normalized()
+            hook = [pts[2] + (pts[3] - pts[2]) * 0.4 + radial(pts[3]) * (rcs[3] + 0.002),
+                    pts[3] + radial(pts[3]) * (rcs[3] + 0.0015),
+                    pts[3] + d0 * 0.010 + radial(pts[3]) * 0.0005,
+                    pts[3] + d0 * 0.016 - radial(pts[3]) * 0.004]
+            _tube(fb, trim, hook, (0.0042, 0.0036, 0.0022, 0.0004), segs=6)
+        else:
+            fb.sphere(plate, tuple(pts[3]), rcs[3] + 0.0011, segs=10, rings=6)
+        if style == 5:   # glowing joint nodes
+            for q in pts[1:3]:
+                fb.sphere('gaunt_glow', tuple(q + radial(q) * (rcs[1] + 0.0028)), 0.0024, segs=8, rings=5)
+        # the hinge: about the handle's direction through the knuckle, the way that lifts the tip off the handle
+        piv = pts[0]
+        best = None
+        for sgn in (1, -1):
+            ang = sgn * math.radians(open_f)
+            d = axis_dist(_rot_about(pts[3], piv, U, ang))
+            if best is None or d > best[0]:
+                best = (d, ang)
+        u_rest = (pts[3] - piv)
+        u_rest = (u_rest - U * U.dot(u_rest)).normalized()
+        u_open = Matrix.Rotation(best[1], 3, U) @ u_rest
+        u_open = (u_open + U * math.tan(math.radians(GRAPPLE_SPLAY[k]))).normalized()   # fanning apart along the handle
+        rig_tri(rig, piv, piv + u_rest * 0.02, piv + u_open * 0.02, (k + 0.5) / 10)
+
+    # ---- the knuckle plate across the knuckles (stays put: the fingers turn under its edge)
+    kc = P(0.008, 0.004, 0.0)
+    kdir = (R * 0.70 + F * 0.71).normalized()
+    krad = {4: 0.0510, 5: 0.0465, 6: 0.0480}[style]
+    ko = _lame(hand, plate, kc + U * -0.035, kc + U * 0.041, krad, math.radians({4: 40, 5: 30, 6: 36}[style]), t_pl * 1.4, kdir,
+               n_arc=5, n_len=10, bulge=0.0025)
+    for col in (0, -1):
+        _tube(hand, trim, [row[col] for row in ko], edge, segs=6)
+    if style == 5:
+        _tube(hand, 'gaunt_glow', [row[2] + (row[2] - kc - U * U.dot(row[2] - kc)).normalized() * 0.0006 for row in ko],
+              0.0008, segs=4)
+    if style == 4:   # studs along the knuckle plate
+        for q in knuckles:
+            on = kc + U * U.dot(q - kc)
+            d = (q - on).normalized()
+            hand.sphere(trim, tuple(on + d * (krad + 0.002)), 0.0032, segs=8, rings=5)
+
+    # ---- the plate over the back of the hand
+    nf, nu_ = 7, 8
+    f0, f1, ua, ub = -0.046, 0.022, -0.036, 0.040
+
+    def r_back(fn, un):
+        return 0.0372 + (0.0082 if heavy else 0.0060) * (1 - un * un) - 0.0012 * fn * fn + 0.0080 * max(0.0, fn) ** 2.2
+    outer, inner = [], []
+    for i in range(nf + 1):
+        fn = 2 * i / nf - 1
+        f = f0 + (f1 - f0) * i / nf
+        ro, ri = [], []
+        for j in range(nu_ + 1):
+            un = 2 * j / nu_ - 1
+            uu = ua + (ub - ua) * j / nu_
+            r = r_back(fn, un)
+            ro.append(P(r, f, uu))
+            ri.append(P(r - t_pl * 1.3, f, uu))
+        outer.append(ro)
+        inner.append(ri)
+    _slab(hand, plate, outer, inner)
+    _tube(hand, trim, outer[0], edge * 1.2, segs=6)
+    um, uh = (ua + ub) / 2, (ub - ua) / 2
+
+    def on_back(fn, un, lift=0.0):
+        return P(r_back(fn, un) + lift, f0 + (f1 - f0) * (fn + 1) / 2, um + uh * un)
+    if style == 4:   # two hydraulic pistons along the back, from the wrist to the knuckle plate
+        for un in (-0.62, 0.62):
+            a_, c_ = on_back(-0.95, un, 0.0045), on_back(0.55, un, 0.0045)
+            _tube(hand, 'gaunt_dark', [a_, a_ + (c_ - a_) * 0.55], 0.0036, segs=10)
+            _tube(hand, trim, [a_ + (c_ - a_) * 0.5, c_], 0.0022, segs=8)
+            for t_ in (0.0, 0.5, 1.0):
+                hand.sphere(trim, tuple(a_ + (c_ - a_) * t_), 0.0042 if t_ != 0.5 else 0.0038, segs=10, rings=6)
+        _tube(hand, plate, [on_back(fn, 0, 0.0008) for fn in np.linspace(-0.92, 0.7, 9)], 0.0024, segs=6)
+    elif style == 5:   # glowing lines
+        for un in (-0.45, 0.0, 0.45):
+            _tube(hand, 'gaunt_glow', [on_back(fn, un, 0.0003) for fn in np.linspace(-0.85, 0.6, 8)], 0.0007, segs=4)
+    else:            # REGALIA: filigree scrolls and a faceted jewel in a gilt setting
+        for s_ in (-1, 1):
+            curl = []
+            for i in range(26):
+                t_ = i / 25
+                ang = 4.2 * t_
+                rr = 0.42 * (1 - 0.75 * t_)
+                curl.append(on_back(-0.15 + 0.55 * math.sin(ang) * rr, s_ * (0.18 + 0.55 * math.cos(ang) * rr * 0.9), 0.0005))
+            _tube(hand, trim, curl, 0.0007, segs=4)
+            _tube(hand, trim, [on_back(fn, s_ * 0.88, 0.0005) for fn in np.linspace(-0.9, 0.65, 9)], 0.0008, segs=4)
+        gc = on_back(0.05, 0.0, 0.0)
+        gn = radial(gc)
+        gq = gn.to_track_quat('Z', 'Y').to_matrix()
+        tmp = bmesh.new()
+        bmesh.ops.create_uvsphere(tmp, u_segments=8, v_segments=4, radius=1.0)
+        bmesh.ops.scale(tmp, vec=(0.0105, 0.0135, 0.0060), verts=tmp.verts)
+        bmesh.ops.rotate(tmp, verts=tmp.verts, cent=(0, 0, 0), matrix=gq)
+        bmesh.ops.translate(tmp, vec=gc + gn * 0.0030, verts=tmp.verts)
+        hand.add_bmesh(tmp, 'gaunt_glow', smooth=False)   # faceted
+        bezel = [gc + gn * 0.0028 + gq @ Vector((math.cos(a) * 0.0118, math.sin(a) * 0.0150, 0)) for a in np.linspace(0, 2 * math.pi, 25)]
+        _tube(hand, trim, bezel, 0.0014, segs=6, closed=True, up=gn)
+        for un in (-0.62, 0.62):   # two small jewels near the wrist
+            q = on_back(-0.72, un, 0.0)
+            n_ = radial(q)
+            hand.sphere('gaunt_glow', tuple(q + n_ * 0.0022), 0.0034, segs=6, rings=4, smooth=False)
+            ring = [q + n_ * 0.0016 + (n_.to_track_quat('Z', 'Y').to_matrix() @ Vector((math.cos(a) * 0.0042, math.sin(a) * 0.0042, 0)))
+                    for a in np.linspace(0, 2 * math.pi, 13)]
+            _tube(hand, trim, ring, 0.0008, segs=4, closed=True, up=n_)
+
+    # ---- the thumb: a wing plate over its root (stays put), the thumb itself opening about its root
+    th_root = P(0.014, -0.034, 0.024)
+    th_pts = [P(-0.008, -0.016, 0.040), P(-0.027, 0.006, 0.047), P(-0.041, 0.028, 0.034), P(-0.041, 0.043, 0.016)]
+    trs = (0.0108, 0.0100, 0.0092, 0.0084)
+    tb = fingers[4]
+    _tube(tb, core, [th_root] + th_pts, (0.0125,) + trs, segs=8)
+    wo = (U * 0.8 - R * 0.35 - F * 0.2).normalized()
+    _lame(hand, plate, th_root + (th_root - th_pts[0]) * 0.15, th_pts[0] + (th_pts[1] - th_pts[0]) * 0.15, 0.0150,
+          math.radians(170), t_pl * 1.2, wo, n_arc=8, n_len=3, r_end=0.0128, bulge=0.0015)
+    for i in range(3):
+        a_, c_ = th_pts[i], th_pts[i + 1]
+        mid = (a_ + c_) / 2
+        out = (mid - U * U.dot(mid) + U * 0.02).normalized()
+        rr = trs[i] + 0.0009 + (0.0007 if heavy else 0.0)
+        spans = (((0.05, 0.40), (0.34, 0.68), (0.62, 1.02)), ((0.02, 0.55), (0.48, 1.02)), ((0.02, 1.0),))[i]
+        for t0, t1 in spans:
+            _lame(tb, plate, a_ + (c_ - a_) * t0, a_ + (c_ - a_) * t1, rr + 0.0017, math.radians(165), t_pl, out,
+                  n_arc=7, n_len=2, r_end=rr, point=0.007 if (i == 2 and style == 5) else 0.0)
+    if style == 4:
+        d0 = (th_pts[3] - th_pts[2]).normalized()
+        _tube(tb, trim, [th_pts[3], th_pts[3] + d0 * 0.010, th_pts[3] + d0 * 0.015 - radial(th_pts[3]) * 0.004],
+              (0.0040, 0.0024, 0.0004), segs=6)
+    else:
+        tb.sphere(plate, tuple(th_pts[3]), trs[3] + 0.0011, segs=10, rings=6)
+    if style == 6:
+        hand.sphere('gaunt_glow', tuple(th_root + wo * 0.0165), 0.0030, segs=6, rings=4, smooth=False)
+    # its hinge: about the axis across the thumb's root and the handle, the way that lifts the tip off the handle
+    t_axis = (th_pts[0] - th_root).cross(U).normalized()
+    piv = th_root
+    best = None
+    for sgn in (1, -1):
+        ang = sgn * math.radians(open_t)
+        d = axis_dist(_rot_about(th_pts[3], piv, t_axis, ang))
+        if best is None or d > best[0]:
+            best = (d, ang)
+    u_rest = th_pts[3] - piv
+    u_rest = (u_rest - t_axis * t_axis.dot(u_rest)).normalized()
+    rig_tri(rig, piv, piv + u_rest * 0.02, piv + (Matrix.Rotation(best[1], 3, t_axis) @ u_rest) * 0.02, 4.5 / 10)
+
+    # ---- the cuff: an existing style's, dressed
+    if want == 'cuff':
+        if style == 6:
+            gauntlet(b_out, 0, 'cuff', plate_mat='gaunt_trim', trim_mat='gaunt_dark')
+        else:
+            gauntlet(b_out, {4: 1, 5: 2}[style], 'cuff')
+
+
+def grapple_beam(b):
+    """The plasma tether, in its own frame: from the origin along +Y to 1 (the app stretches it to the ball), about
+    1 across (scaled down to its width): three crossed ribbons of veined plasma round a bright core."""
+    for k in range(3):
+        a = math.pi * k / 3
+        side = Vector((math.cos(a), 0, math.sin(a)))
+        tmp = bmesh.new()
+        lay = tmp.loops.layers.uv.new('UVMap')
+        n = 8
+        rows = []
+        for i in range(n + 1):
+            t = i / n
+            w = 0.5 + 0.5 * math.sin(math.pi * t) * 0.6   # fuller in the middle
+            rows.append([tmp.verts.new(tuple(Vector((0, t, 0)) + side * s * w)) for s in (-1, 1)])
+        for i in range(n):
+            f = tmp.faces.new((rows[i][0], rows[i][1], rows[i + 1][1], rows[i + 1][0]))
+            for lp, uv in zip(f.loops, ((0, i * 0.5), (1, i * 0.5), (1, (i + 1) * 0.5), (0, (i + 1) * 0.5))):
+                lp[lay].uv = uv
+        b.add_bmesh(tmp, 'ball_plasma', smooth=False)
+    b.cylinder('ball_filament', (0, 0.5, 0), 0.16, 1.0, segs=8, axis='Y', cap=False)
+
+
+def grapple_flare(b):
+    """A ball of plasma, radius 1 (the app sizes it): at the emitter and round the ball held."""
+    b.sphere('ball_plasma', (0, 0, 0), 1.0, segs=16, rings=8, uv_scale=(2, 1))
+    b.sphere('ball_spark', (0, 0, 0), 0.45, segs=10, rings=6)
+
+
+def _grapple_part(style, part):
+    return lambda b: grapple(b, style, part)
+
+
 def knuckleguard(b):
     """Rounded glass shell over the bumper box: centre (-0.022, 0.137, 0.010), half (0.064, 0.029, 0.048)."""
     tmp = bmesh.new()
@@ -547,13 +841,19 @@ PROPS = [('projectile', ball), ('projectile_shell', shell), ('spawner', spawner)
          ('gauntlet_1_hand', _gauntlet_part(1, 'hand')), ('gauntlet_1_cuff', _gauntlet_part(1, 'cuff')),
          ('gauntlet_2_hand', _gauntlet_part(2, 'hand')), ('gauntlet_2_cuff', _gauntlet_part(2, 'cuff')),
          ('knuckleguard', knuckleguard), ('shield', shield), ('head', head), ('torso', torso)]
+PROPS += [('gauntlet_%d_%s' % (k, part), _grapple_part(k, part))
+          for k in (4, 5, 6) for part in ('hand', 'cuff', 'f0', 'f1', 'f2', 'f3', 'f4', 'fist', 'rig')]
+PROPS += [('grapple_beam', grapple_beam), ('grapple_flare', grapple_flare)]
 
 
 def main():
     out = common.out_path() or os.path.join(os.getcwd(), 'props.npz')
     common.reset_scene()
     pos, nrm, uv0, uv1, mat, names, objects = [], [], [], [], [], [], []
+    only = [x for x in os.environ.get('PA_PROPS', '').split(',') if x]   # (a quicker run: these names' prefixes)
     for name, fn in PROPS:
+        if only and not any(name.startswith(o) for o in only):
+            continue
         bld = common.Builder(name)
         fn(bld)
         objs = bld.to_objects()

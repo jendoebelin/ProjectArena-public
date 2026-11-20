@@ -136,6 +136,7 @@ SOUNDS = [   # the subtle set (tools/gen_open_audio.py); the classic set is kept
     ('S31', 'ClockTick', 'Clock tick', 'A very soft, short wooden tick once a second in the last 10 seconds of a timed match or round.'),
     ('S32', 'LeadChange', 'Lead change', 'A bright rising three-note chime with a light shimmer when someone new leads (FOUR CORNERS).'),
     ('S33', 'TargetHit', 'Target hit', 'A bright glassy ping over a quick sparkle of breaking light when a TRAINING target is taken.'),
+    ('S34', 'KnucklePunch', 'Hard punch', 'A hard crack when a knuckle guard punch sends the ball back at 12 m/s or more (0.3.21).'),
 ]
 
 CODE_FX = [

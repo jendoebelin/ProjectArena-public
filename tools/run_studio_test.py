@@ -22,8 +22,10 @@ import re
 cat = re.findall(r"\('(S\d+)', '([A-Za-z]+)'", open(os.path.join(ROOT, 'tools', 'gen_catalog.py'), encoding='utf-8').read())
 game = re.findall(r'\{"([A-Za-z]+)", "(S\d+)", "[^"]*"\}', open(os.path.join(ROOT, 'app', 'src', 'sound_studio.cpp'), encoding='utf-8').read())
 events = [ln.split()[0] for ln in open(os.path.join(ROOT, 'app', 'assets_open', 'audio', 'events.txt'), encoding='utf-8') if ln.strip()]
-ok = sorted(cat) == sorted((c, e) for e, c in game) and sorted(e for _, e in cat) == sorted(events)
-print('  %s   the sound slots S01-S%02d agree: the asset catalog, the game and events.txt' % ('ok' if ok else 'FAIL', len(cat)))
+relay = open(os.path.join(ROOT, 'server', 'projectarena_relay.py'), encoding='utf-8').read()
+relay = re.findall(r"'([A-Za-z]+)'", re.search(r'SOUND_EVENTS = \(([^)]*)\)', relay).group(1))   # (the library's events)
+ok = sorted(cat) == sorted((c, e) for e, c in game) and sorted(e for _, e in cat) == sorted(events) == sorted(relay)
+print('  %s   the sound slots S01-S%02d agree: the asset catalog, the game, events.txt and the server' % ('ok' if ok else 'FAIL', len(cat)))
 if not ok:
     sys.exit(1)
 exe = os.path.join(ROOT, 'build', 'tests', 'studio_test.exe')

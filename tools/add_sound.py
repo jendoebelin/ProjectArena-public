@@ -5,7 +5,7 @@ Event__name.wav. Then prints the two commands that put it on the server (the own
 the server). The relay lists it within seconds; the studio downloads it the next time someone opens it.
 Usage: python -I tools/add_sound.py FILE SLOT "name"     e.g.  tools/add_sound.py glass.wav S12 "glass crack"
 FILE: WAV (any rate, channels, 16/24/32-bit or float); OGG, MP3, FLAC and others through third_party/vgmstream.
-SLOT: the asset catalog's code (S01-S33, tools/gen_catalog.py SOUNDS) or the game's event name (ShieldBreak).
+SLOT: the asset catalog's code (S01-S34, tools/gen_catalog.py SOUNDS) or the game's event name (ShieldBreak).
 name: letters, digits and spaces (24 at most).
 The server: sounds.local.cfg in the project root (gitignored), lines ssh=user@host and key=path-to-ssh-key.
 Only with the maker's agreement; note what a sound is made from and under which terms (other licences than the open

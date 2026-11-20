@@ -4,7 +4,7 @@ Usage: python -I tools/import_glb.py IN.glb MODEL_NAME [--out DIR]     (default 
 
 - Material names must be palette names (tools/blender/palette.py, 'prop' kind: av_primary, av_glow, gaunt_shell, ...);
   anything else is reported and drawn grey.
-- Meshes with skin weights (outfits made on templates/body_*.glb) become skinned models (7-bone avatar rig);
+- Meshes with skin weights (outfits made on templates/body_*.glb) become skinned models (the 9-bone avatar rig);
   everything else becomes a rigid model in the space it was made in (head space for head parts, the hand frame for
   gauntlets).
 """
@@ -51,17 +51,19 @@ def convert(path, name, out_dir):
     problems = []
     for p in prims:
         m = p['material'].split('.')[0]   # Blender adds .001 to duplicates
-        if material_record(m) is None:
-            problems.append(m)
         x = (p.get('extras') or {}).get('projectArena', {})
-        key = (m, p.get('double', False) or bool(x.get('twoSided')), bool(x.get('cloth')), x.get('design') or '')
+        ex = x.get('exact')   # (exported from the game: its exact values, kept)
+        ex = (ex['shader'], tuple(ex['tint']), tuple(ex['em']), ex['flags'], ex.get('diffuse', ''), ex.get('mask', '')) if ex else None
+        if ex is None and material_record(m) is None:
+            problems.append(m)
+        key = (m, p.get('double', False) or bool(x.get('twoSided')), bool(x.get('cloth')), x.get('design') or '', ex)
         groups.setdefault(key, []).append(p)
     verts, idxs, secs, mats = [], [], [], []
     nv = ni = 0
     dt = [('p', '<f4', 3), ('n', '<f4', 3), ('u0', '<f4', 2), ('u1', '<f4', 2), ('c', 'u1', 4)]
     if skinned:
         dt += [('bi', 'u1', 4), ('bw', 'u1', 4)]
-    for mi, m in enumerate(sorted(groups)):
+    for mi, m in enumerate(sorted(groups, key=repr)):
         for p in groups[m]:
             n = len(p['pos'])
             v = np.zeros(n, dtype=dt)
@@ -84,7 +86,7 @@ def convert(path, name, out_dir):
             secs.append((ni, len(p['idx']), mi))
             nv += n
             ni += len(p['idx'])
-        mats.append(material_record(*m) or (0, (0.5, 0.5, 0.5, 1.0), (0, 0, 0, 0), 0, '', ''))
+        mats.append(m[4] or material_record(*m[:4]) or (0, (0.5, 0.5, 0.5, 1.0), (0, 0, 0, 0), 0, '', ''))
     V = np.concatenate(verts)
     I = np.concatenate(idxs)
     os.makedirs(out_dir, exist_ok=True)

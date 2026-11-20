@@ -14,21 +14,29 @@ struct Swatch { const char* name; uint8_t r, g, b; };   // sRGB
 const char* kSuit[] = {"GRID RUNNER", "ARENA JERSEY", "VANGUARD", "STREET JACKET", "HOODIE", "ECHO SUIT", "TANK TOP", "PILOT",
                        "CIRCUIT VEST", "TRAINING TEE", "CIRCUIT RUNNER",   // 10: modelled traces with moving pulses
                        "GRID RUNNER LIVE", "ECHO SUIT LIVE", "CIRCUIT VEST LIVE",   // 11-13: their glow lines raised, pulsing
-                       "VECTOR", "NIGHTFORGE"};   // 14, 15: PR #25 (their own LOWER BODY 1-4; older versions: GRID RUNNER)
+                       "VECTOR", "NIGHTFORGE",    // 14, 15: PR #25 (their own LOWER BODY 1-4; older versions: GRID RUNNER)
+                       "RONIN WRAP",              // 16: PR #27, 0.3.22 (contrib/outfit/ronin-wrap; older versions: GRID RUNNER)
+                       "PELURU TUXEDO", "PELURU LAYERED DRESS"};   // 17, 18: PR #30, 0.3.22 (tools/build_peluru.py; the
+                                                                   // dress its own skirt; older versions: GRID RUNNER)
 const char* kLower[] = {"NONE", "ATHLETIC SHORTS", "CIRCUIT SHORTS", "BIKE SHORTS",
                         "LONG SHORTS", "TENNIS SKIRT", "KILT"};   // 4-6: PR #25 (the skirts sway; older versions: NONE)
 const char* kBody[] = {"MASCULINE", "FEMININE"};
-const char* kGauntlet[] = {"STRIKER", "TITAN", "PHANTOM", "CONTROLLER"};
+const char* kGauntlet[] = {"STRIKER", "TITAN", "PHANTOM", "CONTROLLER",
+                           "GRAPPLER", "ARC CLAW", "REGALIA"};   // 4-6: the trigger opens them (older versions: STRIKER)
 const char* kFace[] = {"FACE 1", "FACE 2", "FACE 3", "FACE 4"};   // tools/blender/make_body.py FACES (FACE 1 = the base)
 const char* kBuild[] = {"SLIM", "STANDARD", "BROAD", "ATHLETIC"};
 const char* kPattern[] = {"NONE", "CIRCUIT", "STRIPES", "CHEVRON", "HEX", "SPLIT", "PIXEL", "BANDS"};
 const char* kPatternTex[] = {nullptr, "open_pat_circuit", "open_pat_stripes", "open_pat_chevron", "open_pat_hex",
                              "open_pat_split", "open_pat_pixel", "open_pat_bands"};
-const char* kHair[] = {"NONE", "BUZZ CUT", "SWEPT", "PONYTAIL", "MOHAWK", "SPIKES", "BOB", "TOP KNOT", "TOUSLED"};
+const char* kHair[] = {"NONE", "BUZZ CUT", "SWEPT", "PONYTAIL", "MOHAWK", "SPIKES", "BOB", "TOP KNOT", "TOUSLED",
+                       "HIGH PIGTAILS", "DREADLOCKS"};   // 9, 10: their tails and locs swing (older versions: NONE)
 const char* kHeadgear[] = {"NONE", "GRID HELMET", "RACER HELMET", "HOOD", "CREST HELMET", "HEADPHONES", "CAP",
-                           "HORNED HELMET", "VECTOR HELMET"};   // 7, 8: PR #25 (older versions: NONE)
+                           "HORNED HELMET", "VECTOR HELMET",   // 7, 8: PR #25 (older versions: NONE)
+                           "RONIN KABUTO",                     // 9: PR #27, 0.3.22 (contrib/headgear/ronin-kabuto; older: NONE)
+                           "SOMBRERO"};                        // 10: PR #30, 0.3.22 (tools/build_peluru.py; older: NONE)
 const char* kVisor[] = {"NONE", "BAND VISOR", "FULL SHIELD", "SHADES", "GOGGLES", "HEADSET", "HALO", "SLIT VISOR"};
-const char* kMask[] = {"NONE", "MOUTH GUARD", "CYBER JAW", "BREATHER", "BANDANA", "FACEPLATE"};
+const char* kMask[] = {"NONE", "MOUTH GUARD", "CYBER JAW", "BREATHER", "BANDANA", "FACEPLATE",
+                       "SUGAR SKULL"};   // 6: PR #30, 0.3.22 (a mask on each face; older versions: NONE)
 
 const Swatch kSuitCol[] = {{"GRAPHITE", 52, 56, 64},  {"SILVER", 168, 174, 184}, {"WHITE", 226, 230, 236},
                            {"MIDNIGHT", 22, 30, 62},  {"COBALT", 30, 82, 196},   {"TEAL", 18, 150, 156},
@@ -109,15 +117,16 @@ const Preset kPresets[] = {
     {"TRAINER", withLower(make(9, 3, 0, 14, 4, 3, 3, 2, 0, 0, 0, 0, 3), 1, 1)},
     {"TANK AND SHORTS", withLower(make(6, 1, 0, 14, 4, 0, 0, 0, 0, 0, 0, 0, 3), 1)},
     {"TRAINING KIT", withLower(make(9, 1, 0, 13, 15, 0, 0, 0, 0, 0, 0, 0, 3), 3, 1)},
+    // the full sets (the owner, 2026-11-19: "make the new outfits that have full sets into the presets menu ... and
+    // don't forget to add night forge outfit and vector outfit"), in their makers' own colours where they gave them:
+    {"RONIN", withLower(make(16, 1, 0, 4, 9, 2, 7, 0, 9, 0, 0, 4, 4), 4)},               // PR #27: wrap, kabuto, bandana
+    {"PELURU TUXEDO", withLower(make(17, 1, 0, 13, 8, 11, 2, 0, 10, 0, 0, 6, 3), 4)},    // PR #30: sombrero, sugar skull
+    {"PELURU DRESS", withLower(make(18, 1, 0, 13, 5, 11, 9, 0, 10, 0, 0, 6, 5), 0, 1)},
+    {"VECTOR", withLower(make(14, 1, 0, 13, 1, 2, 6, 0, 8, 0, 0, 0, 1), 4, 1)},          // PR #25: its helmet, its shorts
+    {"NIGHTFORGE", withLower(make(15, 3, 0, 13, 8, 2, 1, 0, 7, 0, 0, 0, 6), 4)},         // PR #25: the HORNED HELMET
 };
 
 }  // namespace
-
-Field rowField(int row) {
-    static const Field k[kRowCount] = {F_BODY, F_FACE, F_SUIT, F_BUILD, F_LOWER, F_GAUNTLET, F_PATTERN, F_PRIMARY,
-                                       F_SECONDARY, F_GLOW, F_HAIR, F_HAIRCOLOR, F_HEADGEAR, F_VISOR, F_VISORTINT, F_MASK, F_SKIN};
-    return row >= 0 && row < kRowCount ? k[row] : F_SUIT;
-}
 
 int fieldCount(Field f) {
     switch (f) {
@@ -155,6 +164,7 @@ uint8_t get(const AvatarDesc& d, Field f) {
     if (f == F_FACE) return (uint8_t)faceOf(d);
     if (f == F_NATION) return (uint8_t)nationOf(d);
     if (f == F_GAUNTLET) return (uint8_t)gauntletOf(d);
+    if (f == F_PATTERN) return (uint8_t)(d.pattern & ~kOwnKitBit);   // (its top bit: COUNTRY KIT)
     return *ref(const_cast<AvatarDesc&>(d), f);
 }
 
@@ -165,6 +175,7 @@ void set(AvatarDesc& d, Field f, int v) {
     else if (f == F_FACE) d.body = (uint8_t)((d.body & ~6) | (v << 1));
     else if (f == F_NATION) setNation(d, v);
     else if (f == F_GAUNTLET) d.gauntlet = (uint8_t)((d.gauntlet & ~31) | v);
+    else if (f == F_PATTERN) d.pattern = (uint8_t)((d.pattern & kOwnKitBit) | v);
     else *ref(d, f) = (uint8_t)v;
 }
 
@@ -190,6 +201,8 @@ void optionColor(Field f, int i, const float team[3], float out[3]) {
 }
 
 void sanitize(AvatarDesc& d) {
+    const bool own = (d.pattern & kOwnKitBit) != 0;   // (COUNTRY KIT: kept with a country)
+    d.pattern = (uint8_t)(d.pattern & ~kOwnKitBit);
     for (int f = 0; f < F_COUNT; ++f) {
         if (f == F_BODY || f == F_FACE || f == F_NATION || f == F_GAUNTLET) continue;
         uint8_t* v = ref(d, (Field)f);
@@ -202,6 +215,7 @@ void sanitize(AvatarDesc& d) {
     d.body = (uint8_t)(bodyType(d) | (face << 1));
     d.gauntlet = (uint8_t)gauntletOf(d);
     setNation(d, n);
+    if (own && n) d.pattern = (uint8_t)(d.pattern | kOwnKitBit);
 }
 
 int nationCount() { return count(kNations); }
@@ -211,6 +225,10 @@ void setNation(AvatarDesc& d, int n) {
     if (n < 0 || n > 255) n = 0;
     d.body = (uint8_t)((d.body & 7) | ((n & 31) << 3));
     d.gauntlet = (uint8_t)((d.gauntlet & 31) | ((n >> 5) << 5));
+}
+
+void setOwnKit(AvatarDesc& d, bool own) {
+    d.pattern = (uint8_t)((d.pattern & ~kOwnKitBit) | (own && nationOf(d) ? kOwnKitBit : 0));
 }
 
 namespace {
@@ -243,12 +261,24 @@ AvatarDesc uniform(const AvatarDesc& in) {
     sanitize(d);
     const Nation* N = nation(nationOf(d));
     if (!N) return d;
-    d.suit = 1;      // ARENA JERSEY
-    d.pattern = 0;
-    if (d.lower == 0 || d.lower == 2) d.lower = 1;   // ATHLETIC SHORTS (BIKE, LONG SHORTS and the skirts stay)
+    if (d.pattern & kOwnKitBit) {   // COUNTRY KIT = MY OUTFIT: your suit, pattern and lower body stay
+        d.pattern = (uint8_t)(d.pattern & ~kOwnKitBit);
+    } else {
+        d.suit = 1;      // ARENA JERSEY
+        d.pattern = 0;
+        if (d.lower == 0 || d.lower == 2) d.lower = 1;   // ATHLETIC SHORTS (BIKE, LONG SHORTS and the skirts stay)
+    }
     d.primary = (uint8_t)nearest(kSuitCol, count(kSuitCol), 0, N->kit[0]);
     d.secondary = (uint8_t)nearest(kSuitCol, count(kSuitCol), 0, N->kit[kitTrim(N)]);
     d.glow = (uint8_t)nearest(kGlowCol, count(kGlowCol), 1, N->kit[2]);
+    return d;
+}
+
+AvatarDesc sentLook(const AvatarDesc& in) {
+    AvatarDesc s = in;
+    sanitize(s);
+    AvatarDesc d = uniform(s);
+    if (ownKit(s)) d.pattern = (uint8_t)(d.pattern | kOwnKitBit);
     return d;
 }
 
@@ -344,11 +374,12 @@ std::string toText(const AvatarDesc& d) {
         std::snprintf(buf, sizeof buf, "%s=%d\n", kKey[f], (int)get(d, (Field)f));
         s += buf;
     }
+    if (ownKit(d)) s += "kit=1\n";   // COUNTRY KIT = MY OUTFIT (builds before 0.3.22 skip the key: the team jersey)
     return s;
 }
 
 bool fromText(const std::string& s, AvatarDesc& d) {
-    bool any = false;
+    bool any = false, own = false;
     size_t i = 0;
     while (i < s.size()) {
         size_t e = s.find('\n', i);
@@ -361,8 +392,10 @@ bool fromText(const std::string& s, AvatarDesc& d) {
         int v = std::atoi(line.c_str() + eq + 1);
         for (int f = 0; f < F_COUNT; ++f)
             if (k == kKey[f] && v >= 0 && v < fieldCount((Field)f)) { set(d, (Field)f, v); any = true; }
+        if (k == "kit") own = v == 1;
     }
     sanitize(d);
+    setOwnKit(d, own);   // (no kit line: TEAM JERSEY)
     return any;
 }
 
@@ -939,7 +972,7 @@ RigFrame frameOf(const PlayerInput& in, const AvatarDesc& d) {
         // the forearm ends inside the gauntlet's bracer or cuff (RigTuning forearmEnd, carried with the cuff when the
         // tuning tool moves it; the classic lancer's wrist ring, tools/blender/make_props.py)
         const Vec3 fe{side * T.forearmEnd.x, T.forearmEnd.y, T.forearmEnd.z};
-        F.W[k] = in.hand[k].grip.transform(gauntletOf(in.avatar) < 3 ? cuffPose(k == 0).transform(fe) : Vec3{side * 0.004f, -0.042f, 0.105f});
+        F.W[k] = in.hand[k].grip.transform(plateGauntlet(gauntletOf(in.avatar)) ? cuffPose(k == 0).transform(fe) : Vec3{side * 0.004f, -0.042f, 0.105f});
         F.natural[k] = length(K.elbow[k] - K.shoulder[k]) * T.upperLen + length(K.wrist[k] - K.elbow[k]) * T.foreLen;
     }
     return F;
@@ -1222,7 +1255,9 @@ const SwishStyle kSwish[2] = {{11.f, 0.61f, 0.065f, 0.23f, 0.025f, 0.007f, 0.10f
                               {8.f, 0.72f, 0.05f, 0.17f, 0.020f, 0.006f, 0.12f}};      // the kilt
 }  // namespace
 
-int swishKind(const AvatarDesc& d) { return d.lower == 5 ? 0 : d.lower == 6 ? 1 : -1; }
+int swishKind(const AvatarDesc& d) {   // (PELURU LAYERED DRESS: its skirt sways as the tennis skirt does)
+    return d.suit == kSuitDress ? 0 : d.lower == 5 ? 0 : d.lower == 6 ? 1 : -1;
+}
 
 void stepSwish(Swish& s, int kind, float px, float pz, float yaw, double now) {
     auto afresh = [&] {
@@ -1411,7 +1446,8 @@ void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& din, std::v
     add(name, I, false, PART_SKINNED);
     std::snprintf(name, sizeof name, "av_bhead_%s", fk);
     add(name, I, false, PART_SKINNED);
-    if (d.lower >= 1 && d.lower <= 4 && d.suit >= 14)   // VECTOR and NIGHTFORGE: their own shorts
+    if (d.suit == kSuitDress) {}   // PELURU LAYERED DRESS: its skirt in the LOWER BODY's place (nothing under it)
+    else if (d.lower >= 1 && d.lower <= 4 && (d.suit == 14 || d.suit == 15))   // VECTOR and NIGHTFORGE: their own shorts
         { std::snprintf(name, sizeof name, "av_sbottom_%d_%d_%c", d.suit, d.lower, bk); add(name, I, false, PART_SKINNED); }
     else if (d.lower) { std::snprintf(name, sizeof name, "av_bottom_%d_%c", d.lower, bk); add(name, I, false, PART_SKINNED); }
     else { std::snprintf(name, sizeof name, "av_wfade_%c", bk); add(name, I, false, PART_SKINNED); }
@@ -1428,14 +1464,23 @@ void drawList(const Rig& r, const PlayerInput& in, const AvatarDesc& din, std::v
         const uint8_t hf = uint8_t(PART_HAIR | (neonHair(d) ? PART_NEON : 0));
         std::snprintf(name, sizeof name, "av_hair_%d_%c", d.hair, bk);
         add(name, head, false, hf);
-        if (d.hair == 3 || d.hair == 7) {   // PONYTAIL's tail, TOP KNOT's loose ends: parts of their own (they swing)
+        if (d.hair == 3 || d.hair == 7 || d.hair == 9) {   // PONYTAIL's tail, TOP KNOT's ends, HIGH PIGTAILS: parts of their own (they swing)
             std::snprintf(name, sizeof name, "av_hair_%dt_%c", d.hair, bk);
             add(name, head, false, hf);
         }
     }
     // face shields and masks are fitted to each face (the game falls back to the base head's if one is missing)
     if (d.visor) { std::snprintf(name, sizeof name, "av_visor_%d_%s", d.visor, fk); add(name, head, false); }
-    if (d.mask) { std::snprintf(name, sizeof name, "av_mask_%d_%s", d.mask, fk); add(name, head, false); }
+    // (the BANDANA's point below the chin swings, its cloth drawn as hair is: av_mask_4_*.swing)
+    if (d.mask) { std::snprintf(name, sizeof name, "av_mask_%d_%s", d.mask, fk); add(name, head, false, d.mask == 4 ? PART_HAIR : 0); }
+    if (d.mask == 4) {   // BANDANA: its two tails, a part of their own (one per body, every face): they swing as hair does
+        std::snprintf(name, sizeof name, "av_mask_4t_%c", bk);
+        add(name, head, false, PART_HAIR);
+    }
+    if (d.suit == kSuitDress) {   // PELURU LAYERED DRESS: its hoop earrings, which swing as hair does
+        std::snprintf(name, sizeof name, "av_top_%de_%c", kSuitDress, bk);
+        add(name, head, false, PART_HAIR);
+    }
 }
 
 }  // namespace avatar

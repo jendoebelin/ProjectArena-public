@@ -33,9 +33,10 @@ PROMO_TAGLINE = 'THROW. BLOCK. DODGE.'
 # the real screenshots, in the listing's order (file, how it was made)
 SCREENSHOTS = [
     ('20261104-225212_a.jpg', 'the 1-v-1 rally: the ball coming at you'),
-    ('20261107-002041_d.jpg', 'FIREBALL BLITZ for four, flags flying'),
+    # (owner, 2026-11-18: the FIREBALL BLITZ shots showed the flag-on-fireball glitch: replaced)
+    ('blocked_A_39.0.jpg', 'a TRAINING ball coming at your shield'),
     ('selfie_00558.png', 'a spectator\'s SELFIE: the player behind, shield up'),
-    ('20261107-003731_f.jpg', 'a four-player room through the glass'),
+    ('20261104-225212_b.jpg', 'a match in the SQUARE, the score over the far end'),
     # (owner, 2026-11-07: ball shots are fine; mind how the bot stands, or crop it out. Here the coach stands far
     # behind the ball; the crop drops the training line at the top)
     ('blocked_A_18.4.jpg', 'a charged ball in your gauntlet', (180, 140, 1851, 1080)),

@@ -2,10 +2,12 @@
 
 Human, waist-up or (LOWER BODY) down to mid-thigh; never feet. Built from smooth signed-distance shapes and lofts:
   av_head, av_neck              base head (skin, eyes, ears, brows) and the neck bone
-  av_hair_1..8                  BUZZ CUT, SWEPT, PONYTAIL, MOHAWK, SPIKES, BOB, TOP KNOT, TOUSLED
+  av_hair_1..10                 BUZZ CUT, SWEPT, PONYTAIL, MOHAWK, SPIKES, BOB, TOP KNOT, TOUSLED, HIGH PIGTAILS,
+                                DREADLOCKS (av_hair_3t, 7t, 9t: the swinging tail, ends and pigtails)
   av_gear_1..6                  GRID HELMET, RACER HELMET, HOOD, CREST HELMET, HEADPHONES, CAP
   av_visor_1..7                 BAND VISOR, FULL SHIELD, SHADES, GOGGLES, HEADSET, HALO, SLIT VISOR
   av_mask_1..5                  MOUTH GUARD, CYBER JAW, BREATHER, BANDANA, FACEPLATE
+  av_mask_4t                    (--head m|f) the BANDANA's two tails: a part of their own, the game swings them
   av_torso_N / av_torso_Nc      suit N torso, straight / curved build (N = 0..9, see app/src/avatar.cpp)
   av_upper_N, av_fore_N         suit N upper arm and forearm (bone meshes)
   av_waist / av_waist_c         the energy fade where a waist-up body ends (drawn when LOWER BODY = NONE)
@@ -783,6 +785,102 @@ def make_hair(k):
                 w = (0.016 + 0.006 * rng.random()) * np.clip(np.sin(math.pi * np.clip(u * 0.92 + 0.06, 0, 1)), 0, 1) ** 0.6 + 0.0008
                 settle = 1.0 - 0.55 * np.clip((u - 0.75) / 0.25, 0, 1) ** 1.5
                 lock(p, dirs(TH_, EL), (vol + flick) * settle, w, arch=0.0028)
+    elif k == 9:    # HIGH PIGTAILS: combed up to two high ties on the sides, two full tails bouncing from them
+        hair_shell(p, 0.0055, ridges=0.0010)
+        ties = []
+        for s_ in (-1, 1):   # (+1: the right side, +X)
+            th = math.pi / 2 - s_ * math.radians(108)
+            ties.append(project(sd_skull, dirs(np.array(th), np.array(math.radians(38)))[None], 0.013)[0])
+        rng = np.random.default_rng(91)
+        u = np.linspace(0, 1, 12)
+        for kk in range(30):   # locks combed from the hairline up to their side's tie (a parting down the middle)
+            th0 = -math.pi / 2 + 2 * math.pi * (kk + rng.random() * 0.5) / 30
+            tie = ties[1] if math.cos(th0) > 0 else ties[0]
+            e0 = float(hairline(np.array(th0))) + math.radians(3.0)
+            P0 = project(sd_skull, dirs(np.array(th0), np.array(e0))[None], 0.006)[0]
+            path = np.array([P0 + (tie - P0) * f for f in u])
+            D = path - HEAD_C
+            D /= np.linalg.norm(D, axis=-1, keepdims=True)
+            grow = np.clip(u / 0.22, 0, 1) ** 0.7
+            lock(p, D, 0.0035 + 0.0035 * grow + 0.0025 * np.sin(math.pi * u),
+                 ((0.016 + 0.004 * rng.random()) * (1 - 0.6 * u) + 0.003) * (0.35 + 0.65 * grow), arch=0.0016)
+        tails = Part('av_hair_9t')   # its own part: the game swings each tail (uv1 = how far down it, which tail)
+        tails.lines = []
+        p.extra = tails
+        nt = 14
+        t_ = np.linspace(0, 1, nt)
+        for e, (s_, tie) in enumerate(zip((-1, 1), ties)):
+            out = tie - HEAD_C
+            out[2] = 0.0
+            out /= np.linalg.norm(out)
+            # up and out from the tie, then arcing over and falling: a full, bouncy tail just clear of the shoulders
+            line = (tie[None] + out[None] * (0.070 * np.sin(0.5 * math.pi * np.clip(t_ * 1.35, 0, 1)))[:, None]
+                    + np.array([0.0, -1.0, 0.0]) * (0.020 * t_)[:, None]
+                    + np.array([0.0, 0.0, 1.0]) * (0.030 * np.sin(math.pi * np.clip(t_ * 1.7, 0, 1)))[:, None]
+                    + np.array([0.0, 0.0, -1.0]) * (0.165 * t_ ** 1.8)[:, None])
+            tails.lines.append(line)
+            side_ax = np.cross(out, np.array([0.0, 0.0, 1.0]))
+            for kk in range(8):   # the tail: strands round the line, full near the tie, splaying and tapering
+                ang = 2 * math.pi * kk / 8 + rng.random() * 0.3
+                ph = rng.random() * 6.28
+                spread = (0.010 + 0.012 * np.sin(math.pi * np.clip(t_ * 1.15, 0, 1))) * (0.8 + 0.4 * rng.random())
+                offs = (out[None] * np.cos(ang) + side_ax[None] * np.sin(ang)) * spread[:, None]
+                wav = side_ax[None] * (0.004 * np.sin(6.0 * t_ + ph))[:, None]
+                tails.tube('av_hair', line + offs + wav, 0.0120 * (1 - t_) ** 0.7 + 0.0018, segs=6)
+            p.tube('av_secondary', [tie - out * 0.004, tie + out * 0.012], 0.0150, segs=16)   # the tie
+            p.tube('av_trim', [tie + out * 0.0005, tie + out * 0.0035], 0.0156, segs=16)    # a bright band on it
+    elif k == 10:   # DREADLOCKS: smooth locs in two staggered rows over the whole scalp, the front ones swept back, all
+        #               hanging from behind the ears (so none hang in a helmet's face opening), rounded tips, a few beads
+        hair_shell(p, 0.0042, ridges=0.0004)
+        rng = np.random.default_rng(10)
+
+        def spline(P, n):   # a smooth curve through P (Catmull-Rom by length), n points
+            P = np.asarray(P, float)
+            d = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
+            T = np.gradient(P, d, axis=0)
+            s_ = np.linspace(0, d[-1], n)
+            out = []
+            for x in s_:
+                i = min(np.searchsorted(d, x, side='right') - 1, len(P) - 2)
+                h = d[i + 1] - d[i]
+                t = (x - d[i]) / max(h, 1e-9)
+                h00, h10, h01, h11 = 2 * t ** 3 - 3 * t ** 2 + 1, t ** 3 - 2 * t ** 2 + t, -2 * t ** 3 + 3 * t ** 2, t ** 3 - t ** 2
+                out.append(h00 * P[i] + h10 * h * T[i] + h01 * P[i + 1] + h11 * h * T[i + 1])
+            return np.array(out)
+        rows = ((17, 79.0, 0.0090), (21, 63.0, 0.0072))   # (locs, root elevation, offset off the scalp): the upper row lies over
+        for row, (n, e_r, off0) in enumerate(rows):
+            for kk in range(n):
+                th = -math.pi / 2 + 2 * math.pi * (kk + 0.5 * row + rng.uniform(-0.12, 0.12)) / n
+                ph = float(phi_of(th))
+                side = 1.0 if ph >= 0 else -1.0
+                ph_h = side * max(abs(ph), math.radians(82))   # where it hangs: behind the ear or further round
+                m = 7
+                u = np.linspace(0, 1, m)
+                f = u * u * (3 - 2 * u)
+                TH = math.pi / 2 + ph + (ph_h - ph) * f
+                e_line = hairline(np.array(math.pi / 2 + ph_h)) - math.radians(3.0)
+                EL = math.radians(e_r + rng.uniform(-3, 3)) + (e_line - math.radians(e_r)) * u
+                on_head = project(sd_skull, dirs(TH, EL), off0 + 0.0025 * u)
+                H = on_head[-1]
+                out = H - HEAD_C
+                out[2] = 0.0
+                out /= max(np.linalg.norm(out), 1e-6)
+                back = abs(ph_h) / math.pi                                   # 0.46 at the ears .. 1 at the back
+                ln = (0.095 + 0.085 * (back - 0.46) / 0.54) * (0.94 + 0.12 * rng.random())
+                v = np.linspace(0, 1, 6)[1:]
+                hang = (H[None] + out[None] * (0.016 * np.sqrt(v))[:, None]
+                        + np.array([0.0, 0.0, -1.0]) * (ln * v)[:, None])
+                pts = spline(np.vstack([on_head, hang]), 15)
+                s_all = np.linspace(0, 1, len(pts))
+                r0 = 0.0054 + 0.0007 * rng.random()
+                rad = r0 * (1 - 0.18 * s_all) * np.where(s_all > 0.9, np.sqrt(np.clip((1 - s_all) / 0.1, 0.05, 1)), 1.0)
+                p.tube('av_hair', pts, rad, segs=5)
+                if rng.random() < 0.30:   # a bead or a cuff on some
+                    j = int(8 + rng.integers(0, 4))
+                    a_, b_ = pts[j - 1], pts[j]
+                    mat = 'av_trim' if rng.random() < 0.5 else 'av_secondary'
+                    d_ = (b_ - a_) / np.linalg.norm(b_ - a_)
+                    p.tube(mat, [a_, a_ + d_ * (0.010 if mat == 'av_trim' else 0.006)], r0 * 1.32, segs=10)
     return p
 
 
@@ -1199,15 +1297,43 @@ def make_mask(k):
         def kn(b):
             b.sphere('av_cloth', tuple(knot), 0.0100, segs=14, rings=8, scale=(1.35, 0.8, 1.0))
         p.builder(kn)
-        kd = (knot - HEAD_C) / np.linalg.norm(knot - HEAD_C)
-        k_th = math.atan2(kd[1], kd[0])
-        k_el = math.asin(kd[2])
-        u = np.linspace(0, 1, 12)
-        for s_ in (-1, 1):   # two short tails hanging from the knot
-            TH = np.full(12, k_th) + s_ * np.radians(3 + 6 * u)
-            EL = k_el - np.radians(3 + 17 * u)
-            w = (0.0070 + 0.0025 * u) * np.where(u > 0.8, 1 - (u - 0.8) / 0.2 * 0.6, 1.0)
-            lock(p, dirs(TH, EL), 0.0080 + 0.004 * u, w, mat='av_cloth', arch=0.0012, nx=4)
+        if HEAD_KEY:   # the game's heads: two long tails of their own part (av_mask_4t): the game swings them
+            ends = Part('av_mask_4t')   # (uv1 = how far down its tail, which tail; drawn for every face of the body)
+            ends.lines = []
+            p.extra = ends
+            u = np.linspace(0, 1, 16)
+            neck = 0.85 if HEAD_KEY[0] == 'f' else 1.0   # (the feminine neck is shorter: the tails clear the collar)
+            for e, (s_, ln, tw) in enumerate(((-1, 0.112 * neck, 0.35), (1, 0.096 * neck, -0.25))):   # one a little longer
+                C = (knot[None] + np.array([0.0, 0.0, -1.0]) * (ln * u)[:, None]                     # down the nape
+                     + np.array([0.0, -1.0, 0.0]) * (0.004 + 0.016 * u + 0.006 * np.sin(math.pi * u))[:, None]   # off it
+                     + np.array([s_, 0.0, 0.0]) * (0.004 + 0.020 * u ** 1.3)[:, None])               # fanning apart
+                ends.lines.append(C)
+                T = np.gradient(C, axis=0)
+                T /= np.linalg.norm(T, axis=-1, keepdims=True)
+                B = np.cross(T, np.array([0.0, -1.0, 0.0]))   # across the tail, turning a little down its length
+                B /= np.linalg.norm(B, axis=-1, keepdims=True)
+                Nn = np.cross(B, T)
+                a_ = tw * u
+                B = B * np.cos(a_)[:, None] + Nn * np.sin(a_)[:, None]
+                Nn = np.cross(B, T)
+                w = (0.0105 + 0.0040 * u) * np.where(u > 0.78, 1 - (u - 0.78) / 0.22 * 0.88, 1.0)   # a cut point
+                xs = np.linspace(-1, 1, 5)
+                P = (C[:, None] + B[:, None] * (w[:, None] * xs[None])[..., None]
+                     + Nn[:, None] * (0.0014 * (1 - xs[None] ** 2) * np.ones((len(u), 1)))[..., None])
+                P[:, :, 2] -= (0.010 * s_ * xs[None] * np.clip((u[:, None] - 0.78) / 0.22, 0, 1))   # the cut slants
+                flip = float(np.mean(np.sum(np.cross(np.gradient(P, axis=1), np.gradient(P, axis=0)) * Nn[:, None], -1))) < 0
+                mats = np.where((np.arange(len(u) - 1) >= len(u) - 3)[:, None], 'av_cloth_dk', 'av_cloth')
+                ends.grid(np.broadcast_to(mats, (len(u) - 1, 4)).astype(object), P, flip=flip)
+        else:
+            kd = (knot - HEAD_C) / np.linalg.norm(knot - HEAD_C)
+            k_th = math.atan2(kd[1], kd[0])
+            k_el = math.asin(kd[2])
+            u = np.linspace(0, 1, 12)
+            for s_ in (-1, 1):   # two short tails hanging from the knot
+                TH = np.full(12, k_th) + s_ * np.radians(3 + 6 * u)
+                EL = k_el - np.radians(3 + 17 * u)
+                w = (0.0070 + 0.0025 * u) * np.where(u > 0.8, 1 - (u - 0.8) / 0.2 * 0.6, 1.0)
+                lock(p, dirs(TH, EL), 0.0080 + 0.004 * u, w, mat='av_cloth', arch=0.0012, nx=4)
         PROJ[0] = keep
     elif k == 5:    # FACEPLATE: smooth full-face plate with glowing eye slits
         A = 78.0
@@ -1791,11 +1917,11 @@ def main():
         return not only or any(name.startswith(o) for o in only)
     if HEAD_KEY:   # head parts for one MPFB head: av_hair_K_<b>, av_gear_K_<b>, av_visor_K_<b>, av_mask_K_<b>
         PROJ[0] = 'tight'
-        for k in range(1, 9):
+        for k in range(1, 11):
             if want('av_hair_%d' % k):
                 parts.append(make_hair(k))
                 if getattr(parts[-1], 'extra', None) is not None:
-                    parts.append(parts[-1].extra)   # the ponytail's tail, the top knot's ends: they swing
+                    parts.append(parts[-1].extra)   # the ponytail's tail, the top knot's ends, the pigtails: they swing
         PROJ[0] = 'env'
         for k in range(1, 7):
             if want('av_gear_%d' % k):
@@ -1808,6 +1934,8 @@ def main():
         for k in range(1, 6):
             if want('av_mask_%d' % k):
                 parts.append(make_mask(k))
+                if getattr(parts[-1], 'extra', None) is not None and len(HEAD_KEY) == 1:
+                    parts.append(parts[-1].extra)   # the bandana's tails: they swing (one per body, for every face)
         for p_ in parts:
             p_.name += '_' + HEAD_KEY
         export(parts, out)

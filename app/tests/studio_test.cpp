@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
     CHECK(studio::prettyEvent("ShieldBreak") == "SHIELD BREAK" && studio::prettyEvent("HitPlayerSelf") == "HIT PLAYER SELF", "an event's name, spaced");
     CHECK(studio::prettyName("ShieldBreak__glass_crack.wav") == "GLASS CRACK" && studio::eventOf("ShieldBreak__glass_crack.wav") == "ShieldBreak",
           "a sound's name and its event, from its file name");
-    CHECK(studio::slotName("ShieldBreak") == "S12 SHIELD BREAK" && studio::codeOf("TargetHit") == "S33" &&
+    CHECK(studio::slotName("ShieldBreak") == "S12 SHIELD BREAK" && studio::codeOf("TargetHit") == "S33" && studio::slotName("KnucklePunch") == "S34 HARD PUNCH" &&
           studio::slotName("HitPlayerOpponent") == "S14 YOU SCORED", "each event's slot: the asset catalog's code and name");
     std::printf("[MINE: your own .wav files]\n");
     {
@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
         std::vector<studio::Sound> all = m;
         for (const studio::Sound& o : studio::officialSounds()) all.push_back(o);
         const auto c = studio::choicesFor("ShieldBreak", all);
-        bool ord = c.size() == 4 + 1 + 32 && c[0] == -1 && all[c[1]].mine && all[c[1]].event == "ShieldBreak" && all[c[2]].mine &&
+        bool ord = c.size() == 4 + 1 + 33 && c[0] == -1 && all[c[1]].mine && all[c[1]].event == "ShieldBreak" && all[c[2]].mine &&
                    all[c[2]].event == "ShieldBreak" && all[c[3]].mine && all[c[3]].event.empty() && all[c[4]].mine && all[c[4]].event == "SpawnRise" &&
                    all[c[5]].official;
         CHECK(ord, "a slot's choices: OFFICIAL, yours for it, yours without a slot, yours for other slots, then the game's own");
@@ -92,12 +92,12 @@ int main(int argc, char** argv) {
         std::vector<studio::Sound> all = got;
         for (const studio::Sound& o : studio::officialSounds()) all.push_back(o);
         const auto c2 = studio::choicesFor("ShieldBreak", all);
-        bool ok2 = c2.size() == 5 + 32 && c2[0] == -1;
+        bool ok2 = c2.size() == 5 + 33 && c2[0] == -1;
         for (size_t i = 1; i < c2.size(); ++i) ok2 = ok2 && all[c2[i]].official == (i >= 5) && all[c2[i]].event != (all[c2[i]].official ? "ShieldBreak" : "");
-        CHECK(ok2 && studio::officialSounds().size() == 33 && all[c2[5]].name == "S01 BALL APPEARS",
-              "the game's own sounds of the other 32 slots come last, in the catalog's order");
+        CHECK(ok2 && studio::officialSounds().size() == 34 && all[c2[5]].name == "S01 BALL APPEARS",
+              "the game's own sounds of the other 33 slots come last, in the catalog's order");
         const auto c3 = studio::choicesFor("Overtime", studio::officialSounds());
-        CHECK(c3.size() == 33 && c3[0] == -1, "with an empty library, every slot can still try the game's 32 other sounds");
+        CHECK(c3.size() == 34 && c3[0] == -1, "with an empty library, every slot can still try the game's 33 other sounds");
     }
     // a sound removed on the server goes from the headset
     std::string gone = serverLib + "/ShieldBlock__thud_test.wav";
