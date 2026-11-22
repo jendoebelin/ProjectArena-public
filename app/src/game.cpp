@@ -90,18 +90,30 @@ static Vec3 bounceWithFriction(Ball& b, const Vec3& n, const Vec3& surfaceVel, f
     if (s > maxSpin) b.spin *= maxSpin / s;
     return b.vel + n * jn + jt;
 }
-void Game::deflectMoving(Ball& b, const Vec3& n, const Vec3& vs, int deflector, float assistDeg, const Vec3& from,
-                         bool punch, float contactRadius) {
+Vec3 Game::deflectVelocity(Ball& b, const Vec3& n, const Vec3& vs, bool punch, float contactRadius) const {
     Vec3 out;
+    // (KNUCKLE RETURNS: PUNCH, 0.3.25: less of the incoming speed back, and the fist's own speed along the guard's face
+    // counting more; a shield's block as ever)
+    const bool punchFeel = punch && tun.punchReturnsNow();
+    const float e = punchFeel ? tun.punchRestitution : tun.deflectRestitution;
     if (contactRadius > 0.f) {   // (WALL GRIP: the guard grips it; its spin as the contact leaves it)
-        out = bounceWithFriction(b, n, vs, contactRadius, tun.deflectRestitution, tun.knuckleFriction, tun.maxSpin);
+        out = bounceWithFriction(b, n, vs, contactRadius, e, tun.knuckleFriction, tun.maxSpin);
     } else {
         Vec3 rel = b.vel - vs;
         float vn = dot(rel, n);
-        if (vn < 0) rel = rel - n * ((1.f + tun.deflectRestitution) * vn);
+        if (vn < 0) rel = rel - n * ((1.f + e) * vn);
         out = rel + vs;
         b.spin *= 0.5f;
     }
+    if (punchFeel) {
+        const float into = dot(vs, n);   // (the fist driven out through the ball: its speed that way)
+        if (into > 0.f) out += n * (tun.punchGain * into);
+    }
+    return out;
+}
+void Game::deflectMoving(Ball& b, const Vec3& n, const Vec3& vs, int deflector, float assistDeg, const Vec3& from,
+                         bool punch, float contactRadius) {
+    Vec3 out = deflectVelocity(b, n, vs, punch, contactRadius);
     if (punch) {
         // a knuckle-guard hit is a punch: follow the fist's motion and always send the ball toward the opponent's end
         float hs = length(vs);
@@ -237,6 +249,8 @@ Vec3 Game::assistDir(int p, const Vec3& from, const Vec3& dir) const {
 float Game::throwSpeedFromHandSpeed(float s, int thrower) const {
     // lerp(minThrown, maxThrown + strikes * SpeedIncreasePerStrike, t)
     float t = clampf((s - tun.minInputSpeed) / std::max(1e-3f, tun.maxInputSpeed - tun.minInputSpeed), 0.f, 1.f);
+    // (THROW POWER: NATURAL, 0.3.25: a person's throw on a curve, light throws slow; a bot's arm is its level, as ever)
+    if (tun.naturalThrowNow() && thrower >= 0 && thrower < kMaxPlayers && !pl[thrower].isBot) t = std::pow(t, tun.throwCurve);
     int strikes = strikesHeld(thrower);
     return lerpf(tun.projectileMinSpeed, tun.projectileMaxSpeed + strikes * tun.perStrike(), t);
 }

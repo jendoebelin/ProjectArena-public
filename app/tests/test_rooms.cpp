@@ -664,8 +664,15 @@ int main() {
                 const Ball& sb = seen.pl[2].ball;
                 CHECK(read && std::fabs(seen.ahead.snapNow - 12.5f) < 1e-3f && std::fabs(sb.spin.y - 3.f) < 0.01f && sb.bounces == 2 && sb.fouled,
                       "four players: the snapshot carries each ball's spin, bounces and foul, and the host's clock (0.3.24)");
-                CHECK(Net::snapshotInto(host, old, 4 * 7 + 4) && old.np == 4 && old.ahead.snapNow < 0 && old.pl[2].ball.spin.y == 0.f &&
+                CHECK(Net::snapshotInto(host, old, 4 * 7 + 4 + 1) && old.np == 4 && old.ahead.snapNow < 0 && old.pl[2].ball.spin.y == 0.f &&
                       old.tun.palmHold == seen.tun.palmHold, "... a host before 0.3.24 sends none: everything else read as before");
+                // (0.3.25: THROW POWER and KNUCKLE RETURNS, the last byte in FOUR CORNERS; a 0.3.24 host sends none: REGULATION)
+                host.tun.throwPower = 1; host.tun.knuckleReturns = 1;
+                Game feel, feelOld;
+                CHECK(Net::snapshotInto(host, feel) && feel.tun.naturalThrowNow() && feel.tun.punchReturnsNow() &&
+                          Net::snapshotInto(host, feelOld, 1) && feelOld.tun.feelStandard() && feelOld.ahead.snapNow >= 0.f,
+                      "FOUR CORNERS: THROW POWER and KNUCKLE RETURNS reach the players (0.3.25); a 0.3.24 host's: REGULATION, the rest as before");
+                host.tun.throwPower = host.tun.knuckleReturns = 0;
                 host.tun.expRoom = ROOM_BLITZ;
                 Game blitz;
                 CHECK(Net::snapshotInto(host, blitz) && blitz.pl[2].ball.spin.y == 0.f && blitz.ahead.fireKnown,
@@ -908,6 +915,19 @@ int main() {
                   H.game.tun.wallGrip,
               "... a player on 0.3.21 in the match: STANDARD, for the host too (its choice kept for the next match)");
         H.game.tun.wallsLively = H.game.tun.wallGrip = false; H.game.tun.bankAssist = 0;
+        H.game.tun.matchVersion = Tunables::kVerAll;
+        pump(hs, 0.5);
+        // THROW POWER and KNUCKLE RETURNS (0.3.25): the host's reach the players, so their look-ahead throws and punches as
+        // the host will; a player on 0.3.24 in the match: REGULATION
+        H.game.tun.throwPower = 1; H.game.tun.knuckleReturns = 1;
+        pump(hs, 0.5);
+        CHECK(B.game.tun.naturalThrowNow() && B.game.tun.punchReturnsNow(),
+              "THROW POWER: NATURAL and KNUCKLE RETURNS: PUNCH: the host's are the players' too");
+        H.game.tun.matchVersion = 3024;
+        pump(hs, 0.5);
+        CHECK(B.game.tun.throwPower == 0 && B.game.tun.knuckleReturns == 0 && H.game.tun.feelStandard() && H.game.tun.throwPower == 1,
+              "... a player on 0.3.24 in the match: REGULATION, for the host too (its choice kept for the next match)");
+        H.game.tun.throwPower = H.game.tun.knuckleReturns = 0;
         H.game.tun.matchVersion = Tunables::kVerAll;
         pump(hs, 0.5);
         pump(hs, 2.0);   // (the shot clock has been running a while)

@@ -1,12 +1,16 @@
 # Project Arena privacy policy
 
-_Last updated: 21 November 2026. Contact: vrsportsfan@gmail.com._
+_Last updated: 22 November 2026. Contact: vrsportsfan@gmail.com._
 
 Project Arena is a free, open-source VR game. This policy explains what the game and the community servers do with
 information about you.
 
 **Who is responsible for your data:** Jennifer Doebelin, United States, who runs Project Arena and its official
-server. Contact: vrsportsfan@gmail.com.
+server under the studio name CrossGenGaming. Contact: vrsportsfan@gmail.com.
+
+**Where it is kept:** the official server is in a data centre in the United States (Oracle Cloud), and its daily
+encrypted backups are on the server operator's computer, also in the United States. What the game sends the server is
+stored and processed there, wherever you play from.
 
 ## What stays on your device
 

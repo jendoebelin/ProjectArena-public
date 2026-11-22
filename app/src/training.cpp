@@ -346,6 +346,7 @@ void lessonOptions(Tunables& t, const Tunables& own, bool custom) {
     t.strikeSpeed = o.strikeSpeed; t.maiden = o.maiden; t.aimAssist = o.aimAssist; t.strikeZone = o.strikeZone;
     t.ballGrowth = o.ballGrowth; t.shieldSize = o.shieldSize;
     t.wallsLively = o.wallsLively; t.wallGrip = o.wallGrip; t.bankAssist = o.bankAssist;   // (BOUNCES, 0.3.22)
+    t.throwPower = o.throwPower; t.knuckleReturns = o.knuckleReturns;   // (THROW POWER, KNUCKLE RETURNS, 0.3.25)
 }
 
 void Trainer::setRules(Game& g, bool atFar) const {

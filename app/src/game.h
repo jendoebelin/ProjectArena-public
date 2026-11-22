@@ -105,7 +105,8 @@ struct Tunables {
                           foulMove() == 0.f &&                       // (and the FOUL LINE moved)
                           !maidenNow() && aimAssistNow() == (advanced ? 1 : 2) &&   // (ROOMS AND THEIR OPTIONS)
                           strikeZoneNow() == 1 && ballGrowthNow() == 3 && (!advanced || roundsToWinNow() == 2) &&
-                          shieldSizeNow() == 0 && bouncesStandard();   // (BOUNCES, 0.3.22)
+                          shieldSizeNow() == 0 && bouncesStandard() &&   // (BOUNCES, 0.3.22)
+                          feelStandard();                                // (THROW POWER, KNUCKLE RETURNS, 0.3.25)
         return std_ ? 0 : 2;
     }
 
@@ -241,6 +242,26 @@ struct Tunables {
     int bankAssistNow() const { return bouncesNow() ? std::max(0, std::min(3, bankAssist)) : 0; }
     float bankAssistDeg() const { static const float k[4] = {0.f, 0.8f, 1.6f, 2.4f}; return k[bankAssistNow()]; }
     bool bouncesStandard() const { return !wallsLivelyNow() && !wallGripNow() && bankAssistNow() == 0; }
+    // THROW AND PUNCH FEEL (0.3.25; a player's report, 2026-11-22: a light throw "without any effort" comes out much
+    // faster than it should, and a knuckle return depends more on how fast the ball came in than on the punch; the
+    // owner: two more of the host's options, on BOUNCES' page; the SQUARE, DIAMOND and FOUR CORNERS (the owner, the same
+    // day: "Why not four corner"); not FIREBALL BLITZ, whose throws are fireballs), each through FAIR MATCHES.
+    // THROW POWER: 0 REGULATION (the ball 2.15 times the hand's speed: maxInputSpeed to projectileMaxSpeed, straight),
+    //   1 NATURAL (on a curve, (hand / maxInputSpeed) ^ throwCurve of the full speed: a light throw slow, a full throw
+    //   as fast as ever). People's throws only: a bot's arm is its level, so the bots throw as they always have.
+    // KNUCKLE RETURNS: 0 REGULATION (the ball bounces off the moving fist: deflectRestitution of its speed into the guard
+    //   back, the fist's speed along the guard's face added), 1 PUNCH (punchRestitution of it back, and the fist's speed
+    //   punchGain more on top: a still fist drops it back softly, a real punch sends it hard whatever came in)
+    int throwPower = 0, knuckleReturns = 0;
+    static constexpr int kVerFeel = 3025;
+    // (a ball coming in at 10 m/s: a still fist sends it back at 4.5 (REGULATION 9), a 3 m/s punch at about 12 (14, the
+    // most); at 5 m/s: 2.3 still (4.5), 9.6 punched (10.2). A hand at 2 m/s throws 2.1 m/s NATURAL (4.3), at 5 m/s 9.2 (10.8))
+    float throwCurve = 1.6f, punchRestitution = 0.45f, punchGain = 1.0f;
+    bool feelRoom() const { return !experimental || expRoom == ROOM_DIAMOND || expRoom == ROOM_CORNERS; }
+    bool feelNow() const { return feelRoom() && matchVersion >= kVerFeel; }
+    bool naturalThrowNow() const { return feelNow() && throwPower == 1; }
+    bool punchReturnsNow() const { return feelNow() && knuckleReturns == 1; }
+    bool feelStandard() const { return !naturalThrowNow() && !punchReturnsNow(); }
     float sideWallElasticity = 0.97f, bankFriction = 0.10f, knuckleFriction = 0.14f, bankTurnRate = 24.f;
     float shieldScale() const { return 1.f + 0.25f * (float)shieldSizeNow(); }
     Vec3 shieldHalfNow() const { const float s = shieldScale(); return {shieldHalfExtents.x * s, shieldHalfExtents.y, shieldHalfExtents.z * s}; }
@@ -828,6 +849,9 @@ public:
     bool tryBlock(Ball& b, int ball, int q, int hh, int pass, const Vec3& from, const Vec3& to, float r);   // q's hand hh: shield (pass 0) or knuckle guard (pass 1)
     Vec3 chestPoint(int p) const;
     float throwSpeedFromHandSpeed(float handSpeed, int thrower) const;
+    // a guard's bounce (n: its face, toward the ball; surfaceVel: its motion; punch: a knuckle guard's), before a punch's
+    // aim and the speed cap (deflectMoving); public for tests (KNUCKLE RETURNS)
+    Vec3 deflectVelocity(Ball& b, const Vec3& n, const Vec3& surfaceVel, bool punch, float contactRadius) const;
     // public for tests; ball: whose ball did it; by: who earns it (four players: their ball grows)
     void addStrike(int againstPlayer, const Vec3& where, int ball = -1, int by = -1);
     Vec3 handVelocity(int p, int h, float now) const;

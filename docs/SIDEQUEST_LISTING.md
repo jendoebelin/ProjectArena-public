@@ -21,22 +21,22 @@ SideQuest installs the GitHub build, so its release doesn't depend on Meta's rev
   throw, curve, and punch energy balls in fast-paced competitive matches.
 - **Search tags** (unchanged): multiplayer, fitness, vr_sports, cross_platform.
 
-## Description (2026-11-08; the earlier text left out the modes added since and ended "currently in active development"; 2026-11-19, live: the SQUARE and DIAMOND lines without Basic, Advanced or EXPERIMENTAL)
+## Description (2026-11-08; the earlier text left out the modes added since and ended "currently in active development"; 2026-11-19, live: the SQUARE and DIAMOND lines without Basic, Advanced or EXPERIMENTAL; 2026-11-21, for 0.3.24: FIREBALL BLITZ in teams, the ball heard in flight, NEW BOT, lasting mutes, MY LOOKS, the country kit, twelve camera views, The Crowd's four players and notifications, and no crowd noise in the arena any more)
 
 ```
 Project Arena is a free, open-source VR court sport for Meta Quest and PC VR built around fast reactions, physical movement, and competitive play.
 
-Step into a neon glass arena and face another player across the court. Throw energy balls with speed and precision, put curve on your shots, block incoming attacks, punch balls back across the arena, and outplay your opponent through positioning, timing, and reflexes. It's a real workout: you'll be ducking, leaning and sidestepping from the first point.
+Step into a neon glass arena and face another player across the court. Throw energy balls with speed and precision, put curve on your shots, block incoming attacks, punch balls back across the arena, and outplay your opponent through positioning, timing, and reflexes. Every ball that can hurt you can be heard as it flies at you, on your left or your right. It's a real workout: you'll be ducking, leaning and sidestepping from the first point.
 
-Play against bots from ROOKIE to UNBEATABLE, or against other people. Multiplayer works on your local network or online through the community server, with Quest and PC VR players in the same rooms, waiting areas, player queues, voice chat, and spectating.
+Play against bots from ROOKIE to UNBEATABLE, with a new bot of its own look and fighting stance every match, or against other people. Multiplayer works on your local network or online through the community server, with Quest and PC VR players in the same rooms, waiting areas, player queues, voice chat with mutes that last, and spectating.
 
 ## GAME MODES
 
 - The SQUARE: the classic 1-v-1 court, a timed match or rounds
-- FIREBALL BLITZ: up to four players, bouncing fireballs, health bars, last one standing
+- FIREBALL BLITZ: up to four players, bouncing fireballs, health bars, free-for-all, 2 v 2 or 3 v 1
 - FOUR CORNERS: free-for-all, 2 v 2 or 3 v 1
 - DIAMOND: the court rolled 45 degrees
-- TRAINING: throwing, blocking and dodging lessons with worldwide leaderboards
+- TRAINING: throwing, blocking and dodging lessons with worldwide leaderboards, and your own bests in the lobby
 - SOUND STUDIO: try the community's sounds, vote on them, or play your own
 
 ## BUILD YOUR PLAYER
@@ -53,11 +53,13 @@ Create your own arena identity with an avatar system featuring two body types an
 
 Choose between different plate gauntlets, including Striker, Titan, and Phantom, or use the classic controller-glove style.
 
+Save up to three complete looks of your own and switch between them.
+
 ## REPRESENT YOUR COUNTRY
 
 Project Arena includes team presets for 202 countries.
 
-Choose a country and your player receives a matching team kit with the national flag printed on the jersey. Your side of the arena also changes with you: your court end, strike zone, energy balls, and arena flags take on your country's colors.
+Choose a country and your player receives a matching team kit with the national flag printed on the jersey, or keeps your own outfit in your country's team colors. Your side of the arena also changes with you: your court end, strike zone, energy balls, and arena flags take on your country's colors.
 
 This makes international matches immediately recognizable both to the players and to spectators.
 
@@ -82,7 +84,7 @@ Project Arena was designed not only for the people playing, but also for people 
 
 The PC version can launch without a VR headset as a dedicated spectator system. It can automatically locate a live match and provide multiple camera views, including:
 
-- Seven selectable cameras
+- Twelve camera views, three of them following the action (TRACKING, BALL CAM and UNDER FIRE)
 - Automatic camera switching
 - Free camera movement
 - A separate control window that stays off the broadcast
@@ -108,10 +110,11 @@ They can see:
 - Catches
 - Top speed
 - Player career statistics
+- All four players in FOUR CORNERS and FIREBALL BLITZ
 
-Fans can cheer for either side, wave flags, and predict who will score next.
+Fans can cheer for either side, wave flags, and predict who will score next. They can also tap the bell to get a notification on their phone or computer when someone hosts an arena or a match starts.
 
-Those reactions are reflected back inside the VR arena. Crowd noise grows as spectators cheer, arena lighting reacts to bursts of excitement, flags appear in the stands, and visual cheer effects rise from the crowd. Players and spectators can see and hear the audience becoming part of the match.
+Those reactions are reflected back inside the VR arena. Arena lighting flares with bursts of excitement, flags wave in the stands, and visual cheer effects rise from the crowd. Players and spectators can see the audience becoming part of the match.
 
 ## BUILT FOR VR FROM THE GROUND UP
 

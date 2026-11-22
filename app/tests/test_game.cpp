@@ -2507,6 +2507,58 @@ int main(int argc, char** argv) {
             for (int bits = 0; bits <= BALL_FEEL_ALL; ++bits) { f.ballFeel = bits; same &= f.statsMode() == std0; }
             CHECK(same, "BALL FEEL: the standard ball is glow core, true size, visible spin, heavy; any ball feel leaves the stats as they are");
         }
+        {   // THROW AND PUNCH FEEL (0.3.25; a player's report, the owner's options): THROW POWER and KNUCKLE RETURNS
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.pl[1].isBot = true;
+            const float reg2 = g.throwSpeedFromHandSpeed(2.f, 0), reg5 = g.throwSpeedFromHandSpeed(5.f, 0);
+            g.tun.throwPower = 1;
+            const float nat2 = g.throwSpeedFromHandSpeed(2.f, 0), nat5 = g.throwSpeedFromHandSpeed(5.f, 0);
+            const float natFull = g.throwSpeedFromHandSpeed(g.tun.maxInputSpeed, 0), bot2 = g.throwSpeedFromHandSpeed(2.f, 1);
+            g.tun.matchVersion = 3024;
+            const float old2 = g.throwSpeedFromHandSpeed(2.f, 0);
+            std::printf("       (a hand at 2 m/s throws %.1f m/s REGULATION, %.1f NATURAL; at 5 m/s %.1f and %.1f; a full throw NATURAL %.1f)\n",
+                        reg2, nat2, reg5, nat5, natFull);
+            CHECK(std::fabs(reg2 - 4.31f) < 0.02f && std::fabs(nat2 - 2.12f) < 0.03f && std::fabs(nat5 - 9.2f) < 0.05f &&
+                  std::fabs(natFull - g.tun.projectileMaxSpeed) < 1e-3f,
+                  "THROW POWER: NATURAL: a light throw slow (2 m/s hand: 2.1 m/s, not 4.3), a full throw as fast as ever");
+            CHECK(std::fabs(bot2 - reg2) < 1e-4f && std::fabs(old2 - reg2) < 1e-4f,
+                  "THROW POWER: a bot throws as ever; with a 0.3.24 player in the match, REGULATION");
+            // a knuckle guard facing +x, a ball coming in at 10 m/s: still, and punched out at 3 m/s
+            auto ret = [&](int mode, float fist, float speedIn) {
+                Game k = g;
+                k.tun.matchVersion = Tunables::kVerAll;
+                k.tun.knuckleReturns = mode;
+                Ball b; b.vel = {-speedIn, 0, 0};
+                return k.deflectVelocity(b, {1, 0, 0}, {fist, 0, 0}, true, 0.f).x;
+            };
+            const float regStill = ret(0, 0, 10), punStill = ret(1, 0, 10), regHit = ret(0, 3, 10), punHit = ret(1, 3, 10);
+            const float punSlow = ret(1, 3, 5), regSlow = ret(0, 3, 5);
+            std::printf("       (a ball at 10 m/s on a knuckle guard: still REGULATION %.2f, PUNCH %.2f; punched at 3 m/s %.2f and %.2f; "
+                        "a 5 m/s ball punched %.2f and %.2f)\n", regStill, punStill, regHit, punHit, regSlow, punSlow);
+            CHECK(std::fabs(regStill - 9.f) < 1e-3f && std::fabs(regHit - 14.7f) < 1e-3f,
+                  "KNUCKLE RETURNS: REGULATION as before: 90% of the incoming speed back, the fist's added");
+            CHECK(std::fabs(punStill - 4.5f) < 1e-3f && std::fabs(punHit - 11.85f) < 1e-3f && std::fabs(punSlow - 9.6f) < 1e-3f &&
+                      punHit - punStill > regHit - regStill,
+                  "KNUCKLE RETURNS: PUNCH: a still fist drops it back softly (4.5 m/s of 10), a punch counts for more");
+            Ball sb; sb.vel = {-10, 0, 0};
+            Game k = g; k.tun.matchVersion = Tunables::kVerAll; k.tun.knuckleReturns = 1;
+            const float shield = k.deflectVelocity(sb, {1, 0, 0}, {0, 0, 0}, false, 0.f).x;
+            CHECK(std::fabs(shield - 9.f) < 1e-3f, "KNUCKLE RETURNS: PUNCH leaves a shield's block as it is");
+            // FAIR MATCHES, the rooms, the stats
+            Tunables f; f.throwPower = 1;
+            const int natMode = f.statsMode();
+            f.throwPower = 0; f.knuckleReturns = 1;
+            const int punMode = f.statsMode();
+            Tunables c4; c4.experimental = true; c4.expRoom = ROOM_CORNERS; c4.throwPower = 1; c4.knuckleReturns = 1;
+            Tunables bz = c4; bz.expRoom = ROOM_BLITZ;
+            Tunables dm = c4; dm.expRoom = ROOM_DIAMOND;
+            Tunables old = f; old.matchVersion = 3024;
+            CHECK(natMode == 2 && punMode == 2 && Tunables().statsMode() == 0 && Tunables().feelStandard(),
+                  "THROW POWER and KNUCKLE RETURNS: either makes the match custom in the stats; REGULATION by default");
+            CHECK(c4.naturalThrowNow() && c4.punchReturnsNow() && dm.naturalThrowNow() && !bz.naturalThrowNow() &&
+                      !bz.punchReturnsNow() && !old.punchReturnsNow(),
+                  "THROW POWER and KNUCKLE RETURNS: the SQUARE, DIAMOND and FOUR CORNERS, not FIREBALL BLITZ; a 0.3.24 player in the match: REGULATION");
+        }
         {   // BOUNCES (0.3.22; pull request #26's ideas, as the host's options): a ball served at 10 m/s, 30 degrees into the
             // +z side wall, no spin; its speed and spin after that bounce
             auto bank = [&](bool lively, bool grip, int version, float& speed, float& spin, float& outDeg) {

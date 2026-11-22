@@ -784,6 +784,7 @@ struct App {
     bool roomBallPage = false;     // ... its four switches, a page of the room's own
     bool optWallsLively = false, optWallGrip = false;   // BOUNCES (0.3.22): WALLS: LIVELY, WALL GRIP
     int optBankAssist = 0;         // ... BANK ASSIST: 0 OFF, 1 LOW, 2 MEDIUM, 3 HIGH
+    int optThrowPower = 0, optKnuckleReturns = 0;   // (0.3.25, on the same page) THROW POWER: NATURAL, KNUCKLE RETURNS: PUNCH
     bool roomBouncePage = false;   // ... its page
     std::string roundsBuf;
     bool fairTold = false;         // FAIR MATCHES: this match's countdown has told the host what plays at regulation
@@ -1873,7 +1874,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.24";   // (0.3.20: the Meta competition build)
+static const char* kAppVersion = "0.3.25";   // (0.3.20: the Meta competition build)
 // A scrolling texture's offset, kept in [0, 1) (the textures repeat, so it looks the same). The headset's fragment
 // shader works at medium precision (16-bit floats): an offset that grows with the time played lost its fractions after
 // some minutes, and the ball's and fireballs' plasma broke into big square blocks (a tester's report, 2026-11-02).
@@ -3014,7 +3015,7 @@ enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, B
                      Credits, CreditsBack, UpdateStoreGet, UpdateStoreInstall, Defaults, CtlPage, CtlAdj,
                      BallPage, BallCore, BallTrue, BallSpin, BallWeight, BallBack, BtnPage, BtnSlot, BtnSticks, BtnPreset,
                      RoomPick, OptAim, OptZone, OptGrowth, OptRounds, RoundsPad, PadKey, PadDel, PadOk, PadCancel, OptBotPlay, OptShieldSize,
-                     BouncePage, BounceWalls, BounceGrip, BounceAssist, BounceBack,
+                     BouncePage, BounceWalls, BounceGrip, BounceAssist, BounceBack, FeelThrow, FeelPunch,
                      TrainMode, TrainOpts, TrainOptsDone, TrainOptMaiden, GfxFoveation, GfxMsaa, GfxContact, GfxGrade, GfxBloom, GfxReflect,
                      MutedPage, Unmute, MutedPrev, MutedNext, MusicDown, MusicUp, MusicMenu, MusicGame };
 // HOW TO PLAY > CREDITS: one page, film-credit style (small grey headings, the names under them)
@@ -3082,9 +3083,10 @@ static void applyDefaults(App& a, int page) {
     case DEF_BALL:   // (the room's BALL FEEL: the standard ball, the owner's pick; nothing changes until START / APPLY)
         a.optBallFeel = BALL_FEEL_DEFAULT;
         break;
-    case DEF_BOUNCES: {   // (the room's BOUNCES: as the rules have them; nothing changes until START / APPLY)
+    case DEF_BOUNCES: {   // (the room's BOUNCES & POWER: as the rules have them; nothing changes until START / APPLY)
         const Tunables t;
         a.optWallsLively = t.wallsLively; a.optWallGrip = t.wallGrip; a.optBankAssist = t.bankAssist;
+        a.optThrowPower = t.throwPower; a.optKnuckleReturns = t.knuckleReturns;   // (0.3.25)
         break;
     }
     case DEF_MYOPTS: {   // (CUSTOM TRAINING's MY OPTIONS: the options a lesson takes, as the rules have them; in force at once)
@@ -3092,6 +3094,7 @@ static void applyDefaults(App& a, int page) {
         a.optAim = t.aimAssist; a.optShieldSize = t.shieldSize; a.optMaiden = t.maiden; a.optZone = t.strikeZone;
         a.optStrikeSpeed = t.strikeSpeed; a.optGrowth = t.ballGrowth;
         a.optWallsLively = t.wallsLively; a.optWallGrip = t.wallGrip; a.optBankAssist = t.bankAssist;
+        a.optThrowPower = t.throwPower; a.optKnuckleReturns = t.knuckleReturns;
         break;
     }
     case DEF_GRAPHICS:
@@ -3126,6 +3129,7 @@ static void applyDefaults(App& a, int page) {
         a.optShieldSize = t.shieldSize;
         a.optBallFeel = t.ballFeel;   // (BALL FEEL: the standard ball)
         a.optWallsLively = t.wallsLively; a.optWallGrip = t.wallGrip; a.optBankAssist = t.bankAssist;   // (BOUNCES)
+        a.optThrowPower = t.throwPower; a.optKnuckleReturns = t.knuckleReturns;   // (THROW POWER, KNUCKLE RETURNS)
         if (a.optExperimental && a.optExpRoom == ROOM_BLITZ) { a.optShields = false; a.optKnuckle = 1; }
         break;
     }
@@ -3155,6 +3159,7 @@ static void optionsFrom(App& a, const Tunables& t) {
     a.optShieldSize = t.shieldSize;
     a.optBallFeel = t.ballFeel & BALL_FEEL_ALL;
     a.optWallsLively = t.wallsLively; a.optWallGrip = t.wallGrip; a.optBankAssist = t.bankAssist;
+    a.optThrowPower = t.throwPower; a.optKnuckleReturns = t.knuckleReturns;
     a.optBotLevel = t.botLevel; a.optBotAdapt = t.botAdapt; a.optBotMeet = t.botMeet;
 }
 // ROOMS AND THEIR OPTIONS (the owner's design, 2026-11-17): a room is chosen by its shape, then set up with its own
@@ -3208,6 +3213,7 @@ static void optionsInto(const App& a, Tunables& t) {
     t.shieldSize = std::max(0, std::min(4, a.optShieldSize));
     t.ballFeel = a.optBallFeel & BALL_FEEL_ALL;
     t.wallsLively = a.optWallsLively; t.wallGrip = a.optWallGrip; t.bankAssist = std::max(0, std::min(3, a.optBankAssist));
+    t.throwPower = a.optThrowPower & 1; t.knuckleReturns = a.optKnuckleReturns & 1;
     t.botLevel = a.optBotLevel; t.botAdapt = a.optBotAdapt; t.botMeet = a.optBotMeet;
 }
 static std::string timeLabel(float secs, bool rounds) {
@@ -3241,6 +3247,8 @@ static std::string rulesLine(const Tunables& t) {
     if (t.wallsLivelyNow()) s += " - LIVELY WALLS";   // (BOUNCES)
     if (t.wallGripNow()) s += " - WALL GRIP";
     if (t.bankAssistNow() > 0) s += std::string(" - BANK ASSIST ") + kAimName[t.bankAssistNow()];
+    if (t.naturalThrowNow()) s += " - NATURAL THROWS";   // (0.3.25)
+    if (t.punchReturnsNow()) s += " - PUNCH RETURNS";
     return s;
 }
 // ---- CUSTOM TRAINING (0.3.22): MY OPTIONS, your own room options in the lessons (training::lessonOptions)
@@ -3261,6 +3269,8 @@ static std::string myOptionsLine(const Tunables& own) {
     if (t.wallsLivelyNow()) add("LIVELY WALLS");
     if (t.wallGripNow()) add("WALL GRIP");
     if (t.bankAssistNow() > 0) add(std::string("BANK ASSIST ") + kAimName[t.bankAssistNow()]);
+    if (t.naturalThrowNow()) add("NATURAL THROWS");   // (0.3.25)
+    if (t.punchReturnsNow()) add("PUNCH RETURNS");
     return s.empty() ? std::string("AS THE RULES SAY") : s;
 }
 // a lesson open in either mode (one passed with MY OPTIONS opens the next too: the progress is yours)
@@ -3273,6 +3283,7 @@ static void applyMyOptions(App& a) {
     own.aimAssist = t.aimAssist; own.shieldSize = t.shieldSize; own.maiden = a.optMaiden; own.strikeZone = t.strikeZone;
     own.strikeSpeed = t.strikeSpeed; own.ballGrowth = t.ballGrowth;
     own.wallsLively = t.wallsLively; own.wallGrip = t.wallGrip; own.bankAssist = t.bankAssist;
+    own.throwPower = t.throwPower; own.knuckleReturns = t.knuckleReturns;   // (0.3.25)
     saveSettings(a);
 }
 // the clock as the boards show it: 2:41, FREE PLAY, SUDDEN DEATH (empty: an untimed Advanced round)
@@ -3390,8 +3401,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         optionsInto(a, t);
         t.experimental = false; t.advanced = false;   // (a lesson is the SQUARE's, Basic)
         int n = 0;
-        auto put = [&](const std::string& label, MenuAct act) {
-            v.push_back({label, n % 2 ? 0.19f : -0.19f, 0.135f - 0.072f * (n / 2), 0.36f, 0.058f, act, 0, true});
+        auto put = [&](const std::string& label, MenuAct act) {   // (six rows since 0.3.25: a little closer)
+            v.push_back({label, n % 2 ? 0.19f : -0.19f, 0.135f - 0.066f * (n / 2), 0.36f, 0.056f, act, 0, true});
             ++n;
         };
         put(std::string("AIM ASSIST: ") + kAimName[t.aimAssistNow()], MenuAct::OptAim);
@@ -3403,6 +3414,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         put(a.optWallsLively ? "WALLS: LIVELY" : "WALLS: STANDARD", MenuAct::BounceWalls);
         put(a.optWallGrip ? "WALL GRIP: ON" : "WALL GRIP: OFF", MenuAct::BounceGrip);
         put(std::string("BANK ASSIST: ") + kAimName[std::max(0, std::min(3, a.optBankAssist))], MenuAct::BounceAssist);
+        put(a.optThrowPower ? "THROW POWER: NATURAL" : "THROW POWER: REGULATION", MenuAct::FeelThrow);   // (0.3.25)
+        put(a.optKnuckleReturns ? "KNUCKLE RETURNS: PUNCH" : "KNUCKLE RETURNS: REGULATION", MenuAct::FeelPunch);
         const bool std_ = myOptionsLine(myRules(a)) == "AS THE RULES SAY";
         v.push_back({std_ ? "AS THE RULES SAY" : "BACK TO STANDARD", -0.19f, -0.355f, 0.36f, 0.065f, MenuAct::Defaults, DEF_MYOPTS, !std_});
         v.push_back({"DONE", 0.19f, -0.355f, 0.36f, 0.065f, MenuAct::TrainOptsDone, 0, true});
@@ -3562,14 +3575,27 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
                      MenuAct::Defaults, DEF_BALL, f != BALL_FEEL_DEFAULT});
         return v;
     }
-    if (a.rulesOpen && a.rulesStep == 1 && a.roomBouncePage && !a.nameEdit) {   // the room's BOUNCES: its three options
-        const bool std_ = !a.optWallsLively && !a.optWallGrip && a.optBankAssist == 0;
-        v.push_back({a.optWallsLively ? "WALLS: LIVELY" : "WALLS: STANDARD", -0.19f, 0.12f, 0.36f, 0.075f, MenuAct::BounceWalls, 0, true});
-        v.push_back({a.optWallGrip ? "WALL GRIP: ON" : "WALL GRIP: OFF", 0.19f, 0.12f, 0.36f, 0.075f, MenuAct::BounceGrip, 0, true});
-        v.push_back({std::string("BANK ASSIST: ") + kAimName[std::max(0, std::min(3, a.optBankAssist))], 0, 0.02f, 0.40f, 0.075f,
-                     MenuAct::BounceAssist, 0, true});
+    if (a.rulesOpen && a.rulesStep == 1 && a.roomBouncePage && !a.nameEdit) {   // the room's BOUNCES & POWER (FOUR CORNERS: POWER)
+        Tunables t;
+        optionsInto(a, t);
+        const bool two = roomOf(t) <= 1;   // (the SQUARE, DIAMOND: the bounces too; FOUR CORNERS: THROW POWER, KNUCKLE RETURNS)
+        const std::string throwL = a.optThrowPower ? "THROW POWER: NATURAL" : "THROW POWER: REGULATION";
+        const std::string punchL = a.optKnuckleReturns ? "KNUCKLE RETURNS: PUNCH" : "KNUCKLE RETURNS: REGULATION";
+        const bool feelStd = !a.optThrowPower && !a.optKnuckleReturns;
+        const bool std_ = feelStd && (!two || (!a.optWallsLively && !a.optWallGrip && a.optBankAssist == 0));
+        if (two) {
+            v.push_back({a.optWallsLively ? "WALLS: LIVELY" : "WALLS: STANDARD", -0.19f, 0.13f, 0.36f, 0.072f, MenuAct::BounceWalls, 0, true});
+            v.push_back({a.optWallGrip ? "WALL GRIP: ON" : "WALL GRIP: OFF", 0.19f, 0.13f, 0.36f, 0.072f, MenuAct::BounceGrip, 0, true});
+            v.push_back({std::string("BANK ASSIST: ") + kAimName[std::max(0, std::min(3, a.optBankAssist))], -0.19f, 0.045f, 0.36f,
+                         0.072f, MenuAct::BounceAssist, 0, true});
+            v.push_back({throwL, 0.19f, 0.045f, 0.36f, 0.072f, MenuAct::FeelThrow, 0, true});   // (0.3.25)
+            v.push_back({punchL, 0, -0.04f, 0.40f, 0.072f, MenuAct::FeelPunch, 0, true});
+        } else {
+            v.push_back({throwL, -0.19f, 0.13f, 0.36f, 0.072f, MenuAct::FeelThrow, 0, true});
+            v.push_back({punchL, 0.19f, 0.13f, 0.36f, 0.072f, MenuAct::FeelPunch, 0, true});
+        }
         v.push_back({"BACK", -0.19f, -0.335f, 0.36f, 0.065f, MenuAct::BounceBack, 0, true});
-        v.push_back({std_ ? std::string("STANDARD BOUNCES") : std::string("BACK TO STANDARD"), 0.19f, -0.335f, 0.36f, 0.065f,
+        v.push_back({std_ ? std::string("STANDARD") : std::string("BACK TO STANDARD"), 0.19f, -0.335f, 0.36f, 0.065f,
                      MenuAct::Defaults, DEF_BOUNCES, !std_});
         return v;
     }
@@ -3650,7 +3676,9 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         // BALL FEEL, every room's (the owner, 2026-11-17): how the ball looks and feels for everyone at the arena
         put((t.ballFeel & BALL_FEEL_ALL) == BALL_FEEL_DEFAULT ? "BALL FEEL: STANDARD" : "BALL FEEL: CUSTOM", MenuAct::BallPage);
         // BOUNCES (0.3.22, the SQUARE and DIAMOND; pull request #26's ideas as the host's options: the owner, 2026-11-18): its page
-        if (two) put(t.bouncesStandard() ? "BOUNCES: STANDARD" : "BOUNCES: CUSTOM", MenuAct::BouncePage);
+        // (0.3.25: with THROW POWER and KNUCKLE RETURNS on the same page, BOUNCES & POWER; FOUR CORNERS has those two: POWER)
+        if (two) put(t.bouncesStandard() && t.feelStandard() ? "BOUNCES & POWER: STANDARD" : "BOUNCES & POWER: CUSTOM", MenuAct::BouncePage);
+        else if (room == 2) put(t.feelStandard() ? "POWER: STANDARD" : "POWER: CUSTOM", MenuAct::BouncePage);
         if (bot) {   // - / +, the slider (one step a level, lit up to the one chosen), and MATCH MY LEVEL
             const std::string bl = t.botAdapt ? std::string("BOT: MATCH MY LEVEL (NOW ") + botSkillAt(a.game.tun.botMatch).name + ")"
                                               : std::string("BOT: ") + botSkill(t.botLevel).name;
@@ -4504,6 +4532,8 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::BounceWalls: a.optWallsLively = !a.optWallsLively; break;   // (nothing changes until START / APPLY)
     case MenuAct::BounceGrip: a.optWallGrip = !a.optWallGrip; break;
     case MenuAct::BounceAssist: a.optBankAssist = (std::max(0, std::min(3, a.optBankAssist)) + 1) % 4; break;   // OFF .. HIGH
+    case MenuAct::FeelThrow: a.optThrowPower = a.optThrowPower ? 0 : 1; break;   // (0.3.25: REGULATION / NATURAL)
+    case MenuAct::FeelPunch: a.optKnuckleReturns = a.optKnuckleReturns ? 0 : 1; break;   // (REGULATION / PUNCH)
     case MenuAct::BallBack: a.roomBallPage = false; break;
     case MenuAct::BallCore: a.optBallFeel ^= BALL_CORE; break;   // (nothing changes until START / APPLY)
     case MenuAct::BallTrue: a.optBallFeel ^= BALL_TRUE; break;
@@ -5020,16 +5050,24 @@ static void drawMenu(App& a) {
         text("CORE: A SOLID CENTRE IN THE GLOW - GLOW: TRUE SIZE SHOWS EXACTLY WHAT HITS", 0, -0.10f, 0.017f, grey);
         text("SPIN: IT TURNS AS IT FLIES - WEIGHT: IT TRAILS YOUR HAND, THE CONTROLLER HUMS", 0, -0.14f, 0.017f, grey);
         text("ONLY HOW IT LOOKS AND FEELS: NOTHING CHANGES IN PLAY", 0, -0.20f, 0.017f, grey);
-    } else if (a.rulesOpen && a.rulesStep == 1 && a.roomBouncePage && !a.nameEdit) {   // the room's BOUNCES (0.3.22)
+    } else if (a.rulesOpen && a.rulesStep == 1 && a.roomBouncePage && !a.nameEdit) {   // the room's BOUNCES & POWER (0.3.22, 0.3.25)
         Tunables t;
         optionsInto(a, t);
         text(kRoomTitle[roomOf(t)], 0, 0.29f, 0.055f, cyan);
-        text("BOUNCES: HOW THE BALL COMES OFF THE COURT, FOR EVERYONE IN THE MATCH", 0, 0.205f, 0.019f, white);
-        text("WALLS: LIVELY - A SIDE WALL TAKES LESS OF THE BALL'S SPEED", 0, -0.08f, 0.017f, grey);
-        text("WALL GRIP: THE COURT GRIPS THE BALL - IT LEAVES SPINNING, AND CURVES", 0, -0.12f, 0.017f, grey);
-        text("BANK ASSIST: A BANK'S LAST LEG IS NUDGED TOWARD THE OTHER PLAYER", 0, -0.16f, 0.017f, grey);
-        text("THESE CHANGE PLAY: WITH AN OLDER VERSION IN THE MATCH, STANDARD", 0, -0.21f, 0.017f, grey);
-        text("A MATCH WITH ANY OF THEM COUNTS AS CUSTOM IN THE STATS", 0, -0.25f, 0.017f, grey);
+        if (roomOf(t) <= 1) {   // (the SQUARE, DIAMOND)
+            text("BOUNCES & POWER: HOW THE BALL FLIES, FOR EVERYONE IN THE MATCH", 0, 0.205f, 0.019f, white);
+            text("WALLS: LIVELY - SIDE WALLS TAKE LESS SPEED - WALL GRIP: IT LEAVES SPINNING, AND CURVES", 0, -0.12f, 0.016f, grey);
+            text("BANK ASSIST: A BANK'S LAST LEG IS NUDGED TOWARD THE OTHER PLAYER", 0, -0.153f, 0.016f, grey);
+            text("THROW POWER: NATURAL - A LIGHT THROW GOES SLOW, A FULL THROW AS FAST AS EVER", 0, -0.186f, 0.016f, grey);
+            text("KNUCKLE RETURNS: PUNCH - YOUR PUNCH SETS THE SPEED, NOT THE INCOMING BALL", 0, -0.219f, 0.016f, grey);
+            text("THESE CHANGE PLAY: WITH AN OLDER VERSION IN THE MATCH, STANDARD", 0, -0.254f, 0.016f, grey);
+            text("A MATCH WITH ANY OF THEM COUNTS AS CUSTOM IN THE STATS", 0, -0.284f, 0.016f, grey);
+        } else {   // (FOUR CORNERS: THROW POWER, KNUCKLE RETURNS)
+            text("POWER: HOW THROWS AND PUNCHES FEEL, FOR EVERYONE IN THE MATCH", 0, 0.205f, 0.019f, white);
+            text("THROW POWER: NATURAL - A LIGHT THROW GOES SLOW, A FULL THROW AS FAST AS EVER", 0, 0.03f, 0.017f, grey);
+            text("KNUCKLE RETURNS: PUNCH - YOUR PUNCH SETS THE SPEED, NOT THE INCOMING BALL", 0, -0.01f, 0.017f, grey);
+            text("THESE CHANGE PLAY: WITH AN OLDER VERSION IN THE MATCH, STANDARD", 0, -0.06f, 0.017f, grey);
+        }
     } else if (a.rulesOpen && a.rulesStep == 1 && a.roundsPad && !a.nameEdit) {   // BEST OF n typed
         Tunables t;
         optionsInto(a, t);
@@ -8456,6 +8494,8 @@ static void fairMatchNotice(App& a) {
         what = "ROOM OPTIONS: AS THE RULES SAY (A PLAYER NEEDS 0.3.21)";
     else if (a.game.np == 2 && t.roomOptionsNow() && !t.bouncesNow() && (t.wallsLively || t.wallGrip || t.bankAssist > 0))
         what = "BOUNCES: STANDARD (A PLAYER NEEDS 0.3.22)";   // (BOUNCES, 0.3.22)
+    else if (t.feelRoom() && !t.feelNow() && (t.throwPower || t.knuckleReturns))
+        what = "THROW POWER AND KNUCKLE RETURNS: REGULATION (A PLAYER NEEDS 0.3.25)";   // (0.3.25)
     else if (a.game.octagon() && t.teamMode != TEAMS_FFA && !t.blitzTeamsNow())
         what = "TEAMS: FREE-FOR-ALL (A PLAYER NEEDS 0.3.24)";   // (FIREBALL BLITZ in teams, 0.3.24)
     else if (a.game.octagon() && t.teamMode != TEAMS_FFA && a.game.teamsNow() == TEAMS_FFA)
@@ -10824,6 +10864,7 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
             t.ballGrowth = a.ownRules.ballGrowth; t.advancedRoundsToWin = a.ownRules.advancedRoundsToWin;
             t.shieldSize = a.ownRules.shieldSize; t.ballFeel = a.ownRules.ballFeel;
             t.wallsLively = a.ownRules.wallsLively; t.wallGrip = a.ownRules.wallGrip; t.bankAssist = a.ownRules.bankAssist;
+            t.throwPower = a.ownRules.throwPower; t.knuckleReturns = a.ownRules.knuckleReturns;   // (0.3.25)
             a.guestRules = false;
             if (a.game.match == MatchState::WaitingForPlayers || a.net.mode() == Net::Mode::Offline) a.game.reset(a.game.pl[1].isBot);
             LOGI("rules -> %s (our own again)", rulesLine(a.game.tun).c_str());
@@ -11481,6 +11522,7 @@ static void saveSettings(App& a) {
         fprintf(fp, "shieldsize=%d\n", R.shieldSize);   // (SHIELD SIZE)
         fprintf(fp, "ballfeel=%d\n", R.ballFeel & BALL_FEEL_ALL);   // (BALL FEEL, the room's)
         fprintf(fp, "wallslively=%d\nwallgrip=%d\nbankassist=%d\n", R.wallsLively ? 1 : 0, R.wallGrip ? 1 : 0, R.bankAssist);   // (BOUNCES)
+        fprintf(fp, "throwpower=%d\nknucklereturns=%d\n", R.throwPower & 1, R.knuckleReturns & 1);   // (0.3.25)
         fprintf(fp, "ctltilt=%d\nctltwist=%d\nctlturn=%d\n", a.ctlTilt, a.ctlTwist, a.ctlTurn);   // (CONTROLLER ANGLE)
         fprintf(fp, "ballsound=%d\n", a.ballSound ? 1 : 0);   // (BALL IN FLIGHT, 0.3.24)
         fprintf(fp, "musicmenu=%d\nmusicgame=%d\nmusicvol=%d\n", a.musicMenu ? 1 : 0, a.musicGame ? 1 : 0, a.musicVolume);   // (MUSIC)
@@ -11593,6 +11635,8 @@ static void loadSettings(App& a) {
         else if (k == "wallslively") a.game.tun.wallsLively = v != 0;   // (BOUNCES)
         else if (k == "wallgrip") a.game.tun.wallGrip = v != 0;
         else if (k == "bankassist") a.game.tun.bankAssist = std::max(0, std::min(3, (int)v));
+        else if (k == "throwpower") a.game.tun.throwPower = ((int)v) & 1;   // (THROW POWER, 0.3.25)
+        else if (k == "knucklereturns") a.game.tun.knuckleReturns = ((int)v) & 1;
         else if (k == "ctltilt") a.ctlTilt = std::max(-kCtlMax, std::min(kCtlMax, (int)v));
         else if (k == "ballfeel") a.game.tun.ballFeel = (int)v & BALL_FEEL_ALL;   // (BALL FEEL, the room's; the test's
                                                                               // own keys left behind: the owner's pick for all)
@@ -12688,12 +12732,13 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             a.optMaiden = true; a.optAim = 3; a.optZone = 2; a.optGrowth = 1; a.optShieldSize = 2;
             if (v.menu.rfind("roundspad", 0) == 0) { a.roundsPad = true; a.roundsBuf = v.menu.substr(9); }   // (--menu roundspad4: "4" typed)
             if (v.menu == "roomball") a.roomBallPage = true;   // (the room's BALL FEEL)
-            if (v.menu == "roombounce") { a.roomBouncePage = true; a.optWallGrip = true; a.optBankAssist = 2; }   // (BOUNCES)
+            if (v.menu == "roombounce") { a.roomBouncePage = true; a.optWallGrip = true; a.optBankAssist = 2; a.optThrowPower = 1; }   // (BOUNCES & POWER)
         }
-        if (v.menu == "roomcorners" || v.menu == "roomblitz") {   // (the four-player rooms' pages, with BALL FEEL)
-            a.rulesOpen = true; a.rulesForHost = true; a.rulesStep = 1; optionsFrom(a, a.game.tun);
+        if (v.menu == "roomcorners" || v.menu == "roomblitz" || v.menu == "roomcornerspower") {   // (the four-player rooms' pages,
+            a.rulesOpen = true; a.rulesForHost = true; a.rulesStep = 1; optionsFrom(a, a.game.tun);   // with BALL FEEL; POWER)
             a.optAdvanced = false; a.optExperimental = true; a.optExpRoom = v.menu == "roomblitz" ? ROOM_BLITZ : ROOM_CORNERS;
             if (v.menu == "roomblitz") { a.optShields = false; a.optKnuckle = 1; }
+            if (v.menu == "roomcornerspower") { a.roomBouncePage = true; a.optKnuckleReturns = 1; }   // (FOUR CORNERS' POWER, 0.3.25)
         }
         if (v.menu == "options" || v.menu == "options2") {   // MATCH OPTIONS: Basic, hotdog, free play / Advanced, 2 min rounds
             a.rulesOpen = true; a.rulesForHost = true; a.rulesStep = 1; optionsFrom(a, a.game.tun);

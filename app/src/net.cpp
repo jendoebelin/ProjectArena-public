@@ -898,6 +898,10 @@ static void writeState(Writer& w, const Game& g) {
         // for every room, FIREBALL BLITZ too, where it never played: so only this one says FIREBALL BLITZ plays in teams
         w.put<uint8_t>((uint8_t)g.teamsNow());
     }
+    // (0.3.25, THROW POWER and KNUCKLE RETURNS) as this match plays them, so a player looking ahead throws and punches
+    // as the host will. After the last byte 0.3.24 reads in these rooms (the SQUARE, DIAMOND: THE BALL IN THE LEFT PALM;
+    // FOUR CORNERS: the host's clock), so older builds stop before it; never in FIREBALL BLITZ
+    if (g.tun.feelRoom()) w.put<uint8_t>((uint8_t)((g.tun.naturalThrowNow() ? 1 : 0) | (g.tun.punchReturnsNow() ? 2 : 0)));
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -1067,6 +1071,13 @@ static bool readState(Reader& r, Game& g, int localIndex) {
                 g.tun.blitzTeams = true;
             }
         }
+    }
+    // (THROW POWER and KNUCKLE RETURNS, hosts from 0.3.25, as the match plays them; an older host: regulation)
+    g.tun.throwPower = g.tun.knuckleReturns = 0;
+    if (g.tun.feelRoom() && r.ok && r.e - r.p >= 1) {
+        const uint8_t o = r.get<uint8_t>();
+        g.tun.throwPower = o & 1;
+        g.tun.knuckleReturns = (o >> 1) & 1;
     }
     return r.ok;
 }
