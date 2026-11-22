@@ -73,7 +73,15 @@ int main(int argc, char** argv) {
         in.hand[h].grip = {tq, in.hand[h].grip.p + tq.rotate({0, tu, -tf})};
     }
     in.avatar = d;
-    avatar::Rig r = avatar::solveRig(in, d);
+    // settled as the game draws it a few seconds into the pose (issue #24: posed once, with no history, a hand beyond
+    // the arm's reach kept a gap between the forearm and the gauntlet, which in the game ARM SIZING closes within about
+    // 1.5 s, the shoulders and torso easing after it): the rig stepped 4 s at 72 frames a second with these hands, then
+    // solved with that state. PA_NOSETTLE=1: the single posture, as before
+    avatar::RigState st;
+    const bool settle = !std::getenv("PA_NOSETTLE");
+    if (settle)
+        for (int f = 0; f <= 288; ++f) avatar::stepRig(st, in, d, f / 72.0);
+    avatar::Rig r = avatar::solveRig(in, d, settle ? &st : nullptr);
     std::vector<avatar::PartDraw> list;
     avatar::drawList(r, in, d, list);
     const float tc[2][3] = {{0.1f, 0.7f, 1.0f}, {1.0f, 0.4f, 0.1f}};

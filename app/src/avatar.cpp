@@ -231,6 +231,21 @@ void setOwnKit(AvatarDesc& d, bool own) {
     d.pattern = (uint8_t)((d.pattern & ~kOwnKitBit) | (own && nationOf(d) ? kOwnKitBit : 0));
 }
 
+std::vector<int> nationOrder(const int* picks) {
+    auto key = [](int n) {
+        const char* s = kNations[n - 1].name;
+        return std::strncmp(s, "THE ", 4) == 0 ? s + 4 : s;
+    };
+    std::vector<int> v;
+    for (int n = 1; n <= nationCount(); ++n) v.push_back(n);
+    std::stable_sort(v.begin(), v.end(), [&](int x, int y) {
+        const int px = picks ? std::max(0, picks[x]) : 0, py = picks ? std::max(0, picks[y]) : 0;
+        if (px != py) return px > py;
+        return std::strcmp(key(x), key(y)) < 0;
+    });
+    return v;
+}
+
 namespace {
 int nearest(const Swatch* s, int n, int from, const uint8_t c[3]) {
     int best = from;

@@ -13,6 +13,10 @@ RELAY="$HERE/projectarena_relay.py"
 [ "$(id -u)" = 0 ] || { echo "run with sudo"; exit 1; }
 
 command -v python3 >/dev/null || { apt-get update && apt-get install -y python3; }
+# The Crowd's notifications need the standard crypto library (Ubuntu has it already); without it the relay runs as
+# before, with no notifications, and says so in its log
+python3 -c "import cryptography" 2>/dev/null || { apt-get update && apt-get install -y python3-cryptography ||
+  echo "python3-cryptography could not be installed: The Crowd's notifications stay off"; }
 id projectarena >/dev/null 2>&1 || useradd --system --home /opt/projectarena --shell /usr/sbin/nologin projectarena
 mkdir -p /opt/projectarena/bug_reports /opt/projectarena/sound_library/removed   # (sound_library: SOUND STUDIO, 0.3.16)
 install -m 0644 "$RELAY" /opt/projectarena/projectarena_relay.py
@@ -29,9 +33,12 @@ Wants=network-online.target
 [Service]
 User=projectarena
 WorkingDirectory=/opt/projectarena
-# The Crowd's web page address (setup_crowd.sh writes it)
+# The Crowd's web page address (setup_crowd.sh writes it): systemd fills in \${CROWD_ORIGIN} from that file at each
+# start, so only that page may open the live connection (escaped here: the shell writing this file left it empty
+# until 2026-11-20, and the relay then took connections from any web page)
 EnvironmentFile=-/opt/projectarena/crowd.env
-ExecStart=/usr/bin/python3 -I /opt/projectarena/projectarena_relay.py --port $PORT --reports /opt/projectarena/bug_reports --bans /opt/projectarena/bans.txt --stats /opt/projectarena/player_stats.db --crowd 127.0.0.1:47781 --crowd-origin=${CROWD_ORIGIN}
+# --push: The Crowd's notifications (the devices that turned them on, and the server's VAPID key beside them, .vapid)
+ExecStart=/usr/bin/python3 -I /opt/projectarena/projectarena_relay.py --port $PORT --reports /opt/projectarena/bug_reports --bans /opt/projectarena/bans.txt --stats /opt/projectarena/player_stats.db --crowd 127.0.0.1:47781 --crowd-origin=\${CROWD_ORIGIN} --push /opt/projectarena/crowd_push.db
 Restart=always
 RestartSec=3
 NoNewPrivileges=true

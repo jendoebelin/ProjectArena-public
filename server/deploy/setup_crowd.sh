@@ -20,6 +20,9 @@ rm -rf /var/www/projectarena-crowd/*
 cp -R "$WEB"/. /var/www/projectarena-crowd/
 chmod -R a+rX /var/www/projectarena-crowd
 
+# (no-cache: the page and its code are checked with the server at every load, a quick "not changed" when they
+# aren't; 2026-11-20: app.js and style.css had no Cache-Control, so a phone's browser kept an old app.js for hours
+# after an update and drew the four-player matches as two-player ones. The flags may be kept)
 cat > /etc/caddy/Caddyfile <<EOF
 # The Crowd (Project Arena): written by setup_crowd.sh
 $DOMAIN {
@@ -36,8 +39,8 @@ $DOMAIN {
 		Content-Security-Policy "default-src 'self'; connect-src 'self' wss://$DOMAIN; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
 		-Server
 	}
-	@html path / /index.html /sw.js
-	header @html Cache-Control "no-cache"
+	@fresh path / /index.html /sw.js *.js *.css *.webmanifest
+	header @fresh Cache-Control "no-cache"
 }
 EOF
 # the relay accepts the live connection only from this page (setup.sh's service reads this file)

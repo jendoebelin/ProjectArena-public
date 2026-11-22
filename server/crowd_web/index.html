@@ -12,12 +12,17 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="style.css">
+<!-- (?v=: the files under a new name at each update, so no phone keeps an old copy; the same VERSION as sw.js) -->
+<link rel="stylesheet" href="style.css?v=crowd-8">
 </head>
 <body>
 <header>
   <button id="back" class="back hidden" aria-label="Back to the live matches">&#8249;</button>
   <div class="brand"><span class="brand-the">THE</span> CROWD</div>
+  <button id="bell" class="bell hidden" aria-label="Notifications" aria-haspopup="dialog">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22zm7-6V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-2 2v1h18v-1l-2-2z"/></svg>
+    <i class="bell-slash"></i>
+  </button>
   <div id="conn" class="conn" title="Connection">&#9679;</div>
 </header>
 
@@ -37,7 +42,7 @@
   <!-- one match -->
   <section id="match-view" class="hidden">
     <div id="state" class="state">LIVE</div>
-    <div class="board">
+    <div class="board" id="board">
       <div class="side" id="side0">
         <div class="flag" id="flag0"></div>
         <div class="pname" id="name0"></div>
@@ -55,21 +60,23 @@
       </div>
     </div>
 
-    <div class="hype">
+    <div class="hype" id="hypebox">
       <div class="hype-row"><div class="hype-bar"><div id="hype0" class="hype-fill"></div></div></div>
       <div class="hype-label"><span id="fans">0 fans</span><span>HYPE</span><span id="waves"></span></div>
       <div class="hype-row"><div class="hype-bar"><div id="hype1" class="hype-fill"></div></div></div>
     </div>
 
-    <div class="cheer">
+    <div class="cheer" id="cheerbox">
       <button id="cheer0" class="cheer-btn"><span class="cheer-word">CHEER</span><span id="cheername0"></span></button>
       <button id="cheer1" class="cheer-btn"><span class="cheer-word">CHEER</span><span id="cheername1"></span></button>
     </div>
-    <div class="tools">
+    <div class="tools" id="toolsbox">
       <button id="wave" class="tool">&#9873; WAVE FLAG</button>
       <button id="shake" class="tool">&#8645; SHAKE TO CHEER</button>
     </div>
 
+    <!-- four players (FOUR CORNERS, FIREBALL BLITZ): each one's colour, name, country and points (or health) -->
+    <div id="four" class="four hidden"></div>
     <div class="stats">
       <div class="stats-head"><span id="sh0"></span><span>THIS MATCH</span><span id="sh1"></span></div>
       <div id="statrows"></div>
@@ -79,7 +86,7 @@
       </div>
     </div>
 
-    <div class="call">
+    <div class="call" id="callbox">
       <div class="call-title">CALL IT: WHO SCORES NEXT?</div>
       <div class="call-btns">
         <button id="call0" class="call-btn"></button>
@@ -91,15 +98,51 @@
   </section>
 </main>
 
+<!-- notifications: on / off and what to be told about (saved the moment something changes) -->
+<div id="notify" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="notify-title">
+  <div class="sheet-box">
+    <div class="sheet-head">
+      <h2 id="notify-title">Notifications</h2>
+      <button id="notify-close" class="x" aria-label="Close">&times;</button>
+    </div>
+    <label id="push-row" class="switch-row">
+      <span><b>Tell me when people are playing</b><small id="notify-status">Off</small></span>
+      <input type="checkbox" id="notify-on" role="switch">
+      <i class="switch" aria-hidden="true"></i>
+    </label>
+    <div id="notify-help" class="note hidden"></div>
+    <div id="notify-opts" class="hidden">
+      <div class="opt-title">Notify me when</div>
+      <label class="radio"><input type="radio" name="when" value="any"> Someone hosts an arena or a match starts</label>
+      <label class="radio"><input type="radio" name="when" value="match"> Only when a match starts</label>
+      <div class="opt-title">At most</div>
+      <select id="notify-gap" class="select">
+        <option value="30">Once every 30 minutes</option>
+        <option value="60">Once an hour</option>
+        <option value="180">Once every 3 hours</option>
+      </select>
+      <label class="check"><input type="checkbox" id="notify-quiet"> Quiet hours</label>
+      <div id="quiet-row" class="quiet-row hidden">
+        From <select id="quiet-from" class="select small"></select>
+        to <select id="quiet-to" class="select small"></select>
+      </div>
+      <button id="notify-off" class="off-btn">Turn off notifications</button>
+    </div>
+    <p class="sheet-foot">Changes save as you make them. Turning notifications on keeps this device's anonymous push
+      address and these choices (with your time zone, for quiet hours) on our server; no name, account or IP address.
+      Turning them off deletes them.</p>
+  </div>
+</div>
+
 <div id="toast" class="toast hidden"></div>
 
 <footer>
-  Anonymous: no sign-in, no name, nothing kept on the server.
+  Anonymous: no sign-in, no name. Nothing kept on the server unless you turn on notifications.
   <a href="https://github.com/jendoebelin/ProjectArena-public/blob/main/docs/PRIVACY.md" rel="noopener" target="_blank">Privacy</a>
   &middot; Project Arena
 </footer>
 
-<script src="nations.js"></script>
-<script src="app.js"></script>
+<script src="nations.js?v=crowd-8"></script>
+<script src="app.js?v=crowd-8"></script>
 </body>
 </html>

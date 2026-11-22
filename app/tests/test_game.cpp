@@ -6,6 +6,7 @@
 #include "../src/record.h"
 #include "../src/training.h"
 #include "../src/controls.h"
+#include "../src/flight_sound.h"
 #include <chrono>
 #include <functional>
 #include <string>
@@ -250,6 +251,39 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         CHECK(avatar::nationOf(d) == big && avatar::gauntletOf(d) == 0 && avatar::faceOf(d) == 1, "a country above 31 uses the gauntlet's spare bits");
         AvatarDesc c;
         CHECK(avatar::fromText(avatar::toText(d), c) && avatar::nationOf(c) == big, "avatar.cfg keeps the country");
+        {   // the builder's COUNTRY order (0.3.23): your most chosen first, then A-Z ("THE " left out)
+            const int N = avatar::nationCount();
+            auto name = [](int n) { const char* s = avatar::nation(n)->name; return std::strncmp(s, "THE ", 4) == 0 ? s + 4 : s; };
+            std::vector<int> o = avatar::nationOrder(nullptr);
+            std::vector<bool> seen(N + 1, false);
+            bool once = (int)o.size() == N, az = true;
+            for (int i = 0; i < (int)o.size(); ++i) {
+                if (o[i] < 1 || o[i] > N || seen[o[i]]) once = false; else seen[o[i]] = true;
+                if (i && std::strcmp(name(o[i - 1]), name(o[i])) > 0) az = false;
+            }
+            CHECK(once && az, "COUNTRY, nothing chosen yet: every country once, A-Z");
+            std::vector<int> picks(N + 1, 0);
+            picks[1] = 2;                    // UNITED STATES twice
+            picks[std::min(45, N)] = 5;      // another five times
+            picks[2] = 2;                    // CANADA twice (a tie with the United States: A-Z between them)
+            o = avatar::nationOrder(picks.data());
+            CHECK((int)o.size() == N && o[0] == std::min(45, N) && o[1] == 2 && o[2] == 1, "COUNTRY: the most chosen first, equal counts A-Z");
+            bool restAz = true;
+            for (int i = 4; i < N; ++i) if (std::strcmp(name(o[i - 1]), name(o[i])) > 0) restAz = false;
+            CHECK(restAz, "COUNTRY: the ones never chosen after them, A-Z");
+            int glx = 0;
+            for (int n = 1; n <= N; ++n) if (std::strcmp(avatar::nation(n)->name, "THE GALAXY") == 0) glx = n;
+            if (glx) {
+                o = avatar::nationOrder(nullptr);
+                const int at = (int)(std::find(o.begin(), o.end(), glx) - o.begin());
+                CHECK(at > 0 && at + 1 < N && std::strcmp(name(o[at - 1]), "GALAXY") < 0 && std::strcmp(name(o[at + 1]), "GALAXY") > 0,
+                      "COUNTRY: THE GALAXY sorted under G");
+            }
+            AvatarDesc look = avatar::preset(3), back;   // MY LOOKS: a slot is avatar.cfg's lines (looks.cfg)
+            avatar::setNation(look, std::min(45, N));
+            avatar::setOwnKit(look, true);
+            CHECK(avatar::fromText(avatar::toText(look), back) && std::memcmp(&back, &look, sizeof look) == 0, "MY LOOKS: a saved look reads back the same");
+        }
         AvatarDesc s = d;
         avatar::sanitize(s);
         CHECK(avatar::nationOf(s) == big && avatar::gauntletOf(s) == 0, "sanitize (network) keeps a valid country");
@@ -1578,6 +1612,101 @@ static void octagonTests(const std::vector<CollisionTri>& tris) {
         run(g, in, 6.f, &log);
         CHECK(g.overtime && g.alive(0) && g.alive(1) && !g.alive(2) && !g.alive(3) && g.pl[0].health == 1 && g.pl[1].health == 1 &&
               hasEvent(log, EventType::Overtime), "at time the most health stays in; tied at the top: sudden death, one hit each");
+    }
+    {   // FIREBALL BLITZ in teams (0.3.24; the owner, 2026-11-20: "I wanted to select 3 against 1 where I was the 1"): no
+        // friendly fire, THE ONE three times the HEALTH, a team wins when the other is all out; with an older player in
+        // the room, everyone for themselves
+        auto teamGame = [&](int mode, int version) {
+            Game g = octGame(tris, 0, 5);
+            g.tun.teamMode = mode; g.tun.theOne = 2; g.tun.matchVersion = version;
+            PlayerInput in[4] = {standing(g, 0), standing(g, 1), standing(g, 2), standing(g, 3)};
+            for (int i = 0; i < 72 * 5 && g.match != MatchState::InProgress; ++i) g.step(1.f / 72, in);
+            return g;
+        };
+        auto shoot = [&](Game& g, int from, int to) {   // a fireball from one at another, the throw that meets them; hit?
+            const Vec3 head = g.pl[to].in.head.p, src = g.pl[from].in.head.p + Vec3{0, -0.5f, 0};
+            Vec3 flat = normalize(Vec3{head.x - src.x, 0, head.z - src.z}), dir = flat;
+            for (float deg = -30; deg <= 20; deg += 2) {
+                Ball b; b.scale = 1.f; b.pos = src;
+                const Vec3 d = flat * std::cos(deg2rad(deg)) + Vec3{0, std::sin(deg2rad(deg)), 0};
+                b.vel = d * 9.f; b.speedLimit = 9.f * std::cos(deg2rad(deg));
+                if (g.fireHitTime(b, head, 2.f) >= 0) { dir = d; break; }
+            }
+            g.parkBall(from);
+            g.serve(from, src, dir, 9.f, {}, false);
+            PlayerInput in[4] = {standing(g, 0), standing(g, 1), standing(g, 2), standing(g, 3)};
+            std::vector<GameEvent> log;
+            run(g, in, 2.f, &log);
+            return hasEvent(log, EventType::HitPlayer, to);
+        };
+        {
+            Game g = teamGame(TEAMS_2V2, Tunables::kVerAll);
+            const bool mates = g.teamsNow() == TEAMS_2V2 && g.team(0) == g.team(1) && g.team(2) == g.team(3) && g.team(0) != g.team(2);
+            const bool through = !shoot(g, 0, 1) && g.pl[1].health == 5;
+            const bool rival = shoot(g, 0, 2) && g.pl[2].health == 4;
+            CHECK(mates && through && rival, "FIREBALL BLITZ 2 v 2: partners across the ring; a teammate's fireball passes, a rival's hits");
+        }
+        {
+            Game g = teamGame(TEAMS_3V1, Tunables::kVerAll);
+            CHECK(g.pl[2].health == 15 && g.maxHealth(2) == 15 && g.pl[0].health == 5 && g.pl[1].health == 5 && g.pl[3].health == 5,
+                  "FIREBALL BLITZ 3 v 1: THE ONE starts with three times the HEALTH (15), the three with 5");
+        }
+        {
+            Game g = teamGame(TEAMS_2V2, Tunables::kVerAll);
+            PlayerInput in[4] = {standing(g, 0), standing(g, 1), standing(g, 2), standing(g, 3)};
+            g.pl[1].health = 0; g.pl[3].health = 0;   // (one out on each team)
+            run(g, in, 0.5f);
+            const bool goesOn = g.match == MatchState::InProgress;
+            g.pl[2].health = 0;   // (and the other of that team: it is all out)
+            std::vector<GameEvent> log;
+            run(g, in, 0.5f, &log);
+            CHECK(goesOn && g.match == MatchState::MatchSummary && g.matchWinner == g.team(0) && hasEvent(log, EventType::MatchEnd),
+                  "FIREBALL BLITZ in teams: one out on each team, it goes on; a team all out, the other team wins");
+        }
+        {
+            Game g = teamGame(TEAMS_2V2, Tunables::kVerAll);
+            g.tun.basicMatchTime = 5.f; g.roundClock = 0.5f;
+            g.pl[0].health = 5; g.pl[1].health = 1; g.pl[2].health = 3; g.pl[3].health = 4;   // (6 against 7)
+            PlayerInput in[4] = {standing(g, 0), standing(g, 1), standing(g, 2), standing(g, 3)};
+            run(g, in, 1.5f);
+            CHECK(!g.alive(0) && !g.alive(1) && g.alive(2) && g.alive(3) && g.match == MatchState::MatchSummary && g.matchWinner == g.team(2),
+                  "FIREBALL BLITZ in teams, at time: the team with the most health left between them wins");
+        }
+        {
+            Game g = teamGame(TEAMS_3V1, Tunables::kVerBlitzTeams - 1);
+            const bool ffa = g.teamsNow() == TEAMS_FFA && g.team(1) == 1 && g.pl[2].health == 5;
+            CHECK(ffa && shoot(g, 0, 1), "FIREBALL BLITZ with a player before 0.3.24: everyone for themselves (THE ONE as everyone)");
+        }
+        {
+            Game g = octGame(tris, 0, 5);   // (FOUR CORNERS' teams as before: the same setting, its own room)
+            Game c; c.tun.experimental = true; c.tun.expRoom = ROOM_CORNERS; c.tun.players = 4; c.tun.teamMode = TEAMS_3V1;
+            c.tun.matchVersion = Tunables::kVerBlitzTeams - 1;
+            c.resetWithBots(0);
+            CHECK(g.teamsNow() == TEAMS_FFA && c.teamsNow() == TEAMS_3V1 && c.team(c.tun.theOne) == 1,
+                  "FIREBALL BLITZ is everyone for themselves unless TEAMS says otherwise; FOUR CORNERS' 3 v 1 as before");
+        }
+        {   // (review 2026-11-21) a team nobody plays in: everyone for themselves, and the match goes on (it had ended the
+            // moment it began, all who played being on one team)
+            auto start = [&](int mode, int one, int here) {   // here: the corners with a player (bits)
+                Game g = octGame(tris, 0, 5);
+                g.tun.teamMode = mode; g.tun.theOne = one; g.tun.matchVersion = Tunables::kVerAll;
+                PlayerInput in[4];
+                for (int p = 0; p < 4; ++p) if ((here >> p) & 1) in[p] = standing(g, p);
+                for (int i = 0; i < 72 * 8 && g.match != MatchState::InProgress; ++i) g.step(1.f / 72, in);
+                run(g, in, 1.f);
+                return g;
+            };
+            const Game two = start(TEAMS_2V2, 0, 0x3);    // (corners 0 and 1: both on one team)
+            const Game empty = start(TEAMS_3V1, 3, 0x7);  // (THE ONE's corner empty)
+            const Game three = start(TEAMS_3V1, 0, 0x7);  // (THE ONE and two of the three)
+            const bool waiting = octGame(tris, 0, 5).teamsNow() == TEAMS_FFA;   // (TEAMS off: as before)
+            Game w = octGame(tris, 0, 5); w.tun.teamMode = TEAMS_2V2;           // (before the countdown: everyone counts)
+            CHECK(two.match == MatchState::InProgress && two.teamsNow() == TEAMS_FFA && !two.friendly(0, 1) &&
+                  empty.match == MatchState::InProgress && empty.teamsNow() == TEAMS_FFA && empty.pl[0].health == 5 &&
+                  three.match == MatchState::InProgress && three.teamsNow() == TEAMS_3V1 && three.pl[0].health == 15 &&
+                  waiting && w.teamsNow() == TEAMS_2V2,
+                  "FIREBALL BLITZ in teams with a team nobody plays in: everyone for themselves, and the match goes on");
+        }
     }
     {   // the bots dodge, by their level: fireballs at a bot that is standing its ground
         int hit[2] = {0, 0};
@@ -3296,6 +3425,25 @@ int main(int argc, char** argv) {
             CHECK(c.s[0].onTarget == 1 && c.s[0].hits == 1 && c.s[0].returnHits == 1 && c.s[1].onTarget == 0 && valid(c.s[0]) &&
                   valid(c.s[1]), "a rally of blocks: each throw on target once; the last return scores");
         }
+        {   // four players (FOUR CORNERS, 0.3.23, for The Crowd): the one attacking is whoever threw or returned that ball
+            StatCounter c;
+            c.np = 4;
+            c.add(ev(EventType::Throw, 2, 11.f, -1));     // 2 throws its ball
+            c.add(ev(EventType::ShieldBlock, 3, 0, 2));   // 3 blocks it: 2's throw on target, now 3's return
+            c.add(ev(EventType::HitPlayer, 0, 3.f, 2));   // the return hits 0: 3 scores
+            c.add(ev(EventType::Throw, 1, 8.f, -1));      // 1 throws, and strikes 2
+            c.add(ev(EventType::Strike, 2, 1.f, 1));
+            c.add(ev(EventType::Caught, 1, 0, -1));
+            CHECK(c.s[2].throws == 1 && c.s[2].onTarget == 1 && c.s[2].hits == 0 && c.s[2].topSpeed == 11.f,
+                  "four players: a blocked throw is on target once, for its thrower");
+            CHECK(c.s[3].blocks == 1 && c.s[3].faced == 1 && c.s[3].hits == 1 && c.s[3].returnHits == 1 && c.s[0].faced == 1,
+                  "... the blocker's return scores, as theirs, against the one it hit");
+            CHECK(c.s[1].strikes == 1 && c.s[1].onTarget == 1 && c.s[2].faced == 1 && c.s[1].catches == 1 && c.s[3].strikes == 0 &&
+                  c.s[0].strikes == 0, "... a strike goes to whoever threw that ball (not to player 1 - p)");
+            bool ok = true;
+            for (int p = 0; p < 4; ++p) ok = ok && valid(c.s[p]);
+            CHECK(ok, "... and the server's checks hold for all four");
+        }
         {   // real matches: two lively bots for ten minutes; every event behind a point names its ball
             Game g; g.setArena(tris); g.reset(true);
             g.pl[0].isBot = true;
@@ -3329,6 +3477,71 @@ int main(int argc, char** argv) {
     recordTests(tris);
     trainingTests(tris);
     octagonTests(tris);
+    {   // BALL IN FLIGHT (0.3.24; the owner, 2026-11-20: "it's not increasing sound as it gets closer"): how a ball sounds
+        std::printf("[BALL IN FLIGHT: hear it coming]\n");
+        const Vec3 head{0, 1.6f, 0}, right{1, 0, 0};   // (facing -Z)
+        const FlightParams far = flightParams({0, 1.5f, -12}, {0, 0, 11}, head, right), mid = flightParams({0, 1.5f, -6}, {0, 0, 11}, head, right),
+                           close = flightParams({0, 1.5f, -1.5f}, {0, 0, 11}, head, right);
+        CHECK(far.gain > 0.1f && mid.gain > far.gain * 1.5f && close.gain > mid.gain * 1.5f && close.bright > mid.bright && mid.bright > far.bright,
+              "a ball coming at you: louder and brighter the nearer it is (heard from across the court)");
+        const FlightParams past = flightParams({-2.f, 1.5f, -6}, {0, 0, 11}, head, right);
+        CHECK(past.gain < mid.gain * 0.6f && past.pan < -0.2f && mid.pan > -0.05f && mid.pan < 0.05f,
+              "one that will pass 2 m to your left: quieter than one at you, and on your left");
+        const FlightParams away = flightParams({0, 1.5f, -6}, {0, 0, -11}, head, right), slow = flightParams({0, 1.5f, -6}, {0, 0, 4}, head, right);
+        CHECK(away.gain < 0.01f && slow.pitch < mid.pitch && mid.pitch > 1.3f,
+              "going away: silent; the hum rises with how fast it comes at you");
+        FlightSynth syn;
+        syn.want = close;
+        std::vector<float> buf(48000 / 10 * 2, 0.f);
+        syn.render(buf.data(), 48000 / 10, 1.f);
+        float peak = 0, rms = 0;
+        bool finite = true;
+        for (float x : buf) { peak = std::max(peak, std::fabs(x)); rms += x * x; finite &= std::isfinite(x); }
+        rms = std::sqrt(rms / buf.size());
+        FlightSynth off;
+        std::vector<float> quiet(48000 / 10 * 2, 0.f);
+        off.render(quiet.data(), 48000 / 10, 0.f);
+        float q = 0;
+        for (float x : quiet) q = std::max(q, std::fabs(x));
+        char msg[128];
+        std::snprintf(msg, sizeof msg, "the sound: heard, never past full scale (peak %.2f, loudness %.3f); BALL SOUND off: silent", peak, rms);
+        CHECK(finite && rms > 0.02f && peak < 0.95f && q == 0.f, msg);
+    }
+    {   // NEW BOT (0.3.23; the owner, 2026-11-20: "hosts may not want it to change so we need a push to change button"):
+        // the bot's stance comes from botLook: the same every match until a new one; beginners an open one
+        std::printf("[NEW BOT: a stance until a new one]\n");
+        auto stanceAfter = [&](uint32_t look, int level, int matches) {
+            Game g; g.setArena(tris); g.tun.botLevel = level; g.botLook = look; g.reset(true);
+            std::vector<int> seen;
+            for (int m = 0; m < matches; ++m) {
+                g.resetWithBots(2);   // (a new match: the stance is picked again)
+                PlayerInput in[2] = {standing(g, 0), {}};
+                run(g, in, 0.3f);
+                seen.push_back(g.pl[1].botStance);
+            }
+            return seen;
+        };
+        const std::vector<int> kept = stanceAfter(0xC0FFEEu, 3, 4);
+        bool same = kept[0] >= 0;
+        for (int s : kept) same &= s == kept[0];
+        CHECK(same, "the bot keeps its stance match after match (the same botLook)");
+        bool open = true;
+        int kinds = 0;
+        unsigned seenMask = 0;
+        for (uint32_t look = 1; look <= 40; ++look) {
+            const int s = stanceAfter(look * 7919u, 3, 1)[0];
+            if (s >= 0 && s < kBotStances && !((seenMask >> s) & 1u)) { seenMask |= 1u << s; ++kinds; }
+            const int r = stanceAfter(look * 7919u, 0, 1)[0];   // (ROOKIE: no guard)
+            open &= r == STANCE_KITTEN || r == STANCE_RELAXED || r == STANCE_MONKEY;
+        }
+        char msg[112];
+        std::snprintf(msg, sizeof msg, "NEW BOT's other looks bring other stances (%d of %d over 40), a ROOKIE only open ones", kinds, kBotStances);
+        CHECK(kinds >= 5 && open, msg);
+        Game four; four.botLook = 0xC0FFEEu;
+        bool differ = false;
+        for (int p = 1; p < 4; ++p) differ |= four.botStanceFor(p, 3.f) != four.botStanceFor(0, 3.f);
+        CHECK(differ && four.botStanceFor(1, 3.f) == four.botStanceFor(1, 3.f), "four-player bots: each corner a stance of its own");
+    }
     {   // the slap shot (owner, 2026-10-29): the stronger bots send a caught ball straight back; the beginners never do
         std::printf("[bots: the slap shot]\n");
         int slaps[2] = {0, 0}, catches[2] = {0, 0}, shaped = 0;   // (shaped: UNBEATABLE's slaps curved or off a wall)

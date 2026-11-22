@@ -47,13 +47,15 @@ Streamers: capture the window in OBS.
 ## Playing
 
 - Stand in a clear space of about 2 x 2 m. The first launch shows **HOW TO PLAY**.
-- You start in the **lobby**: a balcony over the practice court where two bots play. Point at a poster (or touch
-  it) and pull the trigger, or point at the court to play the bot. **LOBBY** (top of the side menu) brings you back;
-  **QUIT GAME** is at its bottom.
+- You start in the **lobby**: a balcony over the practice court where two bots play, with the main menu open. Point
+  at the court and pull the trigger to play the bot. **LOBBY** (top of the side menu) brings you back; **QUIT GAME**
+  is at its bottom.
 - **MENU** (left controller) opens the menus. **B** or a thumbstick click re-centres you; holding the Meta button
   does too.
 - **PLAY PRACTICE**: you against the bot. **CUSTOMIZE AVATAR**: your look, which other players see. Its **PRESET**
-  row ends in **COUNTRY FLAG**: a team kit in your country's colours, chosen in the **COUNTRY** row under it.
+  row ends in **COUNTRY FLAG**: a team kit in your country's colours, chosen in the **COUNTRY** row under it (the
+  countries you choose most come first, then A to Z). **MY LOOKS** keeps up to three looks: **SAVE** puts the look
+  you have on into a slot, **WEAR** puts it back on, **CLEAR** empties the slot.
 - **SOUND STUDIO** (next to CUSTOMIZE AVATAR): try new sounds in the moment they play and vote on them (ONLINE: ON for
   the community's); try your own `.wav` files (WAV only) from the game's `my_sounds` folder; propose your own
   (`docs/SOUND_STUDIO.md`).
@@ -72,7 +74,8 @@ Streamers: capture the window in OBS.
   BUTTONS, where every button's job is chosen, LEFT-HANDED too; open mic and mutes: VOICE AND MUTES).
 - Something wrong? **MENU → REPORT BUG** sends a short note and the game's recent log to us. Someone behaving
   badly? **MENU → REPORT PLAYER** (report or mute them, or **VOTE TO REMOVE** them from your arena: it takes more than
-  half of the other people in the room).
+  half of the other people in the room). A mute is kept: they stay muted whenever you meet them, even under a new
+  name, until you unmute them in **SETTINGS → VOICE AND MUTES → MUTED PLAYERS**.
 
 ## Updating and uninstalling
 

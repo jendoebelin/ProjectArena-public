@@ -93,6 +93,51 @@ that). The relay logs `the same player is connected twice` when one key connects
 - Keep the server's security updates on (Ubuntu does this by itself with unattended-upgrades; check with
   `systemctl status unattended-upgrades`).
 
+## Backing up the server's data (a Windows PC, daily)
+
+The server's own data exists nowhere else: the players' careers and TRAINING boards, the salt their keys are kept
+under (a restored database without it can't be matched to anyone), the SOUND STUDIO library and votes, the bans and
+name words, the bug and player reports, the version files, The Crowd's settings and the relay's service file.
+`tools/backup_server.py` fetches all of it over SSH as the relay's own account (the database through SQLite's backup,
+in memory: a consistent copy while the relay runs; nothing is written on the server), checks it (the database's
+integrity and counts), encrypts it with Windows DPAPI for the account that runs it (only that account, on that PC,
+can open it) and keeps the newest 14 in `%USERPROFILE%\ProjectArena-server-backups`, with `backup_log.txt` there.
+The server and key come from `sounds.local.cfg` (`ssh=user@host`, `key=path`; not in git).
+
+- Once by hand: `python -I tools/backup_server.py` (prints `OK pa-server-....bak (... KB): N players, ...`).
+- Daily: Windows Task Scheduler runs it (when the PC is on; a missed run happens when it next is). The task runs a copy
+  in the backup folder, so moving or switching the repository doesn't stop it; copy the script there again after
+  changing it.
+- What a backup holds: `python -I tools/backup_server.py --check FILE`.
+
+**Watching the server** (the same PC, every 10 minutes): `tools/watch_server.py` checks over SSH, read-only, whether
+the relay runs and when it last started (and from its journal why: a crash and its error, running out of memory, an
+update, a stop by hand, the server itself restarting), and asks the game port from the internet as a game does. Each
+change comes once: RESTARTED, DOWN, UNREACHABLE (neither SSH nor the port, 20 minutes), NOT ANSWERING (the relay
+runs but the port doesn't answer from outside) and BACK UP, as a Windows notification, a line in
+`%USERPROFILE%\ProjectArena-server-watch\watch_log.txt` and a message to a private Discord channel if
+`discord.local.cfg` has a `server-alerts=` webhook. A restart while the PC was off is reported at the next check.
+Try the notification with `--test`, and a check without showing anything with `--quiet`. The task runs a copy in
+that folder, as the backup's does.
+
+**Restoring the server's data** (a new server, or the old one's files lost):
+1. On the PC that made it: `python -I tools/backup_server.py --restore FILE C:\restore` (the files, decrypted).
+2. Set up the new server with steps 5 and 6 above (`setup.sh`), then stop the relay:
+   `ssh ... "sudo systemctl stop projectarena-relay"`.
+3. Copy the files up (`scp -i oracle.key -r C:/restore/* ubuntu@PUBLIC_IP:restore/`) and put them in place as the
+   relay's account: `ssh ... "sudo cp -r restore/player_stats.db restore/player_stats.db.salt restore/bans.txt
+   restore/latest_version.txt restore/sound_library restore/bug_reports /opt/projectarena/ && sudo chown -R
+   projectarena:projectarena /opt/projectarena && sudo chmod 600 /opt/projectarena/player_stats.db*"` (and
+   `minimum_version.txt`, `crowd.env` and `crowd_push.db.vapid` if the backup has them; `service/` shows the old
+   service's options; the notification key keeps fans' notifications working, and their pages register their devices
+   again as they are opened).
+   The deletion notes: `sudo cp -n restore/player_stats.db.deletions /opt/projectarena/` (`-n`: a server that still
+   has its own keeps them, being newer than the backup's).
+4. `ssh ... "sudo systemctl start projectarena-relay && journalctl -u projectarena-relay -n 8"`: the start-up lines
+   say how many players it has and, when the restored copy had them, `N deletions applied again`: statistics players
+   deleted in the 30 days before (DELETE MY STATS) stay deleted, and what they earned after deleting stays.
+   Point the builds at the new address (step 6) if it changed.
+
 ## The Crowd (the fans' web page, optional)
 
 The relay can show live online matches on a phone web page where fans cheer (`server/crowd_web`). It needs a domain
@@ -107,7 +152,26 @@ name and HTTPS:
    Run `setup.sh` from this release first (it adds `--crowd 127.0.0.1:47781` to the relay's service).
 4. Open `https://crowd.example.com` on a phone. Updating the page later: run step 3 again.
 
-Fans are anonymous and nothing about them is stored (`docs/DATA_AND_SECURITY.md`). Caddy writes no access log.
+Fans are anonymous and nothing about them is stored (`docs/DATA_AND_SECURITY.md`), except the push address and
+choices of a fan who turns on notifications (the bell on the page). Caddy writes no access log.
+
+**Notifications** (fans' phones and computers told when someone hosts an arena or a match starts; no following a
+player by name): `setup.sh` runs the relay with `--push /opt/projectarena/crowd_push.db`. They need the
+`python3-cryptography` package (Ubuntu has it already; `setup.sh` installs it if not); without it the relay runs as
+before, with no notifications, and logs `push: OFF`. The first start makes the server's VAPID key beside the table
+(`crowd_push.db.vapid`); the daily backup (`tools/backup_server.py`) keeps the key, because a new key means fans'
+notifications stop until their page sees it (the page then registers again by itself). The fans' devices aren't
+backed up: each page registers its device again when it is opened. The relay needs outbound HTTPS (TCP 443) to the
+browsers' push services (Oracle allows all outbound traffic by default), and posts nowhere else. Check it:
+`journalctl -u projectarena-relay | grep push` shows `push: N devices` at start and `push: hosted, N devices` when it
+sends. On iPhone, fans must add The Crowd to the home screen first (iOS 16.4 or newer); the page tells them how.
+
+Notifications can't slow the game down: encrypting, signing and sending run in a separate process at the lowest CPU
+priority (nice 19), never in the relay's own, and at most 300 can wait and 3000 go out an hour (more are dropped and
+logged). The relay itself only picks the devices (one SQLite query: a few milliseconds with a full table of 5000) and writes
+the push services' answers once a second. A page may send 6 notification messages at once and one every 10 s after,
+and one address may turn notifications on for at most 10 new devices a day (counted in memory only). The extra
+process uses about 30-40 MB of memory.
 
 ## Any other Ubuntu server
 

@@ -178,10 +178,21 @@ Vec3 Game::peakAngVel(int p, int h, float t) const {
 }
 Vec3 Game::chestPoint(int p) const { return pl[p].in.head.p - Vec3{0, 0.35f, 0}; }
 int Game::team(int p) const {
-    if (np == 2 || octagon()) return p;   // (FIREBALL BLITZ: everyone for themselves)
-    if (tun.teamMode == TEAMS_2V2) return p < 2 ? 0 : 1;   // partners in opposite corners
-    if (tun.teamMode == TEAMS_3V1) return p == tun.theOne ? 1 : 0;
+    if (np == 2) return p;
+    const int m = teamsNow();   // (FIREBALL BLITZ: everyone for themselves, unless the room can play in teams: 0.3.24)
+    if (m == TEAMS_2V2) return p < 2 ? 0 : 1;   // partners in opposite corners (FIREBALL BLITZ: across the ring)
+    if (m == TEAMS_3V1) return p == tun.theOne ? 1 : 0;
     return p;
+}
+int Game::teamsIn() const {
+    unsigned in = 0;
+    for (int p = 0; p < np; ++p) if (alive(p)) in |= 1u << (team(p) & 3);
+    int n = 0;
+    for (; in; in &= in - 1) ++n;
+    return n;
+}
+int Game::maxHealth(int p) const {
+    return std::max(1, tun.health) * (np == 4 && teamsNow() == TEAMS_3V1 && p == tun.theOne ? 3 : 1);
 }
 int Game::leader() const {
     int w = -1, top = -1;
@@ -1206,7 +1217,7 @@ void Game::stepFire(int p, int k, float dt) {
         bool handled = false;
         for (int pass = 0; pass < 2 && !handled; ++pass)
             for (int q = 0; q < np && !handled; ++q) {
-                if (q == b.instigator || !alive(q)) continue;
+                if (q == b.instigator || !alive(q) || friendly(q, b.instigator)) continue;   // (teams: a teammate's passes)
                 for (int hh = 0; hh < 2 && !handled; ++hh) {
                     Vec3 n;
                     const float rg = r + tun.fireGuardPad;
@@ -1235,8 +1246,8 @@ void Game::stepFire(int p, int k, float dt) {
             b.state = BallState::Flying;
         }
         if (match == MatchState::InProgress)
-            for (int q = 0; q < np; ++q) {   // a hit: anyone in the room but whoever last touched it
-                if (q == b.instigator || !alive(q) || !hitsBody(q, to, r)) continue;
+            for (int q = 0; q < np; ++q) {   // a hit: anyone in the room but whoever last touched it (and their team)
+                if (q == b.instigator || !alive(q) || friendly(q, b.instigator) || !hitsBody(q, to, r)) continue;
                 const int by = b.instigator;
                 pl[q].health = std::max(0, pl[q].health - 1);
                 if (by >= 0 && by < np) pl[by].score++;
@@ -1262,7 +1273,7 @@ void Game::knockOut(int q, int by, const Vec3& at) {
     lastKnockBy = by;
     const int left = aliveCount();
     emit(EventType::Knockout, q, by, at, float(left));
-    if (left >= 2) {   // the room closes in on those left, after a warning (a ceasefire till then: every fireball out)
+    if (teamsIn() >= 2) {   // the room closes in on those left, after a warning (a ceasefire till then: every fireball out)
         ringCloseAt = now + tun.ringWarn;
         for (int o = 0; o < np; ++o) for (int k = 0; k < kMaxFire; ++k) fizzle(o, k);
         emit(EventType::RingClose, -1, -1, {}, tun.ringWarn);
@@ -1353,7 +1364,9 @@ bool Game::botFireDodge(int p, const BotSkill& sk, const Vec3& right, Vec3& body
         for (int k = 0; k < kMaxFire; ++k) {
             const uint16_t bit = (uint16_t)(1u << (o * kMaxFire + k));
             const Ball& b = fire[o][k];
-            if (b.state != BallState::Flying || b.instigator == p || !alive(p)) { s.fireSeen &= (uint16_t)~bit; s.fireAct &= (uint16_t)~bit; continue; }
+            if (b.state != BallState::Flying || b.instigator == p || friendly(p, b.instigator) || !alive(p)) {   // (a teammate's passes)
+                s.fireSeen &= (uint16_t)~bit; s.fireAct &= (uint16_t)~bit; continue;
+            }
             if (!(s.fireSeen & bit) && b.timer >= sk.reaction) {
                 s.fireSeen |= bit;
                 if (rnd() < sk.defend) s.fireAct |= bit;
@@ -1486,6 +1499,12 @@ static const BotStance kStances[kBotStances] = {
     {"MONKEY",  {{-0.30f, -0.60f, -0.30f}, {0.30f, -0.60f, -0.30f}}, {{-20, 0, 0}, {-20, 0, 0}}, 0.18f, 2.2f},    // low, loose, bouncing
 };
 const char* botStanceName(int stance) { return kStances[stance < 0 ? 0 : stance >= kBotStances ? kBotStances - 1 : stance].name; }
+int Game::botStanceFor(int p, float level) const {   // (NEW BOT: from botLook, each corner its own; beginners an open one)
+    static const int kOpen[3] = {STANCE_KITTEN, STANCE_RELAXED, STANCE_MONKEY};
+    uint32_t h = botLook ^ (0x9E3779B9u * (uint32_t)(p + 1));
+    h ^= h >> 16; h *= 0x7FEB352Du; h ^= h >> 15; h *= 0x846CA68Bu; h ^= h >> 16;
+    return level < 1.5f ? kOpen[h % 3] : (int)(h % kBotStances);
+}
 
 // a person's movement toward a target: never faster than vmax, speeding up and slowing down at most amax (no
 // teleporting, no instant stops)
@@ -1525,7 +1544,12 @@ Vec3 Game::botInReach(int p, int h, const Pose& grip) const {
 }
 
 void Game::lookAhead(int L, float lead, float dt) {
-    if (L < 0 || L >= np || np != 2 || octagon() || dt <= 0) return;
+    // (two players; four in FOUR CORNERS from hosts that send what it takes, 0.3.24: their clock with the balls' spin
+    // and bounces, ahead.snapNow; FIREBALL BLITZ's fireballs from hosts that send their spin and bounces and the clock,
+    // ahead.fireKnown, 0.3.24. An older host's four-player room or FIREBALL BLITZ: the snapshots as they come)
+    const bool oct = octagon();
+    if (L < 0 || L >= np || dt <= 0) return;
+    if (oct ? !ahead.fireKnown : (np != 2 && !(np == 4 && ahead.snapNow >= 0.f))) return;
     dt = std::min(dt, 0.05f);
     lead = clampf(lead, 0.f, 0.4f);
     now += dt;   // (a client's game isn't stepped: its clock runs here, for the hands' history)
@@ -1570,6 +1594,20 @@ void Game::lookAhead(int L, float lead, float dt) {
         if (hostHas || !canThrow || now - ahead.mineAt > lead + 0.5f) {
             ahead.mine = false;
             if (!hostHas) ahead.valid[L] = false;   // (the host didn't throw it: back to what it says)
+            const int k = ahead.mineSlot;
+            if (oct && k >= 0 && k < kMaxFire) {   // (FIREBALL BLITZ: my fireball, drawn in the slot the host would pick)
+                if (!hostHas) ahead.fireValid[L][k] = false;
+                else if (fire[L][k].state != BallState::Flying)   // (the host put it in another: its glide goes with it)
+                    for (int j = 0; j < kMaxFire; ++j)
+                        if (j != k && fire[L][j].state == BallState::Flying && !ahead.fireValid[L][j]) {
+                            ahead.fireShown[L][j] = ahead.fireShown[L][k]; ahead.fireTarget[L][j] = ahead.fireTarget[L][k];
+                            ahead.fireTvel[L][j] = ahead.fireTvel[L][k]; ahead.fireErr[L][j] = ahead.fireErr[L][k];
+                            ahead.fireValid[L][j] = ahead.fireValid[L][k];
+                            ahead.fireValid[L][k] = false;
+                            break;
+                        }
+                ahead.mineSlot = -1;
+            }
         }
     } else if (mb.state == BallState::Held && mb.heldHand >= 0 && mb.heldHand < 2 && canThrow && lead > 0.02f) {
         const int h = mb.heldHand;
@@ -1584,9 +1622,18 @@ void Game::lookAhead(int L, float lead, float dt) {
             const HandState& hs = me.hands[h];
             const Pose was = hs.histN >= 2 ? hs.gripHist[(hs.histHead + 62) & 63] : hi.grip;
             mb.pos = was.transform(holdLocal(h));
+            Ball fireKeep[kMaxFire];
+            for (int k = 0; k < kMaxFire; ++k) fireKeep[k] = fire[L][k];
             launch(L, h, normalize(v), throwSpeedFromHandSpeed(sp, L), peakAngVel(L, h, now));
             events.resize(ne);   // (the host's Throw comes with a snapshot: its sound plays once)
             ahead.mineBall = mb;   // (as launched: each frame flies it on from here)
+            if (oct) {   // (FIREBALL BLITZ: the launch made it a fireball, in the first free slot, as the host's will)
+                ahead.mineSlot = 0;
+                for (int k = 0; k < kMaxFire; ++k) if (fireKeep[k].state != BallState::Flying) { ahead.mineSlot = k; break; }
+                ahead.mineBall = fire[L][ahead.mineSlot];
+                for (int k = 0; k < kMaxFire; ++k) fire[L][k] = fireKeep[k];   // (the snapshot's, till the host has it)
+                ahead.fireValid[L][ahead.mineSlot] = false;
+            }
             mb = keep;
             ahead.mine = true;
             ahead.mineHost = false;
@@ -1602,19 +1649,116 @@ void Game::lookAhead(int L, float lead, float dt) {
     // whole lead flew on past the other's blocks)
     Game c = *this;
     c.events.clear();
+    // (FIREBALL BLITZ: nobody is knocked out in the copy. A knockout puts out every fireball in the room, and the
+    // fireballs flown on after it in this copy would be drawn gone with it)
+    if (oct) for (int q = 0; q < np; ++q) if (c.alive(q)) c.pl[q].health = 1000;
     const float step = 1.f / 90.f;
-    const float xMe = tun.start[L].x, xThem = tun.start[1 - L].x;
-    auto weight = [&](const Vec3& at) { return std::fabs(xMe - xThem) < 1.f ? 1.f : clampf((at.x - xThem) / (xMe - xThem), 0.f, 1.f); };
+    const bool two = np == 2 && !oct;
+    const float xMe = tun.start[L].x, xThem = two ? tun.start[1 - L].x : 0.f;
+    // (four players, and FIREBALL BLITZ's ring: by the nearest other player still in instead of the other end; all the
+    // lead at my place, none at theirs, where what they do with it is drawn where it happens. Across the floor: everyone
+    // stands at the same height)
+    auto flat = [](const Vec3& a, const Vec3& b) { const float x = a.x - b.x, z = a.z - b.z; return std::sqrt(x * x + z * z); };
+    auto weight = [&](const Vec3& at) {
+        if (two) return std::fabs(xMe - xThem) < 1.f ? 1.f : clampf((at.x - xThem) / (xMe - xThem), 0.f, 1.f);
+        const float mine = flat(at, tun.start[L]);
+        float theirs = 1e9f;
+        for (int q = 0; q < np; ++q) if (q != L && alive(q)) theirs = std::min(theirs, flat(at, tun.start[q]));
+        return mine + theirs < 1e-3f || theirs > 1e8f ? 1.f : clampf(theirs / (mine + theirs), 0.f, 1.f);
+    };
+    auto away = [&](const Ball& sb) {   // (going away from me: off my block, as the host has it once it has the block)
+        if (two) return sb.vel.x * (xThem - xMe) > 0.f;
+        return sb.vel.x * (sb.pos.x - tun.start[L].x) + sb.vel.z * (sb.pos.z - tun.start[L].z) > 0.f;
+    };
+    // a guess the snapshots correct glides over (about a tenth of a second); a big one snaps. Only a jump in the
+    // guess is a correction: where last frame's guess would have the ball now, at its own speed, against where this
+    // one has it. A bounce or a block in the guess is the ball's own path, drawn as it is (owner, 2026-11-10: the
+    // ball wobbled with no lag at all: the glide had kept each ball going the way it was drawn going, so at every
+    // bounce and block it flew on into the wall or the hand and swung back and forth across its path, up to 1.15 m,
+    // for half a second; tools/run_lag_test.py, the swing after a turn). Returns the ball as drawn
+    auto glide = [&](const Ball& b, Vec3& shown, Vec3& target, Vec3& tvel, Vec3& err, bool& valid, bool mine) {
+        if (valid) {
+            Vec3 jump{};
+            const float sv = length(b.vel), st = length(tvel);
+            if (sv < 0.5f || st < 0.5f || dot(b.vel, tvel) > 0.9f * sv * st)   // (turned: a bounce, not a correction)
+                jump = target + tvel * dt - b.pos;
+            const Vec3 corr = err + jump;
+            // (my own throw: a softer glide, over about a fifth of a second: the host's throw, from my hand motion as it
+            // arrived, differs a little from the one launched here)
+            err = length(corr) < 3.f ? corr * std::exp(-dt * (mine ? 5.f : 10.f)) : Vec3{};
+        } else {
+            err = {};
+        }
+        target = b.pos;
+        tvel = b.vel;
+        Ball out = b;
+        out.pos = b.pos + err;
+        shown = out.pos;
+        valid = true;
+        return out;
+    };
+    if (oct) {   // FIREBALL BLITZ (0.3.24): the fireballs, as the balls are below (a player's own ball never flies
+        // there): each one flown on in the copy; my throw's from when I let go, in the slot the host will put it in;
+        // my block of one kept until the host has it
+        for (int p = 0; p < np; ++p)
+            for (int k = 0; k < kMaxFire; ++k) {
+                if (ahead.fireBlk[p][k]) {   // (my block, kept until the snapshots show the host's)
+                    const Ball& sf = fire[p][k];
+                    const bool hostHas = sf.state == BallState::Flying && sf.instigator == L && away(sf);
+                    if (hostHas || sf.state != BallState::Flying || now - ahead.fireBlkReal[p][k] > lead + 0.5f) ahead.fireBlk[p][k] = false;
+                }
+                Ball& b = c.fire[p][k];
+                const bool mineHere = p == L && ahead.mine && k == ahead.mineSlot;
+                if (mineHere || ahead.fireBlk[p][k]) {   // (a flight launched here: flown from then, as a ball's is)
+                    const Ball& from = mineHere ? ahead.mineBall : ahead.fireBlkBall[p][k];
+                    const float at = mineHere ? ahead.mineAt : ahead.fireBlkAt[p][k];
+                    const float w = weight(ahead.fireValid[p][k] ? ahead.fireShown[p][k] : from.pos);
+                    const float fly = std::max(0.f, (now - (1.f - w) * lead) - at);
+                    b = from;
+                    for (float t = 0; t < fly - 1e-4f && b.state == BallState::Flying; t += step) c.stepFire(p, k, std::min(step, fly - t));
+                } else if (b.state == BallState::Flying) {
+                    const float l = lead * weight(b.pos);
+                    for (float t = 0; t < l - 1e-4f && b.state == BallState::Flying; t += step) {
+                        const float h = std::min(step, l - t);
+                        const size_t ne = c.events.size();
+                        c.stepFire(p, k, h);
+                        bool myBlock = false;
+                        for (size_t i = ne; i < c.events.size(); ++i)
+                            myBlock |= (c.events[i].type == EventType::ShieldBlock || c.events[i].type == EventType::KnuckleBlock) && c.events[i].player == L;
+                        if (myBlock && b.state == BallState::Flying && !ahead.fireBlk[p][k]) {
+                            ahead.fireBlk[p][k] = true;
+                            ahead.fireBlkBall[p][k] = b;
+                            ahead.fireBlkAt[p][k] = now - lead + t + h;
+                            ahead.fireBlkReal[p][k] = now;
+                        }
+                    }
+                } else {
+                    ahead.fireValid[p][k] = false;
+                    ahead.fireErr[p][k] = {};
+                    continue;
+                }
+                if (b.state != BallState::Flying) {   // (it fizzles or hits someone within the lead: as the copy has it)
+                    ahead.fireValid[p][k] = false;
+                    ahead.fireErr[p][k] = {};
+                    fire[p][k] = b;
+                    continue;
+                }
+                fire[p][k] = glide(b, ahead.fireShown[p][k], ahead.fireTarget[p][k], ahead.fireTvel[p][k], ahead.fireErr[p][k],
+                                   ahead.fireValid[p][k], p == L);
+            }
+        if (ahead.mine) { mb.state = BallState::Dead; mb.heldHand = -1; }   // (out of my hand: the host's tee ball comes)
+        return;
+    }
     // my block, once seen, is kept until the snapshots show the host's (owner's test, 2026-11-05: flown again from each
     // snapshot against my hand as it is now, gone on past the block, the ball flipped between two paths every other
     // frame: a zigzagging tail)
-    for (int p = 0; p < 2; ++p) {
+    for (int p = 0; p < np; ++p) {
         if (!ahead.blk[p]) continue;
         const Ball& sb = pl[p].ball;
-        const bool hostHas = flying(sb) && sb.instigator == L && sb.vel.x * (xThem - xMe) > 0.f;
+        const bool hostHas = flying(sb) && sb.instigator == L && away(sb);
         if (hostHas || !flying(sb) || now - ahead.blkReal[p] > lead + 0.5f) ahead.blk[p] = false;
     }
-    for (int p = 0; p < 2; ++p) {
+    for (int p = 0; p < np; ++p) {
         Ball& b = c.pl[p].ball;
         // a flight launched here (my throw, my block): flown from then on by the time the ball is drawn at. That time
         // runs `lead` ahead at my end and with the snapshots at the other's: here (now - (1 - w) * lead) on my clock
@@ -1653,33 +1797,10 @@ void Game::lookAhead(int L, float lead, float dt) {
             pl[p].ball = b;
             continue;
         }
-        // a guess the snapshots correct glides over (about a tenth of a second); a big one snaps. Only a jump in the
-        // guess is a correction: where last frame's guess would have the ball now, at its own speed, against where this
-        // one has it. A bounce or a block in the guess is the ball's own path, drawn as it is (owner, 2026-11-10: the
-        // ball wobbled with no lag at all: the glide had kept each ball going the way it was drawn going, so at every
-        // bounce and block it flew on into the wall or the hand and swung back and forth across its path, up to 1.15 m,
-        // for half a second; tools/run_lag_test.py, the swing after a turn)
-        if (ahead.valid[p]) {
-            Vec3 jump{};
-            const float sv = length(b.vel), st = length(ahead.tvel[p]);
-            if (sv < 0.5f || st < 0.5f || dot(b.vel, ahead.tvel[p]) > 0.9f * sv * st)   // (turned: a bounce, not a correction)
-                jump = ahead.target[p] + ahead.tvel[p] * dt - b.pos;
-            const Vec3 corr = ahead.err[p] + jump;
-            // (my own throw: a softer glide, over about a fifth of a second: the host's throw, from my hand motion as it
-            // arrived, differs a little from the one launched here)
-            ahead.err[p] = length(corr) < 3.f ? corr * std::exp(-dt * (p == L ? 5.f : 10.f)) : Vec3{};
-        } else {
-            ahead.err[p] = {};
-        }
-        ahead.target[p] = b.pos;
-        ahead.tvel[p] = b.vel;
-        Ball shown = b;
-        shown.pos = b.pos + ahead.err[p];
-        ahead.shown[p] = shown.pos;
-        ahead.valid[p] = true;
-        pl[p].ball = shown;
+        pl[p].ball = glide(b, ahead.shown[p], ahead.target[p], ahead.tvel[p], ahead.err[p], ahead.valid[p], p == L);
     }
 }
+
 
 // player q's hand hh blocks ball `ball` moving from -> to: its shield (pass 0) or its knuckle guard (pass 1); the ball
 // deflected off it, the events emitted. (The step's own check and BLOCKS ONLINE's late one)
@@ -2327,7 +2448,8 @@ void Game::stepBot(int p, float dt) {
     if (s.botStance < 0) {   // its stance this match. Beginners hold no guard (hands up in front block by themselves)
         static const int kOpen[3] = {STANCE_KITTEN, STANCE_RELAXED, STANCE_MONKEY};
         const float level = s.botLevel >= 0 ? (float)s.botLevel : tun.botAdapt ? tun.botMatch : (float)tun.botLevel;
-        s.botStance = level < 1.5f ? kOpen[(int)(rnd() * 3) % 3] : (int)(rnd() * kBotStances) % kBotStances;
+        s.botStance = botLook ? botStanceFor(p, level)   // (NEW BOT: the one it has until a new one; 0: a new one each match)
+                              : level < 1.5f ? kOpen[(int)(rnd() * 3) % 3] : (int)(rnd() * kBotStances) % kBotStances;
     }
     const BotStance& st = kStances[s.botStance >= kBotStances ? 0 : s.botStance];
     // (steady while it watches a ball, and at the fist bump: a body swaying against a fist held out folded the arm into
@@ -2671,7 +2793,7 @@ void Game::startCountdown() {
         for (int p = 0; p < np; ++p) if (pl[p].in.headTracked && p < std::max(2, std::min(np, octCap))) m |= (uint8_t)(1u << p);
         startMask = ringMask = m;
         for (int p = 0; p < np; ++p) {
-            pl[p].health = ((m >> p) & 1) ? std::max(1, tun.health) : 0;
+            pl[p].health = ((m >> p) & 1) ? maxHealth(p) : 0;   // (3 v 1: THE ONE three times HEALTH)
             if (!((m >> p) & 1)) parkBall(p);
         }
         layoutRing(ringMask);
@@ -2778,14 +2900,14 @@ void Game::stepMatch(float dt) {
                 layoutRing(m);
                 for (int p = 0; p < np; ++p) if (alive(p) && pl[p].ball.state != BallState::Held) { spawnBall(p); pl[p].ball.pos = idlePoint(p); }
             }
-            const int left = aliveCount();
-            if (left <= 1) {
+            const bool teams = teamsNow() != TEAMS_FFA;   // (0.3.24: a team wins when the other team is all out)
+            if (teams ? teamsIn() <= 1 : aliveCount() <= 1) {
                 int w = lastKnockBy;
                 for (int p = 0; p < np; ++p) if (alive(p)) w = p;
                 if (w < 0)   // (nobody left, nobody to credit: whoever landed the most hits; review 2026-11-02)
                     for (int p = 0; p < np; ++p)
                         if (((startMask >> p) & 1) && (w < 0 || pl[p].score > pl[w].score)) w = p;
-                matchWinner = w;
+                matchWinner = teams && w >= 0 ? team(w) : w;   // (teams: the team, as FOUR CORNERS' MatchEnd names it)
                 match = MatchState::MatchSummary;
                 emit(EventType::MatchEnd, matchWinner, -1, {}, 0);
                 break;
@@ -2794,10 +2916,13 @@ void Game::stepMatch(float dt) {
                 roundClock -= dt;
                 if (roundClock <= 0) {
                     roundClock = 0;
+                    // the most health left (teams: between the team's players still in); those below it are out
+                    int left[4] = {0, 0, 0, 0};
+                    for (int p = 0; p < np; ++p) if (alive(p)) left[teams ? team(p) & 3 : p & 3] += pl[p].health;
                     int top = 0;
-                    for (int p = 0; p < np; ++p) if (alive(p)) top = std::max(top, pl[p].health);
-                    for (int p = 0; p < np; ++p) if (alive(p) && pl[p].health < top) knockOut(p, -1, pl[p].in.head.p);
-                    if (aliveCount() > 1) {   // a tie at the top: sudden death, one hit each
+                    for (int t = 0; t < 4; ++t) top = std::max(top, left[t]);
+                    for (int p = 0; p < np; ++p) if (alive(p) && left[teams ? team(p) & 3 : p & 3] < top) knockOut(p, -1, pl[p].in.head.p);
+                    if (teams ? teamsIn() > 1 : aliveCount() > 1) {   // a tie at the top: sudden death, one hit each
                         overtime = true;
                         for (int p = 0; p < np; ++p) if (alive(p)) pl[p].health = 1;
                         emit(EventType::Overtime, -1, -1, {}, 0);
@@ -3013,11 +3138,20 @@ std::vector<CollisionTri> parseCollision(const uint8_t* d, size_t size) {
 
 void StatCounter::add(const GameEvent& e) {
     auto bump = [](uint16_t& v) { if (v < 3000) ++v; };
+    const int n = np == 4 ? 4 : 2;
     const int p = e.player, k = e.ball;
-    if (p < 0 || p > 1) return;
+    if (p < 0 || p >= n) return;
+    const bool known = k >= 0 && k < n;
+    // who attacks with ball k: two players, the other one (as always); four, whoever threw or returned it last
+    // (-1: nobody known, or p themselves)
+    auto attacker = [&]() {
+        if (n == 2) return 1 - p;
+        const int by = known ? shot_[k].by : -1;
+        return by != p ? by : -1;
+    };
     // is ball k an attack by `who`? 0 no, 1 yes (already on target), 2 yes and now on target for the first time
     auto attack = [&](int who) {
-        if (k < 0 || k > 1 || shot_[k].by != who) return 0;
+        if (who < 0 || !known || shot_[k].by != who) return 0;
         if (shot_[k].counted) return 1;
         shot_[k].counted = true;
         if (shot_[k].thrown) bump(s[who].onTarget);
@@ -3030,7 +3164,7 @@ void StatCounter::add(const GameEvent& e) {
         shot_[p] = Shot{p, true, false};
         break;
     case EventType::HitPlayer: {   // player = the one hit, value = the scorer
-        const int sc = (int)e.value, a = sc == 1 - p ? attack(sc) : 0;
+        const int sc = (int)e.value, a = sc >= 0 && sc < n && sc != p ? attack(sc) : 0;
         if (a) {
             bump(s[sc].hits);
             if (!shot_[k].thrown) bump(s[sc].returnHits);
@@ -3038,15 +3172,18 @@ void StatCounter::add(const GameEvent& e) {
         }
         break;
     }
-    case EventType::Strike:   // player = the one struck against
-        bump(s[1 - p].strikes);
-        if (attack(1 - p) == 2) bump(s[p].faced);
+    case EventType::Strike: {   // player = the one struck against
+        const int by = attacker();
+        if (by < 0) break;
+        bump(s[by].strikes);
+        if (attack(by) == 2) bump(s[p].faced);
         break;
+    }
     case EventType::ShieldBlock: case EventType::KnuckleBlock:   // player = the blocker: the ball is now their return
         bump(s[p].blocks);
         bump(s[p].faced);
-        attack(1 - p);
-        if (k >= 0 && k < 2) shot_[k] = Shot{p, false, false};
+        attack(attacker());
+        if (known) shot_[k] = Shot{p, false, false};
         break;
     case EventType::Caught:
         bump(s[p].catches);

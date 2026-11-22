@@ -224,9 +224,16 @@ struct App {
     // DESKTOP SPECTATOR (PC without a headset, or --spectate): a window, mouse and keyboard cameras, for streamers
     bool desktop = false;
     int dcView = 1;                 // 1 side, 2 high, 3 blue end, 4 orange end, 5 top, 6 / 7 blue's / orange's eyes, 8 corner,
-                                    // 9 courtside, 0 free, kDcMine (20) MY CAMERA
+                                    // 9 courtside, 10 tracking, 11 ball cam, 12 under fire, 0 free, kDcMine (20) MY CAMERA
     Pose dcEye;                     // the eyes camera, smoothed (a headset's every twitch is not for an audience)
     bool dcEyeSet = false;
+    // THE FOLLOW VIEWS (10-12; the owner, 2026-11-21: "custom camera angles where the camera follows actions"): the
+    // action (the ball that matters, eased), the camera's eased place and aim, BALL CAM's side of the ball and the way it
+    // last flew, and UNDER FIRE's player (the one the ball is flying at) with when that last changed
+    Vec3 dcActPos, dcActVel, dcCamP, dcCamV, dcAim, dcAimV, dcChaseSide{0, 0, 1}, dcChaseDir{1, 0, 0};
+    bool dcActSet = false, dcCamSet = false;
+    int dcFire = -1, dcFireWant = -1, dcActBall = -1;   // (dcActBall: whose ball the action is, kept while it flies)
+    double dcFireAt = 0, dcFireWantAt = 0;
     // MY CAMERAS (owner, 2026-11-02): the views you save (the headset's director list, warps.cfg), which one is showing,
     // AUTO's turn through them, a move between two of them (a fade glides, 0.8 s), a follow camera's place along the court
     int dcMy = -1;
@@ -537,7 +544,7 @@ struct App {
     // player statistics (the community server keeps them per player key, net.h CareerStats): this match's counts on
     // the host, and the two players' careers as the server last answered (careersOk) for statsHost
     StatCounter matchCount;
-    Net::MatchStats liveStats[2];   // The Crowd: this match so far (kept through the match summary)
+    Net::MatchStats liveStats[kMaxPlayers];   // The Crowd: this match so far (kept through the match summary; four players too)
     Net::CareerStats careers[2];
     bool careersOk = false;
     uint32_t statsHost = 0;
@@ -558,12 +565,10 @@ struct App {
     int sideNation[2] = {0, 0};
     float sideRGB[2][3] = {{0.1f, 0.7f, 1.0f}, {1.0f, 0.4f, 0.1f}};
     bool nationsOn = false;
-    // The Crowd (fans on phones): each end's light flare from cheers (1 -> 0), the crowd sound's level, the last
-    // update seen, whether an end's cheer has played (until its hype settles); testCrowd: --crowd in the pictures
+    // The Crowd (fans on phones): each end's light flare from cheers (1 -> 0), the last update seen; testCrowd: --crowd
+    // in the pictures
     float crowdFlare[2] = {0, 0};
-    double crowdBlipAt = 0, crowdBlipFor = -1;   // THE CROWD: the last crowd blip, and the update it answered
     double crowdAt = -1;
-    bool crowdCheered[2] = {false, false};
     CrowdInfo testCrowd;
     bool testCrowdOn = false;
     // cheer bursts: hearts, stars and little flags rising out of an end's stands (age < 0: not yet out)
@@ -586,6 +591,7 @@ struct App {
     Pose aim[2];
     bool aimValid[2] = {false, false};
     int menuHover = -1;
+    bool bestsHover = false;        // MY BESTS' TRAINING button under the pointer
     Vec3 menuHit;
     bool menuHitValid = false;
     // spectating: hub of miniature live arenas, or one match watched full size from a floating gallery seat
@@ -619,6 +625,13 @@ struct App {
     std::map<int, GLuint> tuckTex;
     GLuint patternTex[2][8] = {};   // per body: each body's own UV layout (tex/open_pat_<name>_<m|f>)
     AvatarDesc myAvatar, botAvatar;
+    // NEW BOT (0.3.23): the bots' outfits and stances come from this (new at every start of the game, never saved; 0:
+    // not yet); each corner's outfit (botLooks[1] is botAvatar, the practice bot's). botEveryMatch (settings.cfg
+    // botnew=): a new bot as each match comes, or only on NEW BOT; botPrevMatch: the match's state last frame
+    uint32_t botSeed = 0;
+    bool botEveryMatch = true;
+    MatchState botPrevMatch = MatchState::WaitingForPlayers;
+    AvatarDesc botLooks[kMaxPlayers];
     PlayerInput localIn;           // the latest local input (the builder's mirror runs while the game is frozen)
     // avatar builder: a mirror 0.85 m ahead (the reflection copies you) and a pointer-driven panel beside it
     bool builderOpen = false, prevBuilderTrig = true;
@@ -628,7 +641,16 @@ struct App {
     Pose builderPose, builderPoseL;   // its panels: the parts and colours right of the mirror, the whole look left of it
     Vec3 mirrorPoint, mirrorNormal;
     int builderHover = -1, presetIdx = 0;
-    int lastNation = 1;             // PRESET > COUNTRY FLAG: the country it picks first (the last one chosen)
+    int lastNation = 0;             // PRESET > COUNTRY FLAG: the country it picks first (the last one chosen; 0: the
+                                    // top of the COUNTRY order)
+    // looks.cfg (0.3.23; the owner, 2026-11-20): how often each country was chosen (the COUNTRY order: those first,
+    // then A-Z) and MY LOOKS, three saved looks in the builder's left panel
+    int nationPicks[256] = {};
+    std::vector<int> nationOrder;   // (worked out when the builder opens)
+    AvatarDesc myLooks[3];
+    bool myLookSaved[3] = {};
+    int lookConfirm = -1;           // MY LOOKS: the SAVE or CLEAR (its hit code) asking SURE? (a second press does it)
+    double lookConfirmUntil = 0;
     std::vector<uint32_t> kickVoted;   // REPORT PLAYER > VOTE TO REMOVE: who we voted on (this session)
     bool statsNoticeOpen = false, statsNoticeSeen = false;   // the one-time notice about statistics (settings.cfg)
     bool ownFail = false, ownQuit = false;   // a store build: Meta couldn't confirm the purchase (the page, then the game closes)
@@ -668,7 +690,16 @@ struct App {
     // only: hands, reach and the court stay true, and the headset still gets the real eye poses.
     int roomFeel = 0;
     std::vector<CollisionTri> classicCol;   // the classic court's collision (arena.col), for switching back from EXPERIMENTAL
-    int crowdMode = 0;             // The Crowd in the arena: 0 all, 1 no sound, 2 off (no sound, flags or flaring lights)
+    int crowdMode = 0;             // The Crowd in the arena: 0 (or 1, before 0.3.23: no sound) flags and lights, 2 off
+    // BALL IN FLIGHT (0.3.24): hear the balls that can hurt you as they fly (SETTINGS > VOICE AND MUTES > BALL SOUND);
+    // which ball each of the mixer's flight voices is playing (-1 none)
+    bool ballSound = true;
+    // MUSIC (0.3.24; the owner, 2026-11-21: "by default the background music is on for the main menu and off any other
+    // time. Allow a toggle to turn off at menu and to turn on during game"; "also allow volume up and down"): SETTINGS'
+    // MUSIC row (settings.cfg musicmenu=, musicgame=, musicvol=)
+    bool musicMenu = true, musicGame = false;
+    int musicVolume = 3;   // 0..10 (30%: kMusicFull's 0.3; the owner, 2026-11-21: "I had it at 30% ... very lovely")
+    int flightKey[Audio::kFlights] = {-1, -1, -1, -1};
     int turnMode = 0;              // spectating, the right stick turns: 0 snap (30 deg), 1 smooth, 2 smooth fast (per player)
     int volume = 8;                // 0..10
     bool firstHelp = false;
@@ -775,12 +806,12 @@ struct App {
     bool optBotMeet = false;       // FIST BUMP FIRST (Tunables::botMeet)
     bool quitArmed = false;         // QUIT GAME pressed once: the next press quits
     // THE LOBBY (owner, 2026-10-17): where you arrive, and come back to from a room, spectating or practice. A balcony
-    // over the practice court where two bots play; posters around it; point at the court to play the bot.
+    // over the practice court where two bots play; point at the court to play the bot.
     bool lobby = true;
     int lobbyPrevMode = 0;          // Net::Mode last frame (back to Offline = back to the lobby)
     float lobbySummaryT = 0;        // bot match over: a new one after a few seconds
-    int lobbyHover = -1;            // poster under the pointer (kPosterCount = the court)
-    bool prevLobbyTrig = true, prevLobbyPoke = false;
+    int lobbyHover = -1;            // the court under the pointer (kLobbyCourt; -1 nothing)
+    bool prevLobbyTrig = true;
     float rawTrigger[2] = {0, 0};   // the triggers as pulled (the open menu zeroes the game's copy)
     uint32_t stateKey = 0xFFFFFFFFu;   // net mode / tank slot / spectating: a change closes the menu and director panel
     int cfgVersion = 0;             // settings.cfg cfgver= (2: older files may hold a test server address; 3: gauntlet pitch default;
@@ -790,6 +821,15 @@ struct App {
     int reportWhy = -1;
     std::string reportNote;
     std::vector<uint32_t> mutedIds;
+    // MUTED PLAYERS (0.3.23; the owner, 2026-11-20: "player mute can be persistent"): every MUTE is kept on this
+    // headset (mutes.cfg) and holds whenever you meet that person again: by the server's code for them when there is
+    // one (a new name doesn't undo it), else by their name. SETTINGS > VOICE AND MUTES > MUTED PLAYERS unmutes
+    struct MuteEntry { uint64_t code = 0; std::string name; };
+    std::vector<MuteEntry> mutes;
+    std::vector<uint32_t> mutedNow;   // the people here now that a kept mute covers (worked out twice a second)
+    double mutedNowAt = -1;
+    bool mutedPage = false;
+    int mutedFirst = 0;               // (MUTED PLAYERS: the first one on the page)
     std::vector<Net::Person> reportFake;   // self-test pictures only (--menu report)
     std::string serverOverride, serverSaved;   // PC --server host:port for this session; the saved choice stays
     std::string serverAddr;        // community relay "host[:port]" (settings.cfg server=...)         // the menu shows a keyboard for the lobby name
@@ -1826,12 +1866,14 @@ static std::vector<uint8_t> packWarps(const App& a);
 static bool unpackWarps(App& a, const std::vector<uint8_t>& b);
 static void savePlayerName(App& a, const char* name);
 static void saveSettings(App& a);
+static void applyBot(App& a);   // (NEW BOT)
+static void newBot(App& a, bool told);
 static void closeBuilder(App& a);
 static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.22";   // (0.3.20: the Meta competition build)
+static const char* kAppVersion = "0.3.24";   // (0.3.20: the Meta competition build)
 // A scrolling texture's offset, kept in [0, 1) (the textures repeat, so it looks the same). The headset's fragment
 // shader works at medium precision (16-bit floats): an offset that grows with the time played lost its fractions after
 // some minutes, and the ball's and fireballs' plasma broke into big square blocks (a tester's report, 2026-11-02).
@@ -1923,12 +1965,14 @@ static void logGraphics(const App& a) {
 // changing how it draws, so each part of the arena is left out in turn instead and the headset's own GPU time a frame
 // (VrApi App=, over ADB) tells what it cost. Started by a file gpu_profile in the game's files folder (adb push; players
 // have none): 4 s of everything, then 6 s without the next part, round them all once; the log says each (gpuprof:);
-// the file is renamed gpu_profile.done (push it again for another round)
+// the file is renamed gpu_profile.done (push it again for another round). (2026-11-21, the start screen: 70 fps at the
+// title menu on astrobleem's Quest 3; the menu panel and the title's avatar are parts of their own)
 enum { PROF_NONE, PROF_REFLECT, PROF_ACCENTS, PROF_FLOOR, PROF_ENV, PROF_ARENA, PROF_GLOWS, PROF_CROWD, PROF_JUMBO, PROF_PLAYERS,
-       PROF_BALLS, PROF_FX, PROF_REST, PROF_COUNT };
+       PROF_BALLS, PROF_FX, PROF_REST, PROF_MENU, PROF_SHOWCASE, PROF_COUNT };
 static void gpuProfile(App& a, double t) {
     static const char* kName[PROF_COUNT] = {"", "floor reflections", "team accents", "floor", "stadium", "arena glass", "glow layers",
-                                            "crowd", "jumbotron", "players", "balls", "effects", "lobby and training"};
+                                            "crowd", "jumbotron", "players", "balls", "effects", "lobby and training", "menu",
+                                            "title avatar"};
     static double checkAt = 0, stepAt = 0;
     static int step = -1;
     if (step < 0) {
@@ -2039,7 +2083,90 @@ static const size_t kNoteMax = 120;   // bug / player report notes (was 60: test
 static const char* kReportWhy[4] = {"HARASSMENT OR HATE", "OFFENSIVE NAME OR LOOK", "CHEATING", "OTHER"};
 
 static std::vector<Net::Person> reportPeople(App& a) { return a.reportFake.empty() ? a.net.peopleHere() : a.reportFake; }
-static bool isMuted(const App& a, uint32_t id) { return std::find(a.mutedIds.begin(), a.mutedIds.end(), id) != a.mutedIds.end(); }
+static bool isMuted(const App& a, uint32_t id) {
+    return std::find(a.mutedIds.begin(), a.mutedIds.end(), id) != a.mutedIds.end() ||
+           std::find(a.mutedNow.begin(), a.mutedNow.end(), id) != a.mutedNow.end();
+}
+// MUTED PLAYERS: whether a kept mute covers this person (the server's code for them, when both are known; else
+// their name), and its place in the list (-1: none)
+static int keptMute(const App& a, uint32_t id, const char* name) {
+    const uint64_t code = a.net.muteCode(id);
+    for (size_t i = 0; i < a.mutes.size(); ++i) {
+        const App::MuteEntry& m = a.mutes[i];
+        if (code && m.code ? m.code == code : m.name == name) return (int)i;
+    }
+    return -1;
+}
+// mutes.cfg: "mute=CODE NAME" a line (CODE 16 hex digits, 0 when muted by name only)
+static void saveMutes(App& a) {
+    const char* ext = dataDir(a);
+    if (!ext) return;
+    const std::string f = std::string(ext) + "/mutes.cfg";
+    if (FILE* fp = fopen(f.c_str(), "w")) {
+        for (const App::MuteEntry& m : a.mutes) std::fprintf(fp, "mute=%016llx %s\n", (unsigned long long)m.code, m.name.c_str());
+        fclose(fp);
+    }
+}
+static void loadMutes(App& a) {
+    a.mutes.clear();
+    const char* ext = dataDir(a);
+    if (!ext) return;
+    const std::string f = std::string(ext) + "/mutes.cfg";
+    FILE* fp = fopen(f.c_str(), "r");
+    if (!fp) return;
+    char line[128];
+    while (fgets(line, sizeof line, fp) && a.mutes.size() < 200) {
+        unsigned long long code = 0;
+        char name[64] = {};
+        if (std::sscanf(line, "mute=%16llx %16[^\r\n]", &code, name) < 1) continue;
+        App::MuteEntry m;
+        m.code = code;
+        m.name = name;
+        if (m.code || !m.name.empty()) a.mutes.push_back(m);
+    }
+    fclose(fp);
+    LOGI("voice: %d players muted (kept)", (int)a.mutes.size());
+}
+// twice a second: who here a kept mute covers; the server asked for everyone's code; a mute made by name takes the
+// code once it is known, and the list keeps the person's name as it is now
+static void refreshMutes(App& a) {
+    const double t = nowSeconds();
+    if (t - a.mutedNowAt < 0.5 && a.mutedNowAt >= 0) return;
+    a.mutedNowAt = t;
+    a.mutedNow.clear();
+    std::vector<uint32_t> ids;
+    bool changed = false;
+    for (const Net::Person& p : a.net.peopleHere()) {
+        ids.push_back(p.id);
+        const int k = keptMute(a, p.id, p.name);
+        if (k < 0) continue;
+        a.mutedNow.push_back(p.id);
+        const uint64_t code = a.net.muteCode(p.id);
+        App::MuteEntry& m = a.mutes[k];
+        if (code && !m.code) { m.code = code; changed = true; }
+        if (code && m.name != p.name) { m.name = p.name; changed = true; }
+    }
+    a.net.askMuteCodes(ids);
+    if (changed) saveMutes(a);
+}
+// MUTE / UNMUTE on REPORT PLAYER: for now (this session) and kept
+static void toggleMute(App& a, uint32_t id, const char* name) {
+    if (!id) return;
+    if (isMuted(a, id)) {
+        a.mutedIds.erase(std::remove(a.mutedIds.begin(), a.mutedIds.end(), id), a.mutedIds.end());
+        a.mutedNow.erase(std::remove(a.mutedNow.begin(), a.mutedNow.end(), id), a.mutedNow.end());
+        for (int k; (k = keptMute(a, id, name)) >= 0;) a.mutes.erase(a.mutes.begin() + k);
+    } else {
+        a.mutedIds.push_back(id);
+        if (keptMute(a, id, name) < 0) {
+            App::MuteEntry m;
+            m.code = a.net.muteCode(id);
+            m.name = name;
+            a.mutes.push_back(m);
+        }
+    }
+    saveMutes(a);
+}
 static const char* roleText(uint8_t role) {
     return role == Net::VOICE_PLAYER ? "PLAYING" : role == Net::VOICE_SPECTATOR ? "WATCHING" : "WAITING";
 }
@@ -2311,7 +2438,7 @@ static const float kFourRGB[4][3] = {{0.1f, 0.7f, 1.0f}, {1.0f, 0.4f, 0.1f}, {0.
 static const float* playerRGB(const App& a, int p) {
     const Game& g = a.game;
     if (g.np == 2) return a.sideRGB[p & 1];
-    return (g.tun.teamMode == TEAMS_FFA || g.octagon()) ? kFourRGB[p & 3] : a.sideRGB[g.team(p) & 1];
+    return g.teamsNow() == TEAMS_FFA ? kFourRGB[p & 3] : a.sideRGB[g.team(p) & 1];   // (FIREBALL BLITZ in teams too: 0.3.24)
 }
 
 // BALL MARKS: the surface the ball bounced off (asked of the arena's own collision, the same on every machine: the event
@@ -2381,7 +2508,7 @@ static void drawMarks(App& a) {
     }
 }
 static const float* teamRGB(const App& a, int t) {   // (a team's colour: the same as its players')
-    return a.game.np == 4 && (a.game.tun.teamMode == TEAMS_FFA || a.game.octagon()) ? kFourRGB[t & 3] : a.sideRGB[t & 1];
+    return a.game.np == 4 && a.game.teamsNow() == TEAMS_FFA ? kFourRGB[t & 3] : a.sideRGB[t & 1];
 }
 // the arena the rules in play ask for (practice, our room, the room we joined, the match we watch); the lobby is classic
 static int arenaFor(const App& a) {
@@ -2870,7 +2997,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
             if (a.menuOpen) a.menuOpen = false; else openMenu(a, in);
         }
     }
-    for (int h = 0; h < 2; ++h) a.rawTrigger[h] = in.hand[h].trigger;   // before the menu clears it (posters, kiosk)
+    for (int h = 0; h < 2; ++h) a.rawTrigger[h] = in.hand[h].trigger;   // before the menu clears it (the court, kiosk)
     updateMenu(a, in);
     updateBuilder(a, in);
     updateDirector(a, in);
@@ -2879,7 +3006,7 @@ static PlayerInput readInput(App& a, XrTime t, int local) {
 
 // ------------------------------------------------------------------ lobby menu
 enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, BugCancel, RulesPick, RulesBack, Report, ReportWho, ReportWhy, ReportNote, ReportMute, ReportKick, StatsNoticeOk,
-                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, OptStrike, OptFoul, ReportHostKick, OptBot, Record, OptMeet, GfxPage, FovDown, FovUp, OptRoom, OptTeams,
+                     ReportSend, ReportBack, Forfeit, Experimental, XpBack, XpServer, XpConnect, Host, Leave, Rules, Close, Join, Spectate, Watch, Hub, Avatar, Name, Key, KeyDel, KeyDone, Help, HelpDone, Play, Multi, Settings, Back, VolDown, VolUp, Hand, Fx, Online, Server, ServerDefault, DeleteStats, ClearWarps, Queue, HideOutside, VoicePage, VoiceMode, MuteSpec, MutePlayers, MuteAll, Director, JoinRoom, BotFill, Tuning, Passthrough, PtMode, PtAdjust, PtMono, PtEdges, PtPreset, PtReveal, PtPeek, Crowd, BallSound, Turn, OptShields, OptKnuckle, OptTime, OptGo, OptBack, OptStrike, OptFoul, ReportHostKick, OptBot, Record, OptMeet, NewBot, BotEveryMatch, GfxPage, FovDown, FovUp, OptRoom, OptTeams,
                      Train, TrainPick, TrainStart, TrainRetry, TrainNext, TrainList, TrainLeave, TrainBoard, TrainKind, TrainBoardBack, TrainShow, TrainVideo,
                      MovePlayers, MoveCorner, MoveOne, MoveBack, OptHealth, OptBalls, OptPlayers, Discord,
                      UpdateOpen, UpdateGo, UpdateRestart, UpdatePage, UpdateStore, UpdateBack, HeadSelfie, PrivateTalk, HandOff, HandOffTo,
@@ -2888,7 +3015,8 @@ enum class MenuAct { None, MainMenu, Nav, Quit, Bug, BugCat, BugNote, BugSend, B
                      BallPage, BallCore, BallTrue, BallSpin, BallWeight, BallBack, BtnPage, BtnSlot, BtnSticks, BtnPreset,
                      RoomPick, OptAim, OptZone, OptGrowth, OptRounds, RoundsPad, PadKey, PadDel, PadOk, PadCancel, OptBotPlay, OptShieldSize,
                      BouncePage, BounceWalls, BounceGrip, BounceAssist, BounceBack,
-                     TrainMode, TrainOpts, TrainOptsDone, TrainOptMaiden, GfxFoveation, GfxMsaa, GfxContact, GfxGrade, GfxBloom, GfxReflect };
+                     TrainMode, TrainOpts, TrainOptsDone, TrainOptMaiden, GfxFoveation, GfxMsaa, GfxContact, GfxGrade, GfxBloom, GfxReflect,
+                     MutedPage, Unmute, MutedPrev, MutedNext, MusicDown, MusicUp, MusicMenu, MusicGame };
 // HOW TO PLAY > CREDITS: one page, film-credit style (small grey headings, the names under them)
 enum { CR_HEAD, CR_NAME, CR_SMALL };
 struct CreditRow { int kind; const char* text; };
@@ -2937,6 +3065,7 @@ static void applyDefaults(App& a, int page) {
     switch (page) {
     case DEF_SETTINGS:
         a.volume = 8; a.audio.setVolume(a.volume / 10.f);
+        a.musicMenu = true; a.musicGame = false; a.musicVolume = 3;   // (MUSIC)
         a.hideOutside = false;
         a.crowdMode = 0;
         a.turnMode = 0;
@@ -2976,6 +3105,7 @@ static void applyDefaults(App& a, int page) {
         a.voiceMode = 0; a.micDenied = false;
         a.muteSpectators = a.mutePlayers = a.muteAll = false;
         a.net.setPrivateTalk(false);
+        a.ballSound = true;   // (BALL SOUND)
         break;
     case DEF_PASSTHROUGH:
         a.ptMode = 0; a.ptFloor = 0.8f; a.ptGlass = 1.f; a.ptRoom = 1.f; a.ptMono = false; a.ptEdges = false;
@@ -3090,7 +3220,9 @@ static std::string timeLabel(float secs, bool rounds) {
 // room, its match and what differs
 static std::string rulesLine(const Tunables& t) {
     static const char* kTeams[3] = {"FREE-FOR-ALL", "2 V 2", "3 V 1"};
-    std::string s = !t.experimental ? roomName(t) : (t.expRoom == ROOM_BLITZ ? std::string("FIREBALL BLITZ - HEALTH ") + std::to_string(t.health) +
+    std::string s = !t.experimental ? roomName(t) : (t.expRoom == ROOM_BLITZ ? std::string("FIREBALL BLITZ - ") +   // (0.3.24: its teams)
+                                                                                                   (t.teamMode != TEAMS_FFA && t.blitzTeamsNow() ? std::string(kTeams[std::min(2, t.teamMode)]) + " - " : std::string()) +
+                                                                                                   "HEALTH " + std::to_string(t.health) +
                                                                                                    (t.fireBalls >= 4 ? " - RAPID FIRE" : t.fireBalls > 1 ? std::string(" - ") + kBallsName[t.fireBalls] + " BALLS" : "")
                                                                 : t.expRoom == ROOM_CORNERS ? std::string("FOUR CORNERS - ") + kTeams[std::max(0, std::min(2, t.teamMode))]
                                                                 : roomName(t));
@@ -3179,6 +3311,26 @@ enum { NAV_LOBBY, NAV_HOME, NAV_PRACTICE, NAV_MULTI, NAV_SPECTATE, NAV_AVATAR, N
 static const char* kNavLabels[kNavCount] = {"LOBBY", "MAIN MENU", "PRACTICE", "MULTIPLAYER", "SPECTATE", "AVATAR", "MY STATS",
                                             "SETTINGS", "REPORT PLAYER", "REPORT BUG", "HOW TO PLAY", "QUIT GAME"};
 static const float kNavX = -0.67f, kNavTop = 0.30f, kNavStep = 0.0745f;
+// MY BESTS (0.3.24; the owner, 2026-11-21: "the local leaderboard with the training button to appear to the left of the
+// menu similar location as the avatar on the right"): the title page's board of your TRAINING bests, kept on the
+// headset (no network). A wing folded out from the side menu's left edge toward you, its own plane with its own pointer
+// test (updateMenu). (The owner, the same evening: in the menu's plane it was "too flat ... hard to see due to the
+// angle"; then, on an arc round you, it stood in front of the side menu: "it should fold out of the side of the main
+// menu not overlap it")
+static const float kBestsW = 0.44f, kBestsH = 0.94f, kBestsY = -0.09f;   // (as tall as the menu, level with it: the owner)
+static const float kBestsFold = 35.f;                      // degrees it is folded toward you
+static const float kBestsHinge = kNavX - 0.15f - 0.015f;   // its right edge: the side menu's left edge, and a gap
+static const float kBestsBtnY = -kBestsH * 0.5f + 0.07f, kBestsBtnW = kBestsW - 0.08f, kBestsBtnH = 0.075f;   // TRAINING
+static Pose bestsPose(const App& a) {   // its centre, facing you (+Z)
+    const float t = deg2rad(kBestsFold), h = kBestsW * 0.5f;
+    return a.menuPose * Pose{Quat::axisAngle({0, 1, 0}, t), {kBestsHinge - h * std::cos(t), kBestsY, h * std::sin(t)}};
+}
+// the title's avatar: a figure of you at kShowcaseScale, right of the menu, on its hologram disc level with the menu's foot
+// (the owner, 2026-11-21, of it standing full size beside the menu: "the avatar is huge and doesn't fit the spot maybe
+// scaled and moved over a little"; before that it stood 1.9 m right of the menu and 1.4 m behind it; then "the avatar
+// should move up a bit": its head about level with the menu's top). In the menu's frame
+static const float kShowcaseScale = 0.6f, kShowcaseX = 0.82f, kShowcaseZ = 0.12f, kShowcaseDiscY = -0.36f;
+static bool bestsShown(const App& a) { return a.titleOpen && !a.helpOpen && !a.nameEdit && !a.settingsOpen && !a.builderOpen; }
 
 static int navCurrent(const App& a) {
     if (a.titleOpen || a.xpOpen || a.trainOpen || a.trainBoard >= -1 || (a.trainer.active() && !otherPage(a))) return NAV_HOME;
@@ -3383,12 +3535,14 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
     if (a.movePlayersOpen && !a.nameEdit) {   // MOVE PLAYERS: a row a corner (pick two to swap them), and THE ONE
         const Game& g = a.game;
         const RoomInfo& r = a.net.room();
-        const bool one = g.tun.teamMode == TEAMS_3V1, host = a.net.mode() == Net::Mode::Host && g.np == 4;
+        // (the teams the match plays, teamsNow: 0.3.23 left them out of FIREBALL BLITZ, where MAKE THE ONE showed "like
+        // it's going to be an option" (the owner, 2026-11-20); from 0.3.24 FIREBALL BLITZ has its own TEAMS)
+        const bool one = g.teamsNow() == TEAMS_3V1, host = a.net.mode() == Net::Mode::Host && g.np == 4;
         static const char* kColour[4] = {"BLUE", "ORANGE", "GREEN", "VIOLET"};
         for (int c = 0; c < 4; ++c) {
             const char* who = r.slot[c] ? r.nameOf(r.slot[c]) : nullptr;
             std::string label = std::to_string(c + 1) + "  " + (r.slot[c] ? (who && who[0] ? who : "A PLAYER") : r.isBot(c) || g.pl[c].isBot ? "BOT" : "EMPTY");
-            if (g.tun.teamMode == TEAMS_2V2) label += c < 2 ? "  - BLUE TEAM" : "  - ORANGE TEAM";
+            if (g.teamsNow() == TEAMS_2V2) label += c < 2 ? "  - BLUE TEAM" : "  - ORANGE TEAM";
             else if (one) label += c == g.tun.theOne ? "  - THE ONE" : "  - THE THREE";
             else label += std::string("  - ") + kColour[c];
             v.push_back({label, one ? -0.10f : 0, 0.15f - 0.085f * c, one ? 0.54f : 0.74f, 0.07f, MenuAct::MoveCorner, (uint32_t)c, host});
@@ -3468,10 +3622,13 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
             v.push_back({"+", 0.34f, 0.165f, 0.05f, bh, MenuAct::OptRounds, 1, t.advanced && bo < kMaxBestOf});
             n = 2;
         }
-        if (room == 3) {   // FIREBALL BLITZ: KNUCKLES, HEALTH, BALLS, the clock (no shields, no strikes)
+        if (room == 3) {   // FIREBALL BLITZ: KNUCKLES, HEALTH, BALLS, the TEAMS (0.3.24, as FOUR CORNERS'), the clock
+            static const char* kTeams[3] = {"TEAMS: FREE-FOR-ALL", "TEAMS: 2 V 2", "3 V 1: YOU ARE THE ONE"};
             put(knuckles, MenuAct::OptKnuckle);
-            put(std::string("HEALTH: ") + std::to_string(t.health), MenuAct::OptHealth);
+            put(std::string("HEALTH: ") + std::to_string(t.health) +   // (3 v 1: THE ONE three times as much)
+                (t.teamMode == TEAMS_3V1 ? " - THE ONE " + std::to_string(3 * std::max(1, t.health)) : std::string()), MenuAct::OptHealth);
             put(std::string("BALLS: ") + kBallsName[std::max(1, std::min(4, t.fireBalls))], MenuAct::OptBalls);
+            put(t.teamMode == TEAMS_3V1 && t.oneTurns ? "3 V 1: ONE TAKES TURNS" : kTeams[std::max(0, std::min(2, t.teamMode))], MenuAct::OptTeams);
             putTime();
         } else if (room == 2) {   // FOUR CORNERS: the teams (3 v 1: you are THE ONE; hosting, it can take turns instead)
             static const char* kTeams[3] = {"TEAMS: FREE-FOR-ALL", "TEAMS: 2 V 2", "3 V 1: YOU ARE THE ONE"};
@@ -3511,12 +3668,16 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
             for (int l = 0; l < kBotLevels; ++l)
                 v.push_back({"", -0.33f + 0.07f * l, yb - 0.05f, 0.062f, 0.03f, MenuAct::OptBot, (uint32_t)(10 + l), true});
             v.push_back({"MATCH MY LEVEL", 0.225f, yb - 0.05f, 0.29f, 0.03f, MenuAct::OptBot, 2, true});
+            // (beside it, NEW BOT, 0.3.23: a new outfit and stance for the bots, at once; until pressed they keep theirs)
             if (!a.rulesForHost && room == 3)   // (FIREBALL BLITZ practice: how many play, you and bots)
-                v.push_back({std::string("PLAYERS: ") + std::to_string(std::max(2, std::min(4, a.optOctPlayers))), 0, -0.415f, 0.46f, 0.038f, MenuAct::OptPlayers, 0, true});
-            else if (!a.rulesForHost) v.push_back({t.botMeet ? "FIST BUMP FIRST: ON" : "FIST BUMP FIRST: OFF", 0, -0.415f, 0.46f, 0.038f, MenuAct::OptMeet, 0, true});
+                v.push_back({std::string("PLAYERS: ") + std::to_string(std::max(2, std::min(4, a.optOctPlayers))), -0.235f, -0.415f, 0.27f, 0.038f, MenuAct::OptPlayers, 0, true});
+            else if (!a.rulesForHost) v.push_back({t.botMeet ? "FIST BUMP FIRST: ON" : "FIST BUMP FIRST: OFF", -0.235f, -0.415f, 0.27f, 0.038f, MenuAct::OptMeet, 0, true});
+            // (NEW BOT: EVERY MATCH or ON PUSH, and the push itself: a new one now, either way)
+            v.push_back({a.botEveryMatch ? "NEW BOT: EVERY MATCH" : "NEW BOT: ON PUSH", 0.065f, -0.415f, 0.31f, 0.038f, MenuAct::BotEveryMatch, 0, true});
+            v.push_back({"NEW BOT NOW", 0.30f, -0.415f, 0.14f, 0.038f, MenuAct::NewBot, 0, true});
         }
         if (a.rulesEdit && a.rulesForHost && a.net.mode() == Net::Mode::Host && a.game.np == 4)   // (who plays in which corner)
-            v.push_back({"MOVE PLAYERS", 0, -0.415f, 0.46f, 0.038f, MenuAct::MovePlayers, 0, true});
+            v.push_back({"MOVE PLAYERS", bot ? -0.235f : 0.f, -0.415f, bot ? 0.27f : 0.46f, 0.038f, MenuAct::MovePlayers, 0, true});
         const char* go = a.rulesEdit ? (rulesLive(a) ? "APPLY FROM THE NEXT MATCH" : "APPLY") : a.rulesForHost ? "OPEN MY ARENA" : "START PRACTICE";
         v.push_back({go, 0.19f, -0.36f, 0.36f, 0.06f, MenuAct::OptGo, 0, true});
         v.push_back({"BACK", -0.19f, -0.36f, 0.36f, 0.06f, MenuAct::OptBack, 0, true});
@@ -3650,7 +3811,8 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"-", -0.17f, -0.105f, 0.09f, 0.075f, MenuAct::FovDown, 0, a.roomFeel > -5});
         v.push_back({"+", 0.17f, -0.105f, 0.09f, 0.075f, MenuAct::FovUp, 0, a.roomFeel < 5});
         // BALL LOOK-AHEAD (0.3.15): playing in someone else's room, the balls where the host will have them
-        // (two-player rooms only: in four-player rooms and FIREBALL BLITZ it stands down, Game::lookAhead)
+        // (two-player rooms, and from 0.3.24 FOUR CORNERS and FIREBALL BLITZ with a host on 0.3.24 or later; in an older
+        // host's four-player room it stands down, Game::lookAhead)
         // (under the field of view: HIT EFFECTS, BALL LOOK-AHEAD, and on a PC DISCORD STATUS, in a row)
 #ifdef _WIN32
         const float bw = 0.255f, bx = 0.27f;
@@ -3659,7 +3821,7 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({a.discordOn ? "DISCORD STATUS: ON" : "DISCORD STATUS: OFF", bx, -0.275f, bw, 0.06f, MenuAct::Discord, 0, true});
 #else
         v.push_back({fx[a.fxLevel % 3], -cx, -0.275f, cw, 0.06f, MenuAct::Fx, 0, true});
-        v.push_back({a.net.lookAhead() ? "BALL LOOK-AHEAD (1-V-1 ONLINE): ON" : "BALL LOOK-AHEAD (1-V-1 ONLINE): OFF", cx, -0.275f, cw, 0.06f,
+        v.push_back({a.net.lookAhead() ? "BALL LOOK-AHEAD (ONLINE): ON" : "BALL LOOK-AHEAD (ONLINE): OFF", cx, -0.275f, cw, 0.06f,
                      MenuAct::LookAhead, 0, true});
 #endif
         v.push_back({"BACK", -0.19f, -0.39f, 0.36f, 0.055f, MenuAct::Back, 0, true});
@@ -3684,6 +3846,22 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({defaultsLabel(a, DEF_CONTROLLERS), 0.19f, -0.385f, 0.36f, 0.055f, MenuAct::Defaults, DEF_CONTROLLERS, true});
         return v;
     }
+    if (a.settingsOpen && a.voicePage && a.mutedPage) {   // MUTED PLAYERS: six a page, each with UNMUTE
+        const int n = (int)a.mutes.size();
+        a.mutedFirst = std::max(0, std::min(a.mutedFirst, (n - 1) / 6 * 6));
+        for (int i = 0; i < 6 && a.mutedFirst + i < n; ++i) {
+            const App::MuteEntry& m = a.mutes[a.mutedFirst + i];
+            const float y = 0.13f - i * 0.085f;
+            v.push_back({m.name.empty() ? std::string("PLAYER") : m.name, -0.12f, y, 0.54f, 0.07f, MenuAct::None, 0, true});
+            v.push_back({"UNMUTE", 0.29f, y, 0.20f, 0.07f, MenuAct::Unmute, (uint32_t)(a.mutedFirst + i), true});
+        }
+        if (n > 6) {
+            v.push_back({"<", -0.33f, -0.385f, 0.10f, 0.055f, MenuAct::MutedPrev, 0, a.mutedFirst > 0});
+            v.push_back({">", 0.33f, -0.385f, 0.10f, 0.055f, MenuAct::MutedNext, 0, a.mutedFirst + 6 < n});
+        }
+        v.push_back({"BACK", 0, -0.385f, 0.36f, 0.055f, MenuAct::Back, 0, true});
+        return v;
+    }
     if (a.settingsOpen && a.voicePage) {
         static const char* modes[3] = {"VOICE: PUSH TO TALK", "VOICE: OPEN MIC", "VOICE: OFF"};
         v.push_back({modes[a.voiceMode % 3], -0.205f, 0.12f, 0.39f, 0.08f, MenuAct::VoiceMode, 0, true});
@@ -3695,9 +3873,13 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
             if (controls::count(m, controls::J_TALK, a.ctlKind) > 1) b += " +";
             v.push_back({b, 0.205f, 0.12f, 0.39f, 0.08f, MenuAct::BtnPage, 0, true});
         }
-        v.push_back({a.muteSpectators ? "SPECTATORS: MUTED" : "SPECTATORS: ON", 0, 0.02f, 0.80f, 0.08f, MenuAct::MuteSpec, 0, true});
-        v.push_back({a.mutePlayers ? "OTHER PLAYERS: MUTED" : "OTHER PLAYERS: ON", 0, -0.08f, 0.80f, 0.08f, MenuAct::MutePlayers, 0, true});
-        v.push_back({a.muteAll ? "MUTE ALL: ON" : "MUTE ALL: OFF", 0, -0.18f, 0.80f, 0.08f, MenuAct::MuteAll, 0, true});
+        v.push_back({a.muteSpectators ? "SPECTATORS: MUTED" : "SPECTATORS: ON", -0.205f, 0.02f, 0.39f, 0.08f, MenuAct::MuteSpec, 0, true});
+        v.push_back({a.mutePlayers ? "OTHER PLAYERS: MUTED" : "OTHER PLAYERS: ON", 0.205f, 0.02f, 0.39f, 0.08f, MenuAct::MutePlayers, 0, true});
+        // (BALL IN FLIGHT, 0.3.24: hear the balls that can hurt you as they fly, louder as they come at you)
+        v.push_back({a.ballSound ? "BALL SOUND: ON - HEAR THE BALLS COMING AT YOU" : "BALL SOUND: OFF", 0, -0.08f, 0.80f, 0.08f,
+                     MenuAct::BallSound, 0, true});
+        v.push_back({a.muteAll ? "MUTE ALL: ON" : "MUTE ALL: OFF", -0.205f, -0.18f, 0.39f, 0.08f, MenuAct::MuteAll, 0, true});
+        v.push_back({"MUTED PLAYERS (" + std::to_string(a.mutes.size()) + ")", 0.205f, -0.18f, 0.39f, 0.08f, MenuAct::MutedPage, 0, true});
         // (hosting: whether spectators hear the room; owner, 2026-11-02: practise your strategy where rivals can watch)
         v.push_back({a.net.privateTalk() ? "ROOM TALK: PRIVATE (SPECTATORS DON'T HEAR IT)" : "ROOM TALK: OPEN (SPECTATORS HEAR IT)",
                      0, -0.28f, 0.80f, 0.07f, MenuAct::PrivateTalk, 0, true});
@@ -3707,6 +3889,12 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
     }
     if (a.settingsOpen) {
         char b[48];
+        snprintf(b, sizeof b, "MUSIC %d%%", a.musicVolume * 10);   // MUSIC (0.3.24): its volume, in the menu, in the game
+        v.push_back({b, -0.19f, 0.215f, 0.20f, 0.065f, MenuAct::None, 0, true});
+        v.push_back({"-", -0.335f, 0.215f, 0.07f, 0.065f, MenuAct::MusicDown, 0, a.musicVolume > 0});
+        v.push_back({"+", -0.045f, 0.215f, 0.07f, 0.065f, MenuAct::MusicUp, 0, a.musicVolume < 10});
+        v.push_back({a.musicMenu ? "MENU: ON" : "MENU: OFF", 0.10f, 0.215f, 0.17f, 0.065f, MenuAct::MusicMenu, 0, true});
+        v.push_back({a.musicGame ? "GAME: ON" : "GAME: OFF", 0.28f, 0.215f, 0.17f, 0.065f, MenuAct::MusicGame, 0, true});
         snprintf(b, sizeof b, "VOLUME %d%%", a.volume * 10);
         v.push_back({b, -0.19f, 0.13f, 0.20f, 0.075f, MenuAct::None, 0, true});
         v.push_back({"-", -0.335f, 0.13f, 0.07f, 0.075f, MenuAct::VolDown, 0, a.volume > 0});
@@ -3720,9 +3908,9 @@ static std::vector<MenuItem> menuItemsBase(App& a) {
         v.push_back({"RULES: " + rulesLine(a.game.tun), -0.19f, -0.14f, 0.36f, 0.075f, MenuAct::Rules, 0,
                      a.net.mode() != Net::Mode::Client && a.net.mode() != Net::Mode::Spectate});
         v.push_back({"VOICE AND MUTES", 0.19f, -0.14f, 0.36f, 0.075f, MenuAct::VoicePage, 0, true});
-        // The Crowd (fans on phones): their sound, flags in the stands and the ends' flaring lights
-        static const char* crowd[3] = {"CROWD: FULL", "CROWD: FLAGS ONLY", "CROWD: OFF"};
-        v.push_back({crowd[a.crowdMode % 3], -0.19f, -0.23f, 0.36f, 0.075f, MenuAct::Crowd, 0, true});
+        // The Crowd (fans on phones): flags in the stands and the ends' flaring lights
+        // (no sound from the fans since 0.3.23: FLAGS AND LIGHTS, or OFF)
+        v.push_back({a.crowdMode < 2 ? "CROWD: FLAGS AND LIGHTS" : "CROWD: OFF", -0.19f, -0.23f, 0.36f, 0.075f, MenuAct::Crowd, 0, true});
         static const char* turn[3] = {"TURNING: SNAP", "TURNING: SMOOTH", "TURNING: SMOOTH FAST"};
         v.push_back({turn[a.turnMode % 3], 0.19f, -0.23f, 0.36f, 0.075f, MenuAct::Turn, 0, true});
         std::string sv = "SERVER: " + (a.serverAddr.empty() ? std::string("NOT SET") : a.serverAddr);
@@ -3816,8 +4004,9 @@ static void openMenu(App& a, const PlayerInput& in) {
     const Vec3 at = f;   // (in front of you, SOUND STUDIO too: owner, 2026-11-12: off to the left was off-putting)
     float yaw = std::atan2(-at.x, -at.z);   // panel +Z faces the player
     a.menuPose = {Quat::axisAngle({0, 1, 0}, yaw), in.head.p + at * 0.9f + Vec3{0, -0.15f, 0}};
-    if (inLobby(a))   // the lobby: always in the middle, between the posters, facing the balcony (owner)
-        a.menuPose = {Quat{}, {kLobbySpot.x, in.head.p.y - 0.22f, kLobbySpot.z - 0.95f}};
+    if (inLobby(a))   // the lobby: always in the middle of the balcony, facing it (owner); 1.3 m out (the owner,
+        // 2026-11-21: at 0.95 m it was "too close to you and fills up the entire screen")
+        a.menuPose = {Quat{}, {kLobbySpot.x, in.head.p.y - 0.22f, kLobbySpot.z - 1.3f}};
     a.menuOpen = true;
     a.prevMenuTrig = true;   // ignore a trigger that is already held
     LOGI("menu: open");
@@ -4124,9 +4313,8 @@ static void menuActivate(App& a, const MenuItem& it) {
         break;
     case MenuAct::ReportWhy: a.reportWhy = (int)it.ip; break;
     case MenuAct::ReportNote: a.nameEdit = true; a.editTarget = 5; a.nameBuf = a.reportNote; break;
-    case MenuAct::ReportMute:
-        if (isMuted(a, a.reportWho)) a.mutedIds.erase(std::remove(a.mutedIds.begin(), a.mutedIds.end(), a.reportWho), a.mutedIds.end());
-        else if (a.reportWho) a.mutedIds.push_back(a.reportWho);
+    case MenuAct::ReportMute:   // (kept on this headset: MUTED PLAYERS)
+        toggleMute(a, a.reportWho, a.reportName);
         LOGI("voice: %s %s", a.reportName, isMuted(a, a.reportWho) ? "muted" : "unmuted");
         break;
     case MenuAct::ReportKick:
@@ -4255,6 +4443,8 @@ static void menuActivate(App& a, const MenuItem& it) {
         a.optBotAdapt = false;
         break;
     case MenuAct::OptMeet: a.optBotMeet = !a.optBotMeet; break;   // FIST BUMP FIRST (practice)
+    case MenuAct::NewBot: newBot(a, true); break;   // NEW BOT (0.3.23): a new outfit and stance for the bots, now
+    case MenuAct::BotEveryMatch: a.botEveryMatch = !a.botEveryMatch; saveSettings(a); break;   // (... or every match)
     case MenuAct::OptBack: a.rulesStep = 0; a.roundsPad = false; a.roomBallPage = false; a.roomBouncePage = false; break;
     case MenuAct::OptGo: {
         applyRules(a);
@@ -4305,7 +4495,7 @@ static void menuActivate(App& a, const MenuItem& it) {
         break;
     case MenuAct::Multi: a.titleOpen = false; break;
     case MenuAct::Settings: a.settingsOpen = true; break;
-    case MenuAct::Back: if (a.btnPage) a.btnPage = false; else if (a.ctlPage) a.ctlPage = false; else if (a.voicePage) a.voicePage = false; else if (a.ptPage) a.ptPage = false; else if (a.gfxPage) a.gfxPage = false; else a.settingsOpen = false; saveSettings(a); break;
+    case MenuAct::Back: if (a.voicePage && a.mutedPage) a.mutedPage = false; else if (a.btnPage) a.btnPage = false; else if (a.ctlPage) a.ctlPage = false; else if (a.voicePage) a.voicePage = false; else if (a.ptPage) a.ptPage = false; else if (a.gfxPage) a.gfxPage = false; else a.settingsOpen = false; saveSettings(a); break;
     case MenuAct::GfxPage: a.gfxPage = true; break;
     case MenuAct::CtlPage: a.ctlPage = true; break;
     case MenuAct::BallPage: a.roomBallPage = true; a.roundsPad = false; break;   // (the room's BALL FEEL)
@@ -4328,7 +4518,23 @@ static void menuActivate(App& a, const MenuItem& it) {
     }
     case MenuAct::FovDown: a.roomFeel = std::max(-5, a.roomFeel - 1); saveSettings(a); break;
     case MenuAct::FovUp: a.roomFeel = std::min(5, a.roomFeel + 1); saveSettings(a); break;
-    case MenuAct::VoicePage: a.voicePage = true; break;
+    case MenuAct::VoicePage: a.voicePage = true; a.mutedPage = false; break;
+    case MenuAct::MutedPage: a.mutedPage = true; a.mutedFirst = 0; break;
+    case MenuAct::MutedPrev: a.mutedFirst = std::max(0, a.mutedFirst - 6); break;
+    case MenuAct::MutedNext: a.mutedFirst += 6; break;
+    case MenuAct::Unmute:   // MUTED PLAYERS: the kept mute goes, and whoever here it covered is heard again
+        if ((int)it.ip >= 0 && (int)it.ip < (int)a.mutes.size()) {
+            LOGI("voice: %s unmuted (MUTED PLAYERS)", a.mutes[it.ip].name.c_str());
+            a.mutes.erase(a.mutes.begin() + it.ip);
+            saveMutes(a);
+            std::vector<uint32_t> keep;
+            for (const Net::Person& p : a.net.peopleHere())
+                if (std::find(a.mutedIds.begin(), a.mutedIds.end(), p.id) != a.mutedIds.end() && keptMute(a, p.id, p.name) >= 0) keep.push_back(p.id);
+            a.mutedIds = keep;
+            a.mutedNow.clear();
+            a.mutedNowAt = -1;
+        }
+        break;
     case MenuAct::Passthrough: a.ptPage = true; break;
     case MenuAct::PtMode:
         if ((int)it.ip != a.ptMode) { a.ptMode = (int)it.ip % PT_COUNT; a.ptFloor = kPtModeFloor[a.ptMode]; }
@@ -4385,6 +4591,10 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::MuteAll: a.muteAll = !a.muteAll; saveSettings(a); break;
     case MenuAct::VolDown: a.volume = std::max(0, a.volume - 1); a.audio.setVolume(a.volume / 10.f); saveSettings(a); break;
     case MenuAct::VolUp: a.volume = std::min(10, a.volume + 1); a.audio.setVolume(a.volume / 10.f); saveSettings(a); break;
+    case MenuAct::MusicDown: a.musicVolume = std::max(0, a.musicVolume - 1); saveSettings(a); break;   // MUSIC
+    case MenuAct::MusicUp: a.musicVolume = std::min(10, a.musicVolume + 1); saveSettings(a); break;
+    case MenuAct::MusicMenu: a.musicMenu = !a.musicMenu; saveSettings(a); LOGI("menu: music in the menu %s", a.musicMenu ? "on" : "off"); break;
+    case MenuAct::MusicGame: a.musicGame = !a.musicGame; saveSettings(a); LOGI("menu: music in the game %s", a.musicGame ? "on" : "off"); break;
     case MenuAct::Hand: a.pointerHand = 1 - a.pointerHand; saveSettings(a); break;
     case MenuAct::Fx: a.fxLevel = (a.fxLevel + 1) % 3; saveSettings(a); break;
     // GRAPHICS (0.3.22): each round its values (OFF, SPECTATING, ON for the three), saved at once
@@ -4394,7 +4604,8 @@ static void menuActivate(App& a, const MenuItem& it) {
     case MenuAct::GfxGrade: a.gfxGrade = (a.gfxGrade + 1) % 3; saveSettings(a); logGraphics(a); break;
     case MenuAct::GfxBloom: a.gfxBloom = (a.gfxBloom + 1) % 3; saveSettings(a); logGraphics(a); break;
     case MenuAct::GfxReflect: a.gfxReflect = (a.gfxReflect + 1) % 3; saveSettings(a); logGraphics(a); break;
-    case MenuAct::Crowd: a.crowdMode = (a.crowdMode + 1) % 3; saveSettings(a); break;
+    case MenuAct::Crowd: a.crowdMode = a.crowdMode < 2 ? 2 : 0; saveSettings(a); break;
+    case MenuAct::BallSound: a.ballSound = !a.ballSound; saveSettings(a); LOGI("menu: ball sound %s", a.ballSound ? "on" : "off"); break;
     case MenuAct::Turn: a.turnMode = (a.turnMode + 1) % 3; saveSettings(a); break;
     case MenuAct::Name: a.nameEdit = true; a.editTarget = 0; a.nameBuf = a.net.name(); break;
     case MenuAct::Server: a.nameEdit = true; a.editTarget = 1; a.nameBuf = a.serverAddr; break;
@@ -4475,6 +4686,29 @@ static void updateMenu(App& a, PlayerInput& in) {
                 }
                 if (trig && !a.prevMenuTrig && a.menuHover >= 0) {
                     menuActivate(a, items[a.menuHover]);
+                    haptic(a, a.pointerHand, 0.4f, 0.03f);
+                }
+            }
+        }
+    }
+    a.bestsHover = false;
+    if (bestsShown(a) && a.aimValid[a.pointerHand]) {   // MY BESTS (its own plane): the pointer on it, its TRAINING button
+        const Vec3 o = a.aim[a.pointerHand].p, d = a.aim[a.pointerHand].q.rotate({0, 0, -1});
+        const Pose bp = bestsPose(a);
+        const Vec3 nz = bp.q.rotate({0, 0, 1});
+        const float den = dot(d, nz);
+        if (den < -1e-3f) {
+            const float t = dot(bp.p - o, nz) / den;
+            const Vec3 p = o + d * t, lp = bp.q.conj().rotate(p - bp.p);
+            if (t > 0 && t < 4 && std::fabs(lp.x) < kBestsW * 0.5f && std::fabs(lp.y) < kBestsH * 0.5f) {
+                a.menuHit = p;
+                a.menuHitValid = true;
+                a.menuHover = -1;
+                const bool can = a.net.mode() == Net::Mode::Offline;   // (TRAINING is played offline, as the title's button)
+                a.bestsHover = can && std::fabs(lp.x) < kBestsBtnW * 0.5f && std::fabs(lp.y - kBestsBtnY) < kBestsBtnH * 0.5f;
+                if (a.bestsHover && trig && !a.prevMenuTrig) {
+                    const MenuItem train{"TRAINING", 0, 0, 0, 0, MenuAct::Train, 0, true};
+                    menuActivate(a, train);
                     haptic(a, a.pointerHand, 0.4f, 0.03f);
                 }
             }
@@ -4819,6 +5053,8 @@ static void drawMenu(App& a) {
              0, 0.225f, 0.02f, white);
         const bool blitz = room == 3;
         const char* hint = rulesLive(a) && a.rulesEdit ? "A MATCH IS ON: THE NEW RULES START WITH THE NEXT MATCH"
+                         : blitz && t.teamMode != TEAMS_FFA   // (0.3.24: in teams, no friendly fire)
+                             ? (t.timed() ? "THE LAST TEAM STANDING WINS - NO FRIENDLY FIRE - AT TIME THE MOST HEALTH" : "THE LAST TEAM STANDING WINS - NO FRIENDLY FIRE")
                          : blitz ? (t.timed() ? "LAST ONE STANDING WINS - AT TIME THE MOST HEALTH, A TIE: SUDDEN DEATH" : "NO CLOCK: THE LAST ONE STANDING WINS")
                          : !t.shields ? "HOTDOG MODE: NO SHIELDS - DODGE, CATCH AND PUNCH"
                          : t.maidenNow() && room <= 1 ? "MAIDEN: A SHIELD WHILE YOU HOLD YOUR BALL, AND IT NEVER BREAKS"
@@ -4922,8 +5158,54 @@ static void drawMenu(App& a) {
             snprintf(buf, sizeof buf, "UPDATE AVAILABLE: %s", v);
             text(buf, -0.10f, 0.145f, 0.022f, amber);
         }
+        if (bestsShown(a)) {   // MY BESTS: your TRAINING bests (the standard ones, as the leaderboards have them)
+            const Pose bp = bestsPose(a);   // (its own plane, turned to face you: x, y on it from its centre)
+            auto bq = [&](float x, float y, float w, float h, float z, const float* c) {
+                a.gfx.drawPanel(Mat4::fromPose(bp * Pose{Quat{}, {x, y, z}}, {w, h, 1}), c);
+            };
+            auto bt = [&](const std::string& s, float x, float y, float h, const float* c) {
+                a.gfx.drawText(s, bp * Pose{Quat{}, {x, y, 0.006f}}, h, c);
+            };
+            bq(0, 0, kBestsW + 0.04f, kBestsH + 0.04f, -0.002f, edge);
+            bq(0, 0, kBestsW, kBestsH, 0, bg);
+            const float left = -kBestsW * 0.5f + 0.03f, right = kBestsW * 0.5f - 0.03f, top = kBestsH * 0.5f;
+            auto textL = [&](const std::string& s, float x, float y, float h, const float* c) { bt(s, x + 0.375f * h * (float)s.size(), y, h, c); };
+            auto textR = [&](const std::string& s, float x, float y, float h, const float* c) { bt(s, x - 0.375f * h * (float)s.size(), y, h, c); };
+            bt("MY BESTS", 0, top - 0.06f, 0.042f, cyan);
+            const auto& Ls = training::lessons();
+            int passed = 0;
+            for (const training::Lesson& L : Ls) passed += a.trainBests.b[L.id].passed;
+            if (passed == 0) {
+                bt("NO BESTS YET", 0, top - 0.20f, 0.03f, white);
+                bt("EACH TRAINING LESSON", 0, top - 0.29f, 0.021f, grey);
+                bt("TEACHES ONE SKILL:", 0, top - 0.328f, 0.021f, grey);
+                bt("THROWING, DEFENDING,", 0, top - 0.366f, 0.021f, grey);
+                bt("CATCHING", 0, top - 0.404f, 0.021f, grey);
+            } else {
+                snprintf(buf, sizeof buf, "TRAINING SCORE %d.%d", a.trainBests.total() / 10, a.trainBests.total() % 10);
+                bt(buf, 0, top - 0.125f, 0.024f, white);
+                snprintf(buf, sizeof buf, "%d OF %d LESSONS PASSED", passed, (int)Ls.size());
+                bt(buf, 0, top - 0.165f, 0.018f, grey);
+                int row = 0;   // the lessons passed, in the TRAINING page's order (the first eight)
+                for (size_t i = 0; i < Ls.size() && row < 8; ++i) {
+                    const training::Best& b = a.trainBests.b[Ls[i].id];
+                    if (!b.passed) continue;
+                    const float y = top - 0.225f - 0.052f * row++;
+                    std::string name = Ls[i].name;
+                    if (name.size() > 14) name.resize(14);
+                    if (Ls[i].timed()) snprintf(buf, sizeof buf, "%.1f S %d%%", b.time, b.permille() / 10);
+                    else snprintf(buf, sizeof buf, "%d / %d", b.successes, b.attempts);
+                    textL(name, left, y, 0.019f, white);
+                    textR(buf, right, y, 0.019f, cyan);
+                }
+            }
+            const bool can = a.net.mode() == Net::Mode::Offline;   // TRAINING (played offline, as the title's button)
+            bq(0, kBestsBtnY, kBestsBtnW, kBestsBtnH, 0.002f, !can ? dis : a.bestsHover ? hov : btn);
+            bt("TRAINING", 0, kBestsBtnY, 0.032f, can ? white : grey);
+            if (!can) bt("LEAVE THE ROOM TO TRAIN", 0, kBestsBtnY + 0.06f, 0.016f, grey);
+        }
     } else if (a.settingsOpen && !a.nameEdit) {
-        text(a.btnPage ? "BUTTONS" : a.ctlPage ? "CONTROLLERS" : a.voicePage ? "VOICE CHAT" : a.ptPage ? "PASSTHROUGH" : a.gfxPage ? "GRAPHICS AND VIEW" : "SETTINGS", 0, 0.29f, 0.055f, cyan);
+        text(a.btnPage ? "BUTTONS" : a.ctlPage ? "CONTROLLERS" : a.voicePage ? (a.mutedPage ? "MUTED PLAYERS" : "VOICE CHAT") : a.ptPage ? "PASSTHROUGH" : a.gfxPage ? "GRAPHICS AND VIEW" : "SETTINGS", 0, 0.29f, 0.055f, cyan);
         if (a.btnPage) {   // BUTTONS
             const float amber[4] = {1.0f, 0.75f, 0.2f, 1};
             text("POINT AT A BUTTON TO CHANGE ITS JOB - THE TRIGGER AND MENU STAY AS THEY ARE", 0, 0.205f, 0.018f, white);
@@ -4949,7 +5231,10 @@ static void drawMenu(App& a) {
                 quad(0.032f * k, -0.165f, k == a.roomFeel ? 0.022f : 0.012f, k == a.roomFeel ? 0.04f : 0.022f, 0.004f, k == a.roomFeel ? on : off);
             }
         }
-        if (a.voicePage && !a.btnPage) text("ONLY PEOPLE AT YOUR ARENA CAN HEAR YOU", 0, 0.205f, 0.024f, grey);
+        if (a.voicePage && !a.btnPage)
+            text(a.mutedPage ? (a.mutes.empty() ? "NOBODY IS MUTED. MUTE SOMEONE FROM REPORT PLAYER"
+                                                : "KEPT ON THIS HEADSET: MUTED WHEREVER YOU MEET THEM")
+                             : "ONLY PEOPLE AT YOUR ARENA CAN HEAR YOU", 0, 0.205f, 0.024f, grey);
         if (a.ptPage) {
             std::string h = kPtModeHelp[a.ptMode % PT_COUNT];
             if (a.ptMode == PT_WINDOW)   // what hides the real things inside the court (environment depth)
@@ -5309,15 +5594,16 @@ static std::array<uint8_t, 4> finalScore(const Game& g) {   // what both players
 }
 
 static void countStat(App& a, const GameEvent& e) {
-    if (a.game.np != 2) return;   // (FOUR CORNERS: careers compare one-on-one matches)
     Net::MatchStats* s = a.matchCount.s;
+    const int np = a.game.np == 4 ? 4 : 2;
+    a.matchCount.np = np;   // (FOUR CORNERS and FIREBALL BLITZ: counted for The Crowd's page; careers stay one-on-one)
     switch (e.type) {
     case EventType::RoundStart:
         if ((int)e.value <= 1) a.matchCount = StatCounter{};
         break;
     case EventType::MatchEnd:
-        a.liveStats[0] = s[0]; a.liveStats[1] = s[1];
-        if (e.player >= 0 && e.player < 2 && !a.game.pl[1].isBot)
+        for (int p = 0; p < kMaxPlayers; ++p) a.liveStats[p] = s[p];
+        if (np == 2 && e.player >= 0 && e.player < 2 && !a.game.pl[1].isBot)
             a.net.reportMatch(e.player, s, finalScore(a.game).data(), a.game.tun.statsMode());
         a.matchCount = StatCounter{};
         return;
@@ -5325,7 +5611,7 @@ static void countStat(App& a, const GameEvent& e) {
         a.matchCount.add(e);
         break;
     }
-    a.liveStats[0] = s[0]; a.liveStats[1] = s[1];
+    for (int p = 0; p < kMaxPlayers; ++p) a.liveStats[p] = s[p];
 }
 
 static void addMark(App& a, const Vec3& at, int player, float speed);
@@ -5514,10 +5800,14 @@ static void drawFlag(App& a, int nation, const Pose& at, float w, const float* r
 static const char* sideName(const App& a, int p);
 
 // a tank player's name on banners: the room's name for them, their career's, or the end's (BLUE, a country)
+// (four players, 2026-11-20: corners 2 and 3 read past the ends' and careers' two entries, and The Crowd named their
+// bots ORANGE: any corner a bot plays says BOT; the two ends' careers and names for corners 0 and 1 only)
 static std::string playerLabel(const App& a, int p) {
-    if (p == 1 && a.game.pl[1].isBot) return "BOT";
+    if (p < 0 || p >= kMaxPlayers) return "OPEN";
+    if (p < a.game.np && a.game.pl[p].isBot && (p == 1 || a.game.np == 4)) return "BOT";
     const RoomInfo& rm = a.watchIp != 0 ? a.watchRoom : a.net.room();
     if (const char* n = rm.nameOf(rm.slot[p])) return n;
+    if (p >= 2) { static const char* kFour[4] = {"BLUE", "ORANGE", "GREEN", "VIOLET"}; return kFour[p]; }
     if (a.careersOk && a.careers[p].name[0]) return a.careers[p].name;
     return sideName(a, p);
 }
@@ -5580,11 +5870,68 @@ static void drawJumbotron(App& a) {
 }
 
 // The Crowd (0.3.7): an online host tells the community server about its match every second (Net::setLive); fans
-// on phones cheer for an end and wave its flag; everyone in the arena (and its spectators) hears them: a crowd sound
-// that swells with the hype, a cheer when an end's hype passes 60, the end's lights flaring with each burst of
-// cheers, and the jumbotron's fan count and hype bars.
+// on phones cheer for an end and wave its flag; everyone in the arena (and its spectators) sees it: the end's lights
+// flaring and flags pouring out of its stands with each burst of cheers, and the jumbotron's fan count and hype bars
+// (no sound since 0.3.23: the owner, 11-20, "the flags and lights are enough").
 static void burstCrowdFx(App& a, int side, int count);
 static void stepCrowdFx(App& a, float dt);
+
+// BALL IN FLIGHT (0.3.24, flight_sound.h): every ball and fireball that can hurt you, heard as it flies, louder as it
+// comes at you; the loudest four, each kept on its own voice while it flies (so it doesn't jump between them). Not
+// your own, not a teammate's, not one that's harmless (fouled, on its way home, already scored); as you see it (BALL
+// LOOK-AHEAD's drawing), from your head as it turns. Playing only: not watching, waiting outside or in the lobby
+// MUSIC (0.3.24): the background track (app/assets_music: CrossGenGaming's own, made on its Suno plan; not in the public
+// repository) at MUSIC 100%. 30%, the start, puts it about 44 dB under full scale on average (the track: -14 dB as
+// mastered), under the game's own sounds; the owner, of a first try about 35 dB under: "too loud", and "even lower";
+// then, of 30%: "very lovely so that is a good default"
+static const float kMusicFull = 0.11f;
+
+static void updateFlightSound(App& a) {
+    a.audio.setFlightLevel(a.ballSound ? 1.f : 0.f);
+    const Game& g = a.game;
+    const int L = a.net.localIndex();
+    struct Cand { int key; FlightParams f; };
+    Cand c[kMaxPlayers + kMaxPlayers * Game::kMaxFire];
+    int n = 0;
+    const bool listening = a.ballSound && !a.viewing && !a.spectating && !inLobby(a) && !a.net.localWaiting() && L >= 0 && L < g.np &&
+                           g.alive(L);
+    if (listening) {
+        const Pose& head = g.pl[L].in.head;
+        Vec3 r = head.q.rotate({1, 0, 0});
+        r = normalize(Vec3{r.x, 0, r.z});
+        if (length2(r) < 0.5f) { const Vec3 f = g.facing(L); r = {-f.z, 0, f.x}; }
+        auto hurts = [&](const Ball& b) { return b.instigator >= 0 && b.instigator < g.np && b.instigator != L && !g.friendly(L, b.instigator); };
+        for (int p = 0; p < g.np; ++p) {
+            const Ball& b = g.pl[p].ball;
+            if (b.state == BallState::Flying && !b.fouled && !b.homing && !b.scored && hurts(b))
+                c[n++] = {p, flightParams(b.pos, b.vel, head.p, r)};
+        }
+        if (g.octagon())
+            for (int p = 0; p < g.np; ++p)
+                for (int k = 0; k < Game::kMaxFire; ++k) {
+                    const Ball& f = g.fire[p][k];
+                    if (f.state == BallState::Flying && hurts(f)) c[n++] = {8 + p * Game::kMaxFire + k, flightParams(f.pos, f.vel, head.p, r)};
+                }
+        std::sort(c, c + n, [](const Cand& x, const Cand& y) { return x.f.gain > y.f.gain; });
+        n = std::min(n, Audio::kFlights);
+    }
+    bool used[Audio::kFlights] = {};
+    int slotOf[Audio::kFlights];
+    for (int i = 0; i < n; ++i) {   // (a ball keeps the voice it had)
+        slotOf[i] = -1;
+        for (int s = 0; s < Audio::kFlights; ++s) if (a.flightKey[s] == c[i].key && !used[s]) { slotOf[i] = s; used[s] = true; break; }
+    }
+    for (int i = 0; i < n; ++i)
+        if (slotOf[i] < 0)
+            for (int s = 0; s < Audio::kFlights; ++s) if (!used[s]) { slotOf[i] = s; used[s] = true; break; }
+    int keyNow[Audio::kFlights] = {-1, -1, -1, -1};
+    for (int i = 0; i < n; ++i) { keyNow[slotOf[i]] = c[i].key; a.audio.setFlight(slotOf[i], c[i].f); }
+    for (int s = 0; s < Audio::kFlights; ++s) {
+        if (keyNow[s] < 0) a.audio.setFlight(s, FlightParams{});
+        a.flightKey[s] = keyNow[s];
+    }
+}
+
 static void updateCrowd(App& a, float dt) {
     if (a.net.mode() == Net::Mode::Host && a.net.onlineReady()) {
         const Game& g = a.game;
@@ -5602,38 +5949,51 @@ static void updateCrowd(App& a, float dt) {
                    (g.tun.knuckleGuards() ? 16 : 0) | (g.tun.advanced && g.tun.advancedRoundTime > 0 ? 32 : 0);
         li.clock = g.roundClock;
         li.st[0] = a.liveStats[0]; li.st[1] = a.liveStats[1];
+        if (g.np == 4) {   // FOUR CORNERS and FIREBALL BLITZ: all four players, for The Crowd's page (0.3.23)
+            li.np = 4;
+            li.room = (uint8_t)(g.tun.experimental ? 1 + g.tun.expRoom : 0);   // (kRoomTitle: 2 FOUR CORNERS, 3 FIREBALL BLITZ)
+            // (the teams as the match plays them; FIREBALL BLITZ, 0.3.24: with 128 added, so the page knows it plays in
+            // teams: an older host sends its TEAMS setting there too, which FIREBALL BLITZ never played)
+            li.teamMode = (uint8_t)(g.teamsNow() | (g.octagon() ? 0x80 : 0));
+            li.theOne = (uint8_t)g.tun.theOne;
+            const int L = a.net.localIndex();
+            for (int p = 0; p < 4; ++p) {
+                const std::string n = a.net.slotFilled(p) ? playerLabel(a, p) : std::string("OPEN");
+                std::snprintf(li.name4[p], sizeof li.name4[p], "%s", n.c_str());
+                const AvatarDesc& d = (p == L && !a.viewing) ? a.myAvatar : a.viewIn[p].avatar;
+                li.nation4[p] = (uint8_t)(a.net.slotFilled(p) ? avatar::nationOf(d) : 0);
+                const float* c = playerRGB(a, p);
+                for (int k = 0; k < 3; ++k) li.rgb4[p][k] = (uint8_t)std::lround(clampf(c[k], 0.f, 1.f) * 255.f);
+                li.team4[p] = (uint8_t)g.team(p);
+                li.points4[p] = (int16_t)std::max(-32000, std::min(32000, g.pl[p].score));
+                li.health4[p] = (uint8_t)std::max(0, std::min(255, g.pl[p].health));
+                li.out4[p] = g.octagon() && !g.alive(p) ? 1 : 0;
+                li.st[p] = a.liveStats[p];
+            }
+            if (g.teamCount() == 2) {   // (teams: the two ends are the two teams, their scores the teams')
+                li.score[0] = (uint8_t)std::max(0, std::min(255, g.teamScore(0)));
+                li.score[1] = (uint8_t)std::max(0, std::min(255, g.teamScore(1)));
+            }
+        }
         li.round = (uint8_t)std::max(0, std::min(255, g.round));
         li.overtime = g.overtime ? 1 : 0;
         a.net.setLive(li);
     }
     const CrowdInfo* c = crowdNow(a);
     for (int p = 0; p < 2; ++p) a.crowdFlare[p] = std::max(0.f, a.crowdFlare[p] - dt * 1.2f);
-    const bool sound = a.crowdMode == 0, show = a.crowdMode < 2;   // SETTINGS > CROWD
+    // (the fans' cheers make no sound in the arena: the owner, 2026-11-20: "change the short cheer in game that comes from
+    // the cheers and just remove it, i think the flags and lights are enough". Before: a short crowd blip as they
+    // cheered, and a cheer when an end's hype passed 60; and before 11-12 a crowd loop under the whole match)
+    const bool show = a.crowdMode < 2;   // SETTINGS > CROWD: FLAGS AND LIGHTS, or OFF
     if (!show) { a.crowdFlare[0] = a.crowdFlare[1] = 0.f; a.crowdFx.clear(); }
     stepCrowdFx(a, dt);
     if (c && c->at != a.crowdAt) {   // a new update (twice a second)
         a.crowdAt = c->at;
-        for (int p = 0; p < 2; ++p) {
+        for (int p = 0; p < 2; ++p)
             if (c->cheers[p] > 0 && show) {
                 a.crowdFlare[p] = std::max(a.crowdFlare[p], std::min(1.f, 0.35f + c->cheers[p] / (4.f + 2.f * c->fans)));
                 burstCrowdFx(a, p, std::min(40, 2 * c->cheers[p]));   // rapid cheering pours more out
             }
-            if (c->hype[p] >= 60 && !a.crowdCheered[p]) { a.crowdCheered[p] = true; if (sound) { const std::string clip = a.audio.officialClip("Cheer"); a.audio.play(clip.empty() ? "oa_Cheer" : clip, 0.8f, 0.f, false, true); } }
-            if (c->hype[p] < 35) a.crowdCheered[p] = false;
-        }
-    }
-    // the fans' cheering: a short, quiet crowd blip when they cheer, at most one every 1.5 s, a little louder with their
-    // hype (owner, 2026-11-12: the crowd loop that ran under the whole match, louder with the hype, was annoying; S29
-    // is a blip now). Under voices: Audio's CROWD UNDER VOICES
-    if (c && sound && c->fans > 0 && (c->cheers[0] > 0 || c->cheers[1] > 0) && c->at != a.crowdBlipFor) {
-        a.crowdBlipFor = c->at;
-        const double now = nowSeconds();
-        if (now - a.crowdBlipAt >= 1.5) {
-            a.crowdBlipAt = now;
-            const float hype = std::max(c->hype[0], c->hype[1]) / 100.f;
-            const std::string clip = a.audio.officialClip("Crowd");
-            a.audio.play(clip.empty() ? "oa_Crowd" : clip, 0.35f + 0.4f * hype, 0.f, false, true);
-        }
     }
 }
 
@@ -5999,6 +6359,109 @@ static void saveAvatar(App& a) {
     }
 }
 
+// <externalDataPath>/looks.cfg (0.3.23): "countries=USA:3,CAN:1" (how often each country was chosen, by its code),
+// then MY LOOKS, each filled slot under "[look N]" in avatar.cfg's lines. Builds before 0.3.23 never read it
+static void saveLooks(App& a) {
+    const char* ext = dataDir(a);
+    if (!ext) return;
+    std::string t = "countries=";
+    bool first = true;
+    for (int n = 1; n <= avatar::nationCount(); ++n)
+        if (a.nationPicks[n] > 0) {
+            t += (first ? "" : ",") + std::string(avatar::nation(n)->code) + ":" + std::to_string(a.nationPicks[n]);
+            first = false;
+        }
+    t += "\n";
+    for (int k = 0; k < 3; ++k)
+        if (a.myLookSaved[k]) t += "[look " + std::to_string(k + 1) + "]\n" + avatar::toText(a.myLooks[k]);
+    const std::string f = std::string(ext) + "/looks.cfg";
+    if (FILE* fp = fopen(f.c_str(), "w")) {
+        fputs(t.c_str(), fp);
+        fclose(fp);
+    }
+}
+
+static void loadLooks(App& a, const char* from = nullptr) {   // (from: picture mode's --looks FILE)
+    for (int& p : a.nationPicks) p = 0;
+    for (bool& s : a.myLookSaved) s = false;
+    if (const char* ext = dataDir(a); ext || from) {
+        const std::string f = from ? std::string(from) : std::string(ext) + "/looks.cfg";
+        if (FILE* fp = fopen(f.c_str(), "r")) {
+            std::string part[4];   // [0] before the first look, [1..3] the looks
+            int at = 0, k = 0;
+            char buf[512];
+            while (fgets(buf, sizeof buf, fp)) {
+                if (std::sscanf(buf, "[look %d]", &k) == 1) { at = k >= 1 && k <= 3 ? k : -1; continue; }
+                if (at >= 0) part[at] += buf;
+            }
+            fclose(fp);
+            const size_t c = part[0].find("countries=");
+            if (c != std::string::npos) {
+                std::string list = part[0].substr(c + 10);
+                list = list.substr(0, list.find('\n'));
+                size_t i = 0;
+                while (i < list.size()) {
+                    size_t e = list.find(',', i);
+                    if (e == std::string::npos) e = list.size();
+                    const std::string item = list.substr(i, e - i);
+                    i = e + 1;
+                    const size_t colon = item.find(':');
+                    if (colon == std::string::npos) continue;
+                    const std::string code = item.substr(0, colon);
+                    const int times = std::atoi(item.c_str() + colon + 1);
+                    for (int n = 1; n <= avatar::nationCount(); ++n)
+                        if (code == avatar::nation(n)->code) a.nationPicks[n] = std::max(0, std::min(times, 1000000));
+                }
+            }
+            for (int s = 0; s < 3; ++s)
+                if (!part[s + 1].empty()) a.myLookSaved[s] = avatar::fromText(part[s + 1], a.myLooks[s] = AvatarDesc{});
+        }
+    }
+    // (the country you wear counts as chosen once: it heads the list the first time you open the builder)
+    const int n = avatar::nationOf(a.myAvatar);
+    if (n >= 1 && n <= avatar::nationCount() && a.nationPicks[n] == 0) a.nationPicks[n] = 1;
+    int looks = 0;
+    for (bool s : a.myLookSaved) looks += s;
+    LOGI("avatar: %d saved looks", looks);
+}
+
+// NEW BOT (0.3.23; the owner, 2026-11-20: "a randomize new bot button to give them a random stance ... and a different
+// outfit ... hosts may not want it to change so we need a push to change button"; then: "a bot option that allows you
+// to have it randomize every match or on push but no matter what it changes when the game restarts"): the bots' outfits
+// from botSeed (the practice bot's, and each four-player corner's own) and their stances (Game::botLook). A new seed at
+// every start of the game (never saved); then, by the room page's option (botEveryMatch, saved): a new one as each
+// match comes (when the last one's summary ends), or only on NEW BOT
+static void applyBot(App& a) {
+    if (!a.botSeed) {   // (the game starting: a bot of its own this time)
+        uint32_t s = (uint32_t)(nowSeconds() * 1000003.0);
+        for (const char* c = a.net.name(); *c; ++c) s = s * 31u + (uint8_t)*c;
+        a.botSeed = s ? s : 1u;
+    }
+    a.botAvatar = avatar::randomLook(a.botSeed ^ 0xB07B07u);
+    for (int p = 0; p < kMaxPlayers; ++p) a.botLooks[p] = p == 1 ? a.botAvatar : avatar::randomLook(a.botSeed * 2654435761u + 0x51ED27u * (uint32_t)(p + 1));
+    a.game.botLook = a.botSeed;
+}
+// a new bot: a new outfit and stance for every bot, at once (hosting: everyone sees them). told: NEW BOT pressed (its
+// notice names the stance); not: EVERY MATCH's, between matches
+static void newBot(App& a, bool told) {
+    const uint32_t seed = (uint32_t)(nowSeconds() * 1000003.0) ^ (a.botSeed * 2654435761u);
+    a.botSeed = seed ? seed : 1u;
+    applyBot(a);
+    for (int p = 0; p < a.game.np; ++p) if (a.game.pl[p].isBot) a.game.pl[p].botStance = -1;   // (its new stance at once)
+    // the notice names a bot's stance as it will play it: the first corner with a bot (the practice bot's, 1, before
+    // the match has one), at the level it plays at, as Game::stepBot works it out (review 2026-11-21: it named corner 1's
+    // at the room's level, which could be no bot's)
+    int p = 1;
+    for (int q = 1; q < a.game.np + 1; ++q) if (a.game.pl[q % a.game.np].isBot) { p = q % a.game.np; break; }
+    const Tunables& t = a.game.tun;
+    const int own = a.game.pl[p].botLevel;
+    const float level = own >= 0 ? (float)own : t.botAdapt ? t.botMatch : (float)t.botLevel;
+    char b[64];
+    snprintf(b, sizeof b, "NEW BOT: %s STANCE", botStanceName(a.game.botStanceFor(p, level)));
+    if (told) a.net.noticeLocal(b);
+    LOGI("bot: %s (%s)", b, told ? "NEW BOT pressed" : "every match");
+}
+
 // <externalDataPath>/avatar.cfg (key=value lines, editable over adb); a first run picks a random look
 static void loadAvatar(App& a) {
     uint32_t seed = (uint32_t)(nowSeconds() * 1000.0);
@@ -6018,6 +6481,7 @@ static void loadAvatar(App& a) {
     }
     if (!ok) { a.myAvatar = avatar::randomLook(seed); saveAvatar(a); }
     LOGI("avatar: %s / %s", avatar::optionName(avatar::F_SUIT, a.myAvatar.suit), avatar::optionName(avatar::F_HEADGEAR, a.myAvatar.headgear));
+    loadLooks(a);
 }
 
 // ---- builder panel layout (panel space: metres, +Z toward the player). Two panels (the owner, 2026-11-19: "the
@@ -6048,7 +6512,14 @@ static int builderLeftRows(const App& a, int out[5]) {
     out[n++] = avatar::F_BUILD;
     return n;
 }
-static float builderBottomL(const App& a) { int r[5]; return builderRowY(builderLeftRows(a, r) - 1) - 0.06f; }
+// MY LOOKS (0.3.23; the owner, 2026-11-20: "we also need to save costume slots up to 3"): under the left panel's rows,
+// three saved looks, each with WEAR (it goes on as a preset does: SAVE AND APPLY keeps it, CANCEL goes back), SAVE
+// (the look you have on into that slot; a filled slot asks SURE? first) and CLEAR (the slot EMPTY again, after SURE?;
+// the owner, 2026-11-20). The slots are kept in looks.cfg at once, whatever the builder closes with
+static float builderLooksY(const App& a) { int r[5]; return builderRowY(builderLeftRows(a, r)) + 0.02f; }   // (its heading)
+static const float kLookRowH = 0.085f, kLookLabelUp = 0.037f, kLookBtnX = 0.145f, kLookBtnW = 0.13f, kLookBtnH = 0.04f;
+static float lookRowY(const App& a, int k) { return builderLooksY(a) - 0.08f - k * kLookRowH; }
+static float builderBottomL(const App& a) { return lookRowY(a, 2) - 0.055f; }
 // the PRESET row: the presets, then COUNTRY FLAG (the team kit of a country, chosen in the row below)
 static int presetSlots() { return avatar::presetCount() + 1; }
 static int presetSlot(const App& a) { return ((a.presetIdx % presetSlots()) + presetSlots()) % presetSlots(); }
@@ -6057,7 +6528,7 @@ static const char* presetLabel(const App& a) {
 }
 
 // hit codes: field * 2 (+1 = next), 100 / 101 preset prev / next, 102 random, 103 save and apply, 104 / 105 country
-// prev / next, 106 cancel, 107 / 108 COUNTRY KIT prev / next
+// prev / next, 106 cancel, 107 / 108 COUNTRY KIT prev / next, 110 / 111 / 112 + 3k MY LOOKS slot k's WEAR / SAVE / CLEAR
 static int builderLeftCode(int item) { return item == BL_PRESET ? 100 : item == BL_COUNTRY ? 104 : item == BL_KIT ? 107 : item * 2; }
 static int arrowHit(float lx, float ly, float cx, float y, int code) {
     if (std::fabs(ly - y) > 0.026f) return -1;
@@ -6071,6 +6542,12 @@ static int builderHitTest(const App& a, int panel, float lx, float ly) {
         const int n = builderLeftRows(a, items);
         for (int i = 0; i < n; ++i)
             if (int h = arrowHit(lx, ly, 0, builderRowY(i), builderLeftCode(items[i])); h >= 0) return h;
+        for (int k = 0; k < 3; ++k) {   // MY LOOKS (an empty slot has nothing to wear or clear)
+            if (std::fabs(ly - lookRowY(a, k)) > kLookBtnH * 0.5f + 0.004f) continue;
+            if (std::fabs(lx + kLookBtnX) < kLookBtnW * 0.5f) return a.myLookSaved[k] ? 110 + 3 * k : -1;
+            if (std::fabs(lx) < kLookBtnW * 0.5f) return 111 + 3 * k;
+            if (std::fabs(lx - kLookBtnX) < kLookBtnW * 0.5f) return a.myLookSaved[k] ? 112 + 3 * k : -1;
+        }
         return -1;
     }
     for (const BuilderRow& r : kBuilderRows)
@@ -6113,6 +6590,8 @@ static void openBuilder(App& a, const PlayerInput& in) {
     a.menuOpen = false;
     a.prevBuilderTrig = true;
     a.presetIdx = avatar::nationOf(a.myAvatar) ? avatar::presetCount() : 0;   // (wearing a country: COUNTRY FLAG)
+    a.nationOrder = avatar::nationOrder(a.nationPicks);   // (fixed while it's open: the picks change when it closes)
+    a.lookConfirm = -1;
     LOGI("avatar builder: open");
 }
 
@@ -6120,11 +6599,22 @@ static void closeBuilder(App& a) {
     if (!a.builderOpen) return;
     a.builderOpen = false;
     saveAvatar(a);
+    // a country you leave with, other than the one you came in with, counts as chosen once more
+    const int n = avatar::nationOf(a.myAvatar);
+    if (n >= 1 && n <= avatar::nationCount() && n != avatar::nationOf(a.builderStart)) {
+        ++a.nationPicks[n];
+        saveLooks(a);
+        LOGI("avatar: %s chosen %d times", avatar::nation(n)->code, a.nationPicks[n]);
+    }
     LOGI("avatar builder: closed");
 }
 
 static void builderActivate(App& a, int hit) {
     AvatarDesc& d = a.myAvatar;
+    if (a.nationOrder.empty()) a.nationOrder = avatar::nationOrder(a.nationPicks);
+    const std::vector<int>& order = a.nationOrder;
+    const int confirm = a.lookConfirm != -1 && nowSeconds() < a.lookConfirmUntil ? a.lookConfirm : -1;
+    a.lookConfirm = -1;   // (any other press: SURE? goes back to SAVE or CLEAR)
     if (hit >= 0 && hit < 100) {
         const avatar::Field f = (avatar::Field)(hit / 2);
         avatar::set(d, f, avatar::get(d, f) + ((hit & 1) ? 1 : -1));
@@ -6132,20 +6622,50 @@ static void builderActivate(App& a, int hit) {
     } else if (hit == 100 || hit == 101) {
         a.presetIdx = presetSlot(a) + (hit == 101 ? 1 : -1);
         if (presetSlot(a) == avatar::presetCount()) {   // COUNTRY FLAG: the look stays, the country's kit goes on
-            avatar::set(d, avatar::F_NATION, std::max(1, std::min(avatar::nationCount(), a.lastNation)));
+            // (the last country chosen this time, else the top of the COUNTRY order: your most chosen, or A-Z)
+            const bool last = a.lastNation >= 1 && a.lastNation <= avatar::nationCount();
+            avatar::set(d, avatar::F_NATION, last ? a.lastNation : order[0]);
         } else {
             d = avatar::preset(presetSlot(a));
         }
         LOGI("avatar: preset %s", presetLabel(a));
-    } else if (hit == 104 || hit == 105) {   // the country (1..count, wrapping)
-        const int n = avatar::nationCount();
-        const int v = (avatar::nationOf(d) - 1 + (hit == 105 ? 1 : n - 1)) % n + 1;
+    } else if (hit == 104 || hit == 105) {   // the country: a step along the COUNTRY order (wrapping)
+        const int m = (int)order.size();
+        int i = (int)(std::find(order.begin(), order.end(), avatar::nationOf(d)) - order.begin());
+        i = i >= m ? 0 : (i + (hit == 105 ? 1 : m - 1)) % m;
+        const int v = order[i];
         avatar::setNation(d, v);
         a.lastNation = v;
         LOGI("avatar: country %s", avatar::nation(v)->name);
     } else if (hit == 107 || hit == 108) {   // COUNTRY KIT (two choices: either arrow swaps them)
         avatar::setOwnKit(d, !avatar::ownKit(d));
         LOGI("avatar: country kit %s", avatar::ownKit(d) ? "MY OUTFIT" : "TEAM JERSEY");
+    } else if (hit >= 110 && hit <= 118) {   // MY LOOKS
+        const int k = (hit - 110) / 3, act = (hit - 110) % 3;
+        if (act == 0) {   // WEAR: the saved look goes on (SAVE AND APPLY keeps it, CANCEL goes back)
+            if (!a.myLookSaved[k]) return;
+            d = a.myLooks[k];
+            if (const int n = avatar::nationOf(d)) { a.presetIdx = avatar::presetCount(); a.lastNation = n; }
+            else if (presetSlot(a) == avatar::presetCount()) a.presetIdx = 0;
+            LOGI("avatar: wearing LOOK %d", k + 1);
+        } else if (a.myLookSaved[k] && confirm != hit) {   // SAVE over a filled slot, or CLEAR: SURE? for 3 s first
+            a.lookConfirm = hit;
+            a.lookConfirmUntil = nowSeconds() + 3.0;
+        } else if (act == 2) {   // CLEAR, sure: the slot EMPTY again (the look you have on stays on)
+            a.myLookSaved[k] = false;
+            a.myLooks[k] = AvatarDesc{};
+            saveLooks(a);
+            const std::string msg = "LOOK " + std::to_string(k + 1) + " CLEARED";
+            a.net.noticeLocal(msg.c_str());
+            LOGI("avatar: LOOK %d cleared", k + 1);
+        } else {
+            a.myLooks[k] = d;
+            a.myLookSaved[k] = true;
+            saveLooks(a);
+            const std::string msg = "SAVED AS LOOK " + std::to_string(k + 1);
+            a.net.noticeLocal(msg.c_str());
+            LOGI("avatar: saved as LOOK %d", k + 1);
+        }
     } else if (hit == 102) {
         d = avatar::randomLook((uint32_t)(nowSeconds() * 1000.0));
     } else if (hit == 103) {   // SAVE AND APPLY (a tester's report: the look shows live, but DONE didn't say it saves)
@@ -6199,8 +6719,10 @@ static const Model& gauntletOf(const App& a, const AvatarDesc& d) {
 
 // GRAPPLER, ARC CLAW, REGALIA: the trigger opens the fingers, each about its hinge (in the grip frame the fist is
 // drawn in: fist = gm * fistPose), and while it is pulled a plasma tether in the glow colour runs from the emitter in
-// the front of the fist to where the ball is held (Tunables::launcherOffset), a flare at each end. Drawing only: the
-// throw, the catch and what is sent are as they were (every player's trigger travels already)
+// the front of the fist to where a ball is held, in the palm (Game::holdLocal), a flare at each end. (Until 0.3.23 it
+// ran to the old launch point 25 cm ahead of the hand, where the ball sat before 0.3.22's palm: the owner, 2026-11-21,
+// "that long green tractor beam, they are supposed to be in the palm of the hand like a palm grappling".) Drawing
+// only: the throw, the catch and what is sent are as they were (every player's trigger travels already)
 static float grappleOpen(float trigger) {
     const float t = clampf((trigger - 0.05f) / 0.80f, 0.f, 1.f);
     return t * t * (3.f - 2.f * t);
@@ -6223,7 +6745,7 @@ static void drawGrapple(App& a, int k, const Mat4& gm, const Mat4& fist, const D
     for (int c = 0; c < 3; ++c) pp.tintMul[c] = glow[c] * (0.7f + 0.6f * t);
     pp.uvOff[1] = wrapUV(-(nowSeconds() - a.startTime) * 2.4);   // the plasma running out along the tether
     const Vec3 E = avatar::fistPose().transform(G.emit);            // in gm's frame (the left hand's mirrored)
-    Vec3 B = a.game.tun.launcherOffset;
+    Vec3 B = a.game.holdLocal(left ? 0 : 1);   // (the held ball, in the grip's space; gm mirrors the left hand's)
     if (left) B.x = -B.x;
     const Vec3 D = B - E;
     const float L = length(D);
@@ -6319,11 +6841,13 @@ static void drawLancerAt(App& a, const Mat4& grip, int h, const AvatarLook& L, i
 // main menu: your avatar on a slowly turning pedestal to the right of the menu, your name above it
 static void drawTitleShowcase(App& a, int pass) {
     if (!a.menuOpen || !a.titleOpen || a.builderOpen || a.helpOpen || a.avModels.empty()) return;
-    const Vec3 right = a.menuPose.q.rotate({1, 0, 0}), away = a.menuPose.q.rotate({0, 0, -1});
-    Vec3 base = a.menuPose.p + right * 1.9f + away * 1.4f;   // clear of the panel (about 40 degrees to the right)
-    if (inLobby(a)) base = kLobbySpot + Vec3{1.45f * std::sin(deg2rad(40.f)), 0, -1.45f * std::cos(deg2rad(40.f))};   // to the right
-    base.y = floorHere(a);
-    Vec3 toUser = a.viewHead.p - base;
+    // (kShowcaseScale of your size beside the menu: drawn as at full size with its feet at `base`, then scaled about its
+    // disc, which the body stands on, 0.62 m up at full size)
+    const Vec3 disc = a.menuPose.transform({kShowcaseX, kShowcaseDiscY, kShowcaseZ});
+    const Vec3 base = disc - Vec3{0, 0.62f, 0};
+    const float sc = kShowcaseScale;
+    const Mat4 M = Mat4::fromPose({Quat{}, disc}, {sc, sc, sc}) * Mat4::fromPose({Quat{}, Vec3{} - disc});
+    Vec3 toUser = a.viewHead.p - disc;
     toUser.y = 0;
     toUser = length(toUser) > 1e-3f ? normalize(toUser) : Vec3{0, 0, 1};
     const float face = std::atan2(-toUser.x, -toUser.z);   // the avatar looks at the player (it had its back turned)
@@ -6339,19 +6863,20 @@ static void drawTitleShowcase(App& a, int pass) {
         in.hand[h].grip = {q * Quat::axisAngle({1, 0, 0}, -1.05f) * Quat::axisAngle({0, 0, 1}, s * 0.25f),
                            in.head.p + q.rotate({s * 0.24f, -0.80f, -0.10f})};
     }
-    drawAvatarBody(a, in, 0, pass, Mat4::identity(), false, false, 0, 100);   // (its own ponytail chain)
+    drawAvatarBody(a, in, 0, pass, M, false, false, 0, 100);   // (its own ponytail chain)
     const AvatarLook look = lookOf(a, in.avatar, 0);
-    for (int h = 0; h < 2; ++h) drawLancerAt(a, Mat4::fromPose(in.hand[h].grip), h, look, pass, Mat4::identity(), false, in.avatar);
+    for (int h = 0; h < 2; ++h) drawLancerAt(a, Mat4::fromPose(in.hand[h].grip), h, look, pass, M, false, in.avatar);
     if (pass != 1) return;
-    // a hologram disc under the avatar (the bodies end above the knee), and its beam down to the floor
-    const float ring[4] = {0.10f, 0.55f, 0.90f, 1}, ring2[4] = {0.04f, 0.20f, 0.40f, 1}, white[4] = {1, 1, 1, 1};
-    a.gfx.drawSpriteFlat(base + Vec3{0, 0.62f, 0}, 0.75f, ring, {0, 1, 0}, 1);
-    a.gfx.drawSpriteFlat(base + Vec3{0, 0.006f, 0}, 0.9f, ring2, {0, 1, 0}, 1);
-    const Vec3 pts[2] = {base + Vec3{0, 0.02f, 0}, base + Vec3{0, 0.60f, 0}};
+    // its hologram disc (the bodies end above the knee) and a beam down to the floor (no ring on the floor: the owner,
+    // 2026-11-21, "the lowest ring projection under the avatar seems unnecessary")
+    const float ring[4] = {0.10f, 0.55f, 0.90f, 1}, white[4] = {1, 1, 1, 1};
+    const Vec3 ground{disc.x, floorHere(a), disc.z};
+    a.gfx.drawSpriteFlat(disc, 0.75f * sc, ring, {0, 1, 0}, 1);
+    const Vec3 pts[2] = {ground + Vec3{0, 0.02f, 0}, disc - Vec3{0, 0.02f, 0}};
     const float beam[4] = {0.06f, 0.30f, 0.55f, 0.5f};
-    a.gfx.drawRibbon(pts, 2, 0.32f, beam);
+    a.gfx.drawRibbon(pts, 2, 0.32f * sc, beam);
     const Quat lq = Quat::axisAngle({0, 1, 0}, face + kPi);   // text quads face +Z
-    a.gfx.drawText(a.net.name(), {lq, base + Vec3{0, 1.90f, 0}}, 0.08f, white);
+    a.gfx.drawText(a.net.name(), {lq, disc + Vec3{0, (1.90f - 0.62f) * sc, 0}}, 0.055f, white);
 }
 
 // the builder's mirror (also the tuning tool's): your reflection, moving with you, and the glass
@@ -6458,6 +6983,22 @@ static void drawBuilder(App& a, int pass) {
                 const avatar::Field fld = (avatar::Field)items[i];
                 row(0, y, avatar::fieldName(fld), avatar::optionName(fld, avatar::get(d, fld)), white, code);
             }
+        }
+        text("MY LOOKS", 0, builderLooksY(a), 0.024f, cyan);
+        const bool sureLive = a.lookConfirm != -1 && nowSeconds() < a.lookConfirmUntil;
+        for (int k = 0; k < 3; ++k) {   // each slot: LOOK N and what it is (its country, else its suit), WEAR and SAVE
+            const float y = lookRowY(a, k);
+            std::string label = "LOOK " + std::to_string(k + 1) + ": ";
+            if (!a.myLookSaved[k]) label += "EMPTY";
+            else if (const avatar::Nation* N = avatar::nation(avatar::nationOf(a.myLooks[k]))) label += N->name;
+            else label += avatar::optionName(avatar::F_SUIT, a.myLooks[k].suit);
+            text(label, 0, y + kLookLabelUp, std::min(0.02f, 0.42f / (0.75f * (float)label.size())), grey);
+            const bool sureSave = sureLive && a.lookConfirm == 111 + 3 * k, sureClear = sureLive && a.lookConfirm == 112 + 3 * k;
+            for (int b = 0; b < 3; ++b)
+                quad((b - 1) * kLookBtnX, y, kLookBtnW, kLookBtnH, 0.003f, a.builderHover == 110 + 3 * k + b ? hov : btn);
+            text("WEAR", -kLookBtnX, y, 0.021f, a.myLookSaved[k] ? white : grey);
+            text(sureSave ? "SURE?" : "SAVE", 0, y, 0.021f, sureSave ? cyan : white);
+            text(sureClear ? "SURE?" : "CLEAR", kLookBtnX, y, 0.021f, sureClear ? cyan : a.myLookSaved[k] ? white : grey);
         }
         P = &a.builderPose;
     }
@@ -7665,37 +8206,14 @@ static void startLobbyMatch(App& a) {
     LOGI("lobby: bots playing");
 }
 
-struct Poster { const char* title; const char* line1; const char* line2; float ang; };
-static const Poster kPosters[] = {
-    {"PLAY THE BOT", "POINT AT THE COURT", "AND PULL THE TRIGGER", -75},
-    {"MULTIPLAYER", "HOST OR JOIN A ROOM", "ONLINE OR ON YOUR WI-FI", -105},
-    {"HOW TO PLAY", "THROW, CURVE, PUNCH", "AND SHIELD", -135},
-    {"CUSTOMIZE", "YOUR LOOK: OUTFITS,", "HAIR, GAUNTLETS", 75},
-    {"SPECTATE", "WATCH LIVE MATCHES", "AND DIRECT CAMERAS", 105},
-    {"SETTINGS", "VOLUME, VOICE,", "SERVER AND RULES", 135},
-};
-static const int kPosterCount = (int)(sizeof kPosters / sizeof kPosters[0]);
+// (the lobby's six posters, PLAY THE BOT, MULTIPLAYER, HOW TO PLAY, CUSTOMIZE, SPECTATE and SETTINGS, taken out
+// 2026-11-21: the owner, "i haven't heard anyone say they like them ... if we hear complaints we can put them back";
+// the main menu, open on arrival, has every one of them. They were there from 0.3.1)
+static const int kLobbyCourt = 0;   // lobbyHover: the court (-1: nothing)
 
-static Pose posterPose(int i) {
-    const float ang = deg2rad(kPosters[i].ang), R = 1.4f;
-    const Vec3 p = kLobbySpot + Vec3{R * std::sin(ang), 1.40f, -R * std::cos(ang)};
-    return {Quat::axisAngle({0, 1, 0}, -ang), p};   // quad +Z faces the middle of the balcony
-}
-
-// pointer ray against the posters and the court; -1 nothing, 0..kPosterCount-1 a poster, kPosterCount the court
-static int lobbyRayHit(const App& a, const Vec3& o, const Vec3& d, float& dist) {
-    int hit = -1;
+// pointer ray against the court (the glass tank: a slab test); -1 nothing, kLobbyCourt the court
+static int lobbyRayHit(const Vec3& o, const Vec3& d, float& dist) {
     dist = 1e9f;
-    for (int i = 0; i < kPosterCount; ++i) {
-        const Pose k = posterPose(i);
-        const Vec3 nz = k.q.rotate({0, 0, 1});
-        const float den = dot(d, nz);
-        if (den > -1e-3f) continue;
-        const float t = dot(k.p - o, nz) / den;
-        const Vec3 lp = k.q.conj().rotate(o + d * t - k.p);
-        if (t > 0 && t < dist && std::fabs(lp.x) < 0.33f && std::fabs(lp.y) < 0.27f) { dist = t; hit = i; }
-    }
-    // the court (the glass tank): slab test
     const Vec3 lo{-9.45f, 0.f, -2.45f}, hi{9.45f, 3.6f, 2.45f};
     float t0 = 0.f, t1 = 60.f;
     const float* po = &o.x; const float* pd = &d.x; const float* pl = &lo.x; const float* ph = &hi.x;
@@ -7707,25 +8225,18 @@ static int lobbyRayHit(const App& a, const Vec3& o, const Vec3& d, float& dist) 
         t0 = std::max(t0, ta); t1 = std::min(t1, tb);
         if (t0 > t1) inside = false;
     }
-    if (inside && t0 < dist) { dist = t0; hit = kPosterCount; }
-    return hit;
+    if (!inside) return -1;
+    dist = t0;
+    return kLobbyCourt;
 }
 
-static void lobbyAction(App& a, int which, const PlayerInput& in) {
-    LOGI("lobby: %s", which == kPosterCount ? "the court" : kPosters[which].title);
-    auto menuPage = [&]() {
-        openMenu(a, in);
-        a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.ctlPage = a.roomBallPage = a.roomBouncePage = a.btnPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.bugOpen = a.reportOpen = a.movePlayersOpen = false;
-    };
-    switch (which) {
-    case 0: case kPosterCount: menuPage(); a.rulesOpen = true; a.rulesForHost = false; break;   // PLAY THE BOT / the court
-    case 1: menuPage(); break;                                                       // MULTIPLAYER page
-    case 2: menuPage(); a.helpOpen = true; a.creditsOpen = false; break;
-    case 3: if (!a.avModels.empty()) openBuilder(a, in); break;
-    case 4: a.net.spectate(); a.watchIp = 0; break;
-    case 5: menuPage(); a.settingsOpen = true; break;
-    default: break;
-    }
+static void lobbyAction(App& a, int which, const PlayerInput& in) {   // the court: practice against the bot
+    if (which != kLobbyCourt) return;
+    LOGI("lobby: the court");
+    openMenu(a, in);
+    a.titleOpen = a.settingsOpen = a.voicePage = a.ptPage = a.gfxPage = a.ctlPage = a.roomBallPage = a.roomBouncePage = a.btnPage = a.helpOpen = a.xpOpen = a.rulesOpen = a.bugOpen = a.reportOpen = a.movePlayersOpen = false;
+    a.rulesOpen = true;
+    a.rulesForHost = false;
 }
 
 static void updateLobby(App& a, const PlayerInput& in) {
@@ -7735,23 +8246,11 @@ static void updateLobby(App& a, const PlayerInput& in) {
         return;
     }
     float dist;
-    a.lobbyHover = lobbyRayHit(a, a.aim[a.pointerHand].p, a.aim[a.pointerHand].q.rotate({0, 0, -1}), dist);
-    if (a.menuOpen && a.lobbyHover == kPosterCount) a.lobbyHover = -1;   // the open menu sits in front of the court
-    // posters can be pressed by hand too
-    int poked = -1;
-    for (int h = 0; h < 2 && poked < 0; ++h) {
-        if (!in.hand[h].tracked) continue;
-        for (int i = 0; i < kPosterCount; ++i) {
-            const Pose k = posterPose(i);
-            const Vec3 lp = k.q.conj().rotate(in.hand[h].grip.p - k.p);
-            if (std::fabs(lp.x) < 0.31f && std::fabs(lp.y) < 0.25f && lp.z < 0.05f && lp.z > -0.12f) poked = i;
-        }
-    }
-    const bool trig = a.rawTrigger[a.pointerHand] > 0.7f;   // works with the main menu open (it opens on arrival)
+    a.lobbyHover = lobbyRayHit(a.aim[a.pointerHand].p, a.aim[a.pointerHand].q.rotate({0, 0, -1}), dist);
+    if (a.menuOpen && a.lobbyHover == kLobbyCourt) a.lobbyHover = -1;   // the open menu sits in front of the court
+    const bool trig = a.rawTrigger[a.pointerHand] > 0.7f;
     if (trig && !a.prevLobbyTrig && a.lobbyHover >= 0) { lobbyAction(a, a.lobbyHover, in); haptic(a, a.pointerHand, 0.4f, 0.03f); }
-    else if (poked >= 0 && !a.prevLobbyPoke) { lobbyAction(a, poked, in); haptic(a, a.pointerHand, 0.4f, 0.03f); }
     a.prevLobbyTrig = trig;
-    a.prevLobbyPoke = poked >= 0;
 }
 
 static void drawLobby(App& a, int pass) {
@@ -7762,12 +8261,19 @@ static void drawLobby(App& a, int pass) {
     for (int h = 0; h < 2; ++h)
         if (mine.hand[h].tracked)
             drawLancerAt(a, Mat4::fromPose(mine.hand[h].grip), h, look, pass, Mat4::identity(), false, a.myAvatar, mine.hand[h].trigger);
-    if (pass != 1) return;
-    const float cyan[4] = {0.3f, 0.85f, 1.0f, 1}, white[4] = {1, 1, 1, 1}, grey[4] = {0.62f, 0.68f, 0.76f, 1};
-    const float deck[4] = {0.02f, 0.03f, 0.05f, 0.92f}, glow[4] = {0.10f, 0.55f, 0.85f, 1};
-    // the balcony: a dark deck with glowing edges and a front rail
+    // the balcony: a dark deck with glowing edges and a front rail. The deck and the rail sign's backing solid, drawn
+    // with the opaque things (2026-11-21, the start screen at 11.6 ms a frame of its 11.1: 92% opaque, they were blended
+    // over the court below, which the graphics chip drew in full underneath them)
     const Vec3 c{0, kLobbyFloor, kLobbySpot.z - 0.4f};
-    a.gfx.drawPanel(Mat4::fromPose({Quat::axisAngle({1, 0, 0}, -kPi * 0.5f), c + Vec3{0, -0.005f, 0}}, {5.4f, 2.6f, 1}), deck);
+    const Pose sign{Quat{}, c + Vec3{0, 0.82f, -1.31f}};
+    if (pass == 0) {
+        const float deckSolid[3] = {0.02f, 0.03f, 0.05f};
+        a.gfx.drawPanelSolid(Mat4::fromPose({Quat::axisAngle({1, 0, 0}, -kPi * 0.5f), c + Vec3{0, -0.005f, 0}}, {5.4f, 2.6f, 1}), deckSolid);
+        a.gfx.drawPanelSolid(Mat4::fromPose(sign, {2.3f, 0.2f, 1}), deckSolid);
+    }
+    if (pass != 1) return;
+    const float white[4] = {1, 1, 1, 1}, grey[4] = {0.62f, 0.68f, 0.76f, 1};
+    const float glow[4] = {0.10f, 0.55f, 0.85f, 1};
     // (the unit box spans -1..1: its scale is a half size)
     a.gfx.drawBox(Mat4::fromPose({Quat{}, c + Vec3{0, 0.0f, -1.3f}}, {2.7f, 0.004f, 0.004f}), glow, true);
     a.gfx.drawBox(Mat4::fromPose({Quat{}, c + Vec3{0, 1.0f, -1.3f}}, {2.7f, 0.006f, 0.006f}), glow, true);   // the rail
@@ -7775,27 +8281,11 @@ static void drawLobby(App& a, int pass) {
     for (float x : {-2.6f, -1.3f, 0.f, 1.3f, 2.6f}) a.gfx.drawBox(Mat4::fromPose({Quat{}, c + Vec3{x, 0.5f, -1.3f}}, {0.004f, 0.5f, 0.004f}), glow, true);
     const float ring[4] = {0.15f, 0.6f, 0.9f, 1};
     a.gfx.drawSpriteFlat({kLobbySpot.x, kLobbyFloor + 0.006f, kLobbySpot.z}, 1.0f, ring, {0, 1, 0}, 1);
-    // the rail sign: the two things everyone needs
-    const Pose sign{Quat{}, c + Vec3{0, 0.82f, -1.31f}};
-    a.gfx.drawPanel(Mat4::fromPose(sign, {2.3f, 0.2f, 1}), deck);
+    // the rail sign: the two things everyone needs (its backing drawn above, solid)
     a.gfx.drawText("LEFT MENU BUTTON: MAIN MENU    -    HOLD THE META BUTTON: RECENTER", sign * Pose{Quat{}, {0, 0.03f, 0.004f}}, 0.035f, white);
-    a.gfx.drawText("POINT AT A POSTER OR THE COURT AND PULL THE TRIGGER", sign * Pose{Quat{}, {0, -0.04f, 0.004f}}, 0.026f, grey);
-    // posters on stands (none while the builder is open: from CUSTOMIZE your reflection stood behind its poster; owner,
-    // 2026-11-14)
-    for (int i = 0; i < kPosterCount && !a.builderOpen; ++i) {
-        const Pose k = posterPose(i);
-        const bool hov = a.lobbyHover == i;
-        const float frame[4] = {hov ? 0.4f : 0.08f, hov ? 0.9f : 0.42f, hov ? 1.0f : 0.62f, 1};
-        a.gfx.drawPanel(Mat4::fromPose(k * Pose{Quat{}, {0, 0, -0.003f}}, {0.66f, 0.54f, 1}), frame);
-        a.gfx.drawPanel(Mat4::fromPose(k, {0.62f, 0.50f, 1}), deck);
-        a.gfx.drawText(kPosters[i].title, k * Pose{Quat{}, {0, 0.12f, 0.004f}}, 0.065f, hov ? white : cyan);
-        a.gfx.drawText(kPosters[i].line1, k * Pose{Quat{}, {0, -0.02f, 0.004f}}, 0.030f, white);
-        a.gfx.drawText(kPosters[i].line2, k * Pose{Quat{}, {0, -0.08f, 0.004f}}, 0.030f, white);
-        a.gfx.drawText(hov ? "PULL THE TRIGGER" : "POINT OR TOUCH", k * Pose{Quat{}, {0, -0.19f, 0.004f}}, 0.022f, hov ? cyan : grey);
-        a.gfx.drawBox(Mat4::fromPose({Quat{}, Vec3{k.p.x, kLobbyFloor + (1.40f - 0.27f) * 0.5f, k.p.z}}, {0.006f, (1.40f - 0.27f) * 0.5f, 0.006f}), glow, true);   // the stand, up to the poster's lower edge
-    }
+    a.gfx.drawText("POINT AT THE COURT AND PULL THE TRIGGER TO PLAY THE BOT", sign * Pose{Quat{}, {0, -0.04f, 0.004f}}, 0.026f, grey);
     // the court as a button
-    if (a.lobbyHover == kPosterCount) {
+    if (a.lobbyHover == kLobbyCourt) {
         const float gold[4] = {1.0f, 0.85f, 0.3f, 1};
         a.gfx.drawText("PULL THE TRIGGER TO PLAY THE BOT", {Quat{}, {0, 3.95f, 2.6f}}, 0.22f, gold);
     }
@@ -7803,11 +8293,11 @@ static void drawLobby(App& a, int pass) {
     if (!a.menuOpen && !a.builderOpen && !a.tuneOpen && a.aimValid[a.pointerHand]) {
         const Vec3 o = a.aim[a.pointerHand].p, d = a.aim[a.pointerHand].q.rotate({0, 0, -1});
         float dist;
-        const int hit = lobbyRayHit(a, o, d, dist);
+        const int hit = lobbyRayHit(o, d, dist);
         const float len = hit >= 0 ? std::min(dist, 25.f) : 2.0f;
         const float laser[4] = {0.3f, 0.8f, 1.0f, 1};
         a.gfx.drawBox(Mat4::fromPose({a.aim[a.pointerHand].q, o + d * (len * 0.5f)}, {0.003f, 0.003f, len * 0.5f}), laser, true);
-        if (hit >= 0) a.gfx.drawSphere(o + d * len, hit == kPosterCount ? 0.05f : 0.008f, laser, true);
+        if (hit >= 0) a.gfx.drawSphere(o + d * len, 0.05f, laser, true);
     }
 }
 
@@ -7875,11 +8365,15 @@ static void drawQueueStation(App& a, int myPos, int queued, const std::string ne
         const int n = teams ? 2 : 4;
         for (int t = 0; t < n; ++t) {
             float c[4]; col(t, c);
+            if (g.octagon()) {   // (FIREBALL BLITZ: always the four players, each in its colour: its team's, in teams)
+                const float* pc = playerRGB(a, t);
+                for (int k = 0; k < 3; ++k) c[k] = pc[k] * 0.6f + 0.4f;
+            }
             const float u = (t - 0.5f * (n - 1)) * (W / n);
             if (g.octagon()) {   // its health: a square for each point left (as over their heads), OUT when gone
                 if (!g.alive(t)) a.gfx.drawText("OUT", at(u, 0.04f), 0.04f, grey);
                 else {
-                    const int hp = std::max(1, g.tun.health);
+                    const int hp = g.maxHealth(t);   // (3 v 1: THE ONE's three times HEALTH)
                     const float pip = std::min(0.024f, (W / n - 0.02f) / (hp * 1.35f)), gap = pip * 1.35f;
                     for (int i = 0; i < hp; ++i) {
                         const bool full = i < g.pl[t].health;
@@ -7946,7 +8440,10 @@ static void drawCourtModel(App& a, const Model& m, const Mat4& M, DrawParams dp,
 // player's game doesn't have it (their own rules stay chosen for the next match)
 static void fairMatchNotice(App& a) {
     const Tunables& t = a.game.tun;
-    if (a.net.mode() != Net::Mode::Host || a.game.match != MatchState::Countdown) { a.fairTold = false; return; }
+    // (hosting; and practice, for FIREBALL BLITZ's teams with a team nobody plays in: the version notices never come
+    // offline, where every option plays)
+    const bool host = a.net.mode() == Net::Mode::Host, practice = a.net.mode() == Net::Mode::Offline && !a.trainer.active();
+    if (!(host || practice) || a.game.match != MatchState::Countdown) { a.fairTold = false; return; }
     if (a.fairTold) return;
     a.fairTold = true;
     const char* what = nullptr;
@@ -7959,6 +8456,10 @@ static void fairMatchNotice(App& a) {
         what = "ROOM OPTIONS: AS THE RULES SAY (A PLAYER NEEDS 0.3.21)";
     else if (a.game.np == 2 && t.roomOptionsNow() && !t.bouncesNow() && (t.wallsLively || t.wallGrip || t.bankAssist > 0))
         what = "BOUNCES: STANDARD (A PLAYER NEEDS 0.3.22)";   // (BOUNCES, 0.3.22)
+    else if (a.game.octagon() && t.teamMode != TEAMS_FFA && !t.blitzTeamsNow())
+        what = "TEAMS: FREE-FOR-ALL (A PLAYER NEEDS 0.3.24)";   // (FIREBALL BLITZ in teams, 0.3.24)
+    else if (a.game.octagon() && t.teamMode != TEAMS_FFA && a.game.teamsNow() == TEAMS_FFA)
+        what = "TEAMS: FREE-FOR-ALL (A TEAM HAS NOBODY IN IT)";   // (Game::teamsNow: who started)
     if (what) {
         a.net.noticeLocal(what);
         LOGI("fair match: %s (the oldest player's game: %d)", what, t.matchVersion);
@@ -8114,7 +8615,7 @@ static void drawMiniMatch(App& a, const Game& g, const Vec3& at0, const Quat& q,
         if (rmini && !rmini->slot[p] && !rmini->isBot(p)) continue;   // empty tank slot
         const PlayerState& ps = g.pl[p];
         DrawParams bp;
-        const float* pc = g.np == 2 ? teamCol[p] : (g.tun.teamMode == TEAMS_FFA || g.octagon()) ? kFourRGB[p & 3] : teamCol[g.team(p) & 1];
+        const float* pc = g.np == 2 ? teamCol[p] : g.teamsNow() == TEAMS_FFA ? kFourRGB[p & 3] : teamCol[g.team(p) & 1];
         for (int k = 0; k < 3; ++k) bp.tintMul[k] = 0.7f + 0.3f * pc[k];
         Pose hp = ps.in.head;
         const PlayerInput pin = handsApart(a, ps.in, ps.in.avatar);
@@ -8190,10 +8691,12 @@ static void drawHub(App& a, int pass) {
             a.gfx.drawText(ms[i].name[0] ? ms[i].name : "LIVE GAME", {lq, at + Vec3{0, 0.46f, 0}}, 0.05f, hover ? cyan : white);
             if (g.tun.advanced) snprintf(buf, sizeof buf, "%s BEST OF %d%s   %d  -  %d   ROUND %d", kRoomTitle[roomOf(g.tun)], 2 * g.tun.roundsToWinNow() - 1,
                                          g.tun.shields ? "" : " HOTDOG", g.pl[0].score, g.pl[1].score, std::max(1, g.round));
-            else if (g.octagon())   // (FIREBALL BLITZ: everyone's health)
-                snprintf(buf, sizeof buf, "FIREBALL BLITZ   %d - %d - %d - %d   %s", g.pl[0].health, g.pl[1].health, g.pl[2].health, g.pl[3].health,
+            else if (g.octagon())   // (FIREBALL BLITZ: everyone's health; 0.3.24: its teams)
+                snprintf(buf, sizeof buf, "FIREBALL BLITZ%s   %d - %d - %d - %d   %s",
+                         g.teamsNow() == TEAMS_3V1 ? " 3 V 1" : g.teamsNow() == TEAMS_2V2 ? " 2 V 2" : "",
+                         g.pl[0].health, g.pl[1].health, g.pl[2].health, g.pl[3].health,
                          clockLine(g).c_str());
-            else if (g.np == 4 && (g.tun.teamMode == TEAMS_FFA || g.octagon()))   // (FOUR CORNERS: the four scores, or the teams')
+            else if (g.np == 4 && g.teamsNow() == TEAMS_FFA)   // (FOUR CORNERS: the four scores, or the teams')
                 snprintf(buf, sizeof buf, "FOUR CORNERS   %d - %d - %d - %d   %s", g.pl[0].score, g.pl[1].score, g.pl[2].score, g.pl[3].score,
                          clockLine(g).c_str());
             else if (g.np == 4)
@@ -8339,6 +8842,7 @@ static void updateVoice(App& a) {
         a.micBuf.clear();
     }
     // incoming voice: mutes by role, panned toward the speaker
+    refreshMutes(a);   // (MUTED PLAYERS: who here a kept mute covers)
     const double t = nowSeconds();
     Vec3 f = a.viewHead.q.rotate({0, 0, -1}), right = normalize(cross(f, Vec3{0, 1, 0}));
     for (const Net::VoiceFrame& v : a.net.voiceInbox()) {
@@ -9187,9 +9691,9 @@ static void drawFireballs(App& a, int pass, const float (*teamCol)[4]) {
         }
     }
     // health: a pip a hit, over everyone's head (turned to you); yours in front of you at your waist
-    const int maxH = std::max(1, g.tun.health);
     for (int p = 0; p < g.np; ++p) {
         if (!g.alive(p) || (g.match == MatchState::WaitingForPlayers && !g.pl[p].in.headTracked)) continue;
+        const int maxH = g.maxHealth(p);   // (3 v 1: THE ONE's three times HEALTH)
         const bool mine = p == L && !a.viewing && !a.spectating;
         const Vec3 head = mine ? g.pl[p].in.head.p : a.viewIn[p].head.p;
         Vec3 at = head + Vec3{0, 0.40f, 0};
@@ -9200,7 +9704,7 @@ static void drawFireballs(App& a, int pass, const float (*teamCol)[4]) {
             to = head - at;
         }
         const Quat q = Quat::axisAngle({0, 1, 0}, std::atan2(to.x, to.z)) * Quat::axisAngle({1, 0, 0}, mine ? -0.6f : 0.f);
-        const float pip = maxH > 5 ? 0.045f : 0.07f, gap = pip * 1.35f;
+        const float pip = std::min(0.07f, 0.6f / (maxH * 1.35f)), gap = pip * 1.35f;   // (at most 60 cm across: THE ONE has 15)
         const float* tc = teamCol[p & 3];
         const float back[4] = {0.01f, 0.02f, 0.04f, 0.7f};
         a.gfx.drawPanel(Mat4::fromPose({q, at - q.rotate({0, 0, 0.004f})}, {gap * maxH + 0.04f, pip + 0.04f, 1}), back);
@@ -9383,16 +9887,28 @@ static void drawWorld(App& a, int pass) {
     updateStats(a);
     float pcol[kMaxPlayers][3];   // each player's colour (playerRGB)
     for (int p = 0; p < kMaxPlayers; ++p) for (int k = 0; k < 3; ++k) pcol[p][k] = playerRGB(a, p < g.np ? p : p & 1)[k];
-    // the match won: bursts of confetti over the winner, in their team colour and gold (fewer with softer effects)
-    if (g.match == MatchState::MatchSummary && g.matchWinner >= 0 && g.matchWinner < 2 && (only < 0 || only == g.matchWinner)) {
+    // the match won: bursts of confetti over the winner, in their team colour and gold (fewer with softer effects). Four
+    // players in teams: over each player of the winning team (review 2026-11-21: the winner is a team there, and the
+    // confetti went over corner 0 or 1 by the team's number, a loser of 3 V 1 when THE ONE won)
+    int winners[kMaxPlayers], nWin = 0;
+    if (g.match == MatchState::MatchSummary && g.matchWinner >= 0) {
+        const bool byTeam = g.np == 4 && g.teamsNow() != TEAMS_FFA;
+        for (int p = 0; p < g.np; ++p) {
+            const bool won = byTeam ? g.team(p) == g.matchWinner && (!g.octagon() || ((g.startMask >> p) & 1)) : p == g.matchWinner;
+            if (won && (only < 0 || only == p)) winners[nWin++] = p;
+        }
+    }
+    if (nWin > 0) {
         if (a.winAt <= 0) a.winAt = nowSeconds();
         const float age = float(nowSeconds() - a.winAt);
-        const int n = a.fxLevel == 0 ? 90 : a.fxLevel == 1 ? 40 : 0;
-        if (pass == 1 && n && age < 6.5f) {
-            const int wn = g.matchWinner;
+        const int all = a.fxLevel == 0 ? 90 : a.fxLevel == 1 ? 40 : 0;
+        const int n = nWin <= 1 ? all : 2 * all / (nWin + 1);   // (a team: a little less over each)
+        for (int wi = 0; pass == 1 && n && age < 6.5f && wi < nWin; ++wi) {
+            const int wn = winners[wi];
             const Vec3 o = a.viewIn[wn].head.p + Vec3{0, 0.45f, 0};
-            float tcol[2][3] = {{0.25f, 0.75f, 1.0f}, {1.0f, 0.55f, 0.2f}};
+            float tcol[kMaxPlayers][3] = {{0.25f, 0.75f, 1.0f}, {1.0f, 0.55f, 0.2f}};
             if (a.nationsOn) for (int p = 0; p < 2; ++p) for (int k = 0; k < 3; ++k) tcol[p][k] = 0.83f * a.sideRGB[p][k] + 0.17f;
+            if (g.np == 4) for (int k = 0; k < 3; ++k) tcol[wn][k] = 0.83f * pcol[wn][k] + 0.17f;   // (its colour, or its team's)
             for (int burst = 0; burst < 3; ++burst) {
                 const float bt = age - burst * 1.6f;
                 if (bt < 0 || bt > 2.6f) continue;
@@ -9500,7 +10016,9 @@ static void drawWorld(App& a, int pass) {
         a.gfx.drawSpriteFlat({kLobbySpot.x, kLobbySpot.y + 0.004f, kLobbySpot.z}, 1.8f, pc, {0, 1, 0}, 0);
         a.gfx.drawSpriteFlat({kLobbySpot.x, kLobbySpot.y + 0.006f, kLobbySpot.z}, 2.0f, rc, {0, 1, 0}, 1);
     }
-    if (pass == 1 && a.spectating && !minimal) {   // the floating gallery seat the spectator stands on
+    // the floating gallery seat the spectator stands on (in a headset; not in the PC spectator's window, where its ring lay
+    // across the bottom of HIGH SIDE: the owner, 2026-11-19)
+    if (pass == 1 && a.spectating && !minimal && !isDesktop(a)) {
         const float pc[4] = {0.03f, 0.08f, 0.12f, 1}, rc[4] = {0.15f, 0.5f, 0.75f, 1};
         const Vec3 st = spectatorSeat(a).p;
         a.gfx.drawSpriteFlat(st + Vec3{0, 0.004f, 0}, 1.8f, pc, {0, 1, 0}, 0);
@@ -9873,7 +10391,7 @@ static void drawWorld(App& a, int pass) {
             txt(buf, 0.80f, 0.04f, 0.36f, opC);
             drawFlag(a, a.sideNation[L], {faceP0, at(-0.50f, 0.04f, 0.003f)}, 0.21f);   // NATIONS: each side's flag
             drawFlag(a, a.sideNation[1 - L], {faceP0, at(0.50f, 0.04f, 0.003f)}, 0.21f);
-        } else if ((g.tun.teamMode == TEAMS_FFA || g.octagon())) {   // FOUR CORNERS, everyone for themselves: four scores, yours marked
+        } else if (g.teamsNow() == TEAMS_FFA || oct) {   // FOUR CORNERS, everyone for themselves: four scores, yours marked (FIREBALL BLITZ: always the four healths, in team colours in teams)
             for (int p = 0; p < 4; ++p) {
                 const float x = (p < 2 ? -1.f : 1.f) * (p % 2 ? 0.62f : 0.95f);
                 const float c[4] = {teamCol[p][0] * 0.6f + 0.4f, teamCol[p][1] * 0.6f + 0.4f, teamCol[p][2] * 0.6f + 0.4f, 1};
@@ -9889,7 +10407,7 @@ static void drawWorld(App& a, int pass) {
             txt(buf, -0.80f, 0.04f, 0.36f, myC);
             snprintf(buf, sizeof buf, "%d", g.teamScore(ot));
             txt(buf, 0.80f, 0.04f, 0.36f, opC);
-            if (g.tun.teamMode == TEAMS_3V1) {
+            if (g.teamsNow() == TEAMS_3V1) {
                 const bool one = g.tun.theOne == L;
                 txt(one ? "YOU: THE ONE" : "YOUR THREE", -0.80f, -0.13f, 0.04f, myC);
                 txt(one ? "THE THREE" : "THE ONE", 0.80f, -0.13f, 0.04f, opC);
@@ -9940,8 +10458,8 @@ static void drawWorld(App& a, int pass) {
             if (g.np == 4 && (inLobby(a) || a.spectating || a.net.localWaiting())) {   // FOUR CORNERS: the colour, or the team
                 static const char* kFour[4] = {"BLUE WINS", "ORANGE WINS", "GREEN WINS", "VIOLET WINS"};
                 banner = g.matchWinner < 0 ? "A DRAW"
-                       : (g.tun.teamMode == TEAMS_FFA || g.octagon()) ? kFour[g.matchWinner & 3]
-                       : g.tun.teamMode == TEAMS_3V1 ? (g.matchWinner == 1 ? "THE ONE WINS" : "THE THREE WIN")
+                       : g.teamsNow() == TEAMS_FFA ? kFour[g.matchWinner & 3]
+                       : g.teamsNow() == TEAMS_3V1 ? (g.matchWinner == 1 ? "THE ONE WINS" : "THE THREE WIN")
                        : (g.matchWinner == 0 ? "BLUE TEAM WINS" : "ORANGE TEAM WINS");
             } else if (inLobby(a) || a.spectating || a.net.localWaiting()) {   // BLUE WINS, or the country: UNITED STATES WINS
                 snprintf(buf, sizeof buf, "%s WINS", sideName(a, g.matchWinner == 1 ? 1 : 0));
@@ -9958,9 +10476,9 @@ static void drawWorld(App& a, int pass) {
             static const char* kLeads[4] = {"BLUE LEADS", "ORANGE LEADS", "GREEN LEADS", "VIOLET LEADS"};
             const int lt = g.leader();
             const bool ours = !a.viewing && !a.spectating && !a.net.localWaiting() && lt == g.team(L);
-            const char* t = ours ? ((g.tun.teamMode == TEAMS_FFA || g.octagon()) ? "YOU LEAD" : "YOUR TEAM LEADS")
-                          : (g.tun.teamMode == TEAMS_FFA || g.octagon()) ? kLeads[lt & 3]
-                          : g.tun.teamMode == TEAMS_3V1 ? (lt == 1 ? "THE ONE LEADS" : "THE THREE LEAD")
+            const char* t = ours ? (g.teamsNow() == TEAMS_FFA ? "YOU LEAD" : "YOUR TEAM LEADS")
+                          : g.teamsNow() == TEAMS_FFA ? kLeads[lt & 3]
+                          : g.teamsNow() == TEAMS_3V1 ? (lt == 1 ? "THE ONE LEADS" : "THE THREE LEAD")
                           : (lt == 0 ? "BLUE TEAM LEADS" : "ORANGE TEAM LEADS");
             const float* lc = teamRGB(a, lt);
             const float col[4] = {lc[0] * 0.6f + 0.4f, lc[1] * 0.6f + 0.4f, lc[2] * 0.6f + 0.4f, std::min(1.f, a.leadFlash)};
@@ -10019,7 +10537,7 @@ static void drawWorld(App& a, int pass) {
             a.gfx.drawText(note, {faceP0, {-1.5f * sx, 1.9f, 0}}, 0.12f, amber);
         }
         if (!a.rttPass && a.ptFadeNow > 0.f) a.gfx.fadeToRoom(a.ptFadeNow);   // the world toward the room, not the menus
-        if (!a.rttPass) drawMenu(a);
+        if (!a.rttPass && !drop(PROF_MENU)) drawMenu(a);
     }
     // (TRAINING's board replaces the scoreboard above, whose block also draws the menu: the menu, then, from here;
     // it was never drawn during a lesson, its card, pause and result pages all invisible in the headset)
@@ -10029,7 +10547,7 @@ static void drawWorld(App& a, int pass) {
     }
     if (!a.rttPass) drawBuilder(a, pass);
     if (!a.rttPass) drawTuning(a, pass);
-    if (!a.rttPass) drawTitleShowcase(a, pass);
+    if (!a.rttPass && !drop(PROF_SHOWCASE)) drawTitleShowcase(a, pass);
     if (!a.rttPass) drawTrainVideo(a, pass);
     if (pass == 1) drawDirector(a);
 }
@@ -10282,6 +10800,12 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
         seenHits = g.lateWaitHits;
     }
     updateCrowd(a, dt);
+    updateFlightSound(a);   // (BALL IN FLIGHT, 0.3.24)
+    {   // MUSIC: in the lobby, as MENU says; elsewhere (playing, watching, training), as GAME says; never in the SOUND
+        // STUDIO (its sounds are what you listen to there)
+        const bool on = (inLobby(a) ? a.musicMenu : a.musicGame) && !a.studioOn;
+        a.audio.setMusicLevel(on ? kMusicFull * a.musicVolume / 10.f : 0.f);
+    }
     {   // a guest plays by the host's rules; ours come back when we leave (and are never saved over). Hosting a room
         // taken over from its host (HOST HANDOFF) is still the room's rules, not ours
         const bool guest = a.net.mode() == Net::Mode::Client || a.net.mode() == Net::Mode::Spectate || a.net.inherited();
@@ -10351,9 +10875,13 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
         if (best < 0.45f && t - a.meetTick > 0.12) { a.meetTick = t; haptic(a, bh, 0.15f + 0.6f * (1.f - best / 0.45f), 0.05f); }
         else if (t - a.meetTick > 2.0) { a.meetTick = t; haptic(a, 0, 0.25f, 0.06f); haptic(a, 1, 0.25f, 0.06f); }
     }
-    if (a.game.pl[1].isBot) a.game.pl[1].in.avatar = a.botAvatar;
-    for (int p = 2; p < a.game.np; ++p)   // (FOUR CORNERS' other bots: looks of their own)
-        if (a.game.pl[p].isBot) a.game.pl[p].in.avatar = avatar::preset((3 * p + 1) % avatar::presetCount());
+    // the bots' outfits (NEW BOT's, each corner its own). Hosting or practice only: a guest and a spectator show the
+    // host's bots as its snapshots have them (until 0.3.23 each guest dressed the host's bot in an outfit of its own)
+    if (a.net.mode() != Net::Mode::Client && a.net.mode() != Net::Mode::Spectate)
+        for (int p = 1; p < a.game.np; ++p)
+            if (a.game.pl[p].isBot) a.game.pl[p].in.avatar = a.botLooks[p];
+    if (a.game.np == 4 && a.game.pl[0].isBot && a.net.mode() != Net::Mode::Client && a.net.mode() != Net::Mode::Spectate)
+        a.game.pl[0].in.avatar = a.botLooks[0];   // (a bot in the host's corner, after MOVE PLAYERS)
     updateHub(a, in[L]);
     updateQueueKiosk(a, in[L]);
     updateLobby(a, in[L]);
@@ -10414,7 +10942,16 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
         // FAIR MATCHES: hosting, an option an older player's game lacks plays at regulation this match (offline and
         // as a guest: everything; a guest gets the host's rules as they play)
         a.game.tun.matchVersion = a.net.matchVersion();
-        if (a.net.mode() != Net::Mode::Client && a.net.mode() != Net::Mode::Spectate) a.game.tun.palmHold = true;   // (a guest: its host's)
+        if (a.net.mode() != Net::Mode::Client && a.net.mode() != Net::Mode::Spectate) {   // (a guest: its host's)
+            a.game.tun.palmHold = true;
+            a.game.tun.blitzTeams = true;   // (FIREBALL BLITZ may play in teams: FAIR MATCHES decides, matchVersion)
+            // NEW BOT: EVERY MATCH: a new bot as each match comes (the last one's summary over: before the next one's
+            // fist bump or countdown, so it doesn't change in front of you); ON PUSH: only NEW BOT
+            if (a.botEveryMatch && a.botPrevMatch == MatchState::MatchSummary && a.game.match != MatchState::MatchSummary)
+                newBot(a, false);
+            a.botPrevMatch = a.game.match;
+            a.game.botLook = a.botSeed;   // (the bots' stances: the same each match until a new bot)
+        }
         fairMatchNotice(a);
         if (a.trainer.active()) {   // TRAINING: the lesson steps the game (and the coach's), paused while its menu is up mid-lesson
             using training::Phase;
@@ -10945,6 +11482,9 @@ static void saveSettings(App& a) {
         fprintf(fp, "ballfeel=%d\n", R.ballFeel & BALL_FEEL_ALL);   // (BALL FEEL, the room's)
         fprintf(fp, "wallslively=%d\nwallgrip=%d\nbankassist=%d\n", R.wallsLively ? 1 : 0, R.wallGrip ? 1 : 0, R.bankAssist);   // (BOUNCES)
         fprintf(fp, "ctltilt=%d\nctltwist=%d\nctlturn=%d\n", a.ctlTilt, a.ctlTwist, a.ctlTurn);   // (CONTROLLER ANGLE)
+        fprintf(fp, "ballsound=%d\n", a.ballSound ? 1 : 0);   // (BALL IN FLIGHT, 0.3.24)
+        fprintf(fp, "musicmenu=%d\nmusicgame=%d\nmusicvol=%d\n", a.musicMenu ? 1 : 0, a.musicGame ? 1 : 0, a.musicVolume);   // (MUSIC)
+        fprintf(fp, "botnew=%d\n", a.botEveryMatch ? 1 : 0);   // (NEW BOT, 0.3.23: EVERY MATCH or ON PUSH; the bot itself never)
         fprintf(fp, "buttons=%s\n", controls::save(a.btnMap).c_str());   // (BUTTONS)
         fprintf(fp, "dcglass=%.2f\n", a.dcGlass);   // (the PC spectator's ARENA GLASS)
         fprintf(fp, "foveation=%d\nmsaa=%d\ncontact=%d\ngrade=%d\nbloom=%d\nreflect=%d\n", a.gfxFoveation, a.gfxMsaa, a.gfxContact,
@@ -11026,6 +11566,11 @@ static void loadSettings(App& a) {
         else if (k == "teams") a.game.tun.teamMode = std::max(0, std::min(2, (int)v));
         else if (k == "oneturns") a.game.tun.oneTurns = v != 0;
         else if (k == "crowd") a.crowdMode = std::max(0, std::min(2, (int)v));
+        else if (k == "ballsound") a.ballSound = v != 0;
+        else if (k == "musicmenu") a.musicMenu = v != 0;   // (MUSIC)
+        else if (k == "musicgame") a.musicGame = v != 0;
+        else if (k == "musicvol") a.musicVolume = std::max(0, std::min(10, (int)v));
+        else if (k == "botnew") a.botEveryMatch = v != 0;   // (NEW BOT: EVERY MATCH or ON PUSH)
         else if (k == "turn") a.turnMode = std::max(0, std::min(2, (int)v));
         else if (k == "botlevel") a.game.tun.botLevel = std::max(0, std::min(kBotLevels - 1, (int)v));
         else if (k == "botadapt") a.game.tun.botAdapt = v != 0;
@@ -11146,6 +11691,9 @@ static void startUp(App& a) {
     loadStatsKey(a);
     a.game.tun.advanced = true;   // the default rules (owner: Advanced is the most played); settings.cfg advanced= wins
     loadSettings(a);
+    loadMutes(a);
+    applyBot(a);   // (NEW BOT: the bots' outfits and stances, kept)
+    a.audio.loadMusic("music/sc_LobbyBackground.wav");   // (MUSIC: in the background; builds without it play none)
     a.net.setBotFill(a.botFill);   // (a saved BOT FILLS IN: OFF never reached the room before 0.3.13)
     if (a.serverAddr.empty() && PA_DEFAULT_SERVER[0]) a.serverAddr = PA_DEFAULT_SERVER;   // the community server of this build
     // settings from before 0.3.1 can hold a local test server (a developer PC on the home network, e.g. 192.168.x.x):
@@ -11243,7 +11791,7 @@ void android_main(android_app* app) {
         }
         if (!a.instance) continue;
         pollXrEvents(a);
-        if (!a.running) { usleep(10000); continue; }
+        if (!a.running) { a.audio.silenceFlights(); a.audio.setMusicLevel(0); usleep(10000); continue; }   // (no frames: no whoosh, no music)
         if (!renderFrame(a)) LOGE("frame failed");
     }
     shutDown(a);
@@ -11267,13 +11815,14 @@ struct ShotView {
     int ctlKind = 0;       // --ctlkind K: the controllers in the hands (controls::K_*: 2 Index, 3 Vive, 4 WMR)
     float filmSeconds = 8.f;   // --film S: the tutorial video that far in (--menu traincard)
     std::string scene;  // --scene action: two players mid-rally (store art)
-    bool lobby = false; // --lobby: the lobby balcony and posters (other pictures show the plain court)
+    bool lobby = false; // --lobby: the lobby balcony (other pictures show the plain court)
     int tunePart = 0;   // --scene tuning --tune N: the developer tuning tool on that part
     int tuneRow = 1;    // --tunerow R: its value picked
     int suit = -1;      // --suit N: the players' outfit in the pictures (avatar checks)
     int hair = -1;      // --hair N: their hair
     int face = -1;      // --face B F: blue's body type (0 / 1) and face (0..3)
     std::string look;   // --look "visor=1,mask=3,headgear=2": avatar.cfg keys for blue (accessory checks)
+    std::string looks;  // --looks FILE: --scene builder's MY LOOKS and COUNTRY order (looks.cfg's lines)
     std::string dcshot;       // --dcshot meet|bump|win|play: the desktop spectator's broadcast moment (its camera and overlay)
     int dcview = -1;          // --dcview N: that preset camera (1 side .. 7, kDcViewName) for the broadcast moment's picture
     float glass = -1;         // --glass 0.35: the PC spectator's ARENA GLASS in the picture
@@ -11357,6 +11906,8 @@ static Pose trailerCamera(const App& a, float tt) {
     return lookFrom(hw + Vec3{side * (2.6f - 0.6f * s), 0.45f - 0.2f * s, 0.9f - 1.4f * s}, hw + Vec3{0, 0.1f, 0});
 }
 
+static bool dcFollowView(int v);                                // (THE FOLLOW VIEWS: the desktop spectator, below)
+static Pose dcFollowPose(App& a, int v, double t, float dt);
 static int selfTest(App& a, const char* out, const ShotView& v) {
     if (!initGraphics(a) || !initContent(a)) return 2;
     for (int i = 0; i < 500 && !a.handShapesReady.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));   // (HANDS APART)
@@ -11419,10 +11970,11 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         }
         (void)in;
     }
-    if (v.scene == "blitz" || v.scene == "blitz3" || v.scene == "blitzrapid" || v.scene == "blitzwait") {   // FIREBALL BLITZ: four bots mid-match (blitz3: one
+    if (v.scene == "blitz" || v.scene == "blitz3" || v.scene == "blitzrapid" || v.scene == "blitzwait" || v.scene == "blitz3v1") {   // FIREBALL BLITZ: four bots mid-match (blitz3: one
         Game& g = a.game;                                                          // out, the room closed in; rapid: RAPID FIRE)
         g.tun.experimental = true; g.tun.expRoom = ROOM_BLITZ; g.tun.players = 4; g.tun.meetTime = 0; g.tun.botLevel = 3;
         g.tun.health = 5; g.tun.fireBalls = v.scene == "blitzrapid" ? 4 : 1; g.tun.basicMatchTime = 0;
+        g.tun.teamMode = v.scene == "blitz3v1" ? TEAMS_3V1 : TEAMS_FFA; g.tun.theOne = 0;   // (blitz3v1: 0.3.24, bot 0 THE ONE)
         g.useArena(ARENA_OCTAGON, a.classicCol);
         g.rngSeed(11);
         g.resetWithBots(0xF);
@@ -11901,6 +12453,7 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             for (char& c : t) if (c == ',') c = '\n';
             avatar::fromText(t, a.myAvatar);
         }
+        if (!v.looks.empty()) loadLooks(a, v.looks.c_str());   // (MY LOOKS and the COUNTRY order from a test file)
         in.avatar = a.myAvatar;
         a.localIn = in;
         a.viewHead = eye;
@@ -11962,7 +12515,9 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
         a.dcKeyCol = v.keyCol % 4;
         a.dcWinStyle = v.winStyle % 3;
         if (v.custom && (v.dcshot == "play" || v.dcshot == "round")) a.dcView = 0;   // (the given camera, no broadcast moment)
-        else for (int f = 0; f <= 90; ++f) eye = eventCamera(a, desktopPreset(a, a.dcView), 1000.0 + f / 60.0, 1.f / 60.f, false);
+        else for (int f = 0; f <= 90; ++f)   // (a follow view: its springs settled on the staged moment)
+            eye = eventCamera(a, dcFollowView(a.dcView) ? dcFollowPose(a, a.dcView, 1000.0 + f / 60.0, 1.f / 60.f) : desktopPreset(a, a.dcView),
+                              1000.0 + f / 60.0, 1.f / 60.f, false);
         a.viewHead = eye;
         a.dcFov = v.fovY;
         desktopRender(a, eye, W, H, 1.f / 60.f);
@@ -11989,11 +12544,20 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
     }
     if (!v.menu.empty() && v.menu != "careers") {
         a.menuOpen = true;
-        a.titleOpen = v.menu == "title";
+        a.titleOpen = v.menu == "title" || v.menu == "titlebests";
+        if (v.menu == "titlebests")   // (MY BESTS with some lessons passed; "title": none, a first start)
+            a.trainBests.load("1 1 14.2 5 5\n2 1 25.3 8 11\n3 1 16.0 5 7\n4 1 21.7 4 9\n");
         a.xpOpen = v.menu == "xp";
-        a.settingsOpen = v.menu == "settings" || v.menu == "voice" || v.menu == "graphics" || v.menu == "controllers";
+        a.settingsOpen = v.menu == "settings" || v.menu == "voice" || v.menu == "graphics" || v.menu == "controllers" ||
+                         v.menu == "muted";
         if (v.menu == "controllers") { a.ctlPage = true; a.ctlTilt = 10; a.ctlTwist = -5; }
-        a.voicePage = v.menu == "voice";
+        a.voicePage = v.menu == "voice" || v.menu == "muted";
+        if (v.menu == "muted") {   // MUTED PLAYERS with made-up names (eight: two pages)
+            a.mutedPage = true;
+            a.mutes.clear();
+            for (const char* n : {"LOUDMOUTH", "TROLL 42", "PLAYER 1A2B", "XX SHOUTER XX", "MIC SPAM", "RUDE DUDE", "ECHO", "NOISY"})
+                a.mutes.push_back({0x1234ull, n});
+        }
         if (!v.buttons.empty() && !controls::load(a.btnMap, v.buttons)) LOGW("--buttons %s not read", v.buttons.c_str());
         a.ctlKind = v.ctlKind;
         if (v.menu == "buttons") a.settingsOpen = a.ctlPage = a.btnPage = true;
@@ -12107,10 +12671,11 @@ static int selfTest(App& a, const char* out, const ShotView& v) {
             a.game.resetWithBots(0xE);
             a.movePlayersOpen = true; a.moveSel = 1;
         }
-        if (v.menu == "optionsblitz") {   // MATCH OPTIONS for practice, FIREBALL BLITZ: health, balls, how many play
-            a.rulesOpen = true; a.rulesForHost = false; a.rulesStep = 1; optionsFrom(a, a.game.tun);
+        if (v.menu == "optionsblitz" || v.menu == "optionsblitz3v1") {   // MATCH OPTIONS for practice, FIREBALL BLITZ: health,
+            a.rulesOpen = true; a.rulesForHost = false; a.rulesStep = 1; optionsFrom(a, a.game.tun);   // balls, how many play
             a.optAdvanced = false; a.optExperimental = true; a.optExpRoom = ROOM_BLITZ; a.optShields = false; a.optKnuckle = 1;
             a.optHealth = 5; a.optBalls = 4; a.optOctPlayers = 3;
+            a.optTeams = v.menu == "optionsblitz3v1" ? TEAMS_3V1 : TEAMS_FFA; a.optOneTurns = false;   // (0.3.24: its TEAMS)
         }
         if (v.menu == "options3v1") {   // MATCH OPTIONS hosting FOUR CORNERS, 3 V 1 with THE ONE taking turns
             a.rulesOpen = true; a.rulesForHost = true; a.rulesStep = 1; optionsFrom(a, a.game.tun);
@@ -12244,10 +12809,14 @@ static Pose lookFrom(const Vec3& pos, const Vec3& target) {
 }
 
 // 1-5 the views; 6, 7 blue's and orange's own eyes (owner, 2026-11-02: first person, from their headset, smoothed);
-// 8 MY CAMERA (dcMy); 0 the free camera
-static const char* kDcViewName[10] = {"FREE CAMERA", "SIDE", "HIGH SIDE", "BLUE END", "ORANGE END", "TOP", "BLUE'S EYES", "ORANGE'S EYES",
-                                      "CORNER", "COURTSIDE"};
+// 8 corner, 9 courtside; 10-12 THE FOLLOW VIEWS (dcFollowPose); kDcMine MY CAMERA (dcMy); 0 the free camera
+static const int kDcViews = 13;   // (0 the free camera, then the views 1-12)
+static const char* kDcViewName[kDcViews] = {"FREE CAMERA", "SIDE", "HIGH SIDE", "BLUE END", "ORANGE END", "TOP", "BLUE'S EYES", "ORANGE'S EYES",
+                                            "CORNER", "COURTSIDE", "TRACKING", "BALL CAM", "UNDER FIRE"};
 static const int kDcMine = 20;   // (8 until the CORNER and COURTSIDE presets, 2026-11-19: the views are numbered only here)
+static const int kDcFollow0 = 10;   // the first follow view
+static bool dcFollowView(int v) { return v >= kDcFollow0 && v < kDcViews; }
+static const char* dcPresetName(int v) { return v >= 0 && v < kDcViews ? kDcViewName[v] : "?"; }
 static const char* kDcLayerName[4] = {"FULL", "NO WALLS", "MINIMAL", "KEY"};
 // TRANSPARENT: no colour at all behind the players (OBS Game Capture with Allow Transparency; no colour can clash)
 static const char* kDcKeyName[4] = {"GREEN", "MAGENTA", "BLUE", "TRANSPARENT"};
@@ -12309,7 +12878,7 @@ static std::string dcViewName(const App& a) {
         const App::WarpCam& w = a.warps[a.dcMy];
         return "MY CAMERA " + std::to_string(a.dcMy + 1) + kTrig[std::min(2, (int)w.trig)];
     }
-    return kDcViewName[a.dcView % 10];
+    return dcPresetName(a.dcView);
 }
 static Pose desktopPreset(const App& a, int v) {
     if (a.watchIp == 0) return lookFrom({-1.3f, 1.75f, 0.f}, {1.4f, 0.85f, 0.f});   // the hub of live miniatures
@@ -12341,6 +12910,127 @@ static Pose desktopPreset(const App& a, int v) {
     case 9: return lookFrom({0, 1.25f, 7.2f}, {0, 1.0f, 0});              // COURTSIDE: low at the side, straight across
     default: return lookFrom({0, 2.7f, 7.3f}, {0, 1.0f, 0});   // (the hall wall is just behind)
     }
+}
+
+// THE FOLLOW VIEWS (the owner, 2026-11-21: "custom camera angles where the camera follows actions"), 10-12:
+//  TRACKING   along the side at head height, sliding with the play and panning to it (a fixed place, panning, in FOUR
+//             CORNERS and FIREBALL BLITZ, where there is no one side);
+//  BALL CAM   low at the side glass, running alongside the ball, close (from COURTSIDE, turning, where there is no one side);
+//  UNDER FIRE over the shoulder of the player the ball is flying at, as it comes in (it moves to the other player
+//             only when the play has gone their way for a moment, and never sooner than 2.5 s: a cut, not a swoop).
+// The action is the ball that matters: one flying at a player (the fastest), else one on its way home, else one in a
+// hand; whom it flies at is found by its direction, so it works in every arena. Every move is eased by a critically
+// damped spring (no overshoot, and the network's small corrections don't shake the picture).
+static void dcSpring(Vec3& x, Vec3& v, const Vec3& target, float w, float dt) {   // w: how quickly it follows (1/s)
+    const int n = std::max(1, std::min(20, (int)std::ceil(dt / 0.008f)));   // (small steps: steady at any frame rate)
+    const float h = dt / n, k = w * w, c = 2.f * w;
+    for (int i = 0; i < n; ++i) { v += ((target - x) * k - v * c) * h; x += v * h; }
+}
+static bool dcAction(App& a, Vec3& pos, Vec3& vel, int& target) {
+    const Game& g = a.game;
+    int best = -1, kind = 0;   // 3 flying at someone, 2 on its way home, 1 in a hand
+    float bs = -1;
+    // the balls by a number: 0-3 each player's own; FIREBALL BLITZ's fireballs 8 + 3 x owner + slot (review 2026-11-21:
+    // there a thrown ball is a fireball, and the players' own balls are only ever held, so the follow views had nothing
+    // to follow)
+    const int nFire = g.octagon() ? g.np * Game::kMaxFire : 0;
+    auto ballOf = [&](int key) -> const Ball& {
+        return key < 8 ? g.pl[key].ball : g.fire[(key - 8) / Game::kMaxFire][(key - 8) % Game::kMaxFire];
+    };
+    auto valid = [&](int key) { return (key >= 0 && key < g.np) || (key >= 8 && key < 8 + nFire); };
+    auto kindOf = [&](int key) {
+        const BallState st = ballOf(key).state;
+        return st == BallState::Flying ? 3 : st == BallState::Returning ? 2 : st == BallState::Held && key < 8 ? 1 : 0;
+    };
+    for (int key = 0; key < 8 + nFire; ++key) {
+        if (!valid(key)) continue;
+        const int k = kindOf(key);
+        const float s = length(ballOf(key).vel);
+        if (k > kind || (k && k == kind && s > bs)) { kind = k; bs = s; best = key; }
+    }
+    // the same ball while it is still in the air (two in flight: the picture doesn't jump between them)
+    if (valid(a.dcActBall) && kindOf(a.dcActBall) >= 2 && kindOf(a.dcActBall) >= kind) { best = a.dcActBall; kind = kindOf(best); }
+    a.dcActBall = kind >= 2 ? best : -1;
+    target = -1;
+    if (best < 0) return false;
+    const Ball& b = ballOf(best);
+    pos = b.pos;
+    vel = kind == 1 ? Vec3{} : b.vel;
+    if (kind == 3) {   // at whom: the player most nearly ahead of it (not the one who sent it, a teammate or one out)
+        Vec3 d{vel.x, 0, vel.z};
+        if (length(d) < 0.5f) return true;
+        d = normalize(d);
+        float bd = 0.3f;
+        for (int p = 0; p < g.np; ++p) {
+            if (p == b.instigator || !a.viewInValid[p] || !g.alive(p) || g.friendly(p, b.instigator)) continue;
+            Vec3 to = a.viewIn[p].head.p - pos;
+            to.y = 0;
+            const float L = length(to);
+            if (L < 0.05f) continue;
+            const float dd = dot(to * (1.f / L), d);
+            if (dd > bd) { bd = dd; target = p; }
+        }
+    }
+    return true;
+}
+static Pose dcFollowPose(App& a, int v, double t, float dt) {
+    const Game& g = a.game;
+    Vec3 mid{0, 1.2f, 0}, sum;
+    int nh = 0;
+    for (int p = 0; p < g.np; ++p) if (a.viewInValid[p]) { sum += a.viewIn[p].head.p; ++nh; }
+    if (nh) mid = sum * (1.f / nh);
+    Vec3 bp, bv;
+    int tgt = -1;
+    const bool ball = dcAction(a, bp, bv, tgt);
+    const Vec3 want = ball ? bp + bv * 0.12f : mid;   // (a touch ahead of the ball)
+    if (!a.dcActSet || length(want - a.dcActPos) > 30.f) { a.dcActPos = want; a.dcActVel = {}; a.dcActSet = true; }
+    dcSpring(a.dcActPos, a.dcActVel, want, 7.f, dt);
+    // (a spring of rate w trails a target moving at speed s by 2s/w: at 15 m/s that is metres. Its own velocity, times
+    // 2/w, puts that back, so the eased action is where the ball is, and each camera leads by what its own spring loses)
+    const Vec3 Fv = a.dcActVel, F = a.dcActPos + Fv * (2.f / 7.f);
+    const bool square = !cornersRoom(a) && !g.octagon();
+    Vec3 camWant, aimWant;
+    float wCam = 2.5f, wAim = 4.f;
+    bool cut = false;
+    if (v == 10) {   // TRACKING
+        camWant = square ? Vec3{clampf(F.x * 0.7f, -6.5f, 6.5f), 2.7f, 6.3f} : desktopPreset(a, 1).p;
+        aimWant = {F.x * 0.85f, clampf(F.y * 0.5f + 0.4f, 0.7f, 1.6f), F.z * 0.4f};   // (the ball, the court around it)
+        wCam = 1.6f;
+        wAim = 3.5f;
+    } else if (v == 11) {   // BALL CAM: low, just outside the side glass (z 2.5), running alongside the ball; in FOUR
+        Vec3 d{bv.x, 0, bv.z};   //  CORNERS and FIREBALL BLITZ from COURTSIDE, turning with it
+        if (length(d) > 1.f) a.dcChaseDir = normalize(d);
+        d = a.dcChaseDir;
+        camWant = square ? Vec3{clampf(F.x - d.x * 0.8f, -8.5f, 8.5f), 1.35f, 3.3f} : desktopPreset(a, 9).p;
+        aimWant = {F.x + d.x * 0.8f, clampf(F.y, 0.8f, 1.8f), square ? F.z * 0.3f : F.z};
+        wCam = 3.f;
+        wAim = 5.f;
+    } else {   // UNDER FIRE
+        int wantP = tgt >= 0 ? tgt : a.dcFire;
+        if (wantP < 0 || wantP >= g.np) wantP = 0;
+        if (wantP != a.dcFireWant) { a.dcFireWant = wantP; a.dcFireWantAt = t; }
+        if (a.dcFire < 0 || a.dcFire >= g.np || (wantP != a.dcFire && t - a.dcFireWantAt > 0.25 && t - a.dcFireAt > 2.5)) {
+            cut = a.dcFire >= 0;
+            a.dcFire = wantP;
+            a.dcFireAt = t;
+        }
+        const int p = a.dcFire;
+        const Vec3 H = a.viewInValid[p] ? a.viewIn[p].head.p : g.tun.start[p] + Vec3{0, 1.6f, 0};
+        Vec3 back{H.x, 0, H.z};   // (away from the middle of the room)
+        back = length(back) > 0.5f ? normalize(back) : Vec3{p == 0 ? -1.f : 1.f, 0, 0};
+        const Vec3 side = cross(Vec3{0, 1, 0}, back);   // (over one shoulder)
+        camWant = H + back * 2.1f + side * 0.45f + Vec3{0, 0.55f, 0};
+        aimWant = lerp(H - back * 7.f + Vec3{0, -0.4f, 0}, F, 0.45f);
+        wCam = 3.f;
+        wAim = 5.f;
+    }
+    const float camLead = v == 11 ? 1.f : v == 10 && square ? 0.7f : 0.f, aimLead = v == 11 ? 1.f : v == 10 ? 0.85f : 0.45f;
+    camWant += Vec3{Fv.x, 0, square ? 0.f : Fv.z} * (camLead * 2.f / wCam);   // (what the camera's spring loses, given back;
+    aimWant += Vec3{Fv.x, 0, Fv.z} * (aimLead * 2.f / wAim);                   //  never up and down: bounces)
+    if (!a.dcCamSet || cut) { a.dcCamP = camWant; a.dcCamV = {}; a.dcAim = aimWant; a.dcAimV = {}; a.dcCamSet = true; }
+    dcSpring(a.dcCamP, a.dcCamV, camWant, wCam, dt);
+    dcSpring(a.dcAim, a.dcAimV, aimWant, wAim, dt);
+    return lookFrom(a.dcCamP, a.dcAim);
 }
 
 static bool dcPressed(App& a, int vk) {   // key went down this frame (window focused)
@@ -12524,7 +13214,14 @@ static void desktopFullscreen(App& a, bool on) {
 enum { DC_VIEW = 100, DC_AUTO = 110, DC_FREE, DC_NEXT, DC_HUB, DC_FULL, DC_HELP, DC_PANEL, DC_LAYER, DC_LAYERBACK, DC_KEYCOL, DC_WINSTYLE, DC_MATCHUP,
        DC_MYSAVE, DC_MYHOLD, DC_MYTRANS, DC_MYTRIG, DC_MYCLEAR, DC_DISCORD, DC_SELFIE, DC_SELFIECORNER, DC_SELFIESIZE,
        DC_SELFIESHAPE, DC_SELFIECAM, DC_UPDATE, DC_GLASS, DC_AUTOLIST, DC_AUTOHOLD, DC_AUTOUP, DC_AUTODOWN, DC_MYGO = 140, DC_MYSET = 150,
-       DC_GFX = 170 };   // (DC_MYGO / DC_MYSET + n: camera n; DC_GFX + n: GRAPHICS' switch n)
+       DC_GFX = 170, DC_VIEWX = 200 };   // (DC_MYGO / DC_MYSET + n: camera n; DC_GFX + n: GRAPHICS' switch n;
+                                          //  DC_VIEWX + n: follow view 10 + n)
+static int dcViewCmd(int v) { return v <= 9 ? DC_VIEW + v : DC_VIEWX + v - kDcFollow0; }
+static int dcCmdView(int cmd) {   // the view a command shows (-1: not a view)
+    if (cmd > DC_VIEW && cmd <= DC_VIEW + 9) return cmd - DC_VIEW;
+    if (cmd >= DC_VIEWX && cmd < DC_VIEWX + kDcViews - kDcFollow0) return cmd - DC_VIEWX + kDcFollow0;
+    return -1;
+}
 
 // the Spectator Controls window's tabbed pages (SETUP, AUTO, GRAPHICS, HELP), each its controls, shown one at a time
 static std::vector<HWND> g_dcPage[4];
@@ -12619,6 +13316,8 @@ static void desktopPanel(App& a) {
     cell(L"4 Orange", 3, 5, y, DC_VIEW + 4); cell(L"5 Top", 4, 5, y, DC_VIEW + 5); y += B + 6;
     button(L"6  Blue's eyes", 0, 2, y, DC_VIEW + 6); button(L"7  Orange's eyes", 1, 2, y, DC_VIEW + 7); y += B + 6;
     button(L"8  Corner", 0, 2, y, DC_VIEW + 8); button(L"9  Courtside", 1, 2, y, DC_VIEW + 9); y += B + 6;
+    cell(L"T Tracking", 0, 3, y, dcViewCmd(10)); cell(L"B Ball cam", 1, 3, y, dcViewCmd(11));   // (THE FOLLOW VIEWS)
+    cell(L"U Under fire", 2, 3, y, dcViewCmd(12)); y += B + 6;
     button(L"F  Free camera", 0, 2, y, DC_FREE); button(L"A  Auto on / off", 1, 2, y, DC_AUTO); y += B + 10;
     heading(L"My cameras (Ctrl + number saves)", y); y += 22;
     for (int i = 0; i < 8; ++i) { wchar_t t[4] = {wchar_t(L'1' + i), 0}; cell(t, i, 8, y, DC_MYGO + i); }
@@ -12687,7 +13386,7 @@ static void desktopPanel(App& a) {
     page = 3;
     y = top;
     heading(L"Keyboard", y); y += 22;
-    note(L"1-9 views (6, 7 the players' eyes), F free (right mouse looks, W A S D\nmoves, Q / E down and up, Shift faster), A auto, Tab\nnext match, H hub, V view layer, R win screen, M VS,\nC selfie, F11 full screen, F2 help. Ctrl + 1-8 saves\nmy camera, Shift + 1-8 shows it. Wheel zooms.", y, 5); y += 92;
+    note(L"1-9 views (6, 7 the players' eyes), T / B / U follow\nthe action, F free (right mouse looks, W A S D\nmoves, Q / E down and up, Shift faster), A auto, Tab\nnext match, H hub, V view layer, R win screen, M VS,\nC selfie, F11 full screen, F2 help. Ctrl + 1-8 saves\nmy camera, Shift + 1-8 shows it. Wheel zooms.", y, 6); y += 110;
     heading(L"Controller (Xbox or PlayStation 4)", y); y += 22;
     note(L"A next match, B hub, X auto, Y free camera, D-pad\nleft / right cameras, up / down layers, triggers zoom.", y, 2); y += 40;
     note(L"Stream only the \"Project Arena - Spectator\" window;\nthis one stays off it. F1 shows or hides it.", y, 2);
@@ -12733,8 +13432,8 @@ static void loadAutoList(App& a) {
 // the list in the controls window, filled again only when what it shows has changed (the row picked stays picked)
 static void dcAutoRefresh(App& a, int select = -1) {
     if (!a.dcAutoView) return;
-    static const wchar_t* kName[10] = {L"", L"Side", L"High side", L"Blue end", L"Orange end", L"Top", L"Blue's eyes", L"Orange's eyes",
-                                       L"Corner", L"Courtside"};
+    static const wchar_t* kName[kDcViews] = {L"", L"Side", L"High side", L"Blue end", L"Orange end", L"Top", L"Blue's eyes", L"Orange's eyes",
+                                             L"Corner", L"Courtside", L"Tracking", L"Ball cam", L"Under fire"};
     std::vector<std::wstring> name, hold;
     std::wstring sig;
     for (const autorot::Item& it : a.dcAutoList) {
@@ -12744,7 +13443,7 @@ static void dcAutoRefresh(App& a, int select = -1) {
             swprintf(n, 48, L"My camera %d%s", it.id + 1, w.trig == 2 ? L" (follow)" : L"");
             swprintf(h, 24, L"%.0f s", kHoldSecs[w.hold & 3]);
         } else {
-            swprintf(n, 48, L"%s", kName[it.id >= 0 && it.id < 10 ? it.id : 0]);
+            swprintf(n, 48, L"%s", kName[it.id >= 0 && it.id < kDcViews ? it.id : 0]);
             swprintf(h, 24, L"%.0f s", it.hold);
         }
         name.push_back(n); hold.push_back(h);
@@ -12784,6 +13483,9 @@ static Pose desktopControls(App& a, double t, float dt) {
     const bool ctrl = dcDown(a, VK_CONTROL), shift = dcDown(a, VK_SHIFT);
     for (int v = 1; v <= 9; ++v)   // 1 to 9 the views; Ctrl + 1 to 8 saves the view as MY CAMERA n, Shift + 1 to 8 shows it
         if (dcPressed(a, '0' + v)) cmd = ctrl ? (v <= 8 ? DC_MYSET + v - 1 : 0) : shift ? (v <= 8 ? DC_MYGO + v - 1 : 0) : DC_VIEW + v;
+    if (dcPressed(a, 'T')) cmd = dcViewCmd(10);   // THE FOLLOW VIEWS: T tracking, B ball cam, U under fire
+    if (dcPressed(a, 'B')) cmd = dcViewCmd(11);
+    if (dcPressed(a, 'U')) cmd = dcViewCmd(12);
     const bool freeKey = dcPressed(a, 'F'), zeroKey = dcPressed(a, '0');
     if (freeKey || zeroKey) cmd = DC_FREE;
     if (a.dcView != 0 && dcPressed(a, 'A')) cmd = DC_AUTO;   // (A moves left in the free camera)
@@ -12808,11 +13510,11 @@ static Pose desktopControls(App& a, double t, float dt) {
         // the cameras: D-pad left / right, or LB / RB (in the free camera LB / RB move it down / up instead)
         const WORD next = XINPUT_GAMEPAD_DPAD_RIGHT | (a.dcView != 0 ? XINPUT_GAMEPAD_RIGHT_SHOULDER : 0);
         const WORD prev = XINPUT_GAMEPAD_DPAD_LEFT | (a.dcView != 0 ? XINPUT_GAMEPAD_LEFT_SHOULDER : 0);
-        if (b & (next | prev)) {   // round the nine views, then your cameras
-            const int n = 9 + (int)a.warps.size();
-            const int at = a.dcView == kDcMine && a.dcMy >= 0 ? 9 + a.dcMy : (a.dcView == 0 ? 1 : a.dcView) - 1;
+        if (b & (next | prev)) {   // round the views (twelve with the follow views), then your cameras
+            const int nv = kDcViews - 1, n = nv + (int)a.warps.size();
+            const int at = a.dcView == kDcMine && a.dcMy >= 0 ? nv + a.dcMy : (a.dcView == 0 ? 1 : a.dcView) - 1;
             const int k = (at + ((b & next) ? 1 : n - 1)) % n;
-            cmd = k < 9 ? DC_VIEW + k + 1 : DC_MYGO + k - 9;
+            cmd = k < nv ? dcViewCmd(k + 1) : DC_MYGO + k - nv;
         }
         if (b & XINPUT_GAMEPAD_BACK) cmd = DC_HELP;
         if (b & XINPUT_GAMEPAD_DPAD_UP) cmd = DC_LAYER;
@@ -12829,13 +13531,14 @@ static Pose desktopControls(App& a, double t, float dt) {
         LOGI("desktop: watching %s", ms[k % ms.size()].name);
     }
     if (cmd == DC_HUB) { a.watchIp = 0; a.dcHubPinned = true; LOGI("desktop: hub"); }
-    if (cmd > DC_VIEW && cmd <= DC_VIEW + 9) {
-        a.dcView = cmd - DC_VIEW; a.dcAuto = false;
+    if (dcCmdView(cmd) > 0) {
+        a.dcView = dcCmdView(cmd); a.dcAuto = false;
+        a.dcCamSet = false;   // (a follow view starts where it should be)
         if (a.dcEventKind) a.dcEventSkip = a.dcEventKind;   // picked during the fist bump / winner close-up: show it now
-        LOGI("desktop: camera %s", kDcViewName[a.dcView % 10]);
+        LOGI("desktop: camera %s", dcPresetName(a.dcView));
     }
     if (cmd == DC_FREE) {   // free camera from where the camera is now
-        const Pose cur = desktopPreset(a, a.dcView);
+        const Pose cur = dcFollowView(a.dcView) && a.dcLastOk ? a.dcLast : desktopPreset(a, a.dcView);
         if (a.dcView != 0) {
             const Vec3 f = cur.q.rotate({0, 0, -1});
             a.dcPos = cur.p; a.dcYaw = std::atan2(-f.x, -f.z); a.dcPitch = std::asin(clampf(f.y, -1.f, 1.f));
@@ -12859,7 +13562,8 @@ static Pose desktopControls(App& a, double t, float dt) {
     if (cmd >= DC_MYSET && cmd < DC_MYSET + 8) {
         const int i = cmd - DC_MYSET;
         Pose cur = a.dcView == 0 ? Pose{Quat::axisAngle({0, 1, 0}, a.dcYaw) * Quat::axisAngle({1, 0, 0}, a.dcPitch), a.dcPos}
-                 : a.dcView == kDcMine && a.dcMy >= 0 && a.dcMy < (int)a.warps.size() ? a.dcLast : desktopPreset(a, a.dcView);
+                 : (a.dcView == kDcMine && a.dcMy >= 0 && a.dcMy < (int)a.warps.size()) || dcFollowView(a.dcView) ? a.dcLast
+                 : desktopPreset(a, a.dcView);
         const Vec3 f = cur.q.rotate({0, 0, -1});
         App::WarpCam w;
         w.pose = {Quat::axisAngle({0, 1, 0}, std::atan2(-f.x, -f.z)), cur.p};
@@ -13005,7 +13709,9 @@ static Pose desktopControls(App& a, double t, float dt) {
         else {
             a.dcAutoRow = r;
             if (L[r].mine) showMine(L[r].id, false);
-            else { a.dcView = L[r].id; a.dcAutoAt = t + L[r].hold; }
+            // (a follow view starts where it should be, as when picked by hand: from another follow view it had swooped
+            // across from that one's camera; review 2026-11-21)
+            else { a.dcView = L[r].id; a.dcAutoAt = t + L[r].hold; a.dcCamSet = false; }
         }
     }
     a.dcFov = clampf(a.dcFov - a.dcWheel * 4.f, 25.f, 100.f);
@@ -13054,6 +13760,8 @@ static Pose desktopControls(App& a, double t, float dt) {
     } else {
         a.dcEyeSet = false;
     }
+    if (dcFollowView(a.dcView) && a.watchIp) base = dcFollowPose(a, a.dcView, t, dt);   // THE FOLLOW VIEWS
+    else a.dcCamSet = false;
     if (a.dcView == kDcMine && a.dcMy >= 0 && a.dcMy < (int)a.warps.size()) {   // one of yours (a follow camera glides along the
         const App::WarpCam& w = a.warps[a.dcMy];                           //  court with the ball, as in the headset)
         base = {w.pose.q * Quat::axisAngle({1, 0, 0}, w.pitch), w.pose.p};
@@ -13167,7 +13875,7 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
         if (g.np == 4) {   // FOUR CORNERS: four names and scores in their colours, or the two teams
             static const char* kTeamName[2][2] = {{"BLUE TEAM", "ORANGE TEAM"}, {"THE THREE", "THE ONE"}};
             panel(0, 0.86f, 1.70f, 0.26f);
-            if ((g.tun.teamMode == TEAMS_FFA || g.octagon())) {
+            if (g.teamsNow() == TEAMS_FFA || g.octagon()) {   // (FIREBALL BLITZ: the four, in their team's colours in teams)
                 for (int p = 0; p < 4; ++p) {
                     const float* pc = playerRGB(a, p);
                     const float c[4] = {0.6f * pc[0] + 0.4f, 0.6f * pc[1] + 0.4f, 0.6f * pc[2] + 0.4f, 1};
@@ -13177,7 +13885,7 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
                     txt(buf, x, 0.84f, 0.065f, white);
                 }
             } else {
-                const bool one = g.tun.teamMode == TEAMS_3V1;
+                const bool one = g.teamsNow() == TEAMS_3V1;
                 for (int t = 0; t < 2; ++t) {
                     const float* tc = teamRGB(a, t);
                     const float c[4] = {0.6f * tc[0] + 0.4f, 0.6f * tc[1] + 0.4f, 0.6f * tc[2] + 0.4f, 1};
@@ -13195,10 +13903,10 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
                 const int wt = g.matchWinner;
                 const float* tc = teamRGB(a, wt);
                 const float c[4] = {0.6f * tc[0] + 0.4f, 0.6f * tc[1] + 0.4f, 0.6f * tc[2] + 0.4f, 1};
-                const std::string nm = (g.tun.teamMode == TEAMS_FFA || g.octagon()) ? who(wt) : kTeamName[g.tun.teamMode == TEAMS_3V1][wt & 1];
+                const std::string nm = g.teamsNow() == TEAMS_FFA ? who(wt) : kTeamName[g.teamsNow() == TEAMS_3V1][wt & 1];
                 panel(0, -0.55f, 1.40f, 0.40f);
                 txt(nm, 0, -0.47f, 0.12f, c);
-                txt((g.tun.teamMode == TEAMS_FFA || g.octagon()) ? "WINS!" : "WIN!", 0, -0.62f, 0.08f, gold4);
+                txt(g.teamsNow() == TEAMS_FFA ? "WINS!" : "WIN!", 0, -0.62f, 0.08f, gold4);
             }
         } else {
         panel(0, 0.88f, a.nationsOn ? 1.50f : 1.15f, 0.2f);
@@ -13297,7 +14005,7 @@ static void desktopHud(App& a, const Pose& eye, float ty, float tx) {
     if (!a.dcHelp && nowSeconds() < a.dcHintUntil) txt("F1: CONTROLS", 0.82f, 0.93f, 0.028f, grey);
     if (a.dcHelp) {
         panel(0, -0.80f, 1.96f, 0.13f);
-        txt("1-9 CAMERAS   CTRL+1-8 SAVE   SHIFT+1-8 MINE   A AUTO   F FREE (RMB + WASD / Q E)   WHEEL ZOOM   V LAYERS   TAB NEXT   H HUB   F11 FULL   F2 HIDE",
+        txt("1-9 CAMERAS   T B U FOLLOW   CTRL+1-8 SAVE   SHIFT+1-8 MINE   A AUTO   F FREE (RMB + WASD / Q E)   WHEEL ZOOM   V LAYERS   TAB NEXT   H HUB   F11 FULL   F2 HIDE",
             0, a.dcPadOk ? -0.775f : -0.80f, 0.026f, white);
         if (a.dcPadOk)
             txt("CONTROLLER:  A NEXT MATCH   B HUB   X AUTO   Y FREE (STICKS, LB / RB)   D-PAD CAMERAS   TRIGGERS ZOOM   VIEW HIDE",
@@ -13405,7 +14113,7 @@ static void desktopRender(App& a, const Pose& eye, int W, int H, float dt) {
     if (!dcWinSplit(a)) {
         a.dcCloseT = 0;
         a.gfx.beginEye(Mat4::viewFromPose(eye), Mat4::projection(-std::atan(tx), std::atan(tx), std::atan(ty), -std::atan(ty), 0.05f, 2000.f), eye.p);
-        a.dcCut = a.watchIp && a.dcView >= 1 && a.dcView <= 9 && a.dcView != 6 && a.dcView != 7;   // (THE CUTAWAY: the presets)
+        a.dcCut = a.watchIp && a.dcView >= 1 && a.dcView < kDcViews && a.dcView != 6 && a.dcView != 7;   // (THE CUTAWAY: the presets)
         drawWorld(a, 0);
         drawWorld(a, 1);
         a.dcCut = false;
@@ -13559,6 +14267,16 @@ static void desktopFrame(App& a) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+// PROCESS PRIORITY (issue #7, a player: "High priority should be set automatically"; the owner, 2026-11-19: "add it and
+// measure it"): playing in PC VR the game asks Windows for ABOVE NORMAL, so a busy browser, Discord or OBS doesn't take
+// the CPU from its frames. Not HIGH: that can starve the VR runtime's compositor, which the headset shows as stutter.
+// The spectator window stays NORMAL (OBS streams it). --priority normal|above sets it either way
+static void setPriority(const std::string& how) {
+    const bool above = how == "above";
+    SetPriorityClass(GetCurrentProcess(), above ? ABOVE_NORMAL_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS);
+    LOGI("process priority: %s", above ? "above normal" : "normal");
+}
+
 static int desktopMain(App& a, bool asked) {
     a.desktop = true;
     LOGI("desktop spectator (%s)", asked ? "--spectate" : "no headset found");
@@ -13579,6 +14297,18 @@ static int desktopMain(App& a, bool asked) {
         if (a.quit) break;
         desktopFrame(a);
         SwapBuffers(a.hdc);
+        {   // performance, every 10 s in the log (as the headset's): the frame rate and the slowest frame
+            static double since = 0, last = 0, worst = 0;
+            static int frames = 0;
+            const double t = nowSeconds();
+            if (since == 0) since = t; else worst = std::max(worst, t - last);
+            last = t;
+            ++frames;
+            if (t - since >= 10.0) {
+                LOGI("perf: %.1f fps, slowest frame %.1f ms (the spectator window)", frames / (t - since), worst * 1000.0);
+                since = t; frames = 0; worst = 0;
+            }
+        }
     }
     webcam::stop();
     discord::stop();   // (review 2026-11-02: left running, its thread aborted the game as it closed)
@@ -13597,6 +14327,7 @@ int main(int argc, char** argv) {
     double probeSeconds = 60;
     bool noDialog = false;
     bool spectateArg = false;   // --spectate: the desktop spectator window even with a headset connected
+    std::string priorityArg;    // --priority normal|above: the process priority (PC VR play: above; the spectator: normal)
     const char* serverArg = nullptr;
     ShotView view;
     for (int i = 1; i < argc; ++i) {
@@ -13650,6 +14381,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--keycol") && i + 1 < argc) view.keyCol = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--nations") && i + 2 < argc) { view.nations[0] = argv[++i]; view.nations[1] = argv[++i]; }
         else if (!strcmp(argv[i], "--opts") && i + 1 < argc) view.opts = argv[++i];
+        else if (!strcmp(argv[i], "--looks") && i + 1 < argc) view.looks = argv[++i];   // --scene builder: MY LOOKS from this file
         else if (!strcmp(argv[i], "--record") && i + 2 < argc) { view.recordDir = argv[++i]; view.recordSeconds = (float)atof(argv[++i]); }
         else if (!strcmp(argv[i], "--size") && i + 2 < argc) { view.w = atoi(argv[++i]); view.h = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "--recordstep") && i + 1 < argc) view.recordStep = atoi(argv[++i]);
@@ -13697,6 +14429,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) probeSeconds = atof(argv[++i]);
         else if (!strcmp(argv[i], "--no-dialog")) noDialog = true;
         else if (!strcmp(argv[i], "--spectate")) spectateArg = true;
+        else if (!strcmp(argv[i], "--priority") && i + 1 < argc) priorityArg = argv[++i];   // normal|above (PROCESS PRIORITY)
         else if (!strcmp(argv[i], "--tag") && i + 1 < argc) {   // a name for this spectator window's title
             for (const char* c = argv[++i]; *c && a.dcTag.size() < 24; ++c)
                 if (*c >= 32 && *c < 127) a.dcTag += (char)std::toupper((unsigned char)*c);
@@ -13752,9 +14485,11 @@ int main(int argc, char** argv) {
         a.viewLayer = view.layer & 3;   // --layer 0-3 / --keycol 0-3: start in a view layer (an OBS key / transparency setup)
         a.dcKeyCol = 3;   // KEY is transparent (--keycol is still accepted from old shortcuts, and ignored)
         a.dcWinStyle = view.winStyle;   // --winscreen split|winner|camera
+        if (!priorityArg.empty()) setPriority(priorityArg);   // (the spectator: NORMAL unless asked)
         return desktopMain(a, spectateArg);
     }
     startUp(a);
+    setPriority(priorityArg.empty() ? "above" : priorityArg);   // (PC VR play: ABOVE NORMAL)
     bool exitRequested = false;
     while (!(a.quit && !a.running)) {
         MSG m;
@@ -13762,7 +14497,7 @@ int main(int argc, char** argv) {
         if (a.quit && a.running && !exitRequested) { xrRequestExitSession(a.session); exitRequested = true; }
         pollXrEvents(a);
         if (a.quit && !a.running) break;
-        if (!a.running) { Sleep(10); continue; }
+        if (!a.running) { a.audio.silenceFlights(); a.audio.setMusicLevel(0); Sleep(10); continue; }   // (no frames: no whoosh, no music)
         if (!renderFrame(a)) LOGE("frame failed");
         SwapBuffers(a.hdc);
     }

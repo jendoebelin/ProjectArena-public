@@ -25,11 +25,14 @@ recordings, MATCH MY LEVEL).
 | Player reports | The official server (`bug_reports/player_report_*`) | The operator | Up to 12 months | Only when a player sends one: names in the room, reason, note, the reported player's current address |
 | Ban list | The official server (`bans.txt`) | The operator | Until lifted | Addresses and names |
 | Votes to remove (REPORT PLAYER > VOTE TO REMOVE) | The arena host's game, in memory only | The host's game; a notice to the host | Until the host leaves its arena (never written anywhere) | Who voted against whom; a removed player's session, virtual address and name, so the host can turn them away for the rest of that session |
+| Server backups (from 2026-11-20) | The operator's own PC (`tools/backup_server.py`: `player_stats.db` with its salt, `sound_library/`, `bans.txt`, `bug_reports/`, the version files, The Crowd's settings and its notification signing key, the service file; not the notification devices) | The operator only (Windows DPAPI: only the operator's account on that PC can open them) | The newest 14 daily copies | Fetched over SSH, read-only on the server; for restoring a failed server |
+| Muted players (0.3.24+) | The device (`mutes.cfg`: the name and the server's code for that person) | Nobody else | Until unmuted | The code: MUTECODE, worked out by the server on request from both players' key hashes (never stored), only for someone the asker is playing or watching with (the relay remembers in memory, while connected, whom each game exchanged game packets with in the last 10 minutes); different for each player who asks |
 | IP addresses | Seen by the server for every connection | The operator (never shown to players) | Not stored, except inside reports and the ban list | Players see only virtual addresses |
 | Voice | Forwarded live between players in a room | The people in that room | **Never stored** | Push-to-talk by default; mutes for spectators, players, everyone, one person |
-| Live match (The Crowd, 0.3.7+) | Sent by an online host to the official server every second; shown on the public web page crowd.aftersparc.com | **Anyone** with the page | In memory only, while the arena is open | The host's name, the tank players' names, countries or end colours, score, rules, clock |
+| Live match (The Crowd, 0.3.7+) | Sent by an online host to the official server every second; shown on the public web page crowd.aftersparc.com | **Anyone** with the page; fans who turned on notifications get the host's or the players' names in one | In memory only, while the arena is open (a notification stays on the fan's device) | The host's name, the tank players' names, countries or end colours, score, rules, clock. Fans can't follow a particular player |
 | Fans' cheers, waved flags, fan count | The official server, in memory; counts sent to the arena host, which passes them to its room and spectators | The players and spectators of that arena (counts only) | Never stored | Fans are anonymous (no sign-in, name or account); the fan score stays on the phone (browser storage) |
-| Fans' IP addresses | Seen by the web server (Caddy) and the relay for each connection | Nobody | Not stored or logged (no access log; used in memory to cap 10 connections per address) | |
+| Crowd notifications (only for fans who turn them on) | The official server (`crowd_push.db`, SQLite; its VAPID signing key beside it, `crowd_push.db.vapid`), both readable by the server's account only; the choices also in the phone's browser storage | The operator; the browser's push service (Google, Apple, Mozilla, Microsoft) sees only that a notification was sent to the address, not its text (encrypted, RFC 8291) | Until the fan turns notifications off, the push service reports the address gone (404 / 410) or refuses it 3 times in a row, or 365 days after the page was last opened. Not backed up (the key is) | The device's push address (endpoint and its two keys), what to be told about (someone hosts or a match starts, or only a match), at most how often, quiet hours, the phone's time zone offset, when last notified and last seen, recent refusals. No name, account or IP address, and no player to follow |
+| Fans' IP addresses | Seen by the web server (Caddy) and the relay for each connection | Nobody | Not stored or logged (no access log; used in memory to cap 10 connections per address, and 10 new notification devices a day per address) | |
 | Passthrough camera images, room depth | The headset only | Nobody | Never stored or sent | The game never receives camera images |
 
 Nothing else is collected: no accounts, no email, no real names, no Meta account data, no location, no analytics or
@@ -55,7 +58,12 @@ advertising identifiers.
   matches against the practice bot never count.
 - Stats requests are limited to two a second per player.
 - DELETE (MY STATS > DELETE MY STATS) erases the player's row at once. Rows unseen for 24 months are removed by the
-  relay at start and once a day.
+  relay at start and once a day. The daily backups (above) keep 14 days, so a deleted row is gone from them within 14.
+  A DELETE also leaves a note (`player_stats.db.deletions`, the server's account only: the time and the key's salted
+  hash, nothing else), kept 30 days; every start applies the notes again, so a restored copy loses what was deleted
+  after it was made. Only what is older than the deletion goes (a career first seen before it; TRAINING and votes
+  last changed before it): a player who plays on after deleting keeps the new statistics
+  (`server/test_relay_deletions.py`).
 - Abuse checks: first and last seen are kept; the relay logs `the same player is connected twice` when one key is
   connected from two places at once.
 - Tested by `server/test_relay_stats.py` (15 checks) and end to end in `app/tests/test_rooms.cpp`.
@@ -75,11 +83,23 @@ advertising identifiers.
 - HTTPS only (Caddy, automatic Let's Encrypt certificates, HSTS); the relay's WebSocket port listens on 127.0.0.1
   only, behind Caddy.
 - The relay accepts the live connection only from The Crowd's own page (Origin check), at most 2000 fans and 10 per
-  address, 20 messages a second per fan (cheers counted at most 8 a second), messages of at most 512 bytes, idle
+  address, 20 messages a second per fan (cheers counted at most 8 a second), messages of at most 2 kB, idle
   connections closed after 90 s.
 - Strict Content-Security-Policy (the page loads only its own files; no third-party scripts, fonts or trackers),
   no cookies, no access log.
 - Fans see a random match id, never a host's address (virtual or real).
+- Notifications (`--push`): the relay posts only to the browsers' push services (an allow-list of their host names,
+  HTTPS on port 443, no redirects followed), so a page can't make it send requests anywhere else; messages encrypted
+  for the one device (RFC 8291) and signed with the server's VAPID key (RFC 8292), with the standard `cryptography`
+  package (`server/test_relay_push.py` checks RFC 8291's own example byte for byte). No third-party notification
+  service (ntfy and the like: left out, the owner 2026-11-21).
+- A page can't fill the table or keep the relay writing it: 5000 devices at most, 10 new ones a day per address, 6
+  notification messages at once per connection and one every 10 s after, and a device that sends the same again
+  costs no write. Who an event goes to is one SQLite query (a few milliseconds with a full table), and the push services'
+  answers are written once a second in one transaction.
+- Notifications can't take time from the game: they are encrypted, signed and sent by a separate process at nice 19,
+  with at most 300 waiting and 3000 an hour (more are dropped, not queued), and at most 1000 devices per event. The
+  self-test sends 200 in a burst and checks the relay's loop is never held up by more than 50 ms.
 
 ## 3. Known gaps (accepted for now)
 

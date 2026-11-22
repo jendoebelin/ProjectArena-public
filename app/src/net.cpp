@@ -54,7 +54,8 @@ enum : uint8_t { R_HELLO = 1, R_WELCOME = 2, R_SEND = 3, R_PING = 4, R_BYE = 5, 
                  R_KEY = 8, R_TANK = 9, R_MATCH = 10, R_STATSREQ = 11, R_STATS = 12, R_CONFIRM = 13, R_DELETE = 14,
                  R_MYSTATS = 15, R_LIVE = 16, R_CROWD = 17,     // (8-15: player statistics; 16-17: The Crowd)
                  R_TRAIN = 18, R_BOARDREQ = 19, R_BOARD = 20,    // (18-20: TRAINING's leaderboards, 0.3.12)
-                 R_SOUNDVOTE = 21 };                             // (21: SOUND STUDIO's votes, 0.3.16)
+                 R_SOUNDVOTE = 21,                               // (21: SOUND STUDIO's votes, 0.3.16)
+                 R_MUTECODE = 22 };                              // (22: MUTED PLAYERS' codes, 0.3.23)
 static const double kRotateDelay = 6.0;          // match summary -> both players out, the queue in
 static const double kMemberTimeout = 4.0;
 
@@ -220,6 +221,14 @@ static bool readRoom(Reader& r, RoomInfo& ri, uint32_t& lastSeq) {
             x.id = r.get<uint32_t>();
             readName(r, x.name);
             if (r.ok) n.names.push_back(x);
+        }
+    }
+    if (r.ok && r.p < r.e) {   // (hosts from 0.3.24, online: the people's virtual addresses, MUTED PLAYERS)
+        uint8_t na = r.get<uint8_t>();
+        for (uint8_t i = 0; i < na && i < 16 && r.ok; ++i) {
+            RoomInfo::Addr x;
+            x.id = r.get<uint32_t>(); x.vip = r.get<uint32_t>();
+            if (r.ok && x.id && x.vip) n.addrs.push_back(x);
         }
     }
     lastSeq = seq;
@@ -427,6 +436,38 @@ void Net::relaySend(uint8_t type, const void* body, int n) {
     std::memcpy(b, &kRelayMagic, 4); b[4] = type; std::memcpy(b + 5, token_, 16);
     if (n) std::memcpy(b + 21, body, n);
     rawSend(b, 21 + n, serverIp_, serverPort_);
+}
+
+uint64_t Net::muteCode(uint32_t session) const {
+    const auto a = addrOf_.find(session);
+    if (a == addrOf_.end()) return 0;
+    const auto c = muteCodes_.find(a->second);
+    return c == muteCodes_.end() ? 0 : c->second;
+}
+
+// (guests and spectators: whose virtual address is whose, as the host's ROOM says; 0.3.24)
+void Net::learnAddrs(const RoomInfo& ri) {
+    if (!online_) return;
+    for (const RoomInfo::Addr& x : ri.addrs) {
+        if (x.id == session_) continue;
+        if (addrOf_.size() > 512) addrOf_.clear();
+        addrOf_[x.id] = x.vip;
+    }
+}
+
+void Net::askMuteCodes(const std::vector<uint32_t>& sessions) {
+    if (!online_ || !vip_) return;
+    uint32_t ask[16];
+    int n = 0;
+    for (uint32_t s : sessions) {
+        const auto a = addrOf_.find(s);
+        if (a == addrOf_.end() || muteCodes_.count(a->second) || n >= 16) continue;
+        double& at = muteAsked_[a->second];
+        if (at > 0 && now_ - at < 5.0) continue;
+        at = now_;
+        ask[n++] = a->second;
+    }
+    if (n) relaySend(R_MUTECODE, ask, 4 * n);
 }
 
 uint32_t Net::roomHostVip() const {
@@ -829,6 +870,34 @@ static void writeState(Writer& w, const Game& g) {
             }
     }
     w.put<uint8_t>(g.tun.palmHoldNow() ? 1 : 0);   // (0.3.22, any room: THE BALL IN THE LEFT PALM, as this match plays it)
+    // (0.3.24, BALL LOOK-AHEAD with four players: FOUR CORNERS) what two-player rooms have sent since 0.3.15, for all
+    // four balls: each one's spin, bounces and whether it is fouled / going home, and the host's game clock. After the
+    // last byte older builds read, so they stop before it (FIREBALL BLITZ: not yet; its fireballs fill the packet)
+    if (g.np == 4 && !(g.tun.experimental && g.tun.expRoom == ROOM_BLITZ)) {
+        for (int p = 0; p < 4; ++p) {
+            const Ball& b = g.pl[p].ball;
+            for (float v : {b.spin.x, b.spin.y, b.spin.z}) w.put<int16_t>((int16_t)std::max(-32000L, std::min(32000L, std::lround(v * 100.f))));
+            w.put<uint8_t>((uint8_t)((b.fouled ? 1 : 0) | (b.homing ? 2 : 0) | (std::min(b.bounces, 63) << 2)));
+        }
+        w.put<float>(g.now);
+    }
+    // (0.3.24, BALL LOOK-AHEAD in FIREBALL BLITZ) each flying fireball's spin round the up axis (quarter rad/s: what
+    // curves it along the floor) and its bounces (it goes out at fireBounces), in the order of the fireballs above,
+    // then the host's game clock: 28 bytes with twelve (1176 of the relay's 1200 with a full event log)
+    if (g.tun.experimental && g.tun.expRoom == ROOM_BLITZ) {
+        for (int p = 0; p < g.np; ++p)
+            for (int k = 0; k < Game::kMaxFire; ++k) {
+                const Ball& f = g.fire[p][k];
+                if (f.state != BallState::Flying) continue;
+                w.put<int8_t>((int8_t)std::max(-127L, std::min(127L, std::lround(f.spin.y * 4.f))));
+                w.put<uint8_t>((uint8_t)std::max(0, std::min(255, f.bounces)));
+            }
+        w.put<float>(g.now);
+        // (0.3.24, FIREBALL BLITZ in teams) the teams the room plays: 0 everyone for themselves, 1 2 v 2, 2 3 v 1 (with
+        // an older player in it, everyone for themselves). The byte before it, the room's own TEAMS, an older host sends
+        // for every room, FIREBALL BLITZ too, where it never played: so only this one says FIREBALL BLITZ plays in teams
+        w.put<uint8_t>((uint8_t)g.teamsNow());
+    }
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -892,6 +961,7 @@ static bool readState(Reader& r, Game& g, int localIndex) {
                 vel.x = r.get<int16_t>() / 100.f; vel.y = r.get<int16_t>() / 100.f; vel.z = r.get<int16_t>() / 100.f;
                 f.instigator = r.get<int8_t>();
                 f.state = BallState::Flying; f.pos = pos; f.vel = vel; f.scale = 1.f;
+                f.spin = {}; f.bounces = 0; f.timer = 0;   // (hosts from 0.3.24 send the spin and bounces below)
                 f.speedLimit = std::max(5.f, std::sqrt(vel.x * vel.x + vel.z * vel.z));   // (read ahead for its warning)
             }
         }
@@ -962,6 +1032,42 @@ static bool readState(Reader& r, Game& g, int localIndex) {
     }
     g.tun.palmHold = false;   // (THE BALL IN THE LEFT PALM, hosts from 0.3.22; older: the left hand's old point)
     if (r.ok && r.e - r.p >= 1) g.tun.palmHold = (r.get<uint8_t>() & 1) != 0;
+    // (four players, hosts from 0.3.24: the balls' spin, bounces, fouls and the host's clock, so BALL LOOK-AHEAD can fly
+    // them on; an older host sends none, and the look-ahead stands down there: Game::lookAhead)
+    if (np == 4 && !(g.tun.experimental && g.tun.expRoom == ROOM_BLITZ) && r.ok && r.e - r.p >= 4 * 7 + 4) {
+        for (int p = 0; p < 4; ++p) {
+            Ball& b = g.pl[p].ball;
+            b.spin.x = r.get<int16_t>() / 100.f; b.spin.y = r.get<int16_t>() / 100.f; b.spin.z = r.get<int16_t>() / 100.f;
+            const uint8_t f = r.get<uint8_t>();
+            b.fouled = (f & 1) != 0; b.homing = (f & 2) != 0; b.bounces = f >> 2;
+        }
+        const float hn = r.get<float>();
+        if (r.ok && std::isfinite(hn) && hn >= 0.f) g.ahead.snapNow = hn;
+    }
+    // (FIREBALL BLITZ, hosts from 0.3.24: each flying fireball's spin and bounces, then the host's clock; without them,
+    // and from an older host, the look-ahead stands down there)
+    g.ahead.fireKnown = false;
+    if (g.tun.experimental && g.tun.expRoom == ROOM_BLITZ) g.tun.blitzTeams = false;   // (teams: only as the host says, below)
+    if (g.tun.experimental && g.tun.expRoom == ROOM_BLITZ && r.ok) {
+        int flying = 0;
+        for (int p = 0; p < np; ++p)
+            for (int k = 0; k < Game::kMaxFire; ++k) flying += g.fire[p][k].state == BallState::Flying;
+        if (r.e - r.p >= 2 * flying + 4) {
+            for (int p = 0; p < np; ++p)
+                for (int k = 0; k < Game::kMaxFire; ++k) {
+                    Ball& f = g.fire[p][k];
+                    if (f.state != BallState::Flying) continue;
+                    f.spin = {0, r.get<int8_t>() * 0.25f, 0};
+                    f.bounces = r.get<uint8_t>();
+                }
+            const float hn = r.get<float>();
+            if (r.ok && std::isfinite(hn) && hn >= 0.f) { g.ahead.snapNow = hn; g.ahead.fireKnown = true; }
+            if (r.ok && r.e - r.p >= 1) {   // (hosts from 0.3.24: the teams it plays)
+                g.tun.teamMode = std::min(2, (int)r.get<uint8_t>());
+                g.tun.blitzTeams = true;
+            }
+        }
+    }
     return r.ok;
 }
 
@@ -1120,6 +1226,18 @@ void Net::sendRoom() {
     static uint32_t roomSeq = 0;
     Writer w; header(w, MSG_ROOM, session_, 0);
     writeRoom(w, room_, ++roomSeq);
+    if (online_) {   // (0.3.24, MUTED PLAYERS: each person's virtual address, so a guest can ask the server for their code;
+        // as many as fit the relay's 1200 bytes. Never at home: there they would be the network's own addresses)
+        std::vector<RoomInfo::Addr> v;
+        for (const Member& m : members_) if (!m.local && m.id && m.ip) v.push_back({m.id, m.ip});
+        for (const Spectator& sp : spectators_) if (sp.where == 1 && sp.id && sp.ip) v.push_back({sp.id, sp.ip});
+        const size_t room = w.b.size() + 1 < 1200 ? (1200 - w.b.size() - 1) / 8 : 0;
+        const size_t n = std::min<size_t>(std::min<size_t>(v.size(), 16), room);
+        if (room) {
+            w.put<uint8_t>((uint8_t)n);
+            for (size_t i = 0; i < n; ++i) { w.put(v[i].id); w.put(v[i].vip); }
+        }
+    }
     for (const Member& m : members_) if (!m.local) sendTo(w.b.data(), (int)w.b.size(), m.ip, kPort);
     for (const Spectator& sp : spectators_) sendTo(w.b.data(), (int)w.b.size(), sp.ip, kPort);
 }
@@ -1508,6 +1626,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
                 if (rr.e - rr.p < 20) continue;
                 std::memcpy(token_, rr.p, 16); std::memcpy(&vip_, rr.p + 16, 4);
                 keySent_ = false;   // (a new session on the relay: name our stats key again)
+                addrOf_.clear(); muteCodes_.clear(); muteAsked_.clear();   // (MUTED PLAYERS: new addresses)
                 LOGI("net: online (relay %s)", serverName_);
                 if (rr.e - rr.p >= 21) {   // the current release (relays from 2026-10-19 on)
                     const size_t n = std::min<size_t>(15, std::min<size_t>(rr.p[20], (size_t)(rr.e - rr.p - 21)));
@@ -1516,6 +1635,16 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
                         const char c = (char)rr.p[21 + i];
                         latest_[i] = (c >= '0' && c <= '9') || c == '.' ? c : 0;
                     }
+                }
+                continue;
+            }
+            if (t == R_MUTECODE) {   // MUTED PLAYERS: (virtual address, its code for us) pairs; zeros: none
+                for (const uint8_t* q = rr.p; q + 12 <= rr.e; q += 12) {
+                    uint32_t v;
+                    uint64_t code;
+                    std::memcpy(&v, q, 4);
+                    std::memcpy(&code, q + 4, 8);
+                    if (code) muteCodes_[v] = code;
                 }
                 continue;
             }
@@ -1595,6 +1724,10 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         }
         if (!r.ok || magic != kMagic || ver != kVersion || session == session_) continue;   // ignore our own broadcasts
         const uint32_t fromIp = from.sin_addr.s_addr;
+        if (online_ && session) {   // (MUTED PLAYERS: whose virtual address is whose)
+            if (addrOf_.size() > 512) addrOf_.clear();
+            addrOf_[session] = fromIp;
+        }
         if (mode_ == Mode::Client && (type == MSG_ROOM || type == MSG_STATE) && session != peerSession_ && now_ - peerSeen_ > 3.0) {
             // our host has gone quiet and the next in line already hosts the room: follow them now
             for (size_t i = 0; i < heirs_.size(); ++i) {
@@ -1664,7 +1797,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             }
             if (m) {
                 m->lastSeen = now_;
-                if (type == MSG_ROOM) readRoom(r, m->room, m->lastRoomSeq);
+                if (type == MSG_ROOM) { if (readRoom(r, m->room, m->lastRoomSeq)) learnAddrs(m->room); }
                 else {
                     readEvents(r, m->lastEventId, m->events);
                     if (m->events.size() > 64) m->events.erase(m->events.begin(), m->events.end() - 64);
@@ -1844,7 +1977,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             peerSession_ = session;
             peerSeen_ = now_;
             if (migrating_) arrived();
-            readRoom(r, room_, lastRoomSeq_);
+            if (readRoom(r, room_, lastRoomSeq_)) learnAddrs(room_);
         } else if (type == MSG_STATE && fromHost) {
             peerSession_ = session;   // the host's session, learned from its beacon or first snapshot
             peerSeen_ = now_;
@@ -1891,7 +2024,12 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         }
         if (vip_ && mode_ == Mode::Host && liveSet_ && now_ - lastLive_ > 1.0) {   // The Crowd: our match, for the fans
             lastLive_ = now_;
-            uint8_t b[82] = {};
+            // (four players, 0.3.23: 104 bytes more after the 82 every relay reads, which older relays leave: a 4, the
+            // room, its team mode and THE ONE; for each of the four its colour (3), team, points (i16), health and out;
+            // the four countries; players 2 and 3's names (16) and match counts (8 x u16). Players 0 and 1's names and
+            // counts are the 82's)
+            uint8_t b[82 + 104] = {};
+            const int n = live_.np == 4 ? 82 + 104 : 82;
             b[0] = live_.state;
             std::memcpy(b + 1, live_.score, 4);
             b[5] = live_.nation[0]; b[6] = live_.nation[1];
@@ -1907,7 +2045,26 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
                 std::memcpy(b + 48 + 16 * k, v, 16);
             }
             b[80] = live_.round; b[81] = live_.overtime;
-            relaySend(R_LIVE, b, sizeof b);
+            if (n > 82) {
+                uint8_t* q = b + 82;
+                *q++ = 4; *q++ = live_.room; *q++ = live_.teamMode; *q++ = live_.theOne;
+                for (int p = 0; p < 4; ++p) {
+                    std::memcpy(q, live_.rgb4[p], 3); q += 3;
+                    *q++ = live_.team4[p];
+                    std::memcpy(q, &live_.points4[p], 2); q += 2;
+                    *q++ = live_.health4[p];
+                    *q++ = live_.out4[p];
+                }
+                for (int p = 0; p < 4; ++p) *q++ = live_.nation4[p];
+                for (int p = 2; p < 4; ++p) {
+                    std::memcpy(q, live_.name4[p], 16); q += 16;
+                    const MatchStats& s = live_.st[p];
+                    const uint16_t v[8] = {s.throws, s.onTarget, s.hits, s.blocks, s.faced, s.catches, s.strikes,
+                                           (uint16_t)std::min(6000.f, std::max(0.f, s.topSpeed * 100.f))};
+                    std::memcpy(q, v, 16); q += 16;
+                }
+            }
+            relaySend(R_LIVE, b, n);
         }
     }
     if (inRoom() && now_ - lastPingSent_ > 2.0) {   // the round trip: the client to its host, the host to each player
@@ -2221,9 +2378,9 @@ size_t Net::snapshotBytes(const Game& g) {
     Writer w; header(w, MSG_STATE, 1, 1); writeEvents(w, log); writeState(w, g);
     return w.b.size();
 }
-bool Net::snapshotInto(const Game& g, Game& into) {
+bool Net::snapshotInto(const Game& g, Game& into, size_t cut) {
     Writer w; writeState(w, g);
-    Reader r{w.b.data(), w.b.data() + w.b.size()};
+    Reader r{w.b.data(), w.b.data() + w.b.size() - std::min(cut, w.b.size())};
     return readState(r, into, -1);
 }
 

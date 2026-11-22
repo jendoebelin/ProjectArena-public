@@ -103,3 +103,7 @@ spectator's VS screen and in MENU > MY STATS.
 - **Blocked names:** names with slurs or hate words are never shown to other players (they see PLAYER), including a
   rename while online; `word:WORD` lines in the bans file add words (found anywhere in a name, at least 3 letters).
 - Players can also mute one person for themselves (REPORT PLAYER > MUTE) or whole groups (SETTINGS > VOICE AND MUTES).
+  From 0.3.24 a mute is kept on the player's headset; the relay's MUTECODE gives their game a code for each person
+  (from both players' key hashes, different for each asker, worked out on request and never stored; only for someone
+  the asker has exchanged game packets with, or shares a host with, in the last 10 minutes), so a mute
+  holds when the muted player renames. An older relay doesn't answer it: the game then keeps the mute by name.

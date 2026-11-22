@@ -53,7 +53,13 @@ The Crowd (2026-10-21; games from 0.3.7 on): fans follow live matches on their p
                                 round clock (u16, tenths of a second), the tank players' names (2 x 16); then
                                 (games from 0.3.7, 82 bytes) this match so far for slot 0 and 1: throws, throws on
                                 target, hits, blocks, balls faced, catches, strikes, top throw speed (cm/s) (8 x u16),
-                                the round (u8) and overtime (u8)
+                                the round (u8) and overtime (u8); then (games from 0.3.23, a four-player match:
+                                FOUR CORNERS or FIREBALL BLITZ; 104 bytes, 186 in all) 4 (u8), the room (u8: 2 FOUR
+                                CORNERS, 3 FIREBALL BLITZ), team mode (u8: 0 free-for-all, 1 2 v 2, 2 3 v 1), THE ONE
+                                (u8); for players 0-3 their colour (RGB), team (u8), points (i16), health (u8), out
+                                (u8); the four countries (4 x u8); players 2 and 3's names (16) and this match so far
+                                (8 x u16, as above). With two players the ends are the players; with four in teams
+                                the two teams (points 0 and 1: the teams' scores)
   CROWD   17  server -> host    body (twice a second while anyone watches): fans watching (u16), cheers for end 0
                                 and end 1 in the last half second (2 x u16), hype 0 and 1 (2 x u8, 0..100), fans
                                 waving each end's flag (2 x u16)
@@ -61,6 +67,12 @@ The Crowd (2026-10-21; games from 0.3.7 on): fans follow live matches on their p
   anyway: host name, score, clock, rules) and the tank players' names from TANK; no match statistics or flags.
   Fans are anonymous: the web page sends no name or account; the relay keeps them in memory only (no file, no log
   line per fan) and counts at most 10 connections per address.
+  Notifications (2026-11-21, --push FILE): a fan can turn on notifications (the page's bell). The hello then carries
+  the server's VAPID public key ("push"). The page sends {"t": "push", "sub": the browser's push subscription,
+  "prefs": {"when": "any" or "match", "gap": 30, 60 or 180 minutes, "quiet": [from, to] hours or null, "tz": minutes
+  east of UTC}} (again each time it opens), {"t": "unpush", "endpoint"} to turn them off; the relay answers
+  {"t": "push", "ok"} and sends a Web Push notification when someone hosts an arena or a match of two or more players
+  starts (class Push, below). No following a player by name (the owner, 2026-11-21).
 TRAINING leaderboards (games from 0.3.12; the player's KEY says whose, as for careers):
   TRAIN   18  player -> server  body: a lesson passed: the lesson (u8 id, LESSONS below), 1 (u8), its time (u32 ms; 0 for
                                 a lesson without a clock), successes (u8), attempts (u8). Kept per player and lesson: the
@@ -101,6 +113,15 @@ u32 size and the file (0xFFFFFFFF: no such sound). Votes come on the UDP connect
 sound; players are only ever told their own. The owner, on the server: --sound-totals prints every sound's thumbs up and
 down; --sound-remove FILE --reason removed|adopted [--adopted-in VERSION] takes a sound out of the library (into
 FOLDER/removed, its totals kept in FOLDER/removed/results.log) and prints the result for the Discord post.
+MUTED PLAYERS (0.3.23; a mute the player keeps on their own headset):
+  MUTECODE 22  player -> server  body: virtual addresses (u32 each, at most 16, at most 5 requests a second)
+               server -> player  body: for each, the address (u32) and an 8-byte code for that person made for this
+                                 player only (HMAC-SHA256 of the two players' keys as the server knows them, the
+                                 salted hashes): the same person keeps it under a new name, no one else gets the same
+                                 code for them, and it says nothing about the key. Zeros: not online, either of
+                                 the two without a KEY, or two who haven't met (no game packets between them, or
+                                 with the same host, in the last 10 minutes: from 2026-11-21). Worked out when asked;
+                                 nothing is stored.
 Testing: --lag MS --jitter MS --loss PERCENT make the relay behave like a long internet path (forwarded game packets
 are delayed by lag plus a smoothly drifting 0..jitter ms, kept in order, and a share is dropped). Never on a public server.
 """
@@ -114,10 +135,15 @@ import json
 import math
 import random
 import os
+import secrets
+import socket
 import sqlite3
 import struct
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 MAGIC = 0x4C52414F          # 'OARL'
 GAME_MAGIC = 0x43525053     # 'SPRC' (the game's LAN packets)
@@ -126,6 +152,7 @@ KEY, TANK, MATCH, STATSREQ, STATS, CONFIRM, DELETE, MYSTATS = 8, 9, 10, 11, 12, 
 LIVE, CROWD = 16, 17
 TRAIN, BOARDREQ, BOARD = 18, 19, 20
 SOUNDVOTE = 21              # player -> server (0.3.16)  body: u8 length, the sound's file name, i8 vote (-1, 0, 1)
+MUTECODE = 22               # player <-> server (0.3.23): MUTED PLAYERS' codes (see the protocol above)
 # SOUND STUDIO's library (the game's sound events, app/assets_open/audio/events.txt; a sound is made for one of them)
 SOUND_EVENTS = ('Spawn', 'SpawnRise', 'Grab', 'Caught', 'ThrowSlow', 'ThrowMed', 'ThrowFast', 'ThrowFull', 'ThrowFail',
                 'Bounce', 'ShieldBlock', 'ShieldBreak', 'KnuckleBlock', 'HitPlayerOpponent', 'HitPlayerSelf', 'Returned',
@@ -244,7 +271,7 @@ def ip_text(v):
 
 class Client:
     __slots__ = ('addr', 'token', 'vip', 'version', 'app', 'name', 'seen', 'bucket', 'bucket_t', 'host_until', 'joined', 'key', 'tank',
-                 'last_match', 'last_req', 'trains', 'last_board', 'sound_votes')
+                 'last_match', 'last_req', 'trains', 'last_board', 'sound_votes', 'last_mute', 'peers')
 
     def __init__(self, addr, vip, version, name):
         self.addr, self.vip, self.version, self.name = addr, vip, version, name
@@ -256,13 +283,19 @@ class Client:
         self.key, self.tank, self.last_match, self.last_req = None, (0, 0), -1e9, -1e9
         self.trains, self.last_board = 0, -1e9
         self.sound_votes = 0    # (SOUND STUDIO: votes from this connection)
+        self.last_mute = -1e9   # (MUTECODE: the last request answered)
+        self.peers = {}         # (MUTECODE: the virtual addresses this one sent game packets to or had them from, and
+                                #  when last; in memory only, gone with the connection)
 
 
 class Stats:
     """Career statistics per player key (a SQLite file): matches, wins and the counts a host reports per match."""
 
+    DELETIONS_DAYS = 30     # how long a deletion's note is kept (longer than any backup: tools/backup_server.py keeps 14)
+
     def __init__(self, path, log=print):
         self.log = log
+        self.deletions_path = path + '.deletions'
         salt_path = path + '.salt'
         if not os.path.exists(salt_path):
             fd = os.open(salt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -288,6 +321,7 @@ class Stats:
             if 'return_hits' not in [r[1] for r in self.db.execute('PRAGMA table_info(%s)' % table)]:
                 self.db.execute('ALTER TABLE %s ADD COLUMN return_hits INTEGER DEFAULT 0' % table)
         self.db.commit()
+        self.reapply_deletions()
         self.purge()
         n = self.db.execute('SELECT COUNT(*) FROM players').fetchone()[0]
         log('stats: %d players (%s)' % (n, os.path.abspath(path)))
@@ -304,6 +338,14 @@ class Stats:
         self.db.commit()
         if n:
             self.log('stats: %d players unseen for %d months removed' % (n, months))
+        try:   # (the deletion notes: none kept past DELETIONS_DAYS)
+            with open(self.deletions_path, encoding='ascii') as f:
+                lines = len(f.read().splitlines())
+            notes = self.deletions()
+            if lines != len(notes):
+                self.write_deletions(notes)
+        except OSError:
+            pass
 
     def add(self, key, name, won, counts, top, mode=0, returns=0):
         t = int(time.time())
@@ -325,6 +367,53 @@ class Stats:
     def ident(self, raw):
         """The stored id for a player's key: a salted hash, so a copy of the table can't be used to act as anyone."""
         return hmac.new(self.salt, raw, hashlib.sha256).hexdigest()
+
+    # DELETIONS (2026-11-20; the owner: if a backup is restored, "there won't be confusion why their stats are back"):
+    # a DELETE also leaves a note beside the database (--stats + '.deletions': the time and the key's salted hash, no
+    # name, nothing else; the server's account only), kept DELETIONS_DAYS. At every start the notes are applied again:
+    # a restored copy of the database loses what was deleted after it was made. Only what is older than the deletion
+    # goes (the career row first seen before it, training and votes last changed before it), so a player who plays on
+    # after deleting keeps the new statistics.
+    def deletions(self):
+        cut, out = time.time() - self.DELETIONS_DAYS * 86400, []
+        try:
+            with open(self.deletions_path, encoding='ascii') as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) == 2 and parts[0].isdigit() and int(parts[0]) >= cut:
+                        out.append((int(parts[0]), parts[1]))
+        except OSError:
+            pass
+        return out
+
+    def write_deletions(self, notes):
+        tmp = self.deletions_path + '.tmp'
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w', encoding='ascii') as f:
+            f.writelines('%d %s\n' % n for n in notes)
+        os.replace(tmp, self.deletions_path)
+
+    def note_deletion(self, key):
+        self.write_deletions(self.deletions() + [(int(time.time()), key)])   # (the expired ones dropped as it goes)
+
+    def reapply_deletions(self):
+        notes = self.deletions()
+        gone = 0
+        for at, key in notes:
+            # (strictly older: anything from the second of the deletion on is new, made after it)
+            n = self.db.execute('DELETE FROM players WHERE key = ? AND first_seen < ?', (key, at)).rowcount
+            self.db.execute('DELETE FROM player_modes WHERE key = ? AND key NOT IN (SELECT key FROM players)', (key,))
+            n += self.db.execute('DELETE FROM training WHERE key = ? AND updated < ?', (key, at)).rowcount
+            try:
+                n += self.db.execute('DELETE FROM sound_votes WHERE key = ? AND updated < ?', (key, at)).rowcount
+            except sqlite3.OperationalError:
+                pass
+            gone += 1 if n else 0
+        self.db.commit()
+        if gone:
+            self.log('stats: %d deletions applied again (a restored copy had brought them back)' % gone)
+        if notes or os.path.exists(self.deletions_path):
+            self.log('stats: %d deletion notes (%d days)' % (len(notes), self.DELETIONS_DAYS))
 
     def delete(self, key):
         self.db.execute('DELETE FROM player_modes WHERE key = ?', (key,))
@@ -612,6 +701,9 @@ class Relay(asyncio.DatagramProtocol):
             if self.sounds is not None:
                 self.sounds.vote_message(c, body)
             return
+        if ptype == MUTECODE:
+            self.mute_codes(c, body, now)
+            return
         if ptype in (KEY, TANK, MATCH, STATSREQ, CONFIRM, DELETE, MYSTATS, TRAIN, BOARDREQ):
             self.stats_message(c, ptype, body, now)
             return
@@ -632,7 +724,45 @@ class Relay(asyncio.DatagramProtocol):
         else:
             o = self.by_vip.get(dst)
             if o is not None:
+                self.met(c, o, now)   # (MUTECODE: who plays or watches with whom)
                 self.forward(out, o.addr)
+
+    PEER_SECONDS = 600   # MUTECODE: how long after their last game packet two players still count as having met
+
+    def met(self, c, o, now):
+        """Two connections exchanged a game packet (one forwarded from c to o): each notes the other, for MUTECODE."""
+        for x, y in ((c, o), (o, c)):
+            if len(x.peers) >= 256:   # (a busy connection: only those met lately kept)
+                x.peers = {v: t for v, t in x.peers.items() if now - t < self.PEER_SECONDS}
+                if len(x.peers) >= 256:
+                    x.peers.pop(min(x.peers, key=x.peers.get))
+            x.peers[y.vip] = now
+
+    def have_met(self, c, o, now):
+        """Whether c may have o's code: they exchanged game packets lately, or both did with the same third (the host of
+        the room they are in, or whose arena they watch). Review 2026-11-21: any address online was answered, so a game
+        could collect a lasting code for everyone online and follow them through name changes"""
+        s = self.PEER_SECONDS
+        if now - c.peers.get(o.vip, -1e9) < s:
+            return True
+        return any(now - t < s and now - o.peers.get(v, -1e9) < s for v, t in c.peers.items())
+
+    def mute_codes(self, c, body, now):
+        """MUTED PLAYERS (0.3.23): for each virtual address asked, that person's code for this player only (see the
+        protocol above), for people the player has met (have_met). Nothing is kept: the same two keys always give the
+        same code."""
+        if now - c.last_mute < 0.2 or len(body) < 4:
+            return
+        c.last_mute = now
+        out = bytearray()
+        for i in range(min(len(body) // 4, 16)):
+            v = struct.unpack_from('<I', body, 4 * i)[0]
+            o = self.by_vip.get(v)
+            code = bytes(8)
+            if o is not None and o is not c and c.key and o.key and self.have_met(c, o, now):
+                code = hmac.new(c.key.encode(), o.key.encode(), hashlib.sha256).digest()[:8]
+            out += struct.pack('<I', v) + code
+        self.send(c.addr, MUTECODE, bytes(out))
 
     def stats_message(self, c, ptype, body, now):
         st = self.player_stats
@@ -701,6 +831,7 @@ class Relay(asyncio.DatagramProtocol):
             self.send(c.addr, BOARD, out + struct.pack('<HIH', min(65535, place), int(mine), min(65535, count)))
         elif ptype == DELETE and st is not None and c.key is not None:
             n = st.delete(c.key)
+            st.note_deletion(c.key)   # (so a restored backup can't bring them back)
             self.log('stats: %s deleted their statistics (%d row)' % (c.name, n))
         elif (ptype == STATSREQ and len(body) >= 4) or ptype == MYSTATS:
             if now - c.last_req < 0.5:
@@ -779,7 +910,7 @@ WS_GUID = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 
 
 class LiveMatch:
-    __slots__ = ('id', 'host', 'info', 'seen', 'cheers', 'hype', 'fans', 'career', 'career_t', 'live_t')
+    __slots__ = ('id', 'host', 'info', 'seen', 'cheers', 'hype', 'fans', 'career', 'career_t', 'live_t', 'pushed')
 
     def __init__(self, host):
         self.id = os.urandom(4).hex()          # what fans see (not the virtual address)
@@ -787,16 +918,19 @@ class LiveMatch:
         self.cheers, self.hype, self.fans = [0, 0], [0.0, 0.0], set()
         self.career, self.career_t = [None, None], -1e9
         self.live_t = -1e9                     # the last LIVE (0.3.7+); until then the beacon describes the match
+        self.pushed = set()                    # the notifications already sent for it ('hosted', 'match')
 
 
 class Fan:
-    __slots__ = ('writer', 'addr', 'watch', 'bucket', 'bucket_t', 'cheer_bucket', 'flag', 'flag_t', 'seen')
+    __slots__ = ('writer', 'addr', 'watch', 'bucket', 'bucket_t', 'cheer_bucket', 'flag', 'flag_t', 'seen', 'push_bucket',
+                 'push_t')
 
     def __init__(self, writer, addr):
         self.writer, self.addr, self.watch = writer, addr, None
         self.bucket, self.cheer_bucket = CROWD_MSG_RATE, CROWD_CHEERS
         self.bucket_t = self.seen = time.monotonic()
         self.flag, self.flag_t = -1, 0.0
+        self.push_bucket, self.push_t = PUSH_MSG_BURST, self.seen   # notification messages (each may write the table)
 
 
 def ws_frame(text, op=0x81):
@@ -812,8 +946,10 @@ def ws_frame(text, op=0x81):
 
 
 class Crowd:
-    def __init__(self, relay, log, origins=()):
-        self.relay, self.log = relay, log
+    def __init__(self, relay, log, origins=(), push=None):
+        self.relay, self.log, self.push = relay, log, push
+        self.recent_hosts = {}                 # host (its key, or name) -> when its last arena closed (notifications)
+        self.push_new = {}                     # phone address -> [new devices today, since when] (memory only)
         self.origins = tuple(o.rstrip('/').lower() for o in origins if o)
         self.matches = {}                      # host vip -> LiveMatch
         self.fans = set()
@@ -843,7 +979,27 @@ class Crowd:
                 m.info['p'][k]['m'] = {'throws': t, 'on': ot, 'hits': hi, 'blocks': bl, 'faced': fa, 'catches': ca,
                                        'strikes': sk, 'top': round(top * 0.036)}   # cm/s -> km/h
             m.info['rnd'], m.info['ot'] = v[16], bool(v[17])
+        if len(body) >= 82 + 104 and body[82] == 4:   # four players (games from 0.3.23: FOUR CORNERS, FIREBALL BLITZ)
+            room, tm, one = body[83], body[84], body[85]
+            m.info.update({'np': 4, 'room': room, 'tm': tm, 'one': one})
+            ps = m.info['p']
+            # (the layout: 82 the marker, room, team mode, THE ONE; 86 + 8k player k's colour, team, points, health, out;
+            # 118 + k the countries; 122 + 32i players 2 and 3's names and 138 + 32i their counts: 186 bytes)
+            ps.extend({'n': clean_name(body[122 + 32 * i:138 + 32 * i])} for i in range(2))   # (players 2 and 3)
+            for k in range(4):
+                q = 86 + 8 * k
+                ps[k]['c'] = '#%02x%02x%02x' % tuple(body[q:q + 3])
+                ps[k]['team'] = body[q + 3]
+                ps[k]['pts'] = struct.unpack_from('<h', body, q + 4)[0]
+                ps[k]['hp'] = body[q + 6]
+                ps[k]['out'] = bool(body[q + 7])
+                ps[k]['nat'] = body[118 + k]
+            for i in range(2):
+                t, ot, hi, bl, fa, ca, sk, top = struct.unpack_from('<8H', body, 138 + 32 * i)
+                ps[2 + i]['m'] = {'throws': t, 'on': ot, 'hits': hi, 'blocks': bl, 'faced': fa, 'catches': ca,
+                                  'strikes': sk, 'top': round(top * 0.036)}
         self.careers(c, m, now)
+        self.announce(m)
 
     def beacon(self, c, payload, now):
         """a host from before 0.3.7 (no LIVE): its arena's beacon, which every host broadcasts twice a second"""
@@ -865,6 +1021,7 @@ class Crowd:
                   'bot': names[1] == 'BOT', 'clock': round(cl, 1), 'old': True,
                   'p': [{'n': names[0], 'nat': 0, 'c': '#1ab3ff'}, {'n': names[1], 'nat': 0, 'c': '#ff6a1a'}]}
         self.careers(c, m, now)
+        self.announce(m)
 
     def careers(self, c, m, now):
         # the two players' careers (the statistics the game shows over the court), refreshed every 10 s
@@ -888,9 +1045,70 @@ class Crowd:
         if m is None or m.host is not c:
             return
         del self.matches[c.vip]
+        if m.info and self.push is not None:
+            self.recent_hosts[m.host.key or m.info['host']] = time.time()
+            if len(self.recent_hosts) > 500:
+                cut = time.time() - PUSH_REHOST
+                self.recent_hosts = {k: v for k, v in self.recent_hosts.items() if v > cut}
         for f in list(m.fans):
             f.watch = None
             self.send(f, {'t': 'gone', 'id': m.id})
+
+    def announce(self, m):
+        """notifications: someone hosts an arena ('hosted', once per arena, not when the same host just reopened one)
+        and a match of two or more players starts ('match', once per arena; FOUR CORNERS and FIREBALL BLITZ too). The
+        names as The Crowd shows them (a blocked name is PLAYER already)."""
+        if self.push is None or not m.info:
+            return
+        i = m.info
+        shown = lambda n: n if n and not name_blocked(n) else 'A player'
+        people = [p.get('n') for p in i['p'] if p.get('n') not in (None, '', 'OPEN', 'BOT')]
+        if i.get('np') != 4 and i.get('bot'):
+            people = people[:1]                # a one-on-one against the bot: one player
+        try:
+            if 'match' not in m.pushed and len(people) >= 2 and i.get('st') in (1, 2, 3):
+                m.pushed.update(('match', 'hosted'))   # (a match already on when the arena appears: just the match)
+                names = [shown(n) for n in people]
+                if len(names) == 2:
+                    title = '%s vs %s is live' % tuple(names)
+                else:
+                    title = '%s & %s are playing %s' % (', '.join(names[:-1]), names[-1],
+                                                        'FIREBALL BLITZ' if i.get('room') == 3 else 'FOUR CORNERS')
+                self.push.notify('match', title, 'Tap to watch and cheer on The Crowd.', m.id)
+            elif 'hosted' not in m.pushed:
+                m.pushed.add('hosted')
+                if time.time() - self.recent_hosts.get(m.host.key or i['host'], -1e9) > PUSH_REHOST:
+                    self.push.notify('hosted', '%s is hosting an arena' % shown(i['host']),
+                                     'People are getting on in Project Arena. Tap to watch, or hop in.', m.id)
+        except sqlite3.Error as e:
+            self.log('push: %s' % e)
+
+    def fan_push(self, fan, msg):
+        """a page's 'push' (notifications on or changed) or 'unpush' (off): at most PUSH_MSG_BURST at once and one every
+        PUSH_MSG_EVERY seconds per connection, and at most PUSH_NEW_PER_ADDR new devices a day from one address, so a
+        page can't fill the table or keep the relay writing it"""
+        now = time.monotonic()
+        fan.push_bucket = min(PUSH_MSG_BURST, fan.push_bucket + (now - fan.push_t) / PUSH_MSG_EVERY)
+        fan.push_t = now
+        if fan.push_bucket < 1:
+            return False
+        fan.push_bucket -= 1
+        if msg.get('t') == 'unpush':
+            self.push.unsubscribe(msg.get('endpoint'))
+            return True
+        sub = msg.get('sub')
+        ep = sub.get('endpoint') if isinstance(sub, dict) else None
+        if not isinstance(ep, str):
+            return False
+        if self.push.known(ep):
+            return self.push.subscribe(sub, msg.get('prefs'))
+        n, since = self.push_new.get(fan.addr, (0, now))
+        if now - since > 86400:
+            n, since = 0, now
+        if n >= PUSH_NEW_PER_ADDR or not self.push.subscribe(sub, msg.get('prefs')):
+            return False
+        self.push_new[fan.addr] = (n + 1, since)
+        return True
 
     # --- fans (WebSocket)
     async def handle(self, reader, writer):
@@ -921,7 +1139,10 @@ class Crowd:
                           'Sec-WebSocket-Accept: %s\r\n\r\n' % accept).encode())
             fan = Fan(writer, addr)
             self.fans.add(fan)
-            self.send(fan, {'t': 'hello', 'v': 1})
+            hello = {'t': 'hello', 'v': 1}
+            if self.push is not None:
+                hello['push'] = self.push.public_key   # (the page shows its bell)
+            self.send(fan, hello)
             self.send(fan, self.list_msg())
             while True:
                 b = await asyncio.wait_for(reader.readexactly(2), CROWD_IDLE)
@@ -930,10 +1151,11 @@ class Crowd:
                     n = struct.unpack('>H', await reader.readexactly(2))[0]
                 elif n == 127:
                     return
-                if not masked or not fin or n > 512:   # phones send short, masked, unfragmented messages
-                    return
+                if not masked or not fin or n > 2048:   # phones send short, masked, unfragmented messages (a push
+                    return                                # subscription is the longest: up to about 1.3 kB)
                 mask = await reader.readexactly(4)
-                data = bytes(x ^ mask[i & 3] for i, x in enumerate(await reader.readexactly(n)))
+                raw = await reader.readexactly(n)       # unmasked in one go (a byte at a time cost 0.1 ms a message)
+                data = (int.from_bytes(raw, 'big') ^ int.from_bytes((mask * (n // 4 + 1))[:n], 'big')).to_bytes(n, 'big')
                 if op == 8:
                     writer.write(b'\x88\x00')
                     return
@@ -992,6 +1214,13 @@ class Crowd:
         elif t == 'flag':
             side = msg.get('side')
             fan.flag, fan.flag_t = (side, now) if side in (0, 1) and type(side) is int else (-1, 0.0)
+        elif t in ('push', 'unpush') and self.push is not None:   # notifications on / changed / off (the bell)
+            try:
+                ok = self.fan_push(fan, msg)
+            except sqlite3.Error as e:
+                self.log('push: %s' % e)
+                ok = False
+            self.send(fan, dict({'t': 'push', 'ok': bool(ok)}, **({'off': True} if t == 'unpush' else {})))
 
     def send(self, fan, obj):
         try:
@@ -1041,6 +1270,343 @@ class Crowd:
             for f in list(self.fans):
                 if f.watch is None:
                     self.send(f, lst)
+        if self.push is not None:
+            try:
+                self.push.flush()              # the push services' answers (gone, refused) in one transaction
+            except sqlite3.Error as e:
+                self.log('push: %s' % e)
+            if k % 7200 == 0 and self.push_new:   # (an hour) the day's counts of new devices per address that are over
+                self.push_new = {a: v for a, v in self.push_new.items() if now - v[1] <= 86400}
+
+
+# ---------------------------------------------------------------- The Crowd: notifications (Web Push, 2026-11-21)
+# A fan who turns on notifications on The Crowd (the bell) gets a phone or computer notification when people are
+# playing: someone hosts an arena, or a match starts (the owner, 2026-11-21: no following a player by name). Standard
+# Web Push (RFC 8030): VAPID (RFC 8292, an ES256 signature) and an encrypted message (RFC 8291, aes128gcm), with the
+# `cryptography` package (Ubuntu: python3-cryptography; setup.sh installs it). Without it the relay runs as before,
+# without notifications (the page's bell stays hidden).
+# Kept (--push FILE, SQLite, the server's account only): each device's push address (the browser's anonymous endpoint
+# and its two keys) and the fan's choices (what about, how often, quiet hours, the phone's time zone offset), when it
+# was last notified and last seen; deleted when the fan turns notifications off, when the browser's push service says
+# the address is gone (or refuses it three times running), or a year after the page was last opened. Fans' addresses
+# are never kept: in memory only, a day's count of new devices per address.
+
+try:
+    from cryptography.hazmat.primitives import hashes as _c_hashes, serialization as _c_ser
+    from cryptography.hazmat.primitives.asymmetric import ec as _c_ec, utils as _c_utils
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _C_AESGCM
+    HAVE_CRYPTOGRAPHY = True
+except ImportError:
+    HAVE_CRYPTOGRAPHY = False
+
+P256_N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551   # (the curve's order: VAPID keys below it)
+
+
+def b64u(data):
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
+
+
+def b64u_dec(text):
+    return base64.urlsafe_b64decode(text + '=' * (-len(text) % 4))
+
+
+def p256_point(raw):
+    """a browser's public key: an uncompressed P-256 point, checked to be on the curve (ValueError otherwise)"""
+    if not isinstance(raw, bytes) or len(raw) != 65 or raw[0] != 4:
+        raise ValueError('not a P-256 point')
+    return _c_ec.EllipticCurvePublicKey.from_encoded_point(_c_ec.SECP256R1(), raw)
+
+
+def p256_public(d):
+    return _c_ec.derive_private_key(d, _c_ec.SECP256R1()).public_key().public_bytes(
+        _c_ser.Encoding.X962, _c_ser.PublicFormat.UncompressedPoint)
+
+
+def webpush_keys(p256dh, auth, as_pub, shared, salt):
+    """RFC 8291's key derivation (HKDF-SHA-256, one block each): the content key and nonce"""
+    prk_key = hmac.new(auth, shared, hashlib.sha256).digest()
+    ikm = hmac.new(prk_key, b'WebPush: info\0' + p256dh + as_pub + b'\1', hashlib.sha256).digest()
+    prk = hmac.new(salt, ikm, hashlib.sha256).digest()
+    cek = hmac.new(prk, b'Content-Encoding: aes128gcm\0\1', hashlib.sha256).digest()[:16]
+    nonce = hmac.new(prk, b'Content-Encoding: nonce\0\1', hashlib.sha256).digest()[:12]
+    return cek, nonce
+
+
+def webpush_encrypt(p256dh, auth, payload, _d=None, _salt=None):
+    """RFC 8291: the message body for one browser (its p256dh public key and auth secret), one record (_d, _salt: the
+    RFC's example in the tests; otherwise a new key and salt for every message)"""
+    ua = p256_point(p256dh)
+    key = _c_ec.derive_private_key(_d, _c_ec.SECP256R1()) if _d else _c_ec.generate_private_key(_c_ec.SECP256R1())
+    as_pub = key.public_key().public_bytes(_c_ser.Encoding.X962, _c_ser.PublicFormat.UncompressedPoint)
+    salt = _salt or os.urandom(16)
+    cek, nonce = webpush_keys(p256dh, auth, as_pub, key.exchange(_c_ec.ECDH(), ua), salt)
+    return salt + struct.pack('>IB', 4096, 65) + as_pub + _C_AESGCM(cek).encrypt(nonce, payload + b'\2', None)
+
+
+def es256(d, msg):
+    """ECDSA P-256 / SHA-256, the raw 64-byte r || s that a JWT carries"""
+    der = _c_ec.derive_private_key(d, _c_ec.SECP256R1()).sign(msg, _c_ec.ECDSA(_c_hashes.SHA256()))
+    r, s = _c_utils.decode_dss_signature(der)
+    return r.to_bytes(32, 'big') + s.to_bytes(32, 'big')
+
+
+# the browsers' push services (a fan's push address must be on one of them: the relay never posts anywhere else)
+PUSH_HOSTS = ('fcm.googleapis.com', 'updates.push.services.mozilla.com', 'web.push.apple.com')
+PUSH_HOST_ENDS = ('.push.apple.com', '.notify.windows.com', '.push.services.mozilla.com')
+PUSH_MAX = 5000              # push addresses kept at most
+PUSH_NEW_PER_ADDR = 10       # new devices one address may turn notifications on for in a day (in memory only)
+PUSH_MSG_BURST = 6           # notification messages ('push', 'unpush') one page connection may send at once ...
+PUSH_MSG_EVERY = 10.0        # ... and one more every this many seconds
+PUSH_GAPS = (30, 60, 180)    # minutes: "at most once every ..."
+PUSH_REHOST = 15 * 60        # seconds: the same host hosting again this soon is not news
+PUSH_KEEP_DAYS = 365         # a device whose page hasn't been opened for this long is forgotten
+PUSH_FAILS = 3               # refusals in a row (an error other than gone, 404 / 410) before a device is forgotten
+PUSH_TTL = 900               # seconds the push service may hold a notification (old "live now" is no use)
+PUSH_QUEUE_MAX = 300         # notifications waiting for the notification process at most (more are dropped)
+PUSH_PER_HOUR = 3000         # notifications sent an hour at most (more are dropped)
+PUSH_PER_EVENT = 1000        # devices one event notifies at most (those notified longest ago first)
+
+
+def push_endpoint_ok(url):
+    if not isinstance(url, str) or len(url) > 1024:
+        return False
+    try:
+        u = urllib.parse.urlsplit(url)
+        port = u.port
+    except ValueError:
+        return False
+    host = (u.hostname or '').lower()
+    return (u.scheme == 'https' and port in (None, 443) and not u.username
+            and (host in PUSH_HOSTS or any(host.endswith(e) for e in PUSH_HOST_ENDS)))
+
+
+def push_prefs(raw):
+    """a fan's choices, checked: when (any: someone hosts or a match starts; match: only when a match starts), gap
+    (minutes between notifications), quiet ([from, to] local hours, or None) and tz (the phone's offset from UTC in
+    minutes, for the quiet hours)"""
+    raw = raw if isinstance(raw, dict) else {}
+    when = raw.get('when') if raw.get('when') in ('any', 'match') else 'any'
+    gap = raw.get('gap') if raw.get('gap') in PUSH_GAPS else 60
+    q = raw.get('quiet')
+    quiet = ([q[0], q[1]] if isinstance(q, list) and len(q) == 2 and all(type(h) is int and 0 <= h < 24 for h in q)
+             and q[0] != q[1] else None)
+    tz = raw.get('tz') if type(raw.get('tz')) is int and -900 <= raw.get('tz') <= 900 else 0
+    return {'when': when, 'gap': gap, 'quiet': quiet, 'tz': tz}
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+# ---- the notification process. Encrypting, signing and posting run in a separate process at the lowest CPU priority
+# (nice 19), never in the relay's own process: a busy evening of notifications can't delay a single game packet.
+_JWTS, _OPENER = {}, []
+
+
+def notify_worker_init():
+    try:
+        os.nice(19)
+    except (AttributeError, OSError):
+        pass
+
+
+def vapid_token(d, contact, endpoint, now):
+    u = urllib.parse.urlsplit(endpoint)
+    aud = '%s://%s' % (u.scheme, u.netloc)
+    tok = _JWTS.get((d, aud))
+    if tok is None or tok[1] < now + 600:
+        exp = int(now) + 12 * 3600
+        head = b64u(b'{"typ":"JWT","alg":"ES256"}') + '.' + b64u(json.dumps(
+            {'aud': aud, 'exp': exp, 'sub': contact}, separators=(',', ':')).encode())
+        tok = _JWTS[(d, aud)] = (head + '.' + b64u(es256(d, head.encode())), exp)
+    return tok[0]
+
+
+def notify_request(job):
+    """a job ('webpush', endpoint, p256dh, auth, message, VAPID key, contact, public key) -> (url, body, headers)"""
+    _, endpoint, p256dh, auth, msg, d, contact, pub = job
+    return endpoint, webpush_encrypt(p256dh, auth, msg), {
+        'TTL': str(PUSH_TTL), 'Urgency': 'high', 'Topic': 'live', 'Content-Encoding': 'aes128gcm',
+        'Content-Type': 'application/octet-stream',
+        'Authorization': 'vapid t=%s, k=%s' % (vapid_token(d, contact, endpoint, time.time()), pub)}
+
+
+def notify_job(job):
+    """one notification, in the notification process: the HTTP status (0: not sent)"""
+    try:
+        url, body, headers = notify_request(job)
+        if not _OPENER:
+            _OPENER.append(urllib.request.build_opener(_NoRedirect))
+        with _OPENER[0].open(urllib.request.Request(url, data=body, method='POST', headers=headers), timeout=10) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception:
+        return 0
+
+
+class Notifier:
+    """hands notifications to the notification process, within limits: at most PUSH_QUEUE_MAX waiting and PUSH_PER_HOUR
+    an hour. Anything over is dropped (and logged once an hour), never queued up."""
+    def __init__(self, log=print):
+        self.log, self.pool, self.waiting = log, None, 0
+        self.hour, self.sent, self.dropped = 0.0, 0, 0
+        self.run_inline = None                 # (the tests: a function(job) -> status, run at once)
+
+    def room(self):
+        now = time.time()
+        if now - self.hour >= 3600:
+            if self.dropped:
+                self.log('notify: %d notifications dropped in the last hour (limits)' % self.dropped)
+            self.hour, self.sent, self.dropped = now, 0, 0
+        if self.waiting >= PUSH_QUEUE_MAX or self.sent >= PUSH_PER_HOUR:
+            self.dropped += 1
+            return False
+        return True
+
+    def submit(self, job, done):
+        if not self.room():
+            return False
+        self.sent += 1
+        if self.run_inline is not None:
+            done(self.run_inline(job))
+            return True
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            done(notify_job(job))
+            return True
+        try:
+            if self.pool is None:
+                import concurrent.futures
+                import multiprocessing
+                self.pool = concurrent.futures.ProcessPoolExecutor(
+                    1, mp_context=multiprocessing.get_context('spawn'), initializer=notify_worker_init)
+            fut = loop.run_in_executor(self.pool, notify_job, job)
+        except Exception as e:                 # the process died: a new one next time
+            self.pool = None
+            self.log('notify: %s' % e)
+            return False
+        self.waiting += 1
+
+        def fin(f):
+            self.waiting -= 1
+            try:
+                st = f.result()
+            except Exception:
+                st, self.pool = 0, None
+            done(st)
+        fut.add_done_callback(fin)
+        return True
+
+
+class Push:
+    """the devices that turned notifications on (SQLite), and the notifications to them. Which devices want an event is
+    chosen by SQLite itself (one query, no per-row Python), and the push services' answers are written once a tick, in
+    one transaction: a full table costs the relay's loop a few milliseconds per event."""
+    def __init__(self, path, contact, notifier, log=print):
+        self.log, self.contact, self.notifier, self.answers = log, contact, notifier, []
+        key_path = path + '.vapid'
+        if not os.path.exists(key_path):   # the server's VAPID key (made once; fans' subscriptions are tied to it)
+            fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as f:
+                f.write('%064x\n' % (secrets.randbelow(P256_N - 1) + 1))
+        with open(key_path) as f:
+            self.d = int(f.read().strip(), 16)
+        self.public_key = b64u(p256_public(self.d))
+        self.db = sqlite3.connect(path)
+        for p in (path, key_path):
+            try:
+                os.chmod(p, 0o600)
+            except OSError:
+                pass
+        self.db.execute('PRAGMA journal_mode=WAL')     # (a write is cheap: no wait for the disk at each one)
+        self.db.execute('PRAGMA synchronous=NORMAL')
+        self.db.execute('CREATE TABLE IF NOT EXISTS subs (endpoint TEXT PRIMARY KEY, p256dh TEXT, auth TEXT, '
+                        'mode TEXT, gap INTEGER, qa INTEGER, qb INTEGER, tz INTEGER, last_sent REAL DEFAULT 0, '
+                        'seen REAL, fails INTEGER DEFAULT 0)')
+        self.db.commit()
+        self.purge()
+        log('push: %d devices (%s)' % (self.count(), os.path.abspath(path)))
+
+    def count(self):
+        return self.db.execute('SELECT COUNT(*) FROM subs').fetchone()[0]
+
+    def known(self, endpoint):
+        return self.db.execute('SELECT 1 FROM subs WHERE endpoint = ?', (str(endpoint),)).fetchone() is not None
+
+    def purge(self):
+        self.db.execute('DELETE FROM subs WHERE seen < ?', (time.time() - PUSH_KEEP_DAYS * 86400,))
+        self.db.commit()
+
+    def subscribe(self, sub, prefs):
+        """a fan turned notifications on or changed them (the page sends this again each time it is opened)"""
+        try:
+            endpoint, keys = sub['endpoint'], sub['keys']
+            p256dh, auth = b64u_dec(keys['p256dh']), b64u_dec(keys['auth'])
+            p256_point(p256dh)
+        except (TypeError, KeyError, ValueError, AttributeError):
+            return False
+        if not push_endpoint_ok(endpoint) or len(auth) != 16:
+            return False
+        p = push_prefs(prefs)
+        row = (b64u(p256dh), b64u(auth), p['when'], p['gap']) + tuple(p['quiet'] or (None, None)) + (p['tz'],)
+        now = time.time()
+        old = self.db.execute('SELECT p256dh, auth, mode, gap, qa, qb, tz, seen FROM subs WHERE endpoint = ?',
+                              (endpoint,)).fetchone()
+        if old is not None and tuple(old[:7]) == row and now - (old[7] or 0) < 86400:
+            return True                        # nothing new (the page opened again today): no write
+        if old is None and self.count() >= PUSH_MAX:
+            return False
+        self.db.execute('INSERT INTO subs (endpoint, p256dh, auth, mode, gap, qa, qb, tz, seen) '
+                        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, '
+                        'auth = excluded.auth, mode = excluded.mode, gap = excluded.gap, qa = excluded.qa, '
+                        'qb = excluded.qb, tz = excluded.tz, seen = excluded.seen, fails = 0', (endpoint,) + row + (now,))
+        self.db.commit()
+        return True
+
+    def unsubscribe(self, endpoint):
+        self.db.execute('DELETE FROM subs WHERE endpoint = ?', (str(endpoint),))
+        self.db.commit()
+
+    def notify(self, kind, title, body, match_id, now=None):
+        """an event ('hosted' or 'match'): a notification to each device that wants it now (its kind of event, its gap
+        since the last one, outside its quiet hours: the hour on the phone's clock from its time zone offset)"""
+        now = time.time() if now is None else now
+        msg = json.dumps({'title': title, 'body': body, 'id': match_id}, separators=(',', ':')).encode()
+        rows = self.db.execute(
+            'SELECT endpoint, p256dh, auth FROM (SELECT *, ((? + tz) / 60) % 24 AS h FROM subs) '
+            "WHERE last_sent <= ? - gap * 60 AND (mode = 'any' OR ? = 'match') "
+            'AND (qa IS NULL OR NOT (CASE WHEN qa < qb THEN h >= qa AND h < qb ELSE h >= qa OR h < qb END)) '
+            'ORDER BY last_sent LIMIT ?', (int(now // 60), now, kind, PUSH_PER_EVENT)).fetchall()
+        sent = []
+        for endpoint, p256dh, auth in rows:
+            job = ('webpush', endpoint, b64u_dec(p256dh), b64u_dec(auth), msg, self.d, self.contact, self.public_key)
+            if not self.notifier.submit(job, lambda st, e=endpoint: self.answers.append((e, st))):
+                break
+            sent.append((now, endpoint))
+        if sent:
+            self.db.executemany('UPDATE subs SET last_sent = ? WHERE endpoint = ?', sent)
+            self.db.commit()
+            self.log('push: %s, %d device%s' % (kind, len(sent), '' if len(sent) == 1 else 's'))
+        self.flush()
+
+    def flush(self):
+        """the push services' answers so far, in one transaction: gone (404, 410) forgets the device; another refusal
+        (4xx, not 429 "too many") counts, PUSH_FAILS in a row forget it; a delivery clears the count"""
+        if not self.answers:
+            return
+        answers, self.answers = self.answers, []
+        gone = [(e,) for e, st in answers if st in (404, 410)]
+        bad = [(e,) for e, st in answers if 400 <= st < 500 and st not in (404, 410, 429)]
+        good = [(e,) for e, st in answers if 200 <= st < 300]
+        self.db.executemany('DELETE FROM subs WHERE endpoint = ?', gone)
+        self.db.executemany('UPDATE subs SET fails = fails + 1 WHERE endpoint = ?', bad)
+        self.db.executemany('UPDATE subs SET fails = 0 WHERE endpoint = ? AND fails > 0', good)
+        if bad:
+            self.db.execute('DELETE FROM subs WHERE fails >= ?', (PUSH_FAILS,))
+        self.db.commit()
 
 
 REPORT_MAX = 200000
@@ -1276,6 +1842,10 @@ async def main():
                     '(e.g. 127.0.0.1:47781, behind an HTTPS web server); off when empty')
     ap.add_argument('--crowd-origin', action='append', default=[], help='The Crowd: web page origin allowed to connect '
                     '(e.g. https://crowd.example.com; repeat for more; any when none)')
+    ap.add_argument('--push', default='', help='The Crowd: notifications (Web Push); the SQLite file for the devices '
+                    'that turned them on (its VAPID key is kept beside it, FILE.vapid)')
+    ap.add_argument('--push-contact', default='https://github.com/jendoebelin/ProjectArena-public',
+                    help='The Crowd: the contact the browsers\' push services see (a mailto: or https: address)')
     ap.add_argument('--sounds', default='sound_library', help='SOUND STUDIO: the folder of sounds players can try and vote on')
     ap.add_argument('--sound-totals', action='store_true', help='owner: print every library sound\'s votes and exit')
     ap.add_argument('--sound-remove', default='', help='owner: take this sound (its file name) out of the library and exit')
@@ -1284,6 +1854,8 @@ async def main():
     ap.add_argument('--lag', type=float, default=0.0, help='testing: extra one-way delay per forwarded packet (ms)')
     ap.add_argument('--jitter', type=float, default=0.0, help='testing: up to this much more delay at random (ms)')
     ap.add_argument('--loss', type=float, default=0.0, help='testing: percent of forwarded packets dropped')
+    ap.add_argument('--udp-buffer', type=int, default=4 << 20, help='the UDP receive buffer asked for (bytes; the system '
+                    'caps it at net.core.rmem_max)')
     args = ap.parse_args()
     loop = asyncio.get_running_loop()
     stamp = lambda m: print(time.strftime('%H:%M:%S ') + m, flush=True)
@@ -1292,15 +1864,31 @@ async def main():
     relay = Relay(args.max_clients, stamp, args.lag, args.jitter, args.loss, Bans(args.bans, stamp), Latest(args.latest),
                   Stats(args.stats, stamp), Latest(args.minimum))
     relay.sounds = Sounds(args.sounds, relay.player_stats, stamp)
-    await loop.create_datagram_endpoint(lambda: relay, local_addr=(args.bind, args.port))
-    stamp('Project Arena relay listening on UDP %s:%d' % (args.bind, args.port))
+    transport, _ = await loop.create_datagram_endpoint(lambda: relay, local_addr=(args.bind, args.port))
+    # a bigger receive buffer (2026-11-19: the server's kernel had dropped 1.8 million packets in a month, 12%, for a
+    # full one, the default 208 KB, while the relay was busy; none that day): packets wait for the relay, not dropped
+    sock = transport.get_extra_info('socket')
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, args.udp_buffer)
+    except OSError as e:
+        stamp('UDP receive buffer not changed: %s' % e)
+    stamp('Project Arena relay listening on UDP %s:%d (receive buffer %d KB)' %
+          (args.bind, args.port, sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF) // 1024))
     reports = Reports(args.reports, stamp, relay, relay.sounds)
     await asyncio.start_server(reports.handle, args.bind, args.port)
     stamp('bug reports: TCP %s:%d -> %s' % (args.bind, args.port, os.path.abspath(args.reports)))
     crowd = None
     if args.crowd:
         h, _, p = args.crowd.rpartition(':')
-        crowd = Crowd(relay, stamp, args.crowd_origin)
+        push = None
+        if args.push and not HAVE_CRYPTOGRAPHY:   # (the relay runs on without them: the page shows no bell)
+            stamp('push: OFF, python3-cryptography is not installed (sudo apt install python3-cryptography)')
+        elif args.push:
+            try:                                 # (never the game's relay down for the notifications' sake)
+                push = Push(args.push, args.push_contact, Notifier(stamp), stamp)
+            except (OSError, ValueError, sqlite3.Error) as e:
+                stamp('push: OFF, %s' % e)
+        crowd = Crowd(relay, stamp, args.crowd_origin, push)
         await asyncio.start_server(crowd.handle, h or '127.0.0.1', int(p), limit=16384)
         stamp('the crowd: WebSocket %s (origins: %s)' % (args.crowd, ', '.join(args.crowd_origin) or 'any'))
     if args.lag or args.jitter or args.loss:
@@ -1317,6 +1905,11 @@ async def main():
         k += 1
         if k % 43200 == 0 and relay.player_stats is not None:   # once a day (k counts 2 s steps)
             relay.player_stats.purge()
+        if k % 43200 == 0 and crowd is not None and crowd.push is not None:
+            try:                                   # (devices not seen for a year; never the relay down for it)
+                crowd.push.purge()
+            except sqlite3.Error as e:
+                stamp('push: %s' % e)
         if k % 15 == 0 and relay.by_addr:
             stamp('%d online, forwarded %d, dropped %d%s' % (len(relay.by_addr), relay.stats['forwarded'], relay.stats['dropped'],
                                                           ', %d fans' % len(crowd.fans) if crowd is not None and crowd.fans else ''))

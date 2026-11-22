@@ -49,6 +49,12 @@ inline bool grappleGauntlet(int k) { return k >= 4 && k < kGauntletStyles; }
 // SUIT 18 PELURU LAYERED DRESS (PR #30): its skirt takes the LOWER BODY's place, and it has hoop earrings (av_top_18e)
 constexpr int kSuitDress = 18;
 void setNation(AvatarDesc& d, int n);
+// the builder's COUNTRY order (0.3.23; the owner, 2026-11-20: "reordered by frequently chosen and then
+// alphabetically ... if it's the first time chosen there isn't a frequent chosen"): the countries this player has
+// chosen, the most often first (equal counts A-Z), then the rest A-Z by name, a leading "THE " left out (THE GALAXY
+// under G). picks[n] is how often country n was chosen (n = 1..nationCount(); picks[0] unused); every country number
+// comes back once. Nothing chosen yet: all of them A-Z. The country numbers themselves stay as they are (append-only)
+std::vector<int> nationOrder(const int* picks);
 // COUNTRY KIT (0.3.22; the owner, 2026-11-18): with a country, TEAM JERSEY (as before, and the default) wears the team
 // kit below; MY OUTFIT keeps your own suit, pattern and lower body and puts the country on them: its colours and its
 // two prints. It rides in PATTERN's top bit, only with a country (sanitize clears it without one). Builds before 0.3.22

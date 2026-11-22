@@ -999,45 +999,97 @@ void Renderer::drawPanel(const Mat4& model, const float rgba[4]) {
     draw(quad, model, dp, 1);
 }
 
-void Renderer::drawText(const std::string& s, const Pose& pose, float height, const float rgba[4]) {
-    // Each glyph is one textured quad; string is centred on `pose` (quad faces pose +Z).
-    float cw = height * 6.f / 8.f;
-    float total = cw * s.size();
-    quad.mats[0].shader = SH_UNLIT;
-    quad.mats[0].diffuse = g_fontTex;
+void Renderer::drawPanelSolid(const Mat4& model, const float rgb[3]) {
+    const float rgba[4] = {rgb[0], rgb[1], rgb[2], 1.f};
+    setColor(quad, rgba, false);
     quad.mats[0].flags = MAT_TWOSIDED;
-    std::memcpy(quad.mats[0].tint, rgba, 16);
+    DrawParams dp;
+    dp.forceShader = SH_UNLIT;
+    draw(quad, model, dp, 0);
+}
+
+void Renderer::drawText(const std::string& s, const Pose& pose, float height, const float rgba[4]) {
+    // The string centred on `pose` (it faces pose +Z), each glyph a quad cw x height of the font atlas (59 cells, 6 px
+    // wide). A line's glyphs go in one draw (2026-11-21: they were a draw each, about 300 for the main menu alone, and
+    // the start screen was over its frame budget; the same quads, the same pixels). Spaces are left out (empty cells).
+    const float cw = height * 6.f / 8.f;
+    const float total = cw * s.size();
+    struct V { float p[3], nrm[3], uv0[2], uv1[2]; uint8_t c[4]; };
+    static const int kMaxGlyphs = 128;
+    if (!textVao_) {
+        glGenVertexArrays(1, &textVao_);
+        glGenBuffers(1, &textVbo_);
+        glGenBuffers(1, &textIbo_);
+        glBindVertexArray(textVao_);
+        glBindBuffer(GL_ARRAY_BUFFER, textVbo_);
+        glBufferData(GL_ARRAY_BUFFER, kMaxGlyphs * 4 * sizeof(V), nullptr, GL_STREAM_DRAW);
+        std::vector<uint16_t> idx(kMaxGlyphs * 6);
+        for (int g = 0; g < kMaxGlyphs; ++g) {
+            const uint16_t b = (uint16_t)(g * 4);
+            const uint16_t q[6] = {b, (uint16_t)(b + 1), (uint16_t)(b + 2), b, (uint16_t)(b + 2), (uint16_t)(b + 3)};
+            std::memcpy(&idx[g * 6], q, sizeof q);
+        }
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, textIbo_);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size() * 2, idx.data(), GL_STATIC_DRAW);
+        const GLsizei st = sizeof(V);
+        glEnableVertexAttribArray(0); glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, st, (void*)0);
+        glEnableVertexAttribArray(1); glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, st, (void*)12);
+        glEnableVertexAttribArray(2); glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, st, (void*)24);
+        glEnableVertexAttribArray(3); glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, st, (void*)32);
+        glEnableVertexAttribArray(4); glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_TRUE, st, (void*)40);
+        glBindVertexArray(0);
+    }
+    static V buf[kMaxGlyphs * 4];
+    const Mat4 mm = Mat4::fromPose(pose);
+    const Mat4 mvp = viewProj_ * mm;
+    glUniformMatrix4fv(uMVP_, 1, GL_FALSE, mvp.m);
+    glUniformMatrix4fv(uModel_, 1, GL_FALSE, mm.m);
+    glUniform1i(uShader_, SH_UNLIT);
+    glUniform4fv(uTint_, 1, rgba);
+    const float zero[4] = {0, 0, 0, 0};
+    glUniform4fv(uEmissive_, 1, zero);
+    glUniform1i(uUV_, 0);
+    glUniform1i(uHasDiffuse_, 1);
+    glUniform1i(uHasMask_, 0);
+    glUniform4f(g_uUVRect, 1, 1, 0, 0);   // (each vertex has its glyph's own place in the atlas)
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, g_fontTex);
     glEnable(GL_BLEND);
+    blendAlpha();
+    glDisable(GL_CULL_FACE);
+    glDepthMask(GL_FALSE);
+    glBindVertexArray(textVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, textVbo_);
+    int n = 0;
+    auto flush = [&]() {
+        if (!n) return;
+        glBufferData(GL_ARRAY_BUFFER, kMaxGlyphs * 4 * sizeof(V), nullptr, GL_STREAM_DRAW);   // (a fresh buffer: no wait)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, n * 4 * sizeof(V), buf);
+        glDrawElements(GL_TRIANGLES, n * 6, GL_UNSIGNED_SHORT, nullptr);
+        n = 0;
+    };
     for (size_t i = 0; i < s.size(); ++i) {
         char c = s[i];
         if (c >= 'a' && c <= 'z') c -= 32;
+        if (c == ' ') continue;
         const bool under = c == '_';   // no '_' cell in the atlas: the dash, dropped to the baseline
-        int g = under ? '-' - 32 : (c >= 32 && c <= 'Z') ? c - 32 : 0;
-        glUniform4f(g_uUVRect, 6.f / (59 * 6), 1.f, (g * 6.f) / (59 * 6), 0.f);
-        Vec3 off{-total * 0.5f + cw * (i + 0.5f), under ? -height * 0.42f : 0.f, 0};
-        Pose p{pose.q, pose.transform(off)};
-        Mat4 mm = Mat4::fromPose(p, {cw, height, 1});
-        DrawParams dp;
-        dp.alphaMul = 0.999f;   // route through the blended pass state
-        Mat4 mvp = viewProj_ * mm;
-        glUniformMatrix4fv(uMVP_, 1, GL_FALSE, mvp.m);
-        glUniformMatrix4fv(uModel_, 1, GL_FALSE, mm.m);
-        glUniform1i(uShader_, SH_UNLIT);
-        glUniform4fv(uTint_, 1, rgba);
-        float zero[4] = {0, 0, 0, 0};
-        glUniform4fv(uEmissive_, 1, zero);
-        glUniform1i(uUV_, 0);
-        glUniform1i(uHasDiffuse_, 1);
-        glUniform1i(uHasMask_, 0);
-        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, g_fontTex);
-        blendAlpha();
-        glDisable(GL_CULL_FACE);
-        glDepthMask(GL_FALSE);
-        glBindVertexArray(quad.vao);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+        const int g = under ? '-' - 32 : (c >= 32 && c <= 'Z') ? c - 32 : 0;
+        const float x = -total * 0.5f + cw * (i + 0.5f), y = under ? -height * 0.42f : 0.f;
+        const float u0 = g / 59.f, u1 = (g + 1) / 59.f;
+        // (the unit quad's corners and texture coordinates: (-0.5, -0.5) at the atlas's bottom, v 1; top v 0)
+        const float cx[4] = {-0.5f, 0.5f, 0.5f, -0.5f}, cy[4] = {-0.5f, -0.5f, 0.5f, 0.5f};
+        const float cu[4] = {u0, u1, u1, u0}, cv[4] = {1, 1, 0, 0};
+        for (int k = 0; k < 4; ++k) {
+            V& v = buf[n * 4 + k];
+            v.p[0] = x + cx[k] * cw; v.p[1] = y + cy[k] * height; v.p[2] = 0;
+            v.nrm[0] = 0; v.nrm[1] = 0; v.nrm[2] = 1;
+            v.uv0[0] = cu[k]; v.uv0[1] = cv[k];
+            v.uv1[0] = v.uv1[1] = 0;
+            v.c[0] = v.c[1] = v.c[2] = v.c[3] = 255;
+        }
+        if (++n == kMaxGlyphs) flush();
     }
+    flush();
     glBindVertexArray(0);
-    glUniform4f(g_uUVRect, 1, 1, 0, 0);
     quad.mats[0].diffuse = 0;
     glDepthMask(GL_TRUE);
 }

@@ -46,6 +46,21 @@ class Host:
             body += struct.pack('<8H', 20, 12, 3, 5, 9, 1, 2, 2500) + struct.pack('<8H', 18, 9, 1, 4, 11, 0, 1, 2010) + bytes([2, 0])
         self.raw(R.LIVE, body)
 
+    def live4(self):
+        """a four-player FOUR CORNERS 2 v 2 match (games from 0.3.23): the 82 bytes, then the four players' block"""
+        body = struct.pack('<7B', 2, 5, 3, 0, 0, 0, 0) + bytes([26, 179, 255, 255, 106, 26]) + struct.pack('<BH', 0, 900)
+        body += b'ANNA'.ljust(16, bytes(1)) + b'BEN'.ljust(16, bytes(1))
+        body += struct.pack('<8H', 10, 6, 2, 3, 5, 1, 0, 2000) + struct.pack('<8H', 8, 4, 1, 2, 6, 0, 0, 1800) + bytes([1, 0])
+        body += bytes([4, 2, 1, 0])   # four players, FOUR CORNERS, 2 v 2, THE ONE
+        cols = [(26, 179, 255), (255, 106, 26), (64, 242, 89), (191, 102, 255)]
+        for k in range(4):   # colour, team, points, health, out
+            body += bytes(cols[k]) + bytes([k // 2]) + struct.pack('<h', 3 - k) + bytes([10, 1 if k == 3 else 0])
+        body += bytes([185, 61, 0, 12])
+        body += b'CARA'.ljust(16, bytes(1)) + struct.pack('<8H', 7, 3, 1, 1, 4, 2, 0, 1500)
+        body += b'DEV'.ljust(16, bytes(1)) + struct.pack('<8H', 5, 2, 0, 0, 3, 0, 0, 1200)
+        assert len(body) == 186
+        self.raw(R.LIVE, body)
+
     def crowd(self, wait=1.5):
         """the latest CROWD within `wait` seconds"""
         end, got = time.time() + wait, None
@@ -207,7 +222,7 @@ async def run():
               'at most %d connections from one address' % R.CROWD_PER_ADDR)
         big = Phone(xff='198.51.100.30')
         big.recv()
-        big.send({'t': 'cheer', 'pad': 'x' * 600})
+        big.send({'t': 'cheer', 'pad': 'x' * 2100})
         check(big.until(lambda m: False, 1.0) == 'closed', 'an oversized message closes the connection')
         check(not any('203.0.113' in l or '198.51.100' in l for l in logs), 'no phone address is ever logged')
         # a second host: the old match is not resurrected under the same id
@@ -240,6 +255,24 @@ async def run():
         time.sleep(0.1)
         lst = p2.until(lambda m: m.get('t') == 'list' and any(x['host'] == 'OLDHOST' and 'old' not in x for x in m['m']))
         check(lst and lst != 'closed', 'once a host sends LIVE, its beacon no longer overrides it')
+        # four players (games from 0.3.23): FOUR CORNERS 2 v 2, everyone's name, colour, team, points and counts
+        four = Host('CORNERS')
+        four.hello()
+        four.live4()
+        lst = p2.until(lambda m: m.get('t') == 'list' and any(x['host'] == 'CORNERS' for x in m['m']))
+        f = next((x for x in lst['m'] if x['host'] == 'CORNERS'), None) if lst and lst != 'closed' else None
+        check(f is not None and f.get('np') == 4 and f.get('room') == 2 and f.get('tm') == 1 and len(f['p']) == 4
+              and [q['n'] for q in f['p']] == ['ANNA', 'BEN', 'CARA', 'DEV'] and f['s'][:2] == [5, 3],
+              'a four-player match: its room, teams, the four names and the teams\' scores reach the phone')
+        check(f is not None and [q['team'] for q in f['p']] == [0, 0, 1, 1] and [q['pts'] for q in f['p']] == [3, 2, 1, 0]
+              and f['p'][2]['c'] == '#40f259' and f['p'][3]['nat'] == 12 and f['p'][3]['out'] and not f['p'][0]['out'],
+              '... each player\'s team, points, colour, country and whether they are out')
+        check(f is not None and f['p'][0]['m']['throws'] == 10 and f['p'][2]['m']['throws'] == 7
+              and f['p'][3]['m']['top'] == round(1200 * 0.036) and f['p'][2]['m']['catches'] == 2,
+              '... and all four players\' counts for this match')
+        o = next((x for x in lst['m'] if x['host'] == 'OLDHOST'), None) if lst and lst != 'closed' else None
+        check(o is not None and 'np' not in o and len(o['p']) == 2, 'a two-player match stays as it was')
+        four.raw(R.BYE)
         old.raw(R.BYE)
         guest.raw(R.BYE)
         # a host that stops sending LIVE disappears from the list after 5 s

@@ -1,6 +1,6 @@
 # Project Arena privacy policy
 
-_Last updated: 6 November 2026. Contact: vrsportsfan@gmail.com._
+_Last updated: 21 November 2026. Contact: vrsportsfan@gmail.com._
 
 Project Arena is a free, open-source VR game. This policy explains what the game and the community servers do with
 information about you.
@@ -12,7 +12,9 @@ server. Contact: vrsportsfan@gmail.com.
 
 The game keeps these in its own folder on your headset or PC (`%APPDATA%\ProjectArena` on PC):
 - your player name;
-- your avatar choices;
+- your avatar choices (from version 0.3.24 also up to three saved looks, and how often you chose each country, so
+  your countries come first in the list);
+- the players you muted (from version 0.3.24: their names, and the server's code for each; see Player reports);
 - your settings and camera positions;
 - a diagnostic log;
 - a private random player key (made once; it is what your statistics are kept under, below);
@@ -69,7 +71,15 @@ who run the official server see reports and addresses; the reported player is no
 are used to keep the game safe (warnings and bans) and are kept for up to 12 months. Banned addresses and names are
 kept on the server while the ban lasts.
 
-**MUTE** on the same page silences one player's voice for you only, until you quit the game. Nothing is sent.
+**MUTE** on the same page silences one player's voice for you only. Until version 0.3.22 it lasted until you quit
+the game. From version 0.3.24 the game keeps it on your device (that player's name, and the community server's code
+for them when there is one), so they stay muted whenever you meet them again, until you unmute them (SETTINGS >
+VOICE AND MUTES > MUTED PLAYERS). The code is worked out by the server, when your game asks, from your private
+player key and theirs (as the salted hashes the server keeps, below): the same person keeps the same code when they
+change their name, every player who asks gets a different code for them, and it says nothing about anyone's key.
+It gives a code only for someone you are playing or watching with: to know that, it remembers, in memory while you
+are connected, whose games yours exchanged game packets with in the last 10 minutes.
+The server keeps nothing of it, and nothing about who you muted is sent.
 
 ## What other players see
 
@@ -138,17 +148,38 @@ for each sound you voted on: your vote and when you last changed it.
 
 When you host an **online** arena, the official server shows your match on The Crowd, a public web page
 (crowd.aftersparc.com) where anyone can follow live matches and cheer:
-- what it shows: the host's player name, the two tank players' names, their countries (COUNTRY FLAG) or end colours,
-  the score, the rules and the clock;
+- what it shows: the host's player name, the players' names (the two in the tank; from version 0.3.24 all four in
+  FOUR CORNERS and FIREBALL BLITZ), their countries (COUNTRY FLAG) or colours, the score (FIREBALL BLITZ: each
+  player's health), this match's statistics, the rules and the clock, and in a one-on-one match the two players'
+  career statistics (public in the game already);
 - it is **live only**: nothing about the match is stored for the page, and a match leaves the page when its arena
   closes;
-- the fans' cheers, waved flags and how many fans watch come back to the arena (a crowd sound, the lights at the
-  ends, the screen over the court). They are counts only: nobody in the arena sees who the fans are.
+- fans who turned on The Crowd's **notifications** (below) may get one on their phone or computer when you host an
+  online arena, or when a match you play in starts: it names the host, or the players and the mode. Fans can't pick a
+  player to follow, and nothing about you is kept on the server for it; the notification stays on the fan's device
+  like any other until they clear it;
+- the fans' cheers, waved flags and how many fans watch come back to the arena (flags, the lights at the ends, the
+  screen over the court). They are counts only: nobody in the arena sees who the fans are.
 
 **Fans on The Crowd** use it anonymously: no sign-in, no name, no account. The server keeps a fan's connection in
 memory only while the page is open, and uses the phone's IP address only to limit how many connections one address
-can open; it is not written to any log or file. The web server keeps no access log. The fan score ("call it") is
+can open (and how many devices one address can turn notifications on for in a day); it is not written to any log or
+file. The web server keeps no access log. The fan score ("call it") is
 kept on the phone only. The page sets no cookies and uses no analytics or advertising.
+
+**Notifications on The Crowd (only when you turn them on).** The bell at the top of the page lets a fan get a
+notification on their phone or computer when people are playing: when someone hosts an arena or a match starts, or
+only when a match starts. There is no following a particular player. When you turn it on, your browser makes an
+anonymous push address for this device (a web address at your browser maker's push service, such as Google, Apple,
+Mozilla or Microsoft, with two keys), and the official server keeps it with your choices: what to be told about, how
+often at most, your quiet hours (on to start, 10 PM to 8 AM) and your time zone offset (so quiet hours work), when it
+last notified you, when you last opened the page, and whether the push service has refused it lately. Nothing else:
+no name, account, email or phone number, and no IP address. The notification's text is encrypted so the push service
+can't read it; it says who is hosting or playing. It is deleted when you turn notifications off (the bell, or **Turn
+off notifications**), when the push service says the address is no longer used (or refuses it three times in a
+row), or a year after you last opened The Crowd. It is not in the server's backups (only the server's own signing key
+is; your page registers your device again when you open it). Your choices are also kept on your phone (browser
+storage).
 
 ## Community servers
 
@@ -198,6 +229,12 @@ would; on Quest it opens the store page or the GitHub page in the headset's brow
 - Players never see each other's internet addresses; the server forwards packets only between connected games.
 - Statistics are kept under a scrambled form of your game's player key (a salted hash), never the key itself, and
   only the server's own account can read the table. A match counts only when both players' games agree on it.
+- From 20 November 2026 the server's data (statistics, leaderboards, SOUND STUDIO votes, reports) is copied once a
+  day to the server operator's own computer, encrypted so only the operator's account there can open it, so it can
+  be restored if the server fails. The newest 14 copies are kept, so something you delete is gone from the copies
+  within 14 days. So that restoring a copy can't bring back statistics you deleted, the server keeps a note that a
+  deletion happened (only its time and the scrambled form of your key: no name, nothing else) for 30 days, and applies
+  it again whenever it starts. What you earn after deleting is kept.
 - Voice and passthrough images are never stored.
 - Data travels unencrypted between the game and the server (like most small game servers). It holds nothing secret:
   your player name and game statistics are public in the game anyway, and there are no passwords, emails or payments.

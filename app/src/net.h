@@ -55,6 +55,11 @@ struct RoomInfo {
     struct Name { uint32_t id = 0; char name[17] = {}; };
     std::vector<Name> names;
     const char* nameOf(uint32_t id) const { for (const Name& n : names) if (n.id == id) return n.name; return nullptr; }
+    // online, hosts from 0.3.24 (MUTED PLAYERS): each person's virtual address on the community server (the relay's
+    // own numbers, 10.x: no one's internet address), after the names. A guest and a spectator hear only the host
+    // directly, so without them they could ask the server for the host's code alone (review 2026-11-21)
+    struct Addr { uint32_t id = 0, vip = 0; };
+    std::vector<Addr> addrs;
 };
 
 // The Crowd: fans following an online match on their phones (the crowd web app, through the relay). Cheers in the
@@ -170,9 +175,16 @@ public:
         uint8_t state = 0, score[4] = {0, 0, 0, 0}, nation[2] = {0, 0}, rgb[2][3] = {}, flags = 0;   // flags: 1 advanced, 2 bot
         float clock = 0;
         char name[2][17] = {};
-        MatchStats st[2];             // this match so far (for the fans' stats table)
+        MatchStats st[kMaxPlayers];   // this match so far (for the fans' stats table; four players: all four)
         uint8_t round = 0, overtime = 0;
         // the flags byte also says: 4 HOTDOG (no shields), 8 free play, 16 knuckle guards on, 32 a round timer
+        // FOUR PLAYERS (0.3.23: FOUR CORNERS and FIREBALL BLITZ on The Crowd's page): np 4, the room (2 FOUR CORNERS,
+        // 3 FIREBALL BLITZ), its teams, and each player's name, country, colour, team, points, health and whether out
+        uint8_t np = 2, room = 0, teamMode = 0, theOne = 0;
+        char name4[kMaxPlayers][17] = {};
+        uint8_t nation4[kMaxPlayers] = {}, rgb4[kMaxPlayers][3] = {}, team4[kMaxPlayers] = {}, health4[kMaxPlayers] = {};
+        uint8_t out4[kMaxPlayers] = {};
+        int16_t points4[kMaxPlayers] = {};
     };
     void setLive(const LiveInfo& li) { live_ = li; liveSet_ = true; }
     // the fans of our room's match (host / client), or of the match at hostIp (spectator); null: none lately
@@ -244,13 +256,20 @@ public:
     uint32_t hostSession() const { return mode_ == Mode::Host ? session_ : mode_ == Mode::Client ? peerSession_ : 0; }
     int kickVotesNeeded() const;      // host: how many votes remove someone now (0 = too few people to vote)
     std::vector<Person> peopleHere() const;
+    // MUTED PLAYERS (0.3.23): the community server's code for a person (by session id, as Person.id and a voice
+    // frame's speaker), made for this player only (MUTECODE): the same person keeps it under a new name and address,
+    // and nobody else's game gets the same one. 0: not known (yet), at home (no server), an older server, or either
+    // player without a statistics key. askMuteCodes asks the server for the ones not known (each at most every 5 s)
+    uint64_t muteCode(uint32_t session) const;
+    void askMuteCodes(const std::vector<uint32_t>& sessions);
     std::string hereName() const;     // that room's name (its host's name; empty: none)
     bool peerConnected() const { return peerSeen_ > 0 && (now_ - peerSeen_) < 3.0; }
     Mode mode() const { return mode_; }
     const char* status() const;
     void sendState(const Game& g);    // host: the post-step snapshot to every member and spectator
     static size_t snapshotBytes(const Game& g);   // a STATE packet's size with a full event log (tests: the relay's 1200)
-    static bool snapshotInto(const Game& g, Game& into);   // g's STATE read into another game, as a spectator's (tests)
+    // g's STATE read into another game, as a spectator's (tests); cut: bytes left off its end (an older host's snapshot)
+    static bool snapshotInto(const Game& g, Game& into, size_t cut = 0);
     struct SentEvent { uint32_t id; double t; GameEvent e; };
 
 private:
@@ -290,6 +309,10 @@ private:
     bool heirBeacon(uint32_t id, uint32_t ip, double since) const;   // that heir hosts a room we heard since then
     void closeRoom();
     std::vector<Heir> heirs_;             // client: who hosts next, in order
+    std::map<uint32_t, uint32_t> addrOf_;     // online: each session's virtual address (from its packets; MUTECODE)
+    std::map<uint32_t, uint64_t> muteCodes_;  // MUTECODE's answers, by virtual address
+    std::map<uint32_t, double> muteAsked_;    // when each virtual address was last asked
+    void learnAddrs(const RoomInfo& ri);      // addrOf_ from a host's ROOM (its people's virtual addresses, 0.3.24)
     uint8_t heirFlags_ = 0;               // 1 bot fills in, 2 private talk, 4 THE ONE takes turns, 8 THE ONE fixed
     char heirRoom_[17] = {};              // the room's name
     size_t heirAt_ = 0;

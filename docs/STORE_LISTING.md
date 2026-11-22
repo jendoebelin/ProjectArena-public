@@ -50,6 +50,11 @@ Submit for Review until the public launch (ROADMAP 4c).
   > - Voice chat: push-to-talk or open mic, with mutes for spectators, players or one person.
   > - Make it yours: body types, outfits and full sets made with the community, hair, headgear, masks, team colours and gauntlets.
   > - Play for your country: a team kit or your own outfit in your flag's colours, over 200 to choose from.
+- **NEXT DESCRIPTION CHANGE** (the owner, 2026-11-20, with the block above approved and live that day: "fix it in the
+  next app submission that we make where we add something significantly different"): in the block above, the country
+  line becomes the one below (MY OUTFIT takes the country's team colours, not its flag's: the Netherlands in orange).
+  1,451 characters with it. Add to it anything that release adds, and count again:
+  > - Play for your country: a team kit or your own outfit in your country's colours, over 200 to choose from.
   > - Career statistics in MY STATS. Delete them any time.
   > - Free and open source: no ads, no accounts, no tracking.
 

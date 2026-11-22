@@ -284,6 +284,23 @@ int main() {
               "a spectator at the arena sees the room's names");
         CHECK(H.net.hereName() == "HOST" && ns[2]->net.hereName() == "HOST", "everyone knows the room's name");
     }
+    std::printf("[MUTED PLAYERS: a code for everyone here (0.3.24)]\n");
+    {   // (review 2026-11-21: a guest hears only from the host, so it could ask the server for the host's code alone; the
+        // host's ROOM now says whose virtual address is whose)
+        Node& A = *ns[2];   // TWO, waiting
+        Node& B = *ns[3];   // THREE, waiting
+        uint8_t kA[16], kB[16], kS[16];
+        std::memset(kA, 0x33, 16); std::memset(kB, 0x44, 16); std::memset(kS, 0x55, 16);
+        A.net.setStatsKey(kA); B.net.setStatsKey(kB); S.net.setStatsKey(kS);
+        pump(ns, 0.8);   // (the keys reach the relay; the host's ROOM carries everyone's address)
+        A.net.askMuteCodes({B.net.session(), ns[1]->net.session(), S.net.session(), H.net.session()});
+        S.net.askMuteCodes({B.net.session()});
+        pump(ns, 0.8);
+        const uint64_t ab = A.net.muteCode(B.net.session()), a1 = A.net.muteCode(ns[1]->net.session());
+        const uint64_t as = A.net.muteCode(S.net.session()), ah = A.net.muteCode(H.net.session()), sb = S.net.muteCode(B.net.session());
+        CHECK(ab && a1 && as && ah, "a waiting player gets the server's code for another waiting player, a tank player, the spectator and the host");
+        CHECK(sb && sb != ab, "a spectator at the arena gets one too, its own (another game's code for the same person differs)");
+    }
     std::printf("[rotation]\n");
     H.game.match = MatchState::MatchSummary;   // the match ends
     pump(ns, 7.5);
@@ -615,6 +632,151 @@ int main() {
                     home &= length(seen.tun.start[p] - diamond.tun.start[p]) < 1e-3f && length(seen.tun.spawner[p] - diamond.tun.spawner[p]) < 1e-3f;
                 CHECK(home, "a watched match from FIREBALL BLITZ to DIAMOND: the players' places are the room's own again");
             }
+            {   // BALL LOOK-AHEAD with four players (0.3.24): FOUR CORNERS hosts send the balls' spin, bounces and fouls
+                // and their clock after the last byte older builds read; a player not hosting flies the balls on from it
+                Game host; host.tun.experimental = true; host.tun.expRoom = ROOM_CORNERS; host.tun.players = 4;
+                host.useArena(ARENA_FOURCORNERS, {}); host.resetWithBots(0);
+                host.now = 12.5f;
+                for (int p = 0; p < 4; ++p) {   // (everyone standing in their corner, facing the middle, the hands down)
+                    PlayerInput& in = host.pl[p].in;
+                    const Vec3 f = host.facing(p);
+                    const Quat face = Quat::axisAngle({0, 1, 0}, std::atan2(-f.x, -f.z));
+                    in.headTracked = true;
+                    in.head = {face, host.tun.start[p] + Vec3{0, 1.65f, 0}};
+                    for (int h = 0; h < 2; ++h) {
+                        in.hand[h].tracked = true;
+                        in.hand[h].trigger = 0;
+                        in.hand[h].grip = {face, host.tun.start[p] + Vec3{0, 0.9f, 0} + face.rotate({h == 0 ? -0.25f : 0.25f, 0, 0})};
+                    }
+                }
+                const Vec3 mine = host.tun.start[1], other = host.tun.start[3];
+                auto shoot = [&](Game& g, const Vec3& from) {   // ball 2 flying at corner 1 from `from`, 10 m/s, curving
+                    Ball& b = g.pl[2].ball;
+                    b.state = BallState::Flying; b.instigator = 2; b.heldHand = -1; b.scale = 1.f;
+                    b.pos = from;
+                    const Vec3 to = mine + Vec3{0, 1.5f, 0} - from;
+                    b.vel = normalize(Vec3{to.x, 0, to.z}) * 10.f;
+                    b.spin = {0, 3.f, 0}; b.bounces = 2; b.fouled = true; b.homing = false;
+                };
+                shoot(host, {0, 1.5f, 0});
+                Game seen, old;
+                const bool read = Net::snapshotInto(host, seen) && seen.np == 4;
+                const Ball& sb = seen.pl[2].ball;
+                CHECK(read && std::fabs(seen.ahead.snapNow - 12.5f) < 1e-3f && std::fabs(sb.spin.y - 3.f) < 0.01f && sb.bounces == 2 && sb.fouled,
+                      "four players: the snapshot carries each ball's spin, bounces and foul, and the host's clock (0.3.24)");
+                CHECK(Net::snapshotInto(host, old, 4 * 7 + 4) && old.np == 4 && old.ahead.snapNow < 0 && old.pl[2].ball.spin.y == 0.f &&
+                      old.tun.palmHold == seen.tun.palmHold, "... a host before 0.3.24 sends none: everything else read as before");
+                host.tun.expRoom = ROOM_BLITZ;
+                Game blitz;
+                CHECK(Net::snapshotInto(host, blitz) && blitz.pl[2].ball.spin.y == 0.f && blitz.ahead.fireKnown,
+                      "... not in FIREBALL BLITZ, whose balls never fly (its fireballs have their own, below)");
+                host.tun.expRoom = ROOM_CORNERS;
+                const size_t four = Net::snapshotBytes(host);
+                char m4[112];
+                std::snprintf(m4, sizeof m4, "... a four-player snapshot with it and a full event log fits the relay (%d of 1200 bytes)", (int)four);
+                CHECK(four <= 1200, m4);
+                const float lead = 0.2f, dt = 1.f / 72;
+                const Vec3 at = sb.pos;
+                seen.lookAhead(1, lead, dt);
+                const float flown = length(seen.pl[2].ball.pos - at);
+                old.lookAhead(1, lead, dt);
+                const float oldFlown = length(old.pl[2].ball.pos - at);
+                char m5[128];
+                std::snprintf(m5, sizeof m5, "... a ball from the middle at my corner is drawn ahead (%.2f m of %.2f); from an older host, as sent (%.2f)",
+                              flown, 10.f * lead, oldFlown);
+                CHECK(flown > 0.8f && flown < 2.1f && oldFlown < 1e-4f, m5);
+                Game beside;   // (the same ball beside another corner: what that player does with it is drawn where it happens)
+                shoot(host, other + host.facing(3) * 0.8f + Vec3{0, 1.5f, 0});
+                Net::snapshotInto(host, beside);
+                const Vec3 nearAt = beside.pl[2].ball.pos;
+                beside.lookAhead(1, lead, dt);
+                const float nearFlown = length(beside.pl[2].ball.pos - nearAt);
+                char m6[112];
+                std::snprintf(m6, sizeof m6, "... beside another player's corner, hardly ahead at all (%.2f m)", nearFlown);
+                CHECK(nearFlown < flown / 3.f, m6);
+            }
+            {   // BALL LOOK-AHEAD in FIREBALL BLITZ (0.3.24): its hosts send each flying fireball's spin and bounces and
+                // their clock; a player not hosting flies the fireballs on, and one at its last bounce goes out on time
+                Game host; host.tun.experimental = true; host.tun.expRoom = ROOM_BLITZ; host.tun.players = 4;
+                host.useArena(ARENA_OCTAGON, {}); host.resetWithBots(0);
+                host.startMask = 0xF; host.ringMask = 0xF; host.layoutRing(0xF);
+                for (int p = 0; p < 4; ++p) {
+                    host.pl[p].health = 3;
+                    PlayerInput& in = host.pl[p].in;
+                    const Vec3 f = host.facing(p);
+                    const Quat face = Quat::axisAngle({0, 1, 0}, std::atan2(-f.x, -f.z));
+                    in.headTracked = true;
+                    in.head = {face, host.tun.start[p] + Vec3{0, 1.65f, 0}};
+                    for (int h = 0; h < 2; ++h) {
+                        in.hand[h].tracked = true;
+                        in.hand[h].trigger = 0;
+                        in.hand[h].grip = {face, host.tun.start[p] + Vec3{0, 0.9f, 0} + face.rotate({h == 0 ? -0.25f : 0.25f, 0, 0})};
+                    }
+                }
+                host.now = 31.25f;
+                auto fireAt = [&](const Vec3& from, float vy, int bounces) {   // fireball 2/0 at place 1, 10 m/s, curving
+                    Ball& f = host.fire[2][0];
+                    f.state = BallState::Flying; f.instigator = 2; f.heldHand = -1; f.scale = 1.f; f.timer = 0;
+                    f.pos = from;
+                    const Vec3 to = host.tun.start[1] - from;
+                    f.vel = normalize(Vec3{to.x, 0, to.z}) * 10.f;
+                    f.vel.y = vy;
+                    f.speedLimit = 10.f;
+                    f.spin = {0, 2.f, 0}; f.bounces = bounces;
+                };
+                auto guest = [&](Game& g, size_t cut) {   // (a guest's game is in the octagon before the snapshot comes)
+                    g.tun.experimental = true; g.tun.expRoom = ROOM_BLITZ; g.tun.players = 4;
+                    g.useArena(ARENA_OCTAGON, {});
+                    return Net::snapshotInto(host, g, cut);
+                };
+                fireAt({0, 1.0f, 0}, 0.f, 1);
+                Game seen, old;
+                const bool read = guest(seen, 0);
+                const Ball& sf = seen.fire[2][0];
+                CHECK(read && seen.ahead.fireKnown && std::fabs(seen.ahead.snapNow - 31.25f) < 1e-3f && std::fabs(sf.spin.y - 2.f) < 0.01f &&
+                      sf.bounces == 1, "FIREBALL BLITZ: the snapshot carries each flying fireball's spin and bounces, and the host's clock (0.3.24)");
+                CHECK(guest(old, 2 + 4) && !old.ahead.fireKnown && old.fire[2][0].state == BallState::Flying && old.fire[2][0].spin.y == 0.f,
+                      "... a host before 0.3.24 sends none: the fireballs read as before");
+                const float lead = 0.2f, dt = 1.f / 72;
+                const Vec3 at = sf.pos;
+                seen.lookAhead(1, lead, dt);
+                const float flown = length(seen.fire[2][0].pos - at);
+                old.lookAhead(1, lead, dt);
+                const float oldFlown = length(old.fire[2][0].pos - at);
+                char m7[128];
+                std::snprintf(m7, sizeof m7, "... a fireball from the middle at my place is drawn ahead (%.2f m of %.2f); from an older host, as sent (%.2f)",
+                              flown, 10.f * lead, oldFlown);
+                CHECK(seen.fire[2][0].state == BallState::Flying && flown > 0.8f && flown < 2.1f && oldFlown < 1e-4f, m7);
+                fireAt({0, 0.3f, 0}, -3.f, host.tun.fireBounces - 1);   // (about to hit the floor: its last bounce)
+                Game last, more;
+                guest(last, 0);
+                last.lookAhead(1, lead, dt);
+                fireAt({0, 0.3f, 0}, -3.f, 0);
+                guest(more, 0);
+                more.lookAhead(1, lead, dt);
+                CHECK(last.fire[2][0].state != BallState::Flying && more.fire[2][0].state == BallState::Flying,
+                      "... one at its last bounce goes out where it lands, one with bounces left hops on");
+                host.fire[2][0].state = BallState::Dead;
+                for (auto& row : host.fire) for (Ball& f : row) { f.state = BallState::Flying; f.pos = {1, 1, 1}; f.instigator = 0; f.spin = {0, 30.f, 0}; f.bounces = 3; }
+                const size_t bytes = Net::snapshotBytes(host);
+                char m8[112];
+                std::snprintf(m8, sizeof m8, "... twelve fireballs with it and a full event log fit the relay (%d of 1200 bytes)", (int)bytes);
+                CHECK(bytes <= 1200, m8);
+                // (FIREBALL BLITZ in teams, 0.3.24: the teams the room plays, in a byte after the clock; an older host's
+                // TEAMS byte, which it sends for every room, never made FIREBALL BLITZ play in teams)
+                host.tun.teamMode = TEAMS_3V1; host.tun.theOne = 2;
+                Game t3, older;
+                const bool t3read = guest(t3, 0);
+                CHECK(t3read && t3.tun.blitzTeams && t3.teamsNow() == TEAMS_3V1 && t3.team(2) == 1 && t3.team(0) == 0 && t3.maxHealth(2) == 15,
+                      "FIREBALL BLITZ in teams: the guest plays the host's 3 v 1 (0.3.24)");
+                CHECK(guest(older, 1) && !older.tun.blitzTeams && older.teamsNow() == TEAMS_FFA && older.team(2) == 2,
+                      "... a host before 0.3.24 (its TEAMS set to 3 v 1 for FOUR CORNERS): everyone for themselves, as it played");
+                host.tun.matchVersion = Tunables::kVerBlitzTeams - 1;   // (an older player in the room)
+                Game fair;
+                CHECK(guest(fair, 0) && fair.tun.blitzTeams && fair.teamsNow() == TEAMS_FFA,
+                      "... with an older player in the room: the host says everyone for themselves");
+                host.tun.matchVersion = Tunables::kVerAll; host.tun.teamMode = TEAMS_FFA;
+            }
             Q.game.tun.expRoom = ROOM_BLITZ;
             Q.game.useArena(ARENA_OCTAGON, {});
             for (int i = 1; i <= 3; ++i) { pump(fs, 0.3); fs[i]->game.useArena(fs[i]->game.tun.expRoom == ROOM_BLITZ ? ARENA_OCTAGON : ARENA_CLASSIC, {}); }
@@ -637,7 +799,18 @@ int main() {
             for (int i = 1; i <= 3; ++i) {
                 const Game& c = fs[i]->game;
                 same &= c.octagon() && c.pl[2].health == 3 && c.startMask == Q.game.startMask && c.fireCount(0) == Q.game.fireCount(0) && Q.game.fireCount(0) == 1;
-                same &= length(c.fire[0][0].pos - Q.game.fire[0][0].pos) < 1.0f && length(c.tun.start[1] - Q.game.tun.start[1]) < 1e-3f;
+                same &= length(c.tun.start[1] - Q.game.tun.start[1]) < 1e-3f;
+                // (the fireball where the host has it, or (BALL LOOK-AHEAD, 0.3.24) where it will within the lead, 0.4 s at
+                // most: drawn ahead for the one it flies at)
+                Game ah = Q.game;
+                float best = length(c.fire[0][0].pos - ah.fire[0][0].pos);
+                for (int s = 0; s < 36 && ah.fire[0][0].state == BallState::Flying; ++s) {
+                    PlayerInput in[kMaxPlayers];
+                    for (int p = 0; p < kMaxPlayers; ++p) in[p] = ah.pl[p].in;
+                    ah.step(1.f / 90.f, in);
+                    if (ah.fire[0][0].state == BallState::Flying) best = std::min(best, length(c.fire[0][0].pos - ah.fire[0][0].pos));
+                }
+                same &= best < 0.3f;
             }
             CHECK(Q.game.match == MatchState::InProgress && same, "FIREBALL BLITZ online: every visitor sees the health, the ring and the fireballs");
             // a match in a room for four ends: everyone back to the waiting area (owner, 2026-11-03), JOIN QUEUE again

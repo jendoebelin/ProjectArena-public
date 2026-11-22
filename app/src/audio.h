@@ -9,6 +9,8 @@
 #include <thread>
 #include <vector>
 #include "game.h"
+#include "flight_sound.h"
+#include "ima_adpcm.h"
 
 #ifdef __ANDROID__
 #include <aaudio/AAudio.h>
@@ -45,8 +47,38 @@ public:
     bool capturing() const { return capOn_; }
     int readCapture(int16_t* out, int max);   // 16 kHz samples captured since the last call
     void pushVoice(uint32_t speaker, const int16_t* pcm, int n, float gain, float pan);
+    // BALL IN FLIGHT (0.3.24, flight_sound.h): up to kFlights balls that can hurt you, heard as they fly; the game sets
+    // each one every frame (a gain of 0: silent). level: SETTINGS > VOICE AND MUTES > BALL SOUND (0 off)
+    static constexpr int kFlights = 4;
+    void setFlight(int slot, const FlightParams& f) {
+        if (slot < 0 || slot >= kFlights) return;
+        std::lock_guard<std::mutex> lk(mu_);
+        flights_[slot].want = f;
+    }
+    void setFlightLevel(float l) { flightLevel_ = l < 0 ? 0 : l > 1 ? 1 : l; }
+    // all of them silent (they fade out): when the game stops drawing frames (the headset's session not running), so a
+    // ball's last whoosh doesn't go on with no game to update it (review 2026-11-21)
+    void silenceFlights() {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (FlightSynth& f : flights_) f.want = FlightParams{};
+    }
+    // MUSIC (0.3.24; the owner, 2026-11-21: background music, on in the menu, off in the game unless chosen; "even lower"
+    // than the first try): an IMA ADPCM WAV asset (ima_adpcm.h; 24 or 48 kHz), read in the background, decoded a block at
+    // a time as it plays, looped at `level` while wanted and faded in and out over about a second; under voices as the
+    // crowd was (CROWD UNDER VOICES); 0: silent. The master volume on it as on everything
+    void loadMusic(const std::string& asset);
+    void setMusicLevel(float level) { musicWant_ = level < 0 ? 0 : level > 1 ? 1 : level; }
 
 private:
+    std::vector<uint8_t> musicFile_;          // the WAV, as read (musicWav_ points into it)
+    ima::Wav musicWav_;
+    std::atomic<bool> musicReady_{false};
+    std::atomic<float> musicWant_{0.f};
+    std::thread musicThread_;
+    float musicGain_ = 0;                     // (the mixer's own: its level now, and where it plays)
+    ima::Player musicPlay_;
+    FlightSynth flights_[kFlights];
+    std::atomic<float> flightLevel_{1.f};
     struct Clip { std::vector<float> samples; int channels = 1; };   // 48 kHz
     struct Voice { const Clip* clip; size_t pos; float gainL, gainR; bool loop; bool duck = false; };
     // CROWD UNDER VOICES (owner, 2026-11-10: the crowd drowned a conversation): while anyone else's voice plays, the

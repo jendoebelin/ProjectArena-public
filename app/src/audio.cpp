@@ -119,6 +119,23 @@ void Audio::mix(float* out, int frames) {
     }
     self->voices_.erase(std::remove_if(self->voices_.begin(), self->voices_.end(), [](const Voice& v) {
         return !v.loop && v.pos >= v.clip->samples.size() / v.clip->channels; }), self->voices_.end());
+    {   // BALL IN FLIGHT (0.3.24): the balls coming at you, as the game last set them (not under voices: you need it)
+        const float lvl = self->flightLevel_.load();
+        for (FlightSynth& f : self->flights_) f.render(out, frames, lvl);
+    }
+    if (self->musicReady_.load(std::memory_order_acquire)) {   // MUSIC: looped, gliding to its level, under voices
+        const float want = self->musicWant_.load();
+        float& g = self->musicGain_;
+        for (int32_t f = 0; f < frames && (want > 0.f || g > 0.f); ++f) {
+            g += (want - g) * 0.00005f;   // (about a second to its level)
+            if (want <= 0.f && g < 1e-4f) { g = 0.f; break; }
+            float l, r;
+            if (!self->musicPlay_.frame(l, r)) { self->musicReady_ = false; break; }   // (a broken file: no music)
+            const float k = g * self->duck_;
+            out[f * 2] += l * k;
+            out[f * 2 + 1] += r * k;
+        }
+    }
     // voice: each speaker resampled 16 -> 48 kHz (linear), after ~80 ms of buffering; re-buffers on underrun
     for (auto it = self->vq_.begin(); it != self->vq_.end();) {
         Audio::VoiceQ& v = it->second;
@@ -183,12 +200,35 @@ bool Audio::init() {
     return true;
 }
 
+// MUSIC: the asset read and checked in the background (8.7 MB for six minutes at 24 kHz stereo); played once ready
+void Audio::loadMusic(const std::string& asset) {
+    if (musicThread_.joinable() || musicReady_) return;
+    musicThread_ = std::thread([this, asset]() {
+        if (!assetRead(asset, musicFile_)) return;   // (a build without it: no music)
+        ima::Wav w;
+        if (!ima::parseWav(musicFile_.data(), musicFile_.size(), w) || (w.rate != 24000 && w.rate != 48000)) {
+            LOGW("music: %s is not IMA ADPCM at 24 or 48 kHz", asset.c_str());
+            musicFile_.clear();
+            return;
+        }
+        musicWav_ = w;
+        musicPlay_.start(musicWav_);
+        musicReady_.store(true, std::memory_order_release);
+        LOGI("music: %s, %.0f s", asset.c_str(), (double)(w.bytes / w.blockAlign) * w.spb / w.rate);
+    });
+}
+
 #ifdef __ANDROID__
 aaudio_data_callback_result_t Audio::cb(AAudioStream*, void* user, void* data, int32_t frames) {
     ((Audio*)user)->mix((float*)data, frames);
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
-void Audio::shutdown() { stopCapture(); if (stream_) { AAudioStream_requestStop(stream_); AAudioStream_close(stream_); stream_ = nullptr; } outOn_ = false; }
+void Audio::shutdown() {
+    stopCapture();
+    if (stream_) { AAudioStream_requestStop(stream_); AAudioStream_close(stream_); stream_ = nullptr; }
+    outOn_ = false;
+    if (musicThread_.joinable()) musicThread_.join();
+}
 void Audio::pause() { if (stream_) AAudioStream_requestPause(stream_); }
 void Audio::resume() { if (stream_) AAudioStream_requestStart(stream_); }
 #else
@@ -197,6 +237,7 @@ void Audio::shutdown() {
     stopOut_ = true;
     if (outThread_.joinable()) outThread_.join();
     outOn_ = false;
+    if (musicThread_.joinable()) musicThread_.join();
 }
 void Audio::pause() { paused_ = true; }
 void Audio::resume() { paused_ = false; }

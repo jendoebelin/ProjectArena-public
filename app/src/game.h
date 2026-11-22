@@ -128,6 +128,14 @@ struct Tunables {
     // then sudden death at 1 each). fireBalls: how many of your fireballs can be in the room at once (1, 2, 3; 4 =
     // RAPID FIRE: 3, and the tee refills at once). octPlayers: practice, how many play (2 to 4: you and bots)
     int health = 5, fireBalls = 3, octPlayers = 4;   // (BALLS: THREE by default: owner, 2026-11-02)
+    // FIREBALL BLITZ in teams (0.3.24; the owner, 2026-11-20: "I wanted to select 3 against 1 where I was the 1"): the
+    // room's TEAMS, as FOUR CORNERS has them (the same setting). A teammate's fireball passes through you as your own
+    // does (no friendly fire), 3 v 1's THE ONE starts with three times the HEALTH, and a team wins when the other team
+    // is all out (at time: the most health left between them). FAIR MATCHES: with a player before 0.3.24 in it, the room
+    // is everyone for themselves. A guest learns it from the host's snapshot (blitzTeams; an older host sends none)
+    static constexpr int kVerBlitzTeams = 3024;
+    bool blitzTeams = true;
+    bool blitzTeamsNow() const { return blitzTeams && matchVersion >= kVerBlitzTeams; }
     float fireGravity = 12.f, fireHop = 1.0f, fireMinSpeed = 5.f, fireLife = 5.f, ringWarn = 2.f;   // (hop: to the waist)
     int fireBounces = 4, rapidLimit = 3;
     // (only hits from the hips up count: owner, 2026-11-02, "I don't want feet getting hit to count", "include the butt":
@@ -479,11 +487,15 @@ struct MatchTally {
     uint16_t throws = 0, onTarget = 0, hits = 0, blocks = 0, faced = 0, catches = 0, strikes = 0, returnHits = 0;
     float topSpeed = 0;
 };
+// Four players (0.3.23; the owner, 2026-11-20: "four player stats don't appear in crowd.aftersparc either when it's four
+// corner or fireball blitz"): the same counts for each of the four, for The Crowd's page (careers stay one-on-one). With
+// two players the one attacking is always the other; with four it is whoever threw or returned that ball last
 struct StatCounter {
-    MatchTally s[2];
+    MatchTally s[kMaxPlayers];
+    int np = 2;                     // (the match's players: set by whoever counts, before its events)
     void add(const GameEvent& e);   // Throw, HitPlayer, Strike, ShieldBlock, KnuckleBlock, Caught (others: ignored)
 private:
-    struct Shot { int by = -1; bool thrown = false, counted = false; } shot_[2];   // the attack each ball carries
+    struct Shot { int by = -1; bool thrown = false, counted = false; } shot_[kMaxPlayers];   // the attack each ball carries
 };
 
 struct Ball {
@@ -637,6 +649,12 @@ public:
     float ringCloseAt = -1, ringApothem = 7.5f;
     int lastKnockBy = -1;
     int octCap = 4;   // FIREBALL BLITZ: how many places play (the app: practice's PLAYERS; 4 in a room, whatever practice said)
+    // NEW BOT (0.3.23; the owner, 2026-11-20: "a randomize new bot button to give them a random stance ... and a
+    // different outfit ... hosts may not want it to change so we need a push to change button"): the bots' stances come
+    // from this (each corner its own), the same every match until NEW BOT gives a new one; 0: a new stance each match,
+    // at random (as before; the tests). The app keeps it (settings) and makes the outfits from it too
+    uint32_t botLook = 0;
+    int botStanceFor(int p, float level) const;   // the stance botLook gives corner p's bot at that level
     bool octagon() const { return arenaKind == ARENA_OCTAGON; }
     bool alive(int p) const { return !octagon() || (((startMask >> p) & 1) && pl[p].health > 0); }
     int fireLimit() const { return tun.fireBalls >= 4 ? tun.rapidLimit : std::max(1, std::min(kMaxFire, tun.fireBalls)); }
@@ -655,9 +673,30 @@ public:
     void resetWithBots(uint32_t botMask);   // bit p: player p is a bot (four players: any of them)
     // Advance the simulation. `in` (np entries) is overwritten for bot players.
     void step(float dt, PlayerInput* in);
-    // teams: two players are each their own; FOUR CORNERS by tun.teamMode. Rivals: different teams
+    // teams: two players are each their own; FOUR CORNERS by tun.teamMode, and FIREBALL BLITZ too when the room can
+    // play in teams (0.3.24: Tunables::blitzTeamsNow; else everyone for themselves). Rivals: different teams; friendly:
+    // two players on the same team (never in a free-for-all). FIREBALL BLITZ plays in teams only when the players who
+    // start (startMask: everyone until the countdown) are on both of them; else everyone for themselves (review
+    // 2026-11-21: practice's PLAYERS: 2 in 2 V 2, or a room's THE ONE in an empty corner, put everyone in one team, and
+    // the match ended the moment it began)
+    int teamsNow() const {
+        if (octagon() && !tun.blitzTeamsNow()) return TEAMS_FFA;
+        const int m = std::max(0, std::min(2, tun.teamMode));
+        return octagon() && m != TEAMS_FFA && !bothTeams(m, startMask) ? TEAMS_FFA : m;
+    }
+    // whether the players in `mask` are on both teams of team mode m (2 V 2: corners 0, 1 against 2, 3; 3 V 1: THE ONE
+    // against the rest)
+    bool bothTeams(int m, uint8_t mask) const {
+        unsigned seen = 0;
+        for (int p = 0; p < np; ++p)
+            if ((mask >> p) & 1) seen |= 1u << (m == TEAMS_2V2 ? (p < 2 ? 0 : 1) : (p == tun.theOne ? 1 : 0));
+        return seen == 3u;
+    }
     int team(int p) const;
-    int teamCount() const { return np == 2 ? 2 : tun.teamMode == TEAMS_FFA || octagon() ? 4 : 2; }
+    int teamCount() const { return np == 2 ? 2 : teamsNow() == TEAMS_FFA ? 4 : 2; }
+    bool friendly(int a, int b) const { return a >= 0 && b >= 0 && a < np && b < np && a != b && team(a) == team(b); }
+    int teamsIn() const;         // FIREBALL BLITZ: how many teams (everyone for themselves: players) still have someone in
+    int maxHealth(int p) const;  // FIREBALL BLITZ: the health p starts a match with (3 v 1's THE ONE: three times HEALTH)
     int teamScore(int t) const;
     int leader() const;          // the team ahead on its own (-1: level at the top)
     bool rivals(int a, int b) const { return a >= 0 && b >= 0 && a != b && team(a) != team(b) && alive(a) && alive(b); }
@@ -688,7 +727,9 @@ public:
     // host will have them when this player's hands get there, so a block made against what you see lands; and your own
     // throw leaves your hand the moment you let go (launched here from your hand as the host will launch it). Display
     // only: the host still decides every throw, block and point. A guess it disagrees with (it blocked or caught the
-    // ball) glides over to the real flight (a big one snaps). Two players in the classic court (not FIREBALL BLITZ).
+    // ball) glides over to the real flight (a big one snaps). Two players; and from hosts on 0.3.24, four in FOUR
+    // CORNERS (the host's clock and the balls' spin: ahead.snapNow) and FIREBALL BLITZ's fireballs (their spin and
+    // bounces and the clock: ahead.fireKnown; my throw a fireball at once, in the slot the host will put it in).
     void lookAhead(int local, float lead, float dt);
     struct Ahead {
         bool mine = false;          // my throw, flying here since I let go, until the snapshots show it
@@ -706,6 +747,16 @@ public:
         bool blk[kMaxPlayers] = {};   // my block of that ball, flying on here until the snapshots show the host's
         Ball blkBall[kMaxPlayers];    // ... just after it
         float blkAt[kMaxPlayers] = {}, blkReal[kMaxPlayers] = {};   // ... its time as drawn (my clock less the lead's part), and when seen
+        // FIREBALL BLITZ (0.3.24): the same for each fireball, by its owner and slot. My throw's fireball (mineBall) is
+        // drawn in the slot the host will put it in (the first free one: mineSlot)
+        Vec3 fireShown[kMaxPlayers][kMaxFire], fireTarget[kMaxPlayers][kMaxFire], fireTvel[kMaxPlayers][kMaxFire],
+             fireErr[kMaxPlayers][kMaxFire];
+        bool fireValid[kMaxPlayers][kMaxFire] = {};
+        bool fireBlk[kMaxPlayers][kMaxFire] = {};
+        Ball fireBlkBall[kMaxPlayers][kMaxFire];
+        float fireBlkAt[kMaxPlayers][kMaxFire] = {}, fireBlkReal[kMaxPlayers][kMaxFire] = {};
+        int mineSlot = -1;
+        bool fireKnown = false;   // the latest snapshot had the fireballs' spin and bounces and the host's clock (0.3.24)
     } ahead;
 
     // helpers exposed for rendering / tests

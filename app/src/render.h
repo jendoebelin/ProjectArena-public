@@ -100,6 +100,9 @@ public:
     void drawText(const std::string& s, const Pose& pose, float height, const float rgba[4]);   // 7-segment HUD text
     void drawQuad(const Mat4& model, const float rgba[4], bool additive);
     void drawPanel(const Mat4& model, const float rgba[4]);   // unlit, alpha-blended UI quad
+    // unlit and solid (rgb; drawn in the opaque pass, 0): it hides what is behind it from the graphics chip, which then
+    // doesn't draw it (the lobby balcony's floor, 2026-11-21: the start screen over its budget)
+    void drawPanelSolid(const Mat4& model, const float rgb[3]);
     // additive camera-facing glow sprite; tex 0 = soft gaussian blob, 1 = soft ring. Faces `viewer`, rolled by `roll`.
     void drawSprite(const Vec3& c, float size, const float rgba[4], const Vec3& viewer, int tex = 0, float roll = 0.f);
     // flat sprite lying in the plane with normal `n` (e.g. a glow on the floor)
@@ -166,6 +169,7 @@ private:
     Mat4 view_, proj_, viewProj_;
     Vec3 eye_;
     GLuint ribbonVao_ = 0, ribbonVbo_ = 0;
+    GLuint textVao_ = 0, textVbo_ = 0, textIbo_ = 0;   // drawText: a line's glyphs in one draw (2026-11-21)
     GLint uVColFade_ = -1;
     float team0_[4] = {0.1f, 0.7f, 1, 1}, team1_[4] = {1, 0.4f, 0.1f, 1};
     std::map<std::string, GLuint> texCache_;
