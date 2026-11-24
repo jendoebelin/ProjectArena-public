@@ -721,6 +721,192 @@ static void botTests(const std::vector<CollisionTri>& tris) {
         }
         CHECK(wins == 2, "UNBEATABLE beats ROOKIE");
     }
+    {   // BOT IDLE MOTION (0.3.26; the owner, 2026-11-22: idle animations, taunts when someone stalls, victory poses)
+        std::printf("[bot idle motion: at ease, a taunt, a fist pump, victory poses (0.3.26)]\n");
+        Game g; g.setArena(tris); g.tun.basicMatchTime = 0; g.tun.meetTime = 0; g.tun.botLevel = 0; g.reset(true);
+        PlayerInput in[2] = {standing(g, 0), {}};
+        for (int i = 0; i < 72 * 20 && g.match != MatchState::InProgress; ++i) stepCopy(g, in);
+        g.pl[1].botStance = STANCE_RELAXED;
+        auto hold = [&](float secs, auto&& each) {   // (the bot kept from throwing: only its idle motion)
+            for (int i = 0; i < (int)(secs * 72); ++i) { g.pl[1].botTimer = 99.f; stepCopy(g, in); each(); }
+        };
+        const Vec3 face = g.botFacing(1).rotate({0, 0, -1});
+        float turned = 0, faceMoved = 0;
+        hold(12.f, [&]() {
+            const Vec3 f = g.pl[1].in.head.q.rotate({0, 0, -1}), r = g.botFacing(1).rotate({0, 0, -1});
+            turned = std::max(turned, std::acos(clampf(dot(f, r), -1.f, 1.f)));
+            faceMoved = std::max(faceMoved, length(r - face));
+        });
+        std::printf("       at ease: its head turned up to %.0f degrees from the way it faces (that moved %.4f)\n", rad2deg(turned), faceMoved);
+        CHECK(turned > deg2rad(8.f) && turned < deg2rad(60.f) && faceMoved < 1e-4f,
+              "at ease, its head glances about; the way it faces, as its rules have it, stays put");
+        grabBall(g, in);   // (you hold your ball and don't throw)
+        float taunt = 0, out = 0, early = 0;
+        int frames = 0;
+        hold(9.f, [&]() {
+            ++frames;
+            if (frames < 72 * 3) early = std::max(early, g.pl[1].botTaunt);
+            taunt = std::max(taunt, g.pl[1].botTaunt);
+            for (int h = 0; h < 2; ++h) out = std::max(out, std::fabs(g.pl[1].in.hand[h].grip.p.z - g.pl[1].in.head.p.z));
+        });
+        std::vector<GameEvent> log;
+        swingAndRelease(g, in, normalize(g.chestPoint(1) - g.launcherPoint(0, 1)), 6.5f, log);
+        float after = 1;
+        hold(0.4f, [&]() { after = g.pl[1].botTaunt; });
+        std::printf("       you hold your ball 9 s: its taunt %.2f (none in the first 3 s: %.2f), hands out %.2f m; thrown: %.2f\n", taunt, early, out, after);
+        CHECK(early < 0.01f && taunt > 0.8f && out > 0.3f, "you hold your ball without throwing: after 4 s it taunts, its hands out of its guard");
+        CHECK(after < 0.1f, "... and when the ball comes it stops (back to its guard at its own speed)");
+        {   // (0.3.26, the owner's test: "I also held the ball but never saw a taunt, just kept throwing balls at me"):
+            // a bot left to throw as it likes taunts between its throws while you hold yours
+            Game h; h.setArena(tris); h.tun.basicMatchTime = 0; h.tun.meetTime = 0; h.tun.botLevel = 0; h.reset(true);
+            PlayerInput hin[2] = {standing(h, 0), {}};
+            for (int i = 0; i < 72 * 20 && h.match != MatchState::InProgress; ++i) stepCopy(h, hin);
+            grabBall(h, hin);
+            float most = 0;
+            int throws = 0;
+            for (int i = 0; i < 72 * 14; ++i) {
+                stepCopy(h, hin);
+                most = std::max(most, h.pl[1].botTaunt);
+                throws += hasEvent(h.events, EventType::Throw, 1);
+            }
+            std::printf("       you hold your ball 14 s, the bot free to throw: its taunt %.2f, %d throws\n", most, throws);
+            CHECK(most > 0.8f && throws >= 1, "you hold your ball, it keeps attacking: it taunts between its throws");
+        }
+        hold(2.f, []() {});
+        Vec3 rel0[2];
+        for (int h = 0; h < 2; ++h) rel0[h] = g.pl[1].in.hand[h].grip.p - g.pl[1].in.head.p;
+        g.pl[1].score += 1;   // (a point to it)
+        float moved = 0, cheer = 0;
+        hold(1.f, [&]() {
+            cheer = std::max(cheer, g.pl[1].botCheer);
+            for (int h = 0; h < 2; ++h) moved = std::max(moved, length(g.pl[1].in.hand[h].grip.p - g.pl[1].in.head.p - rel0[h]));
+        });
+        std::printf("       a point won (celebration %d): a hand moved %.2f m\n", g.pl[1].botCheerKind, moved);
+        CHECK(cheer > 0.f && moved > 0.15f, "a point won: it celebrates");
+        int cheerKinds = 0;   // (0.3.26, the owner's test: "a little variety"; chosen by the moment it comes)
+        for (int k = 0; k < 12; ++k) {
+            hold(0.37f + 0.05f * k, []() {});
+            g.pl[1].score += 1;
+            hold(1.f / 72, []() {});
+            cheerKinds |= 1 << std::max(0, std::min(3, g.pl[1].botCheerKind));
+        }
+        CHECK(((cheerKinds & 1) + ((cheerKinds >> 1) & 1) + ((cheerKinds >> 2) & 1) + ((cheerKinds >> 3) & 1)) >= 3,
+              "points won: its celebrations vary (a fist pump, a double pump, a point, a clap)");
+        {   // (0.3.26, the owner in the asset viewer: "the point at you" pointed its fist up and back, its eyes on the
+            // stands; and the double pump looked like the fist pump)
+            hold(2.f, []() {});
+            g.pl[1].score += 1;
+            hold(1.f / 72, []() {});
+            g.pl[1].botCheerKind = 2;
+            float aim = -1, eyes = -1;
+            hold(0.7f, [&]() {
+                const PlayerState& s = g.pl[1];
+                for (int h = 0; h < 2; ++h)
+                    aim = std::max(aim, dot(s.in.hand[h].grip.q.rotate({0, 0, -1}), normalize(g.pl[0].in.head.p - s.in.hand[h].grip.p)));
+                eyes = std::max(eyes, dot(s.in.head.q.rotate({0, 0, -1}), normalize(g.pl[0].in.head.p - s.in.head.p)));
+            });
+            std::printf("       a point at you: its fist %.0f degrees off you at best, its eyes %.0f\n",
+                        rad2deg(std::acos(clampf(aim, -1.f, 1.f))), rad2deg(std::acos(clampf(eyes, -1.f, 1.f))));
+            CHECK(aim > std::cos(deg2rad(20.f)) && eyes > std::cos(deg2rad(15.f)), "a point won, a point at you: its fist and its eyes at you");
+            hold(1.f, []() {});
+            g.pl[1].score += 1;
+            hold(1.f / 72, []() {});
+            g.pl[1].botCheerKind = 1;
+            float top[2] = {-9.f, -9.f};
+            hold(0.9f, [&]() {
+                for (int h = 0; h < 2; ++h) top[h] = std::max(top[h], g.pl[1].in.hand[h].grip.p.y - g.pl[1].in.head.p.y);
+            });
+            const Ball& own = g.pl[1].ball;
+            int up = 0, loose = 0;
+            for (int h = 0; h < 2; ++h) {
+                const bool holds = own.state == BallState::Held && own.heldHand == h;
+                loose += !holds;
+                up += !holds && top[h] > 0.1f;
+            }
+            std::printf("       a double pump: its fists up to %.2f and %.2f m over its head (%d free)\n", top[0], top[1], loose);
+            CHECK(loose > 0 && up == loose, "a point won, a double pump: both free fists thrust up over its head");
+        }
+        g.match = MatchState::MatchSummary; g.matchWinner = 1;   // (the match won)
+        g.pl[1].botWonSeen = true; g.pl[1].botWinKind = 0;   // (its stance's own pose)
+        float raised = -9.f;
+        int fists = 0;
+        hold(1.5f, [&]() {
+            raised = std::min(g.pl[1].in.hand[0].grip.p.y, g.pl[1].in.hand[1].grip.p.y) - g.pl[1].in.head.p.y;
+            fists = (g.pl[1].in.hand[0].trigger > 0.5f) + (g.pl[1].in.hand[1].trigger > 0.5f);
+        });
+        std::printf("       the match won (RELAXED): both hands %.2f m over its head\n", raised);
+        CHECK(raised > 0.15f && fists == 2, "the match won: RELAXED raises both arms, fists closed");
+        g.pl[1].botStance = STANCE_KARATE;
+        float bowed = 0;
+        hold(1.f, [&]() { bowed = -g.pl[1].in.head.q.rotate({0, 0, -1}).y; });
+        CHECK(bowed > 0.3f, "the match won: KARATE bows");
+        g.pl[1].botStance = STANCE_RELAXED; g.pl[1].botWinKind = 1;   // AIR GUITAR
+        float strumLo = 9.f, strumHi = -9.f, neckOut = 0;
+        hold(2.f, [&]() {
+            const PlayerState& s = g.pl[1];
+            const float y = s.in.hand[1].grip.p.y - s.in.head.p.y;
+            strumLo = std::min(strumLo, y); strumHi = std::max(strumHi, y);
+            neckOut = std::fabs(s.in.hand[0].grip.p.z - s.in.head.p.z);
+        });
+        std::printf("       AIR GUITAR's stroke: %.2f m from top to bottom\n", strumHi - strumLo);
+        CHECK(strumHi - strumLo > 0.45f && neckOut > 0.2f,
+              "the match won: AIR GUITAR (the neck out to one side; a slow stroke from its shoulder past its hip)");
+        {   // (0.3.26, the owner in the asset viewer: the pose alone read as something else: "manifest an actual
+            // guitar"): its hologram guitar, held by the hand on its neck, the other hand at its strings; slow strokes
+            Mat4 gm;
+            float show = 0, offNeck = 0, nearStrings = 9.f, overHead = -9.f, lowest = 9.f;
+            bool held = true;
+            hold(5.6f, [&]() {   // (a whole bar: two strokes and the one from over its head)
+                const PlayerState& s = g.pl[1];
+                held &= g.botGuitar(1, s.in, gm, show);
+                const Vec3 o{gm.m[12], gm.m[13], gm.m[14]}, neck = normalize(Vec3{gm.m[0], gm.m[1], gm.m[2]});
+                const Vec3 d = s.in.hand[0].grip.p - o;
+                offNeck = std::max(offNeck, length(d - neck * dot(d, neck)));
+                nearStrings = std::min(nearStrings, length(s.in.hand[1].grip.p - o));
+                const float y = s.in.hand[1].grip.p.y - s.in.head.p.y;
+                overHead = std::max(overHead, y); lowest = std::min(lowest, y);
+            });
+            std::printf("       AIR GUITAR's guitar: shown %.2f, the hand on its neck %.3f m off it, the other %.2f m from its body; "
+                        "the strumming hand from %.2f to %.2f m against its head\n", show, offNeck, nearStrings, lowest, overHead);
+            CHECK(held && show > 0.95f && offNeck < 0.01f && nearStrings < 0.15f,
+                  "AIR GUITAR: a guitar in its hands (the neck through one, the other at its strings)");
+            CHECK(overHead > 0.05f && lowest < -0.55f, "AIR GUITAR: the third stroke from over its head, down past its hip");
+            CHECK(!g.botGuitar(0, g.pl[0].in, gm, show), "... and none for a player");
+        }
+        g.pl[1].botWinKind = 2;   // RAISE THE ROOF
+        float roofLo = 9.f, roofHi = -9.f;
+        int open = 0;
+        hold(1.2f, []() {});   // (its hands up to it first)
+        {
+            Mat4 gm;
+            float show = 0;
+            CHECK(!g.botGuitar(1, g.pl[1].in, gm, show), "another celebration: the guitar is gone");
+        }
+        hold(1.6f, [&]() {
+            const PlayerState& s = g.pl[1];
+            const float y = std::min(s.in.hand[0].grip.p.y, s.in.hand[1].grip.p.y) - s.in.head.p.y;
+            roofLo = std::min(roofLo, y); roofHi = std::max(roofHi, y);
+            open = 0;   // (open, but for a hand still holding its ball)
+            for (int k = 0; k < 2; ++k) open += s.in.hand[k].trigger < 0.5f || (s.ball.state == BallState::Held && s.ball.heldHand == k);
+        });
+        std::printf("       RAISE THE ROOF: its hands from %.2f to %.2f m over its head\n", roofLo, roofHi);
+        // (0.3.26, the owner in the asset viewer: held up, 10 cm at the top of its reach, it looked like the arms-up poses)
+        CHECK(roofLo > -0.15f && roofHi > 0.2f && roofHi - roofLo > 0.15f && open == 2,
+              "the match won: RAISE THE ROOF (open hands pushed up from its head, over and over)");
+        int winKinds = 0;   // (each win chooses: by the moment it comes)
+        for (int k = 0; k < 9; ++k) {
+            g.match = MatchState::InProgress;
+            hold(0.29f + 0.07f * k, []() {});
+            g.match = MatchState::MatchSummary; g.matchWinner = 1;
+            hold(1.f / 72, []() {});
+            winKinds |= 1 << std::max(0, std::min(2, g.pl[1].botWinKind));
+        }
+        CHECK(((winKinds & 1) + ((winKinds >> 1) & 1) + ((winKinds >> 2) & 1)) >= 2, "matches won: its victory poses vary");
+        g.match = MatchState::MatchSummary; g.matchWinner = 0;   // (lost: nothing to celebrate)
+        g.pl[1].botStance = STANCE_RELAXED;
+        hold(1.5f, [&]() { raised = std::max(g.pl[1].in.hand[0].grip.p.y, g.pl[1].in.hand[1].grip.p.y) - g.pl[1].in.head.p.y; });
+        CHECK(raised < 0.f, "the match lost: no victory pose");
+    }
     {
         std::printf("[practice bot: UNBEATABLE against a strong player]\n");
         struct M { const char* name; bool adv, shields; int knuckles; } modes[] = {
@@ -729,6 +915,7 @@ static void botTests(const std::vector<CollisionTri>& tris) {
         for (const M& m : modes) {
             Game g; g.setArena(tris); g.tun.advanced = m.adv; g.tun.shields = m.shields; g.tun.knuckleMode = m.knuckles;
             g.tun.basicMatchTime = 0; g.tun.meetTime = 0; g.tun.botLevel = kBotLevels - 1; g.reset(true);
+            g.tun.botIdle = false;   // (BOT IDLE MOTION off: these counts come from fixed seeds; with it each level measures the same: PA_BOT_MEASURE)
             // 200 throws each from three spots and at the headset's two frame rates
             int throws = 0, points = 0, rebounds = 0, scored = 0, strikes = 0, blocks = 0, punches = 0;
             double slowest = 0;
@@ -1550,6 +1737,7 @@ static void octagonTests(const std::vector<CollisionTri>& tris) {
     {   // the best bots' fireballs: straight, curved and off the walls (owner, 2026-11-02: "only straight balls")
         Game g = octGame(tris, 0xE, 100);
         g.tun.botLevel = kBotLevels - 1;
+        g.tun.botIdle = false;   // (BOT IDLE MOTION off: these counts come from fixed seeds; with it each level measures the same: PA_BOT_MEASURE)
         PlayerInput in[4];
         int thrown = 0, curved = 0, banked = 0;
         for (int i = 0; i < 72 * 60; ++i) {
@@ -1749,6 +1937,30 @@ int main(int argc, char** argv) {
     auto tris = loadCol(col);
     std::printf("loaded %zu collision tris\n", tris.size());
     CHECK(tris.size() > 100, "arena collision loaded");
+    if (const char* m = std::getenv("PA_BOT_MEASURE")) {   // BOT IDLE MOTION (0.3.26): each level hit by a strong
+        // player's throws, with its idle motion and without, over many seeds (PA_BOT_MEASURE=seeds; nothing else runs)
+        const int seeds = std::max(1, std::atoi(m));
+        std::printf("[measure: each level against a strong player, %d seeds x 72 and 90 Hz x 200 throws]\n", seeds);
+        for (int adv = 0; adv < 2; ++adv)
+            for (int level = 0; level < kBotLevels; ++level) {
+                int hits[2] = {0, 0}, throws[2] = {0, 0};
+                for (int idle = 0; idle < 2; ++idle) {
+                    Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
+                    g.tun.botLevel = level; g.tun.botIdle = idle == 1; g.reset(true);
+                    for (int k = 0; k < seeds; ++k)
+                        for (float hz : {72.f, 90.f}) {
+                            Game g2 = g;
+                            g2.rngSeed(0x9E3779B9u * (uint32_t)(k + 1) + 17u * (uint32_t)level);
+                            const Attack a = attackBot(g2, 200, hz, 1000u + 7919u * (uint32_t)k);
+                            hits[idle] += a.points; throws[idle] += a.throws;
+                        }
+                }
+                std::printf("       %s level %d: without %d hits in %d throws (%.2f%%), with %d in %d (%.2f%%)\n",
+                            adv ? "Advanced" : "Basic", level, hits[0], throws[0], 100.0 * hits[0] / std::max(1, throws[0]),
+                            hits[1], throws[1], 100.0 * hits[1] / std::max(1, throws[1]));
+            }
+        return 0;
+    }
 
     {
         std::printf("[match start]\n");
@@ -2165,6 +2377,68 @@ int main(int argc, char** argv) {
             bool back = false;
             for (const GameEvent& e : log) back |= e.type == EventType::Returned && e.player == 0 && e.pos.z < -7.f;
             CHECK(back, "a ball into another player's corner comes back to its thrower");
+        }
+        {   // BOUNCES IN FOUR CORNERS (0.3.26): the walls between the corners (z = x + 9.5 between corners 0 and 3's)
+            auto wallHit = [&](bool lively, bool grip, int version, float& speed, float& spin) {
+                PlayerInput in[4]; Game g = make4(TEAMS_FFA, 0, in);
+                g.tun.experimental = true; g.tun.expRoom = ROOM_CORNERS;
+                g.tun.wallsLively = lively; g.tun.wallGrip = grip; g.tun.matchVersion = version;
+                const Vec3 n{-0.70710678f, 0, 0.70710678f}, along{0.70710678f, 0, 0.70710678f};   // (out of the room; along the wall)
+                const Vec3 from = Vec3{-4.75f, 1.5f, 4.75f} - n * 1.f - along * 1.7f;
+                const float a = deg2rad(30.f);
+                Ball& b = g.pl[0].ball;
+                b.state = BallState::Flying; b.instigator = 0; b.rechargePending = false; b.scored = false; b.spin = {};
+                b.pos = from; b.vel = (along * std::cos(a) + n * std::sin(a)) * 10.f; b.speedLimit = 10.f; b.timer = 0;
+                b.progX = from.x; b.progZ = from.z; b.progT = 0; b.bounces = 0; b.fouled = b.homing = false; b.heldHand = -1;
+                speed = spin = -1.f;
+                for (int i = 0; i < 72; ++i) {
+                    PlayerInput tmp[4] = {in[0], in[1], in[2], in[3]};
+                    g.step(1.f / 72, tmp);
+                    if (hasEvent(g.events, EventType::Bounce, 0)) { speed = g.pl[0].ball.speedLimit; spin = length(g.pl[0].ball.spin); break; }
+                }
+            };
+            float s0, w0, s1, w1, s2, w2, s3, w3;
+            wallHit(false, false, Tunables::kVerAll, s0, w0);
+            wallHit(true, false, Tunables::kVerAll, s1, w1);
+            wallHit(false, true, Tunables::kVerAll, s2, w2);
+            wallHit(true, true, 3025, s3, w3);
+            std::printf("       (FOUR CORNERS, a 30 degree bank at 10 m/s: STANDARD %.2f m/s; LIVELY %.2f; GRIP %.2f spinning %.1f rad/s; "
+                        "a 0.3.25 player in it %.2f)\n", s0, s1, s2, w2, s3);
+            CHECK(std::fabs(s0 - 9.f) < 0.02f && std::fabs(s1 - 9.926f) < 0.03f && std::fabs(s2 - 8.93f) < 0.05f && w2 > 20.f,
+                  "BOUNCES IN FOUR CORNERS: its walls between the corners: LIVELY keeps 9.93 m/s of 10, WALL GRIP grips and spins it");
+            CHECK(std::fabs(s3 - 9.f) < 0.02f && w3 < 0.01f, "... a player on 0.3.25 in the match: STANDARD");
+            // BANK ASSIST: player 0's bank off that wall toward player 3, half a metre wide of their chest
+            auto banked4 = [&](int level, int version, int mode, int theOne, float& closest, float& turnDeg) {
+                PlayerInput in[4]; Game g = make4(mode, 0, in);
+                g.tun.experimental = true; g.tun.expRoom = ROOM_CORNERS; g.tun.aimAssist = 0; g.tun.theOne = theOne;
+                g.tun.bankAssist = level; g.tun.matchVersion = version;
+                const Vec3 chest = g.chestPoint(3), wide = chest + Vec3{0.5f, 0, 0};
+                const float c = 9.5f - g.ballRadius(0) * 1.41421356f;   // (the wall, for the ball's centre)
+                const Vec3 mirror{wide.z - c, wide.y, wide.x + c};      // (seen in the wall z = x + c)
+                const Vec3 from = g.tun.start[0] + Vec3{0.6f, 1.3f, 0};
+                g.serve(0, from, normalize(mirror - from), 10.f, {}, true);
+                closest = 1e9f; turnDeg = 0.f;
+                bool bounced = false;
+                for (int i = 0; i < 72 * 3; ++i) {
+                    PlayerInput tmp[4] = {in[0], in[1], in[2], in[3]};
+                    g.step(1.f / 72, tmp);
+                    const Ball& b = g.pl[0].ball;
+                    if (!bounced && hasEvent(g.events, EventType::Bounce, 0)) { bounced = true; turnDeg = rad2deg(length(b.bankTurn)); }
+                    if (b.state != BallState::Flying) break;
+                    if (bounced) closest = std::min(closest, length(b.pos - chest));
+                }
+            };
+            float c0, t0, c3, t3, cOld, tOld, cMate, tMate;
+            banked4(0, Tunables::kVerAll, TEAMS_FFA, 0, c0, t0);
+            banked4(3, Tunables::kVerAll, TEAMS_FFA, 0, c3, t3);
+            banked4(3, 3025, TEAMS_FFA, 0, cOld, tOld);
+            banked4(3, Tunables::kVerAll, TEAMS_3V1, 1, cMate, tMate);   // (THE ONE player 1: 0 and 3 on the same team)
+            std::printf("       (FOUR CORNERS, a bank 0.5 m wide of a rival's chest: OFF passes %.2f m from it; HIGH turns it %.2f deg and "
+                        "passes %.2f m; a teammate's: %.2f deg)\n", c0, t3, c3, tMate);
+            // (a shorter leg than the SQUARE's, about 5 m: the 2.4 degrees at most move it less)
+            CHECK(t0 == 0.f && t3 > 0.5f && t3 <= 2.4f + 1e-3f && c3 < c0 - 0.05f,
+                  "BANK ASSIST IN FOUR CORNERS: a bank's last leg turned toward the rival it passes nearest, and passes nearer");
+            CHECK(tOld == 0.f && tMate == 0.f, "... none with a player on 0.3.25 in the match, and never toward a teammate");
             PlayerInput in2[4]; Game g2 = make4(TEAMS_FFA, 0, in2);
             std::vector<GameEvent> log2;
             g2.pl[2].ball.charged = false;
@@ -2179,6 +2453,7 @@ int main(int argc, char** argv) {
         }
         for (int mode = 0; mode < 3; ++mode) {   // four bots, a match each way
             Game g; g.setArena(tris); g.tun.players = 4; g.tun.teamMode = mode; g.tun.basicMatchTime = 0; g.tun.botLevel = 1;
+            g.tun.botIdle = false;   // (BOT IDLE MOTION off: these counts come from fixed seeds; with it each level measures the same: PA_BOT_MEASURE)
             g.useArena(ARENA_FOURCORNERS, tris); g.resetWithBots(0xF);
             PlayerInput in[4];
             std::vector<GameEvent> log;
@@ -2544,6 +2819,31 @@ int main(int argc, char** argv) {
             Game k = g; k.tun.matchVersion = Tunables::kVerAll; k.tun.knuckleReturns = 1;
             const float shield = k.deflectVelocity(sb, {1, 0, 0}, {0, 0, 0}, false, 0.f).x;
             CHECK(std::fabs(shield - 9.f) < 1e-3f, "KNUCKLE RETURNS: PUNCH leaves a shield's block as it is");
+            {   // FULL EFFORT (0.3.26: "at least 50% more effort"): top speed only at half as hard a throw or punch again
+                Game h = g;
+                h.tun.matchVersion = Tunables::kVerAll; h.tun.throwPower = 2;
+                const float full2 = h.throwSpeedFromHandSpeed(2.f, 0), full5 = h.throwSpeedFromHandSpeed(5.f, 0);
+                const float fullOld = h.throwSpeedFromHandSpeed(h.tun.maxInputSpeed, 0);
+                const float fullTop = h.throwSpeedFromHandSpeed(h.tun.maxInputSpeed * 1.5f, 0);
+                h.tun.matchVersion = 3025;
+                const float with25 = h.throwSpeedFromHandSpeed(5.f, 0);
+                std::printf("       (FULL EFFORT: a hand at 2 m/s throws %.1f m/s, at 5 m/s %.1f; NATURAL's full throw (6.5 m/s) %.1f; "
+                            "top speed at 9.75 m/s: %.1f)\n", full2, full5, fullOld, fullTop);
+                CHECK(full2 < nat2 && full5 < nat5 && fullOld < 0.6f * h.tun.projectileMaxSpeed &&
+                          std::fabs(fullTop - h.tun.projectileMaxSpeed) < 1e-3f && std::fabs(with25 - nat5) < 1e-4f,
+                      "THROW POWER: FULL EFFORT: top speed only from a 50% faster throw; with a 0.3.25 player in the match, NATURAL");
+                const float fullStill = ret(2, 0, 10), fullHit = ret(2, 3, 10), fullHard = ret(2, 4.5f, 10);
+                std::printf("       (FULL EFFORT on a knuckle guard, a ball at 10 m/s: still %.2f, punched at 3 m/s %.2f, at 4.5 m/s %.2f)\n",
+                            fullStill, fullHit, fullHard);
+                CHECK(std::fabs(fullStill - 3.f) < 1e-3f && fullHit < punHit - 2.f && std::fabs(fullHard - punHit) < 0.01f,
+                      "KNUCKLE RETURNS: FULL EFFORT: a still fist 3 m/s of 10 back, and a punch half as hard again for PUNCH's return");
+                Tunables x; x.throwPower = 2; x.knuckleReturns = 2; x.matchVersion = 3025;
+                Tunables y = x; y.matchVersion = 3024;
+                Tunables z = x; z.matchVersion = Tunables::kVerAll;
+                CHECK(x.naturalThrowNow() && !x.fullThrowNow() && x.punchReturnsNow() && !x.fullPunchNow() && y.feelStandard() &&
+                          z.fullThrowNow() && z.fullPunchNow() && z.statsMode() == 2,
+                      "FULL EFFORT FAIR MATCHES: a 0.3.25 player: NATURAL and PUNCH; older: REGULATION; a custom match in the stats");
+            }
             // FAIR MATCHES, the rooms, the stats
             Tunables f; f.throwPower = 1;
             const int natMode = f.statsMode();
@@ -2627,9 +2927,12 @@ int main(int argc, char** argv) {
             f.wallGrip = false; f.bankAssist = 1;
             const int bankMode = f.statsMode();
             f.experimental = true; f.expRoom = ROOM_CORNERS; f.wallsLively = true; f.wallGrip = true;
-            const bool corners = f.bouncesStandard();
-            CHECK(gripMode == 2 && bankMode == 2 && corners && Tunables().statsMode() == 0,
-                  "BOUNCES: any of them makes the match custom in the stats; FOUR CORNERS keeps STANDARD for now");
+            const bool corners = !f.bouncesStandard();   // (BOUNCES IN FOUR CORNERS, 0.3.26)
+            Tunables fOld = f; fOld.matchVersion = 3025;
+            Tunables fBlitz = f; fBlitz.expRoom = ROOM_BLITZ;
+            CHECK(gripMode == 2 && bankMode == 2 && corners && fOld.bouncesStandard() && fBlitz.bouncesStandard() &&
+                      Tunables().statsMode() == 0,
+                  "BOUNCES: any of them makes the match custom; FOUR CORNERS has them (0.3.26: STANDARD with an older player), FIREBALL BLITZ not");
             // (what BANK ASSIST costs a bot reading your banks: its reads and tryouts fly the turn too; the PC's time a step)
             double avg[2] = {0, 0}, worst[2] = {0, 0};
             for (int k = 0; k < 2; ++k) {
@@ -3632,6 +3935,7 @@ int main(int argc, char** argv) {
         for (int adv = 0; adv < 2; ++adv) {
             Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.botPlay = adv; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
             g.tun.botLevel = kBotLevels - 1; g.reset(true);   // (timed with the BRAWLER, rounds with the DUELLIST)
+            g.tun.botIdle = false;   // (BOT IDLE MOTION off: these counts come from fixed seeds; with it each level measures the same: PA_BOT_MEASURE)
             PlayerInput in[2] = {standing(g, 0), {}};
             bool thrownCurved = false;
             int throwsCold = 0, atCold = 0, throwsHot = 0, atHot = 0, strikes = 0, onSide = 0, sides[2] = {0, 0}, hits = 0;

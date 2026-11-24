@@ -95,7 +95,8 @@ Vec3 Game::deflectVelocity(Ball& b, const Vec3& n, const Vec3& vs, bool punch, f
     // (KNUCKLE RETURNS: PUNCH, 0.3.25: less of the incoming speed back, and the fist's own speed along the guard's face
     // counting more; a shield's block as ever)
     const bool punchFeel = punch && tun.punchReturnsNow();
-    const float e = punchFeel ? tun.punchRestitution : tun.deflectRestitution;
+    const bool fullPunch = punchFeel && tun.fullPunchNow();   // (FULL EFFORT, 0.3.26: PUNCH's numbers over fullEffort)
+    const float e = fullPunch ? tun.punchRestitution / tun.fullEffort : punchFeel ? tun.punchRestitution : tun.deflectRestitution;
     if (contactRadius > 0.f) {   // (WALL GRIP: the guard grips it; its spin as the contact leaves it)
         out = bounceWithFriction(b, n, vs, contactRadius, e, tun.knuckleFriction, tun.maxSpin);
     } else {
@@ -107,7 +108,7 @@ Vec3 Game::deflectVelocity(Ball& b, const Vec3& n, const Vec3& vs, bool punch, f
     }
     if (punchFeel) {
         const float into = dot(vs, n);   // (the fist driven out through the ball: its speed that way)
-        if (into > 0.f) out += n * (tun.punchGain * into);
+        if (into > 0.f) out += n * ((fullPunch ? tun.punchGain / tun.fullEffort : tun.punchGain) * into);
     }
     return out;
 }
@@ -250,7 +251,12 @@ float Game::throwSpeedFromHandSpeed(float s, int thrower) const {
     // lerp(minThrown, maxThrown + strikes * SpeedIncreasePerStrike, t)
     float t = clampf((s - tun.minInputSpeed) / std::max(1e-3f, tun.maxInputSpeed - tun.minInputSpeed), 0.f, 1.f);
     // (THROW POWER: NATURAL, 0.3.25: a person's throw on a curve, light throws slow; a bot's arm is its level, as ever)
-    if (tun.naturalThrowNow() && thrower >= 0 && thrower < kMaxPlayers && !pl[thrower].isBot) t = std::pow(t, tun.throwCurve);
+    if (tun.naturalThrowNow() && thrower >= 0 && thrower < kMaxPlayers && !pl[thrower].isBot) {
+        // (FULL EFFORT, 0.3.26: top speed only from fullEffort times the hand speed)
+        if (tun.fullThrowNow())
+            t = clampf((s - tun.minInputSpeed) / std::max(1e-3f, (tun.maxInputSpeed - tun.minInputSpeed) * tun.fullEffort), 0.f, 1.f);
+        t = std::pow(t, tun.throwCurve);
+    }
     int strikes = strikesHeld(thrower);
     return lerpf(tun.projectileMinSpeed, tun.projectileMaxSpeed + strikes * tun.perStrike(), t);
 }
@@ -459,7 +465,7 @@ void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist) {
     }
     // (BANK ASSIST, BOUNCES: a player's own throw at the other player may have a bank's last leg turned; not the bots',
     // nor TRAINING's throws at its targets)
-    b.bankAimPending = assist && np == 2 && tun.bankAssistNow() > 0 && !pl[p].isBot && aimAt[p].empty();
+    b.bankAimPending = assist && tun.bankAssistNow() > 0 && !pl[p].isBot && aimAt[p].empty();   // (its rooms: bouncesNow)
     b.bankTurn = {};
     float sl = length(spin);
     if (sl > tun.maxSpin) spin *= tun.maxSpin / sl;
@@ -699,46 +705,68 @@ static void advanceFlight(Ball& b, const Tunables& tun, float h) {
 // it is turned toward their chest by that or bankAssistDeg(), whichever is less (bankTurnRate a second, its speed
 // kept), if that brings it nearer. Planned once; their moves after it don't steer it
 void Game::planBankAim(Ball& b, const Vec3& from, float radius) const {
-    if (!b.bankAimPending || tun.bankAssistNow() == 0 || np != 2 || b.state != BallState::Flying || b.fouled || b.homing ||
-        b.instigator < 0 || b.instigator >= 2 || b.speedLimit < tun.recallSpeed) return;
-    const int opponent = 1 - b.instigator;
-    if (!pl[opponent].in.headTracked) return;
-    const Vec3 head = pl[opponent].in.head.p;
-    const Vec3 target = chestPoint(opponent);
-    const float forward = facing(b.instigator).x;
-    if ((target.x - from.x) * forward < 0.1f || b.vel.x * forward <= 0.f) return;
+    if (!b.bankAimPending || tun.bankAssistNow() == 0 || (np != 2 && np != 4) || b.state != BallState::Flying || b.fouled ||
+        b.homing || b.instigator < 0 || b.instigator >= np || b.speedLimit < tun.recallSpeed) return;
     const float step = std::min(1.f / 120.f, 0.05f / b.speedLimit);
-    // (the leg flown on to their plane: false if it meets the court first, or, unturned, them)
-    auto arrival = [&](Ball flight, bool missOnly, Vec3& at, float& elapsed) {
-        flight.pos = from;
-        for (float t = 0; t < 2.5f; t += step) {
-            advanceFlight(flight, tun, step);
-            Vec3 next = flight.pos + flight.vel * step;
-            const bool crosses = (next.x - target.x) * forward >= 0.f;
-            const float fraction = crosses ? (target.x - flight.pos.x) / (next.x - flight.pos.x) : 1.f;
-            next = lerp(flight.pos, next, fraction);
-            Vec3 hit, normal;
-            uint32_t tags;
-            if (sweepArena(flight.pos, next, radius, hit, normal, tags) ||
-                (missOnly && bodyTouchesPath(head, flight.pos, next, radius))) return false;
-            if (crosses) { at = next; elapsed = t + step * fraction; return true; }
-            flight.pos = next;
-        }
-        return false;
+    // a turn toward rival q, flying the leg on to the plane through their chest across `axis` (two players: along the
+    // court, as always; FOUR CORNERS, 0.3.26: across the line from the bounce to them). False: none for them
+    auto tryRival = [&](int q, const Vec3& axis, Vec3& turn, float& missLeft) {
+        if (!pl[q].in.headTracked) return false;
+        const Vec3 head = pl[q].in.head.p;
+        const Vec3 target = chestPoint(q);
+        if (dot(target - from, axis) < 0.1f || dot(b.vel, axis) <= 0.f) return false;
+        // (the leg flown on to their plane: false if it meets the court first, or, unturned, them)
+        auto arrival = [&](Ball flight, bool missOnly, Vec3& at, float& elapsed) {
+            flight.pos = from;
+            for (float t = 0; t < 2.5f; t += step) {
+                advanceFlight(flight, tun, step);
+                Vec3 next = flight.pos + flight.vel * step;
+                const bool crosses = dot(next - target, axis) >= 0.f;
+                const float fraction = crosses ? dot(target - flight.pos, axis) / dot(next - flight.pos, axis) : 1.f;
+                next = lerp(flight.pos, next, fraction);
+                Vec3 hit, normal;
+                uint32_t tags;
+                if (sweepArena(flight.pos, next, radius, hit, normal, tags) ||
+                    (missOnly && bodyTouchesPath(head, flight.pos, next, radius))) return false;
+                if (crosses) { at = next; elapsed = t + step * fraction; return true; }
+                flight.pos = next;
+            }
+            return false;
+        };
+        Vec3 at;
+        float elapsed;
+        if (!arrival(b, true, at, elapsed)) return false;
+        const Vec3 miss = target - at;
+        const float distance = length(miss);
+        const float needed = std::atan2(distance, b.speedLimit * std::max(0.01f, elapsed - 0.08f));
+        if (distance > 0.85f || needed > deg2rad(8.f) || length2(cross(b.vel, miss)) < 1e-10f) return false;
+        Ball steered = b;
+        steered.bankTurn = normalize(cross(b.vel, miss)) * std::min(needed, deg2rad(tun.bankAssistDeg()));
+        if (!(arrival(steered, false, at, elapsed) && length2(target - at) < length2(miss))) return false;
+        turn = steered.bankTurn;
+        missLeft = distance;
+        return true;
     };
-    Vec3 at;
-    float elapsed;
-    if (!arrival(b, true, at, elapsed)) return;
-    const Vec3 miss = target - at;
-    const float distance = length(miss);
-    const float needed = std::atan2(distance, b.speedLimit * std::max(0.01f, elapsed - 0.08f));
-    if (distance > 0.85f || needed > deg2rad(8.f) || length2(cross(b.vel, miss)) < 1e-10f) return;
-    Ball steered = b;
-    steered.bankTurn = normalize(cross(b.vel, miss)) * std::min(needed, deg2rad(tun.bankAssistDeg()));
-    if (arrival(steered, false, at, elapsed) && length2(target - at) < length2(miss)) {
-        b.bankTurn = steered.bankTurn;
-        b.bankAimPending = false;
+    if (np == 2) {
+        if (b.instigator >= 2) return;
+        Vec3 turn;
+        float miss;
+        if (tryRival(1 - b.instigator, Vec3{facing(b.instigator).x, 0, 0}, turn, miss)) { b.bankTurn = turn; b.bankAimPending = false; }
+        return;
     }
+    // FOUR CORNERS: the rival its leg would pass nearest (its teammates never)
+    float best = 1e9f;
+    Vec3 bestTurn;
+    for (int q = 0; q < np; ++q) {
+        if (q == b.instigator || !rivals(b.instigator, q)) continue;
+        Vec3 across = chestPoint(q) - from;
+        across.y = 0;
+        if (length2(across) < 1e-6f) continue;
+        Vec3 turn;
+        float miss;
+        if (tryRival(q, normalize(across), turn, miss) && miss < best) { best = miss; bestTurn = turn; }
+    }
+    if (best < 1e8f) { b.bankTurn = bestTurn; b.bankAimPending = false; }
 }
 
 void Game::stepBall(int p, float dt, int ignoredPlayer) {
@@ -1080,7 +1108,7 @@ void Game::stepBall(int p, float dt, int ignoredPlayer) {
                 // spin kick, and the whole speed cut to elasticity. (A side wall: the classic court's by its facing, the
                 // rooms built here by their tag)
                 const bool sideWall = arenaKind <= ARENA_CLASSIC ? std::fabs(hn.z) > 0.9f : (tags & TAG_SIDE_WALL) != 0;
-                const bool lively = np == 2 && sideWall && tun.wallsLivelyNow();
+                const bool lively = sideWall && tun.wallsLivelyNow();   // (its rooms: Tunables::bouncesNow)
                 if (!returning && tun.bouncesChangeSpeed && (gripsNow() || lively)) {
                     const float e = lively ? tun.sideWallElasticity : tun.elasticity;
                     Vec3 v;
@@ -1537,17 +1565,21 @@ static float moveTime(float d, float vmax, float amax) {   // from standing stil
     return d < vmax * vmax / amax ? 2.f * std::sqrt(d / amax) : d / vmax + vmax / amax;
 }
 
+Quat Game::botFacing(int p) const {
+    const PlayerState& s = pl[p];
+    return s.isBot && s.botFaceSet ? s.botFace : s.in.head.q;   // (BOT IDLE MOTION: not its glances)
+}
 Vec3 Game::botShoulder(int p, int h) const {
     const Pose& hd = pl[p].in.head;   // (the bot's head stays level, facing the court)
     const Vec3 o = tun.botShoulder;
-    return hd.p + hd.q.rotate({h == 1 ? o.x : -o.x, 0, o.z}) + Vec3{0, o.y, 0};
+    return hd.p + botFacing(p).rotate({h == 1 ? o.x : -o.x, 0, o.z}) + Vec3{0, o.y, 0};
 }
 Vec3 Game::botWrist(int h, const Pose& grip) const {
     const Vec3 w = tun.botWrist;
     return grip.transform({h == 1 ? w.x : -w.x, w.y, w.z});
 }
 Pose Game::botTuck(int p, int h, const Vec3& head) const {
-    const Quat q = pl[p].in.head.q;
+    const Quat q = botFacing(p);
     return {q * Quat::axisAngle({1, 0, 0}, deg2rad(-20)),
             head + q.rotate({h == 1 ? 0.20f : -0.20f, 0, 0.12f}) + Vec3{0, -0.48f, 0}};
 }
@@ -1946,7 +1978,7 @@ Pose Game::botBlockGrip(int p, int h, int plan, const BallPathPt& x) const {
         if (h == 0) ko.x = -ko.x;
         return {gq, x.pos - gq.rotate(ko)};
     }
-    const Quat gq = pl[p].in.head.q * Quat::axisAngle({1, 0, 0}, deg2rad(-20));   // a catch: the hand as at rest
+    const Quat gq = botFacing(p) * Quat::axisAngle({1, 0, 0}, deg2rad(-20));   // a catch: the hand as at rest
     return {gq, x.pos - gq.rotate(tun.catcherOffset)};
 }
 
@@ -2117,8 +2149,8 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
         r.relQ[h] = s.botPhysQ[h];
         if (r.mode == 1) {   // a ball coming at it: from its stance into the ready one (hands up in a guard catch balls by
             const BotStance& k = kStances[STANCE_KITTEN];   // themselves, and send some into its own foul zone)
-            r.rel[h] = s.in.head.q.rotate(k.pos[h]);
-            r.relQ[h] = s.in.head.q * Quat::axisAngle({1, 0, 0}, deg2rad(k.rot[h].x));
+            r.rel[h] = botFacing(p).rotate(k.pos[h]);
+            r.relQ[h] = botFacing(p) * Quat::axisAngle({1, 0, 0}, deg2rad(k.rot[h].x));
         }
     }
     // (and its head steady: it stops bobbing while it watches)
@@ -2167,7 +2199,7 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
         else passive = std::max(passive, tryOut(0xFFFFFFFFu, BOT_NONE, -1, none, still, -1));
         if (passive == 0)   // (its answer must come before the ball reaches it)
             for (const BallPathPt& x : r.path)
-                if (x.t >= now && dot(x.pos - head, s.in.head.q.rotate({0, 0, -1})) < 0.6f) { r.hitT = x.t; break; }
+                if (x.t >= now && dot(x.pos - head, botFacing(p).rotate({0, 0, -1})) < 0.6f) { r.hitT = x.t; break; }
     }
     const PlayerState::BotRead& other = s.botRead[1 - k];
     // (its defence may take the hand a catch of its own ball has: that catch plans again, the owner 2026-11-17)
@@ -2213,11 +2245,11 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
     // out of the ball's way: the smallest step, lean or duck that clears it, made in time
     // (tried out: its hands come along, and a shield up must not catch the ball on the way)
     auto dodge = [&](int need) {
-        const Vec3 right = s.in.head.q.rotate({1, 0, 0});
+        const Vec3 right = botFacing(p).rotate({1, 0, 0});
         const Vec3 stand = tun.start[p] + Vec3{0, 1.62f, 0};
         struct Spot { float cost; Vec3 o; uint32_t key; };
         std::vector<Spot> ok;
-        const Vec3 fwd = s.in.head.q.rotate({0, 0, -1});
+        const Vec3 fwd = botFacing(p).rotate({0, 0, -1});
         const float steps[3] = {0.f, 0.3f, -0.15f};   // (a step forward or back, for a ball coming in on a slant)
         // (how far the ball's path stays from a body standing at offset o: below zero, it touches)
         auto gap = [&](const Vec3& o) {
@@ -2357,7 +2389,7 @@ void Game::botPlanShot(int p, const BotSkill& sk, int hand) {
     if (sk.hunts) {   // the attack plan: this throw's aim, tried as it would fly (strike first, or at the player)
         PlayerState& s = pl[p];
         const int opp = botAim(p), k = s.botShotsTried++, h = hand >= 0 ? hand : s.ball.heldHand;
-        const Vec3 fwd = s.in.head.q.rotate({0, 0, -1});
+        const Vec3 fwd = botFacing(p).rotate({0, 0, -1});
         const Vec3 rel = botShoulder(p, h) + fwd * 0.45f;
         Vec3 spin;
         const int style = k < 8 ? s.botStyle : HUNT_STRAIGHT;   // (its shape, eight ways; then straight, if none works)
@@ -2396,7 +2428,7 @@ void Game::botPlanShot(int p, const BotSkill& sk, int hand) {
     }
     PlayerState& s = pl[p];
     const int opp = botAim(p), k = s.botShotsTried++, h = s.ball.heldHand;
-    const Vec3 fwd = s.in.head.q.rotate({0, 0, -1});
+    const Vec3 fwd = botFacing(p).rotate({0, 0, -1});
     const Vec3 rel = botShoulder(p, h) + fwd * 0.45f;   // about where its hand lets go
     Vec3 aim = chestPoint(opp) + Vec3{rnd() - 0.5f, rnd() - 0.5f, rnd() - 0.5f} * 0.15f, spin{};
     const float sgn = rnd() < 0.5f ? -1.f : 1.f;
@@ -2440,6 +2472,37 @@ void Game::botPlanShot(int p, const BotSkill& sk, int hand) {
     if (score > s.botShotScore) { s.botShotScore = score; s.botShotDir = dir; s.botShotSpin = spin; }
 }
 
+// BOT IDLE MOTION's celebrations, chosen by the moment they happen (no random draw: the bot's choices stay as they were)
+static uint32_t momentHash(float now, int p, uint32_t salt) {
+    uint32_t h = (uint32_t)(now * 1000.f) * 2654435761u ^ ((uint32_t)p * 40503u + salt * 0x9E3779B9u);
+    h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+    return h;
+}
+
+bool Game::botGuitar(int p, const PlayerInput& in, Mat4& place, float& show) const {
+    if (p < 0 || p >= np) return false;
+    const PlayerState& s = pl[p];
+    if (!s.isBot || s.botProp < 0.02f || !in.headTracked || !in.hand[0].tracked) return false;
+    // slung across it: the body at its ribs, the neck through the hand that holds it (its left), the face to the front
+    const Quat q = botFacing(p);
+    const Vec3 right = q.rotate({1, 0, 0}), fwd = q.rotate({0, 0, -1});
+    const Vec3 body = in.head.p + right * 0.10f + fwd * 0.10f - kUp * 0.44f;
+    Vec3 neck = in.hand[0].grip.p - body;
+    if (length2(neck) < 0.04f) return false;   // (the hand not out on a neck: nothing to hold it by)
+    neck = normalize(neck);
+    Vec3 face = fwd - neck * dot(fwd, neck);
+    if (length2(face) < 1e-4f) return false;
+    face = normalize(face);
+    const Vec3 z = face * -1.f, y = cross(z, neck);
+    const float k = 0.7f + 0.3f * s.botProp;   // (it grows into its hands)
+    place = Mat4::identity();
+    const Vec3 col[3] = {neck * k, y * k, z * k};
+    for (int c = 0; c < 3; ++c) { place.m[c * 4] = col[c].x; place.m[c * 4 + 1] = col[c].y; place.m[c * 4 + 2] = col[c].z; }
+    place.m[12] = body.x; place.m[13] = body.y; place.m[14] = body.z;
+    show = s.botProp;
+    return true;
+}
+
 void Game::stepBot(int p, float dt) {
     // Practice opponent following the same rules (shield only while holding a charged ball), moving as a person
     // can: a body that steps, leans and ducks, two arms of a person's reach and speed, either hand for everything
@@ -2470,10 +2533,23 @@ void Game::stepBot(int p, float dt) {
     // the torso, owner's report 2026-10-29)
     s.botSteady += ((s.botRead[0].mode || s.botRead[1].mode || meet ? 1.f : 0.f) - s.botSteady) * std::min(1.f, dt * 5.f);
     auto bob = [&]() { return Vec3{0, 0.03f * st.bob * (1.f - s.botSteady) * std::sin(now * 2.1f * std::sqrt(st.bob)), 0}; };
-    // a bow (KARATE, at the fist bump): the head down and forward
-    s.botBow += ((s.botStance == STANCE_KARATE && meet && meetBumped ? 1.f : 0.f) - s.botBow) * std::min(1.f, dt * 6.f);
+    // BOT IDLE MOTION (0.3.26): the match won (its team's), its victory pose until the next match
+    const bool wonMatch = tun.botIdle && match == MatchState::MatchSummary && matchWinner >= 0 && team(p) == matchWinner &&
+                          !s.coach.on && !botFrozen;
+    if (wonMatch && !s.botWonSeen) s.botWinKind = (int)(momentHash(now, p, 2) % 3u);   // (a new win: which celebration)
+    s.botWonSeen = wonMatch;
+    // (AIR GUITAR's guitar comes to its hands once they are up to it, and goes with the pose)
+    s.botProp = wonMatch && s.botWinKind == 1 ? std::min(1.f, s.botProp + dt * 1.6f) : std::max(0.f, s.botProp - dt * 4.f);
+    const bool ownPose = wonMatch && s.botWinKind == 0;   // (its stance's own: KARATE's is its bow)
+    // a bow (KARATE, at the fist bump; and its victory pose): the head down and forward
+    s.botBow += ((s.botStance == STANCE_KARATE && ((meet && meetBumped) || ownPose) ? 1.f : 0.f) - s.botBow) * std::min(1.f, dt * 6.f);
+    const float rhythm = 1.7f * p + 0.9f * s.botStance;   // (BOT IDLE MOTION: each bot its own)
     auto headAt = [&]() {
-        return Pose{q * Quat::axisAngle({1, 0, 0}, -0.6f * s.botBow), stand + s.botBody + bob() + fwd * (0.10f * s.botBow) - Vec3{0, 0.12f * s.botBow, 0}};
+        // (its rules' turn as it always was, botFace; drawn and sent with its glance, botLook; a breath when at ease)
+        s.botFace = q * Quat::axisAngle({1, 0, 0}, -0.6f * s.botBow);
+        s.botFaceSet = true;
+        const Vec3 breath{0, 0.006f * s.botIdle * std::sin(now * 1.55f + rhythm), 0};
+        return Pose{s.botFace * s.botLook, stand + s.botBody + bob() + breath + fwd * (0.10f * s.botBow) - Vec3{0, 0.12f * s.botBow, 0}};
     };
     Ball& b = s.ball;
     s.in.headTracked = true;
@@ -2516,6 +2592,288 @@ void Game::stepBot(int p, float dt) {
     if (b.state == BallState::Held) want[b.heldHand].p = s.in.head.p + Vec3{0, -0.15f, 0} + side(b.heldHand) * 0.30f - fwd * 0.10f;
     // (it stops swaying while it watches a ball)
     Vec3 bodyWant = right * (meet ? 0.f : 0.15f * std::sin(now * 0.9f)) - Vec3{0, st.crouch, 0};
+    // BOT IDLE MOTION (0.3.26; the owner, 2026-11-22: "idle animations for the bots to help make them less stiff between
+    // shots"; "taunt if someone isn't throwing and victory poses also"). At ease between shots it breathes, its hands
+    // drift a little on their own, its weight shifts and it glances about; someone holding their ball without throwing
+    // gets a taunt, stronger the longer they wait; a point won, a fist pump; the match won, its stance's victory pose.
+    // Its real hands move (a ball thrown mid-taunt can catch it out: "that's more human like than anything. we get hit
+    // while taunting and not focused"), back to its guard at its level's speed; the best taunt closer to their guard.
+    // Not for a coach (TRAINING) or in its tryouts; no random draws (its choices as before)
+    const bool still = !tun.botIdle || s.coach.on || botFrozen || (octagon() && !alive(p));
+    const bool atEaseNot = reads[0]->mode || reads[1]->mode || meet || s.botThrow != 0 || still;
+    s.botIdle += ((atEaseNot ? 0.f : 1.f) - s.botIdle) * std::min(1.f, dt * (atEaseNot ? 12.f : 1.5f));
+    const float levelF = clampf((s.botLevel >= 0 ? (float)s.botLevel : (float)tun.botLevel) / std::max(1.f, kBotLevels - 1.f), 0.f, 1.f);
+    auto freeHand = [&](int h) { return !(b.state == BallState::Held && b.heldHand == h) && !handBusy(h); };
+    const Vec3 up = kUp;
+    // THE WRISTS (0.3.26; the owner, 2026-11-24, the animations seen in the asset viewer: "check all the animations for
+    // correct wrist movements"): a gesture's hand turned as its arm has it. The rig draws the elbow where the back of
+    // the hand points, as near as the arm's two bones allow (avatar.cpp solveRig), so a hand turned by a set angle bent
+    // the wrist wherever the two disagreed (a clap's by 100 degrees). Here the elbow comes first, where an arm hangs
+    // (down, a little out and back; out to the side for a hand over its shoulder), the back of the hand turned to it,
+    // its palm toward `palm` as far as that leaves free; then bent at the wrist by `flex` (rad, toward the palm).
+    // For where the hand is now, not where it is going: its wrist is straight all the way there. (elbowWay: where the
+    // elbow goes instead, from the wrist: a guitarist's strumming arm, its elbow out behind the guitar)
+    auto armTurn = [&](int h, const Vec3& palm, float flex = 0.f, const Vec3* elbowWay = nullptr) {
+        // (the avatars' arms as the rig sizes them to a bot's reach, about 52 cm, and their shoulders: avatar.cpp)
+        const float sd = h == 1 ? 1.f : -1.f, kU = 0.272f, kF = 0.248f;
+        const Vec3 at = s.botHand[h], S = s.in.head.p + q.rotate({sd * 0.21f, 0, 0.14f}) - up * 0.25f;
+        const Vec3 lineL = normalize(Vec3{0, 0.047f, -1.f}), palmL{-sd, 0, 0}, wristL{sd * 0.004f, -0.042f, 0.105f};
+        Vec3 f = length2(at - S) > 1e-6f ? normalize(at - S) : fwd;   // (the forearm's way, elbow to wrist)
+        Quat t = q;
+        for (int it = 0; it < 3; ++it) {
+            t = fromTo(lineL, f);
+            Vec3 to = palm - f * dot(palm, f);
+            if (length2(to) > 1e-6f) {   // (about the forearm, until the palm is as near `palm` as it gets)
+                to = normalize(to);
+                const Vec3 have = t.rotate(palmL);
+                t = Quat::axisAngle(f, std::atan2(dot(cross(have, to), f), dot(have, to))) * t;
+            }
+            const Vec3 d = at + t.rotate(wristL) - S;   // (the elbow for it: two bones from its shoulder to this wrist)
+            const float len = clampf(length(d), 0.05f, kU + kF - 1e-3f);
+            const Vec3 dn = length2(d) > 1e-8f ? normalize(d) : fwd;
+            // (a full reach is drawn straight, from 96% of the arm: solveWith's FULL REACH, STRAIGHT)
+            const float ext = len / (kU + kF), bent = 1.f - clampf((ext - 0.96f) / 0.025f, 0.f, 1.f);
+            const float e = clampf(dot(dn, up) * 1.4f, 0.f, 1.f);
+            Vec3 pole = elbowWay ? *elbowWay : lerp(q.rotate({sd * 0.35f, -1.f, 0.25f}), q.rotate({sd, 0.15f, 0.35f}), e);
+            pole = pole - dn * dot(pole, dn);
+            if (length2(pole) < 1e-6f) break;
+            const float along = (kU * kU - kF * kF + len * len) / (2.f * len);
+            const Vec3 E = S + dn * along + normalize(pole) * (bent * std::sqrt(std::max(0.f, kU * kU - along * along)));
+            f = normalize(S + dn * len - E);
+        }
+        if (flex != 0.f) {
+            const Vec3 axis = cross(f, t.rotate(palmL));
+            if (length2(axis) > 1e-6f) t = Quat::axisAngle(normalize(axis), flex) * t;
+        }
+        return t;
+    };
+    if (s.botIdle > 0.001f) {   // breathing (the guard easing with it), each hand's own drift, the weight shifting
+        // (the better its level the less it moves: UNBEATABLE's guard barely shifts)
+        const float breath = std::sin(now * 1.55f + rhythm), k = s.botIdle * (1.f - 0.85f * levelF);
+        for (int h = 0; h < 2; ++h)
+            if (freeHand(h))
+                want[h].p += (right * (0.025f * std::sin(now * 0.71f + rhythm + h * 2.1f)) +
+                              up * (0.02f * std::sin(now * 0.53f + rhythm * 1.3f + h) + 0.012f * breath) +
+                              fwd * (0.015f * std::sin(now * 0.37f + h))) * k;
+        bodyWant.y -= 0.02f * k * std::fabs(std::sin(now * 0.9f));
+    }
+    {   // TAUNTS WHEN SOMEONE STALLS: the one it aims at holding their ball 4 s without throwing. Between its own throws
+        // (no ball coming at it, not mid-throw): three seconds of taunt, its throw waiting, then two to throw in, while they
+        // keep holding (0.3.26, the owner's test: a taunt waited for the bot to be at ease, and one attacking you never is:
+        // "I also held the ball but never saw a taunt, just kept throwing balls at me")
+        const bool stalling = match == MatchState::InProgress && opp != p && pl[opp].ball.state == BallState::Held && !still;
+        s.botStall = stalling ? s.botStall + dt : 0.f;
+        bool attacked = false;
+        for (const PlayerState::BotRead* r : reads) attacked |= r->mode == 1;
+        const float beat = std::fmod(std::max(0.f, s.botStall - 4.f), 5.f);
+        const bool taunt = stalling && s.botStall > 4.f && beat < 3.f && !attacked && s.botThrow == 0 && !meet;
+        s.botTaunt += ((taunt ? 1.f : 0.f) - s.botTaunt) * std::min(1.f, dt * (taunt ? 2.5f : 12.f));
+        if (taunt && b.state == BallState::Held) s.botTimer = std::max(s.botTimer, 0.3f);   // (its throw waits for the taunt)
+    }
+    bool tauntFists = false;   // (pounding its chest: both fists clenched)
+    if (s.botTaunt > 0.001f) {
+        const float amp = s.botTaunt * (1.f - 0.6f * levelF);   // (the best keep closer to their guard)
+        const Vec3 hp = s.in.head.p;
+        // a beckon first; then arms spread wide (or a shrug); then its stance's own; and round again while they wait
+        int g = s.botStall < 7.f ? 0 : s.botStall < 10.f ? 1 + (p & 1) : 3;
+        if (s.botStall >= 13.f) g = 1 + (int)((s.botStall - 13.f) / 3.f) % 3;
+        Pose tw[2] = {want[0], want[1]};
+        const int one = freeHand(1) ? 1 : 0;   // (the hand it gestures with)
+        bool armed = false;   // (THE WRISTS: the hands' turn is their arms' own, whole, however far the hands go)
+        bool chest = false;
+        if (g == 0) {   // come on: palms up, both forearms reaching out and curling in (one, its ball in the other)
+            // (0.3.26, the owner in the asset viewer: a fist by its belly, rocking a few centimetres, didn't read. Then:
+            // "the elbows move into the body unnaturally": the curl turned the knuckles outward, the wrists and forearms
+            // in across its chest. Now the fingers tip up toward it, the hands a little wider and lower, elbows at its sides)
+            const float curl = 0.5f + 0.5f * std::sin(now * 7.f);
+            // (THE WRISTS: the curl is the wrist's own now, the forearms lifting with it)
+            armed = true;
+            for (int k = 0; k < 2; ++k)
+                tw[k] = {armTurn(k, up, 0.6f * curl),
+                         hp + fwd * (0.18f + 0.12f * (1.f - curl)) - up * (0.50f - 0.16f * curl) + side(k) * 0.24f};
+        } else if (g == 1) {   // here I am: arms spread wide, palms to the front
+            armed = true;
+            for (int h = 0; h < 2; ++h) tw[h] = {armTurn(h, fwd + up * 0.5f), hp + side(h) * 0.62f - up * 0.22f + fwd * 0.08f};
+        } else if (g == 2) {   // a shrug: hands out low, palms up, the shoulders lifting
+            armed = true;
+            for (int h = 0; h < 2; ++h)
+                tw[h] = {armTurn(h, up), hp + side(h) * 0.38f - up * (0.62f - 0.06f * std::fabs(std::sin(now * 3.f))) + fwd * 0.18f};
+        } else if (s.botStance == STANCE_BOXER) {   // its gloves tapped together, knuckles to knuckles
+            armed = true;
+            for (int h = 0; h < 2; ++h)
+                tw[h] = {armTurn(h, up * -1.f), hp + fwd * 0.30f - up * 0.16f + side(h) * (0.05f + 0.05f * std::fabs(std::sin(now * 6.f)))};
+        } else if (s.botStance == STANCE_MONKEY) {   // bouncing, its arms shaken out
+            bodyWant.y += 0.12f * amp * std::fabs(std::sin(now * 5.f));
+            for (int h = 0; h < 2; ++h) tw[h] = {stanceQ(h), hp + side(h) * 0.45f - up * (0.35f + 0.1f * std::sin(now * 10.f + h)) + fwd * 0.1f};
+        } else {   // pounding its chest: a fist drawn back and driven into the top of its chest, over and over
+            // (0.3.26, the owner in the asset viewer, 2026-11-24: "tap on chest should be higher on chest and more
+            // aggressive": it patted its belly, 5 cm of travel. Now 11 cm higher, a 20 cm wind-up struck fast and drawn
+            // back slower, its chest thrown out at each blow, the other fist clenched out at its side)
+            armed = chest = true;
+            const float ph = now * 2.f - std::floor(now * 2.f);
+            const float back = ph < 0.25f ? 1.f - (ph / 0.25f) * (ph / 0.25f)        // (1 drawn back .. 0 the blow, held
+                                          : ph < 0.4f ? 0.f : (ph - 0.4f) / 0.6f;     // a moment on its chest)
+            const Vec3 elbowOut = side(one) - up * 0.25f;   // (its elbow out to the side, the forearm across its chest)
+            tw[one] = {armTurn(one, fwd * -1.f, 0.f, &elbowOut),
+                       hp + fwd * (0.02f + 0.22f * back) - up * 0.27f + side(one) * (0.05f + 0.07f * back)};
+            tw[1 - one] = {armTurn(1 - one, side(1 - one) * -1.f), hp + side(1 - one) * 0.36f - up * 0.52f + fwd * 0.04f};
+            bodyWant = bodyWant + fwd * (0.05f * amp * (1.f - back));
+            if (!reads[0]->mode && !reads[1]->mode && s.botTaunt > 0.9f) speed[one] = std::max(speed[one], 3.5f);   // (a blow)
+        }
+        for (int h = 0; h < 2; ++h)
+            if (freeHand(h)) want[h] = {nlerp(want[h].q, tw[h].q, armed ? std::min(1.f, s.botTaunt * 3.f) : amp), lerp(want[h].p, tw[h].p, amp)};
+        tauntFists = chest;
+    }
+    // a point won: one of four, chosen by the moment it comes (0.3.26, the owner: "a little variety for the in game point
+    // fist pump, it just kept repeating the same animation every time it hit me"): a fist pump, a double pump, a point
+    // at them, a clap (both hands free; otherwise a double pump); and a look up at the stands
+    if (s.botScoreSeen >= 0 && s.score > s.botScoreSeen && match == MatchState::InProgress && !still) {
+        s.botCheer = 1.1f;
+        s.botCheerKind = (int)(momentHash(now, p, 1) % 4u);
+    }
+    s.botScoreSeen = s.score;
+    s.botCheer = std::max(0.f, s.botCheer - dt);
+    const int cheerKind = s.botCheerKind == 3 && !(freeHand(0) && freeHand(1)) ? 1 : s.botCheerKind;
+    if (s.botCheer > 0 && !wonMatch) {
+        const int h = freeHand(1) ? 1 : freeHand(0) ? 0 : -1;
+        const float t = 1.1f - s.botCheer;
+        const float ease = t < 0.2f ? t / 0.2f : t > 0.8f ? std::max(0.f, (1.1f - t) / 0.3f) : 1.f;   // (in, held, out)
+        const Vec3 hp = s.in.head.p;
+        if (h >= 0 && cheerKind == 0) {   // the fist pump
+            const float lift = t < 0.25f ? t / 0.25f : t < 0.7f ? 1.f - 0.35f * std::fabs(std::sin((t - 0.25f) * 14.f))
+                                                                : std::max(0.f, 1.f - (t - 0.7f) / 0.4f);
+            want[h] = {nlerp(want[h].q, q * Quat::axisAngle({1, 0, 0}, 1.2f), lift),
+                       lerp(want[h].p, hp + up * 0.05f + side(h) * 0.22f + fwd * 0.18f, lift)};
+            speed[h] = std::max(speed[h], 3.f);
+        } else if (h >= 0 && cheerKind == 1) {   // a double pump: both fists (the free ones) thrust up over its head, twice
+            // (0.3.26, the owner in the asset viewer, 2026-11-24: "some aren't quite getting the animation": one fist
+            // lifted twice by its face looked just like the fist pump)
+            const float pump = t < 0.2f || t > 0.8f ? 0.f : std::fabs(std::sin((t - 0.2f) * kPi / 0.3f));
+            for (int k = 0; k < 2; ++k)
+                if (freeHand(k)) {
+                    want[k] = {nlerp(want[k].q, armTurn(k, fwd - side(k) * 0.6f), std::min(1.f, ease * 2.f)),
+                               lerp(want[k].p, hp + up * (0.30f * pump - 0.04f) + side(k) * 0.26f - fwd * 0.04f, ease)};
+                    speed[k] = std::max(speed[k], 3.5f);
+                }
+        } else if (h >= 0 && cheerKind == 2) {   // a point at them: its arm out at its shoulder, the fist at them, two jabs
+            // (0.3.26, the owner in the asset viewer: "the point at you" kept its guard's turn, the fist up and back, and
+            // looked away at the stands; now the knuckles go at them, as they look, with "you!" twice)
+            const Vec3 sh = hp + side(h) * 0.16f - up * 0.27f;
+            Vec3 to = pl[opp].in.head.p - sh;
+            to = length2(to) > 1e-4f ? normalize(to) : fwd;
+            const float jab = t > 0.3f && t < 0.75f ? std::fabs(std::sin((t - 0.3f) * kPi / 0.225f)) : 0.f;
+            want[h] = {nlerp(want[h].q, armTurn(h, side(h) * -1.f - up * 0.4f), std::min(1.f, ease * 2.f)),
+                       lerp(want[h].p, sh + to * (0.46f + 0.06f * jab), ease)};
+            speed[h] = std::max(speed[h], 3.f);
+        } else if (cheerKind == 3) {   // a clap: both hands together in front, three times
+            const float apart = 0.02f + 0.13f * (0.5f + 0.5f * std::cos(t * 2.f * kPi / 0.3f));
+            for (int k = 0; k < 2; ++k) {
+                const Pose c{armTurn(k, side(k) * -1.f), hp + fwd * 0.32f - up * 0.36f + side(k) * apart};   // (palm to palm)
+                want[k] = {nlerp(want[k].q, c.q, std::min(1.f, ease * 2.f)), lerp(want[k].p, c.p, ease)};
+                speed[k] = std::max(speed[k], 4.f);
+            }
+        }
+    }
+    if (wonMatch) {   // VICTORY POSES: each stance its own, or (0.3.26, the owner: "air guitar for example") one of two more
+        const Vec3 hp = s.in.head.p;
+        Pose vp[2] = {want[0], want[1]};
+        // (THE WRISTS: every pose's hands turned as their arms have them, armTurn)
+        if (s.botWinKind == 1) {
+            // AIR GUITAR, as a guitar is played (0.3.26, the owner in the asset viewer, 2026-11-24: a fist jerking up
+            // and down at its hip read as something else entirely: "we can't leave that like that"). The guitar slung
+            // across it, its neck up and out to its left: the left hand high on the neck, palm to its face, sliding
+            // along it, its fingers working the frets; the right hand an open pick hand.
+            // THE STROKE (the owner, 2026-11-24: "the guitar should be a slow and exaggerated guitar stroke"): quick
+            // strumming from the wrist is gone. Three slow strokes a bar, 1.8 s each: the hand raised out by its right
+            // shoulder, swept down across the strings and on past its hip (0.6 s), left there while the chord rings,
+            // then raised again round the outside; the third from over its head, the neck lifted for it. Its knees
+            // sink into each one
+            const Vec3 neck = normalize(up * 0.45f - right * 0.85f + fwd * 0.15f);
+            const float kStroke = 1.8f;
+            const float bar = std::fmod(now, 3.f * kStroke), ph = std::fmod(bar, kStroke) / kStroke;
+            const bool big = bar >= 2.f * kStroke;   // (the third: from over its head)
+            const float lead = big ? 0.22f : 0.f;                 // (the lift before it, as part of the stroke's time)
+            const float downEnd = lead + 0.6f / kStroke, ringEnd = downEnd + (big ? 0.12f : 0.17f);
+            auto ease = [](float t) { t = std::max(0.f, std::min(1.f, t)); return t * t * (3.f - 2.f * t); };
+            const Vec3 top = hp + right * 0.30f + fwd * 0.06f + up * 0.20f;     // over its head, on its right
+            const Vec3 high = hp + right * 0.30f + fwd * 0.22f - up * 0.05f;    // out by its right shoulder
+            const Vec3 strings = hp + right * 0.07f + fwd * 0.16f - up * 0.42f; // the strings, over the guitar's body
+            const Vec3 low = hp + right * 0.24f + fwd * 0.04f - up * 0.70f;     // past its hip, the arm long
+            auto through = [](const Vec3* pt, int n, float u) {   // a smooth line through the points (Catmull-Rom)
+                const float x = std::max(0.f, std::min(1.f, u)) * (float)(n - 1);
+                const int i = std::min(n - 2, (int)x);
+                const float t = x - (float)i;
+                const Vec3& p0 = pt[std::max(0, i - 1)];
+                const Vec3& p1 = pt[i];
+                const Vec3& p2 = pt[i + 1];
+                const Vec3& p3 = pt[std::min(n - 1, i + 2)];
+                return (p1 * 2.f + (p2 - p0) * t + (p0 * 2.f - p1 * 5.f + p2 * 4.f - p3) * (t * t) +
+                        (p1 * 3.f - p0 - p2 * 3.f + p3) * (t * t * t)) * 0.5f;
+            };
+            Vec3 pick;
+            float sweep = 0.f;   // (0 raised .. 1 at the end of the stroke: the wrist leads, the knees sink)
+            float hit = 0.f;     // (1 as the hand crosses the strings)
+            if (ph < lead) {                 // (the third stroke: up over its head first)
+                const float e = ease(ph / lead);
+                pick = high + (top - high) * e + right * (0.06f * std::sin(e * kPi));
+            } else if (ph < downEnd) {       // (the stroke)
+                sweep = ease((ph - lead) / (downEnd - lead));
+                if (big) { const Vec3 pt[4] = {top, high, strings, low}; pick = through(pt, 4, sweep); }
+                else { const Vec3 pt[3] = {high, strings, low}; pick = through(pt, 3, sweep); }
+                hit = std::sin(sweep * kPi);
+                speed[1] = std::max(speed[1], big ? 4.5f : 3.f);
+            } else if (ph < ringEnd) {       // (the chord rings: the hand left where the stroke ended)
+                sweep = 1.f;
+                pick = low;
+            } else {                         // (raised again, round the outside)
+                const float e = ease((ph - ringEnd) / (1.f - ringEnd));
+                sweep = 1.f - e;
+                pick = low + (high - low) * e + (right * 0.12f + fwd * 0.05f) * std::sin(e * kPi);
+            }
+            const float lift = big ? std::sin(std::min(1.f, ph / downEnd) * kPi) : 0.f;
+            vp[0] = {armTurn(0, hp - s.botHand[0] + up * 0.25f),
+                     hp - right * 0.40f + fwd * 0.22f - up * 0.10f + neck * (0.05f * std::sin(now * 1.7f)) + up * (0.07f * lift)};
+            const Vec3 elbowOut = right * 0.8f - fwd * 0.5f - up * 0.1f;   // (the forearm lies across the guitar)
+            vp[1] = {armTurn(1, fwd * -1.f - up * 0.3f, -0.3f + 0.5f * sweep, &elbowOut), pick};
+            bodyWant.y -= 0.02f + 0.05f * std::max(hit, ph >= downEnd && ph < ringEnd ? 0.6f : 0.f);   // (its knees into the stroke)
+        } else if (s.botWinKind == 2) {   // RAISE THE ROOF: elbows bent, hands by its head, pushed up over it and back
+            // (0.3.26, the owner in the asset viewer: arms held up, moving 10 cm at the top of its reach, looked like
+            // the other arms-up poses; now from its head to over it, its knees bouncing with each push; the palms tipped
+            // back to the roof as far as a wrist goes)
+            const float push = std::fabs(std::sin(now * 4.f));
+            for (int h = 0; h < 2; ++h)
+                vp[h] = {armTurn(h, fwd, -0.45f), hp + up * (0.02f + 0.30f * push) + side(h) * 0.30f - fwd * 0.04f};
+            bodyWant.y -= 0.05f * (1.f - push);
+        } else switch (s.botStance) {
+        case STANCE_BOXER:   // flexing: fists by its ears, elbows out, the wrists curled in
+            for (int h = 0; h < 2; ++h)
+                vp[h] = {armTurn(h, side(h) * -1.f, 0.4f), hp + side(h) * 0.30f + up * (0.02f + 0.03f * std::sin(now * 4.f)) - fwd * 0.10f};
+            break;
+        case STANCE_KARATE:   // a bow (botBow), its fist in the other palm
+            vp[1] = {armTurn(1, up * -1.f), hp + fwd * 0.30f - up * 0.34f + right * 0.05f};
+            vp[0] = {armTurn(0, right), hp + fwd * 0.30f - up * 0.32f - right * 0.07f};
+            break;
+        case STANCE_MONKEY:   // jumping, its arms up
+            bodyWant.y = -st.crouch + 0.2f * std::fabs(std::sin(now * 4.5f));
+            for (int h = 0; h < 2; ++h) vp[h] = {armTurn(h, fwd), hp + up * 0.38f + side(h) * 0.25f - fwd * 0.06f};
+            break;
+        case STANCE_KITTEN: {   // a big wave: one open hand high over its shoulder, swung side to side from the elbow
+            // (0.3.26, the owner in the asset viewer, 2026-11-24: its two fists waggling by its face, "waving its
+            // paws", were "weird and not very obvious what it is doing and again is suggestive". A wave is a wave)
+            const int w = !handBusy(1) && !(b.state == BallState::Held && b.heldHand == 1) ? 1 : 0, o = 1 - w;
+            const float a = 0.55f * std::sin(now * 5.5f);
+            vp[w] = {armTurn(w, fwd), hp + side(w) * 0.30f - up * 0.06f - fwd * 0.04f + (side(w) * std::sin(a) + up * std::cos(a)) * 0.30f};
+            vp[o] = {armTurn(o, side(o) * -1.f), hp + side(o) * 0.27f - up * 0.58f + fwd * 0.04f};   // (the other at its side)
+            bodyWant.y -= 0.03f * std::fabs(std::sin(now * 2.75f));   // (a happy bounce)
+            break;
+        }
+        default:   // RELAXED (and MANTIS): both arms raised
+            for (int h = 0; h < 2; ++h) vp[h] = {armTurn(h, fwd - side(h) * 0.3f), hp + up * 0.42f + side(h) * 0.30f - fwd * 0.05f};
+            break;
+        }
+        for (int h = 0; h < 2; ++h)   // (a ball still in its hand goes up with it: no play now)
+            if (!handBusy(h)) { want[h] = vp[h]; speed[h] = std::max(speed[h], 2.5f); }
+    }
     bool threatened = false;
     for (const PlayerState::BotRead* r : reads) {
         // (no throw while a ball comes at it: a wind-up could swing its shield into it. Four players: only an attack that
@@ -2684,6 +3042,36 @@ void Game::stepBot(int p, float dt) {
         if (length2(o - s.botBody) > 1e-10f) s.botBodyVel = {};   // (at the edge of where it can go)
         s.botBody = o;
     }
+    {   // its glances (BOT IDLE MOTION): a ball coming, its eyes on it; at ease, about the room (drawn and sent only)
+        Vec3 at = s.in.head.p + fwd * 4.f;
+        float nearest = 1e9f;
+        for (int o = 0; o < np; ++o) {   // (busy: the nearest ball in flight)
+            const Ball& ob = pl[o].ball;
+            if (s.botIdle > 0.5f || (ob.state != BallState::Flying && ob.state != BallState::Returning)) continue;
+            const float d = length(ob.pos - s.in.head.p);
+            if (d < nearest) { nearest = d; at = ob.pos; }
+        }
+        if (s.botIdle > 0.5f) {
+            const Vec3 them = pl[opp].in.head.p;
+            // (THE WRISTS: the chest turns with the head, and a pose made for a body facing ahead was twisted 30 degrees
+            // by a glance to one side: celebrating, it looks up the middle of the stands, or at them)
+            if (wonMatch || (s.botCheer > 0 && cheerKind == 2)) at = them;   // (its win, or pointing at them: its eyes on them)
+            else if (s.botCheer > 0) at = s.in.head.p + fwd * 3.f + up * 2.5f + right * ((p & 1) ? 0.4f : -0.4f);   // (the stands)
+            else if (s.botStall > 1.f) at = lerp(them, pl[opp].ball.pos, 0.5f);   // (them and the ball they hold)
+            else {   // (now and then: the one it aims at, the stands, back to the middle)
+                const uint32_t seg = (uint32_t)std::max(0.f, (now + rhythm * 2.f) / 3.5f) * 2654435761u + (uint32_t)p * 40503u;
+                const int pick = (int)((seg >> 13) % 6u);
+                if (pick == 2 || pick == 3) at = them;
+                else if (pick == 4) at = s.in.head.p + fwd * 6.f + up * 3.f + right * (((seg >> 7) & 1) ? 4.f : -4.f);
+            }
+        }
+        const Vec3 d = q.conj().rotate(at - s.in.head.p);   // (from the way it faces, not its bow: KARATE's stays a bow)
+        const float yaw = clampf(std::atan2(-d.x, -d.z), -0.7f, 0.7f);
+        const float pitch = clampf(std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)), -0.45f, 0.5f);
+        // (none for a coach; KARATE's eyes down as it bows)
+        const Quat look = (still && !wonMatch) || (ownPose && s.botStance == STANCE_KARATE) ? Quat{} : Quat::axisAngle(kUp, yaw) * Quat::axisAngle({1, 0, 0}, pitch);
+        s.botLook = nlerp(s.botLook, look, std::min(1.f, dt * (s.botIdle > 0.5f ? 3.f : 8.f)));
+    }
     s.in.head = headAt();
     int bump = -1;   // the fist bump (owner, 2026-10-28): one offers a fist in its ring, the other meets it there
     bool bumpClosed = false;
@@ -2727,6 +3115,16 @@ void Game::stepBot(int p, float dt) {
         HandInput& hi = s.in.hand[h];
         hi.grip = {s.botHandQ[h], s.botHand[h]};
         hi.trigger = (b.state == BallState::Held && b.heldHand == h) || (h == bump && bumpClosed) ? 1.f : 0.f;   // (a fist for the bump)
+        // (BOT IDLE MOTION, drawn only: a bot's trigger changes no rule: a fist pumped or posed, a beckon's fingers)
+        if (hi.trigger < 0.5f && freeHand(h)) {
+            if (wonMatch && s.botWinKind == 1)   // (AIR GUITAR: a pick held loosely, the fingers on the frets working)
+                hi.trigger = h == 1 ? 0.5f : 0.55f + 0.3f * std::sin(now * 9.f);
+            else if (wonMatch && s.botWinKind == 2) hi.trigger = 0.f;                // (RAISE THE ROOF: open hands)
+            else if (wonMatch) hi.trigger = s.botStance == STANCE_KITTEN ? 0.f : 1.f;   // (KITTEN: an open hand, waving)
+            else if (s.botCheer > 0) hi.trigger = cheerKind == 3 ? 0.f : cheerKind == 2 ? 0.7f : 1.f;   // (a clap open, a point)
+            else if (s.botTaunt > 0.3f && s.botStall < 7.f) hi.trigger = 0.5f + 0.5f * std::sin(now * 7.f);   // (the beckon's fingers)
+            else if (s.botTaunt > 0.3f && tauntFists) hi.trigger = 1.f;
+        }
     }
     // the slap shot's shape, planned while its ball comes back to it (owner, 2026-11-02: CHAMPION threw only straight
     // balls: a slap gave it a frame or two to try a curve or a bank, and it nearly never found one in time)
@@ -3051,6 +3449,7 @@ std::vector<CollisionTri> collision(bool four) {
             uint32_t tags = TAG_ARENA;
             if (std::fabs(mid.x) > kBackX) tags |= TAG_RETURN | (mid.x < 0 ? TAG_TEAM0 : TAG_TEAM1);
             else if (four && std::fabs(mid.z) > kBackX) tags |= TAG_RETURN | (mid.z < 0 ? TAG_TEAM2 : TAG_TEAM3);
+            else tags |= TAG_SIDE_WALL;   // (BOUNCES IN FOUR CORNERS, 0.3.26: the walls between the corners' back walls)
             quad(a + Vec3{0, kFloor, 0}, b + Vec3{0, kFloor, 0}, b + Vec3{0, kCeiling, 0}, a + Vec3{0, kCeiling, 0},
                  Vec3{-mid.x, 0, -mid.z}, tags);
         }

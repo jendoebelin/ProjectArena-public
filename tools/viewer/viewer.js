@@ -24,7 +24,89 @@ const KEY = { 'BODY TYPE': 'body', FACE: 'face', SUIT: 'suit', BUILD: 'build', '
 
 let D = null;                      // data.json
 const state = { section: 'avatar', look: null, pose: 'ready', team: 0, surface: 0, wire: false, ghost: false, bones: false,
-  grid: true, item: null, focus: 'full' };
+  grid: true, item: null, focus: 'full', animRun: null };
+// (0.3.26) ANIMATIONS: the practice bot at ease, its taunts, celebrations and victory poses, and the skirts' swing
+// (tools/bot_anims.cpp: the game's own bot and rig), a file a body and build (anims/anims_<body><build>.json, 12 frames a
+// second, blended); `live`: the avatar's meshes each frame moves
+const animFiles = {};
+let live = null;
+async function animsFor(combo) {
+  if (!animFiles[combo]) animFiles[combo] = fetch(`anims/anims_${combo}.json`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
+  return animFiles[combo];
+}
+// a kept frame as the rig the page draws with: its 3 x 4 matrices made whole, each hand's gauntlet frames from its grip,
+// fist and cuff as gen_viewer.py rig_data puts them
+function m34(a, o) {
+  return [a[o], a[o + 1], a[o + 2], 0, a[o + 3], a[o + 4], a[o + 5], 0, a[o + 6], a[o + 7], a[o + 8], 0, a[o + 9], a[o + 10], a[o + 11], 1];
+}
+const MIRL = [-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+function mulA(a, b) { return new THREE.Matrix4().fromArray(a).multiply(new THREE.Matrix4().fromArray(b)).toArray(); }
+function rigOfFrame(fr) {
+  const skin = [];
+  for (let b = 0; b < 9; b++) skin.push(m34(fr.s, b * 12));
+  const L = D.handFrames.lancer, K = D.handFrames.knuckle, hands = [];
+  for (let h = 0; h < 2; h++) {
+    const G = m34(fr.g, h * 36), F = m34(fr.g, h * 36 + 12), C = m34(fr.g, h * 36 + 24);
+    const Gm = h === 0 ? mulA(G, MIRL) : G;
+    hands.push({ fist: mulA(F, L), cuff: mulA(C, L), lancer: mulA(Gm, L), knuckle: mulA(Gm, K) });
+  }
+  const r = { skin, head: m34(fr.h, 0), hands, bones: null };
+  if (fr.p) r.pelvis = m34(fr.p, 0);
+  if (fr.t) r.twist = fr.t;
+  return r;
+}
+function blendFrame(a, b, t) {
+  const mix = (x, y) => (x && y ? x.map((v, i) => v + (y[i] - v) * t) : (t < 0.5 ? x : y));
+  return { s: mix(a.s, b.s), h: mix(a.h, b.h), g: mix(a.g, b.g), w: mix(a.w, b.w), p: mix(a.p, b.p), t: mix(a.t, b.t),
+    x: mix(a.x, b.x), xs: a.xs !== undefined && b.xs !== undefined ? a.xs + (b.xs - a.xs) * t : (t < 0.5 ? a.xs : b.xs) };
+}
+// a skirt's swing for the page's copy of the shader's (render.cpp uSwish): its shape, and this frame's swing for its kind
+// (0 the tennis skirt and the dress, 1 the kilt), the hem lifted as it swings out (main.cpp); none moving: still, but
+// kept out of the body as the game keeps it
+function swingFor(model, fr) {
+  const sh = D.swish && D.swish[model];
+  if (!sh) return null;
+  const k = sh.kind ? 3 : 0;
+  const x = fr && fr.w ? fr.w[k] : 0, z = fr && fr.w ? fr.w[k + 1] : 0, tw = fr && fr.w ? fr.w[k + 2] : 0;
+  const len = Math.max(0.1, (sh.waist - sh.hem) * 0.6);
+  return { x, z, tw, lift: Math.min(0.018, (x * x + z * z) / (2 * len)), sh };
+}
+function swRadius(sh, y, th) {   // the body's radius at this height and angle (render.cpp swishRadius)
+  const rows = sh.p[2], cols = sh.p[3], R = sh.r;
+  const fy = Math.min(rows - 1, Math.max(0, (y - sh.p[0]) * sh.p[1]));
+  const lo = Math.floor(fy), hi = Math.min(lo + 1, rows - 1);
+  const uu = th * 0.1591549 + 1, u = (uu - Math.floor(uu)) * cols;
+  const i = Math.floor(u) % cols, j = (i + 1) % cols, f = u - Math.floor(u);
+  const ra = R[lo * cols + i] + (R[lo * cols + j] - R[lo * cols + i]) * f;
+  const rb = R[hi * cols + i] + (R[hi * cols + j] - R[hi * cols + i]) * f;
+  return ra + (rb - ra) * (fy - lo);
+}
+// AIR GUITAR's guitar (0.3.26; Game::botGuitar, main.cpp): a hologram in the avatar's glow colour, where the frame has it
+function placeProp(fr) {
+  if (!live || !live.prop) return;
+  live.prop.visible = !!(fr && fr.x);
+  if (fr && fr.x) live.prop.matrix.fromArray(m34(fr.x, 0));
+}
+// each frame of an animation: the frame blended, the skinned parts skinned again, the head and hands moved
+let animLast = 0;
+function animStep(now) {
+  const A = state.animRun;
+  if (!A || !live || now - animLast < 30) return false;
+  animLast = now;
+  const n = A.frames.length, f = (((now - A.start) / 1000) * D.anims.fps) % n;
+  const i0 = Math.floor(f), fr = blendFrame(A.frames[i0], A.frames[(i0 + 1) % n], f - i0);
+  const rig = rigOfFrame(fr);
+  for (const p of live.skinned) {
+    const [pos, nrm] = skin(p.M, rig, swingFor(p.model, fr));
+    const g = p.mesh.geometry;
+    g.attributes.position.array.set(pos); g.attributes.position.needsUpdate = true;
+    g.attributes.normal.array.set(nrm); g.attributes.normal.needsUpdate = true;
+  }
+  for (const m of live.heads) m.matrix.fromArray(rig.head);
+  for (const h of live.hands) h.mesh.matrix.fromArray(rig.hands[h.hand][h.slot]);
+  placeProp(fr);
+  return true;
+}
 
 // ---------------------------------------------------------------- loading the game's files
 async function gunzip(buf) {
@@ -348,8 +430,8 @@ function mul4(A, B, out) {   // column-major 4x4: out = A * B
   return out;
 }
 
-function skin(M, rig) {
-  const nv = M.nv, P = M.pos, N = M.nrm, BI = M.bi, BW = M.bw;
+function skin(M, rig, sw) {
+  const nv = M.nv, P = M.pos, N = M.nrm, BI = M.bi, BW = M.bw, UV1 = M.uv1;
   const op = new Float32Array(nv * 3), on = new Float32Array(nv * 3);
   const B = rig.skin.map((a) => Float64Array.from(a));
   const pel = rig.pelvis ? Float64Array.from(rig.pelvis) : null;
@@ -357,7 +439,24 @@ function skin(M, rig) {
   const S = new Float64Array(16), T = new Float64Array(16), Rt = new Float64Array(16), TB = new Float64Array(16);
   const twG = [0, 0, 0, 0];
   for (let v = 0; v < nv; v++) {
-    const px = P[v * 3], py = P[v * 3 + 1], pz = P[v * 3 + 2];
+    let px = P[v * 3], py = P[v * 3 + 1], pz = P[v * 3 + 2];
+    let nx0 = N[v * 3], ny0 = N[v * 3 + 1], nz0 = N[v * 3 + 2];
+    const sww = sw ? UV1[v * 2] : 0;
+    if (sww > 0) {   // TENNIS SKIRT / KILT / DRESS (0.3.26): render.cpp's swing, its weight and room from the body in aUV1
+      const a = sw.tw * sww, c = Math.cos(a), sn = Math.sin(a), Cc = sw.sh.c;
+      const dx = px - Cc[0], dz = pz - Cc[1];
+      let qx = Cc[0] + c * dx + sn * dz + sw.x * sww, qy = py + sw.lift * sww, qz = Cc[1] - sn * dx + c * dz + sw.z * sww;
+      const mx = qx - px, my = qy - py, mz = qz - pz, Lm = Math.hypot(mx, my, mz), bound = Cc[2] * sww;
+      if (Lm > bound) { qx = px + mx * bound / Lm; qy = py + my * bound / Lm; qz = pz + mz * bound / Lm; }
+      const ex = qx - Cc[0], ez = qz - Cc[1], r = Math.hypot(ex, ez);
+      const target = swRadius(sw.sh, qy, Math.atan2(ex, -ez)) + UV1[v * 2 + 1];
+      if (r < target) {
+        if (r > 1e-6) { qx = Cc[0] + ex * target / r; qz = Cc[1] + ez * target / r; } else { qx = Cc[0] + target; qz = Cc[1]; }
+      }
+      px = qx; py = qy; pz = qz;
+      const rnx = c * nx0 + sn * nz0, rnz = -sn * nx0 + c * nz0;
+      nx0 = rnx; nz0 = rnz;
+    }
     S.fill(0);
     for (let i = 0; i < 4; i++) {
       twG[i] = 0;
@@ -393,7 +492,6 @@ function skin(M, rig) {
       for (let k = 0; k < 16; k++) S[k] += Mb[k] * w;
     }
     const x = S[0] * px + S[4] * py + S[8] * pz + S[12], y = S[1] * px + S[5] * py + S[9] * pz + S[13], z = S[2] * px + S[6] * py + S[10] * pz + S[14];
-    const nx0 = N[v * 3], ny0 = N[v * 3 + 1], nz0 = N[v * 3 + 2];
     let nx = S[0] * nx0 + S[4] * ny0 + S[8] * nz0, ny = S[1] * nx0 + S[5] * ny0 + S[9] * nz0, nz = S[2] * nx0 + S[6] * ny0 + S[10] * nz0;
     if (tw) {
       for (let i = 0; i < 4; i++) {
@@ -657,16 +755,19 @@ function resize() {
   dirty = true;
 }
 new ResizeObserver(resize).observe(stage);
-function frame() {
+function frame(now) {
   requestAnimationFrame(frame);
   if (document.hidden) return;
   if (controls.update()) dirty = true;
+  if (state.animRun && animStep(now || performance.now())) dirty = true;   // (0.3.26: an animation playing)
   if (!dirty || !$('flat').hidden) return;
   dirty = false;
   composer.render();
 }
 
 function clear() {
+  state.animRun = null;   // (an animation stops with what it moved)
+  live = null;
   for (const g of [root, overlay]) {
     while (g.children.length) {
       const o = g.children.pop();
@@ -706,14 +807,28 @@ async function showAvatar(keepCamera) {
   const my = ++token;
   const look = uniformLook(state.look);   // (a country: its team kit)
   const N = nationOf(look);
-  const rigKey = `${look.body ? 1 : 0}${look.build}_${state.pose}`;
-  const rig = D.rig[rigKey];
+  const combo = `${look.body ? 1 : 0}${look.build}`;
+  let rig = D.rig[`${combo}_${state.pose}`], run = null;
+  if (state.pose.startsWith('anim:')) {   // (0.3.26) an ANIMATION: its frames for this body and build
+    let frames;
+    try { frames = (await animsFor(combo))[state.pose.slice(5)]; } catch (e) { return fail(e); }
+    if (my !== token) return;
+    if (!frames || !frames.length) return fail(new Error('no frames for ' + state.pose));
+    run = { frames, start: performance.now() };
+    rig = rigOfFrame(frames[0]);
+  }
   const parts = partsOf(look);
   busy(true, 'loading ' + parts.length + ' parts');
   let models;
-  try { models = await Promise.all(parts.map((p) => loadModel(p.model))); } catch (e) { return fail(e); }
+  let propM = null;   // (an animation with a thing in its hands: AIR GUITAR's guitar)
+  try {
+    models = await Promise.all(parts.map((p) => loadModel(p.model)));
+    if (run && run.frames.some((f) => f.x) && D.models.guitar) propM = await loadModel('guitar');
+  } catch (e) { return fail(e); }
   if (my !== token) return;
   clear();
+  state.animRun = run;
+  live = { skinned: [], heads: [], hands: [] };
   const C = channels(look, state.team);
   const rim = [...teamColor(look, state.team), N ? 0.25 : 0.5];   // (main.cpp lookOf: softer over a country's kit)
   const b = look.body ? 'f' : 'm';
@@ -734,17 +849,19 @@ async function showAvatar(keepCamera) {
     const M = models[i];
     let mesh;
     if (p.at === 'skin') {
-      const [pos, nrm] = skin(M, rig);
+      const [pos, nrm] = skin(M, rig, swingFor(p.model, run ? run.frames[0] : null));
       // (main.cpp: the prints on the jersey or your own top, and its pulses give way to them)
       const jersey = flagTex && (p.model.startsWith('av_top_') || p.model.startsWith('av_tpulse_'));
       mesh = meshOf(p.model, M, jersey ? Object.assign({}, ctx, { decalTex: flagTex }) : ctx, pos, nrm,
         jersey ? decalCoords(M, !!look.body, look.suit) : null);
+      live.skinned.push({ mesh, M, model: p.model });
     } else if (p.at === 'head') {
       const c = Object.assign({}, ctx);
       if (p.neon) c.emAdd = C[3].map((x) => x * 0.35);
       mesh = meshOf(p.model, M, c, p.hair && maps.length ? tucked(M, maps) : null, null);
       mesh.matrixAutoUpdate = false;
       mesh.matrix.copy(head);
+      live.heads.push(mesh);
     } else {
       const c = Object.assign({}, ctx);
       if (p.knuckle) {
@@ -755,6 +872,7 @@ async function showAvatar(keepCamera) {
       mesh = meshOf(p.model, M, c);
       mesh.matrixAutoUpdate = false;
       mesh.matrix.fromArray(rig.hands[p.hand][p.slot]);
+      live.hands.push({ mesh, hand: p.hand, slot: p.slot });
     }
     root.add(mesh);
     if (!(p.at === 'hand' && p.hand === 0)) {
@@ -763,7 +881,15 @@ async function showAvatar(keepCamera) {
         file: p.model, v: M.nv, t: M.idx.length / 3, note: p.hair && maps.length ? 'kept inside the headgear' : (p.at === 'hand' ? 'each hand' : '') });
     }
   });
-  if (state.bones) drawBones(rig);
+  if (propM) {   // (main.cpp: additive, the glow colour over a little white)
+    const glow = C[3];
+    live.prop = meshOf('guitar', propM, { channels: null, rim: null, tintMul: [0.35 + 0.65 * glow[0], 0.35 + 0.65 * glow[1], 0.35 + 0.65 * glow[2], 1] });
+    live.prop.matrixAutoUpdate = false;
+    root.add(live.prop);
+    placeProp(run.frames[0]);
+    rows.push({ id: 'P13', file: 'guitar', v: propM.nv, t: propM.idx.length / 3, note: 'AIR GUITAR: a hologram in the glow colour' });
+  }
+  if (state.bones && rig.bones) drawBones(rig);   // (an animation's frames carry no bones)
   root.updateMatrixWorld(true);
   grid.visible = state.grid;
   grid.position.y = 0;
@@ -957,6 +1083,21 @@ function buildAvatarPanel() {
     showAvatar(true);
     setHash('');
   });
+  if (D.anims && !$('pose').querySelector('optgroup')) {   // (0.3.26) the ANIMATIONS, grouped, after the poses
+    let og = null, grp = '';
+    for (const a of D.anims.anims) {
+      if (a.group !== grp) {
+        og = document.createElement('optgroup');
+        og.label = 'Animation: ' + a.group.charAt(0) + a.group.slice(1).toLowerCase();
+        $('pose').append(og);
+        grp = a.group;
+      }
+      const o = document.createElement('option');
+      o.value = 'anim:' + a.id;
+      o.textContent = a.name;
+      og.append(o);
+    }
+  }
   $('pose').addEventListener('change', () => { state.pose = $('pose').value; showAvatar(true); });
   $('team').addEventListener('change', () => { state.team = +$('team').value; syncAvatarPanel(); rebuild(true); });
   $('random').addEventListener('click', () => {

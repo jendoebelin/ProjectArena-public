@@ -20,7 +20,8 @@ Play together
   - Online (the default): MENU > MULTIPLAYER shows the rooms on the community server; Quest and PC players meet
     there. HOST A ROOM to open one, or JOIN someone's; in the waiting area press JOIN QUEUE (the red button) to play.
   - Same home network instead: MULTIPLAYER > ONLINE: OFF (LAN), then host and join the same way.
-  - You start in the lobby over the practice court: point at a poster or the court and pull the trigger.
+  - You start in the lobby over the practice court, with the main menu in front of you: point at a button, or at
+    the court to play the bot, and pull the trigger.
   - Two players start face to face in the centre: hold your trigger and bump fists (or wait 10 seconds).
   - Hold the left grip to talk. MENU > REPORT BUG sends us a note and the game's recent log; MENU > REPORT PLAYER
     reports or mutes someone in your room.

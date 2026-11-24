@@ -9,7 +9,8 @@ and pose (tools/avatar_pose.cpp: the game's own solveRig and part placing). The 
 game's shader (app/src/render.cpp) and the game's part selection (app/src/avatar.cpp drawList).
 
 Usage: python -I tools/gen_viewer.py [OUT_DIR] [--text-models]    (default build/viewer; needs build/tests/avatar_pose.exe,
-made by tools/build_avatar_pose.bat). --text-models: each model as its gzipped bytes in base64, a few to a bundle
+made by tools/build_avatar_pose.bat, and build/tests/bot_anims.exe, by tools/build_bot_anims.bat: anims/, the
+ANIMATIONS, one file a body and build, fetched when one is played). --text-models: each model as its gzipped bytes in base64, a few to a bundle
 (models/bundle_K.json), for hosts that serve only web types and few files (the Claude artifact); otherwise
 models/NAME.mdl.gz, and dl/ holds the downloads
 (--no-downloads leaves them out): each item's models as .glb (tools/export_glb.py: Blender's format, the 9-bone rig)
@@ -33,6 +34,9 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(ROOT, 'app', 'assets_open')
 POSE_EXE = os.path.join(ROOT, 'build', 'tests', 'avatar_pose.exe')
+# (0.3.26) the ANIMATIONS: the practice bot at ease, its taunts, celebrations and victory poses, and the skirts' swing
+# (tools/bot_anims.cpp: the game's own bot and rig; build it with tools/build_bot_anims.bat)
+ANIMS_EXE = os.path.join(ROOT, 'build', 'tests', 'bot_anims.exe')
 PAGE = os.path.join(ROOT, 'tools', 'viewer')
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 import frames  # noqa: E402
@@ -96,6 +100,9 @@ PROPS = [
     ('P12', ['gauntlet_2_hand', 'gauntlet_2_cuff'], 'Phantom gauntlet', 'GAUNTLET = PHANTOM: light plate over a dark '
      'glove. Thin finger scales, a smooth knuckle ridge and back plate with glowing inlays, a slim cuff.',
      'make_props.py: gauntlet(2)'),
+    ('P13', ['guitar'], 'Air guitar', 'The hologram guitar a practice bot plays when it wins a match with AIR GUITAR, '
+     'in its glow colour (additive plasma, veins T08). See it played: Avatar builder, Pose or animation, AIR GUITAR.',
+     'make_props.py: guitar'),
 ]
 TEXTURES = [
     ('T01', 'open_soft_strip', 'Soft strip', 'The soft band used for every halo and glow line.'),
@@ -543,6 +550,8 @@ def main():
     out = os.path.abspath(args[0] if args else os.path.join(ROOT, 'build', 'viewer'))
     if not os.path.exists(POSE_EXE):
         raise SystemExit('build/tests/avatar_pose.exe is missing: run tools/build_avatar_pose.bat first')
+    if not os.path.exists(ANIMS_EXE):
+        raise SystemExit('build/tests/bot_anims.exe is missing: run tools/build_bot_anims.bat first')
     for sub in ('models', 'tex', 'snd'):
         os.makedirs(os.path.join(out, sub), exist_ok=True)
     opt = json.loads(subprocess.run([POSE_EXE, '--options'], capture_output=True, text=True, check=True).stdout)
@@ -609,6 +618,22 @@ def main():
             tuck[f[:-5]] = {'w': w, 'h': h, 'c': [round(x, 6) for x in struct.unpack_from('<3f', b, 12)],
                             'v': base64.b64encode(b[24:24 + w * h]).decode()}
     rig = rig_data()
+    # the ANIMATIONS (0.3.26): anims/anims_<body><build>.json, and their index
+    os.makedirs(os.path.join(out, 'anims'), exist_ok=True)
+    subprocess.run([ANIMS_EXE, os.path.join(ASSETS, 'arena.col'), os.path.join(out, 'anims')], check=True, capture_output=True)
+    anims = json.load(open(os.path.join(out, 'anims', 'anims_index.json'), encoding='utf-8'))
+    # the skirts' swing shapes ('SWSH', u32 kind, f32 waist y, hem y, centre x, z, the most a vertex moves, the first row's
+    # y, the row step, u32 rows, cols, the body's radii; main.cpp loadSwish), for the page's copy of the shader's swing
+    swish = {}
+    for f in sorted(os.listdir(ASSETS)):
+        if f.endswith('.swish'):
+            b = open(os.path.join(ASSETS, f), 'rb').read()
+            kind = struct.unpack_from('<I', b, 4)[0]
+            v = struct.unpack_from('<7f', b, 8)
+            rows, cols = struct.unpack_from('<2I', b, 36)
+            radii = struct.unpack_from('<%df' % (rows * cols), b, 44)
+            swish[f[:-6]] = {'kind': kind, 'waist': round(v[0], 5), 'hem': round(v[1], 5), 'c': [round(x, 5) for x in v[2:5]],
+                             'p': [round(v[5], 5), round(1.0 / v[6], 5), rows, cols], 'r': [round(x, 4) for x in radii]}
     data = {
         'models': models,
         'modelExt': '.mdl.gz',
@@ -628,6 +653,10 @@ def main():
         'nations': countries,
         'rig': rig,
         'gauntletLocal': gauntlet_local(),
+        'anims': anims,   # (0.3.26: their frames in anims/)
+        'swish': swish,
+        # (the gauntlets' frames against the grip, fist and cuff, as rig_data puts them: for each animation frame)
+        'handFrames': {'lancer': col_major(frames.LANCER), 'knuckle': col_major(KNUCKLE_SHIFT @ frames.KNUCKLE)},
     }
     # the downloads (not where the page can't offer them: the Claude artifact's frame refuses downloads)
     data['dl'] = None if text_models or '--no-downloads' in sys.argv else downloads(out, data, tex_use)

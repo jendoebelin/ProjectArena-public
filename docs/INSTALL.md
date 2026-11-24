@@ -18,6 +18,27 @@ The release page has a step-by-step `README-Quest.txt` for both ways.
    install-APK icon and pick `ProjectArena-<version>.apk`), or with adb: `adb install -r ProjectArena-<version>.apk`.
 3. In the headset: **Library** → **Unknown Sources** → **Project Arena**.
 
+## PICO (PICO 4, 4 Pro, 4 Ultra)
+
+The PICO version is on the GitHub release and SideQuest as `ProjectArena-<version>-pico.apk`, with a step-by-step
+`README-PICO.txt`. PICO's own store is to follow, after PICO's review. It is the same game, and online it uses the
+same community server as Quest and PC.
+
+**Installing the APK (developer mode):**
+1. Sign the headset in to your PICO account: PICO needs it to run an app installed by hand.
+2. Turn on developer mode once: on the headset, **Settings → General → About**, press **Software Version** several
+   times until **Developer** appears, then in **Developer** turn on **USB Debug**. (PICO 4 Ultra: **Control Center →
+   Settings → About**.)
+3. Connect the headset to a computer with a USB-C cable, put it on and allow USB debugging if it asks.
+4. Install with adb: `adb install -r ProjectArena-<version>-pico.apk`, or with SideQuest
+   (https://sidequestvr.com/setup-howto: click the install-APK icon and pick the file).
+5. In the headset: open your **Library** and start **Project Arena**. If it isn't with your other apps, look for the
+   list of apps from unknown sources.
+
+On PICO the left controller's menu button opens the menus, and **B** re-centres you (holding the Home button does
+too). PASSTHROUGH isn't in the PICO version yet. **SETTINGS → GRAPHICS AND VIEW → RESOLUTION** (1X, 1.25X as
+standard, 1.5X) sets how sharp the picture is; a change shows the next time the game starts.
+
 ## PC VR (SteamVR: Valve Index, Vive, Windows Mixed Reality; or Meta Quest Link)
 
 1. Download `ProjectArena-<version>-PC.zip` from the GitHub release and unzip it anywhere (keep the `assets` folder
@@ -37,7 +58,7 @@ Keys:
   move, **Q / E** down and up, **Shift** faster. The fixed cameras don't turn; only the free camera does.
 - **Mouse wheel** zooms (in every camera).
 - **Ctrl + 1-8** saves the view as one of MY CAMERAS, **Shift + 1-8** shows it.
-- **V** view layers, **R** win screen, **M** VS screen, **C** selfie, **F11** full screen, **F1** the controls window,
+- **V** view layers, **R** win screen, **M** VS screen, **O** scoreboard (banner, corner, jumbotron), **C** selfie, **F11** full screen, **F1** the controls window,
   **F2** the help bar.
 - A game controller works too: in the free camera the left stick moves, the right stick looks, **LB / RB** down and
   up, and a left stick click is faster.
@@ -81,3 +102,7 @@ Streamers: capture the window in OBS.
 
 Store installs update themselves; sideloaded APKs update by installing the new APK the same way (your avatar, name
 and settings are kept). Uninstall: Settings → Apps → Installed apps → Project Arena.
+
+A store copy and a copy installed by hand (from GitHub or SideQuest) are signed with different keys, on Quest and
+on PICO alike, so one can't be installed over the other. To change from one to the other, uninstall the one you
+have first. Uninstalling removes what the game keeps on the headset.

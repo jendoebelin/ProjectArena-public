@@ -221,5 +221,17 @@
   "title": "The Crowd: get notified when people are playing",
   "color": "#ff6a1a",
   "text": "Tap the 🔔 bell at the top of **https://crowd.aftersparc.com** to get a notification on your phone or computer when people are playing Project Arena.\n\n**You choose:**\n- Someone hosts an arena or a match starts, or only when a match starts\n- How often: at most every 30 minutes, every hour or every 3 hours\n- Quiet hours: 10 PM to 8 AM to start, change them any time\n\nNo sign-up and no account. Turning notifications off deletes them from the server.\n\n**Android or a computer** (Chrome, Edge, Firefox or Safari): tap the bell and allow notifications when your browser asks. On a computer they arrive while your browser is running.\n**iPhone:** open the page in Safari, tap **Share**, then **Add to Home Screen**. Open The Crowd from your home screen and tap the bell.\n\nSince 0.3.24 the players see your cheers rather than hear them: their end's lights flare, flags wave and hearts and stars burst from the stands."
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.25: THROW POWER and KNUCKLE RETURNS",
+  "color": "#5ec8ff",
+  "text": "**New: THROW POWER and KNUCKLE RETURNS** (a community request): two new options for the host, on the room page's **BOUNCES & POWER** (FOUR CORNERS: **POWER**).\n- **THROW POWER: NATURAL**: the ball's speed follows your effort more like a real throw. A light toss goes slow, a full throw still reaches top speed.\n- **KNUCKLE RETURNS: PUNCH**: your punch sets the return speed, not how fast the ball came in. A still fist drops it back softly, a real punch sends it hard.\n\nREGULATION stays the default. In the SQUARE, DIAMOND and FOUR CORNERS, and in TRAINING's MY OPTIONS. Everyone in the match needs 0.3.25.\n\n0.3.14 to 0.3.25 play together online.\n**Heads up:** from 2 December, versions before 0.3.20 will stop playing online. Practice and offline play keep working.\n\n**Quest:** update from your Library\n**PC VR:** https://github.com/jendoebelin/ProjectArena-public/releases/latest"
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.26 is out",
+  "color": "#5ec8ff",
+  "text": "- **Simple setup**: a room's page opens on a few big buttons and START. CUSTOM SETTINGS still has everything, now with **MY SAVES** (three slots per room type).\n- **FULL EFFORT**: a harder step for THROW POWER and KNUCKLE RETURNS, as asked for.\n- **BOUNCES in FOUR CORNERS**.\n- **Livelier bots**: they taunt you when you stall and celebrate when they score. Lose a match to one and you may get an air guitar solo.\n- **Views while waiting**: press A to watch from other spots while you wait your turn.\n- **HAND POSITION** in SETTINGS > CONTROLLERS, to line your in-game hands up with your real ones.\n- Smoother watching from the waiting area and as a spectator, and a few fixes.\n- **PICO owners**: there is now a build for PICO 4, 4 Pro and 4 Ultra on GitHub and SideQuest, to install by hand. Same game, same online rooms as Quest and PC. It's our first PICO release, so tell us how it runs.\n\nFull notes are on GitHub. 0.3.14 to 0.3.26 play together online; from December 2, versions before 0.3.20 stop playing online.\n\n**Quest:** update from your Library\n**PC VR:** https://github.com/jendoebelin/ProjectArena-public/releases/latest\n**PICO:** https://github.com/jendoebelin/ProjectArena-public/releases/latest (ProjectArena-0.3.26-pico.apk), or SideQuest"
  }
 ]

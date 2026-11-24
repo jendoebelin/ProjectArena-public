@@ -236,7 +236,14 @@ struct Tunables {
     static constexpr int kVerPalm = 3022;
     bool palmHold = true;
     bool palmHoldNow() const { return palmHold && matchVersion >= kVerPalm; }
-    bool bouncesNow() const { return roomOptionsNow() && matchVersion >= kVerBounces; }
+    // BOUNCES IN FOUR CORNERS (0.3.26; the owner, 2026-11-22: "Why not four corner, did we include bounciness and wall
+    // options in them?"): FOUR CORNERS' own walls (between the corners; near a player's corner they are its back wall)
+    // and BANK ASSIST toward whichever of its rivals a bank's last leg passes nearest, with two players or four
+    static constexpr int kVerCornerBounces = 3026;
+    bool cornersBounceRoom() const { return experimental && expRoom == ROOM_CORNERS; }
+    bool bouncesNow() const {
+        return (roomOptionsNow() && matchVersion >= kVerBounces) || (cornersBounceRoom() && matchVersion >= kVerCornerBounces);
+    }
     bool wallsLivelyNow() const { return bouncesNow() && wallsLively; }
     bool wallGripNow() const { return bouncesNow() && wallGrip; }
     int bankAssistNow() const { return bouncesNow() ? std::max(0, std::min(3, bankAssist)) : 0; }
@@ -259,8 +266,18 @@ struct Tunables {
     float throwCurve = 1.6f, punchRestitution = 0.45f, punchGain = 1.0f;
     bool feelRoom() const { return !experimental || expRoom == ROOM_DIAMOND || expRoom == ROOM_CORNERS; }
     bool feelNow() const { return feelRoom() && matchVersion >= kVerFeel; }
-    bool naturalThrowNow() const { return feelNow() && throwPower == 1; }
-    bool punchReturnsNow() const { return feelNow() && knuckleReturns == 1; }
+    // FULL EFFORT (0.3.26; the same player, after trying 0.3.25's: "a noticeable improvement ... it still feels a little
+    // too easy"; "at least 50% more effort to mimic" the original; the owner: "I will add the stronger levels for each"):
+    // 2 for either. THROW POWER: FULL EFFORT, NATURAL's curve with top speed only at fullEffort times the hand speed
+    // (9.75 m/s, not 6.5). KNUCKLE RETURNS: FULL EFFORT, PUNCH's numbers over fullEffort (30% of the incoming speed
+    // back, the fist's 0.67 on top): the same return takes half as much punch again. With a 0.3.25 player in the match
+    // they play as NATURAL and PUNCH (theirs); older, REGULATION
+    static constexpr int kVerFullEffort = 3026;
+    float fullEffort = 1.5f;
+    bool naturalThrowNow() const { return feelNow() && throwPower >= 1; }
+    bool punchReturnsNow() const { return feelNow() && knuckleReturns >= 1; }
+    bool fullThrowNow() const { return naturalThrowNow() && throwPower >= 2 && matchVersion >= kVerFullEffort; }
+    bool fullPunchNow() const { return punchReturnsNow() && knuckleReturns >= 2 && matchVersion >= kVerFullEffort; }
     bool feelStandard() const { return !naturalThrowNow() && !punchReturnsNow(); }
     float sideWallElasticity = 0.97f, bankFriction = 0.10f, knuckleFriction = 0.14f, bankTurnRate = 24.f;
     float shieldScale() const { return 1.f + 0.25f * (float)shieldSizeNow(); }
@@ -409,6 +426,9 @@ struct Tunables {
     int botPlay = 0;
     float botMatch = 2.f, botMatchStep = 0.15f;
     bool botMeet = false;   // practice: meet the bot in the centre for a fist bump first (owner, 2026-10-27)
+    // BOT IDLE MOTION (0.3.26): its breathing, drift, glances, taunts and victory poses (off: as before 0.3.26; the
+    // tests' measurement of each level with and without it)
+    bool botIdle = true;
     Vec3 botShoulder = {0.18f, -0.295f, 0.04f}, botWrist = {0.04f, 0.047f, 0.122f};
     float botArm = 0.52f, botHandAccel = 40.f;   // (0.52: room for the shoulder lifting with a raised arm)
     Vec3 botBodyRange = {1.0f, 0.50f, 0.35f};
@@ -596,6 +616,23 @@ struct PlayerState {
     float botBow = 0;           // 0 upright .. 1 bowed (KARATE, at the fist bump)
     int botBumpHand = 1;        // the hand it bumps with (kept unless their fist is clearly on its other side)
     float botSteady = 0;        // 0 bobbing as its stance does .. 1 still (it steadies its head while it watches a ball)
+    // BOT IDLE MOTION (0.3.26; the owner, 2026-11-22: "idle animations for the bots to help make them less stiff between
+    // shots"; "taunt if someone isn't throwing and victory poses also"). Its head turns as it glances about (drawn and
+    // sent: botLook), while its rules keep the way it faces (botFace: what its head's turn always was)
+    Quat botFace, botLook;
+    bool botFaceSet = false;
+    float botIdle = 0;          // 0 busy (a ball to watch, a throw, the fist bump) .. 1 at ease between shots
+    float botStall = 0;         // how long the one it aims at has held their ball without throwing (a taunt from 4 s)
+    float botTaunt = 0;         // 0 its guard .. 1 taunting
+    float botCheer = 0;         // a point won: its fist pump's time left (seconds)
+    int botScoreSeen = -1;      // its score as last seen (it went up: a point won)
+    // (0.3.26, the owner's test: "a little variety"): which celebration, chosen by the moment it comes: a point's
+    // (0 fist pump, 1 double pump, 2 a point at them, 3 a clap), a match's (0 its stance's own, 1 AIR GUITAR, 2 RAISE
+    // THE ROOF); botWonSeen: the match won, as last step (a new win chooses)
+    int botCheerKind = 0, botWinKind = 0;
+    bool botWonSeen = false;
+    float botProp = 0;          // AIR GUITAR's guitar: 0 none .. 1 in its hands (Game::botGuitar; drawn only; the host's
+                                // in the snapshot's last byte, so guests and spectators see it)
     float botTimer = 0;         // until its next throw
     Vec3 botBody, botBodyVel;   // its head's offset from where it stands (steps, leans, ducks), and that offset's speed
     Vec3 botHand[2], botHandVel[2];   // its grips, moving at a person's speed
@@ -867,6 +904,12 @@ public:
     // the bot's body: where its shoulder is and where a grip puts its wrist (within tun.botArm of the shoulder), and
     // whether a ball of radius r at pos would touch a body whose head is at `head` (as hitsBody)
     Vec3 botShoulder(int p, int h) const;
+    Quat botFacing(int p) const;   // the way a bot faces, as its rules have it (its head's turn, but for its glances)
+    // AIR GUITAR's guitar (0.3.26; the owner, 2026-11-24: "manifest an actual guitar"): while bot p plays its win, where
+    // its hologram guitar is for the head and hands drawn (`in`): the guitar's own frame (the middle of its body at the
+    // origin, the neck along +X, its face -Z) into the world; show: 0 .. 1 as it comes to its hands. False: no guitar.
+    // Drawn only. Guests and spectators: PlayerState::botProp comes in the host's snapshot (its last byte)
+    bool botGuitar(int p, const PlayerInput& in, Mat4& place, float& show) const;
     Vec3 botWrist(int h, const Pose& grip) const;
     Vec3 botInReach(int p, int h, const Pose& grip) const;   // the grip's position, moved in if the arm can't reach it
     Pose botTuck(int p, int h, const Vec3& head) const;       // hand h pulled in to its side (a shield out of the way)
@@ -938,7 +981,7 @@ private:
     // (contactRadius > 0: WALL GRIP, the guard grips the ball where it meets it)
     void deflectMoving(Ball& b, const Vec3& n, const Vec3& surfaceVel, int deflector, float assistDeg, const Vec3& from,
                        bool punch = false, float contactRadius = 0.f);
-    bool gripsNow() const { return np == 2 && tun.wallGripNow(); }   // (BOUNCES: WALL GRIP, in a two-player room)
+    bool gripsNow() const { return tun.wallGripNow(); }   // (BOUNCES: WALL GRIP; its rooms: Tunables::bouncesNow)
     void scorePoint(int scorer, int victim, const Vec3& where, int ball);
     int botThreat(int p) const;   // four players: whose ball read 0 watches (the most urgent attack); two: the other
     int botAim(int p) const { return np == 2 ? 1 - p : pl[p].botTarget >= 0 ? pl[p].botTarget : aimTarget(p, pl[p].in.head.p, facing(p)); }

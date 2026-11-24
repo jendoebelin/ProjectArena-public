@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include "game.h"
+#include "view_smooth.h"
 
 struct LanGame {
     uint32_t ip = 0, session = 0;
@@ -78,6 +79,7 @@ struct SpecMatch {
                                    // room updates is WAITING, not a LIVE MATCH)
     std::vector<uint8_t> state;
     bool fresh = false;
+    ViewSmooth smooth;             // SMOOTH VIEWS WHILE WAITING (0.3.26): what a spectator sees, between snapshots
     std::vector<GameEvent> events;   // new events since they were last taken
     CrowdInfo crowd;                 // its fans (The Crowd), as its host passes them on
 };
@@ -123,6 +125,9 @@ public:
     const char* name() const { return name_; }
     void setAppVersion(const char* v);   // this build ("0.3.11"): told to the relay in HELLO, for its log
     static int versionNumber(const char* v);   // "0.3.20" -> 3020 (major * 1000000 + minor * 1000 + patch; "" -> 0)
+    // STEADY UPDATES WHILE WAITING (0.3.26): whether the waiting area's and spectators' snapshot (30 a second) is due
+    // at `now`; if so `last` steps on by a 30th of a second (from now when more than one behind)
+    static bool slowStateDue(double now, double& last);
     // host: the oldest game among the match's players (FAIR MATCHES, Tunables::matchVersion); our own build and bots
     // have everything; not hosting: Tunables::kVerAll
     int matchVersion() const;
@@ -384,6 +389,7 @@ private:
     uint32_t seq_ = 0, lastRecvSeq_ = 0, lastRoomSeq_ = 0;
     uint32_t statRecv_ = 0, statLost_ = 0, statLate_ = 0;
     float pingAvg_ = -1;           // BALL LOOK-AHEAD: the round trip (ms), smoothed
+    ViewSmooth smooth_;            // SMOOTH VIEWS WHILE WAITING (0.3.26): the room as a viewer in its waiting area sees it
     bool lookAhead_ = true;        // (on by default from 0.3.21: owner, 2026-11-17, after a player's lag report; it was
                                    // off while it was tried, owner 2026-11-05)
     double stateAt_ = 0;           // when the latest snapshot came (Net's clock)

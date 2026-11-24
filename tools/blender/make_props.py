@@ -8,6 +8,7 @@
   shield                         shield frame: plate in X (+-0.20) by Y (+-0.32), thin along Z
   gauntlet_4..6_*                the grapple gauntlets, in the grip frame (see grapple())
   grapple_beam / grapple_flare   the grapple's plasma, in their own unit frames
+  guitar                         AIR GUITAR's hologram, in its own frame (see guitar())
   head                           head frame: eyes at the origin, looking +Y
   torso                          body frame: origin on the floor under the head, facing +Y
 
@@ -770,6 +771,34 @@ def grapple_flare(b):
     b.sphere('ball_spark', (0, 0, 0), 0.45, segs=10, rings=6)
 
 
+def guitar(b):
+    """AIR GUITAR's guitar (0.3.26; the owner, 2026-11-24: "manifest an actual guitar"): a hologram of plasma in the
+    player's glow colour, in its own frame: the middle of its body at the origin, the neck along +X (the nut at 0.65,
+    the head to 0.77), its face toward +Y, 1 m long. The game holds it by the hand on its neck (Game::botGuitar)."""
+    # the body: two bouts of veined plasma, a bright rim round each
+    for cx, r, sz in ((-0.075, 0.165, 0.96), (0.105, 0.120, 0.98)):
+        b.sphere('ball_plasma', (cx, 0, 0), r, segs=28, rings=14, scale=(1.0, 0.13, sz), uv_scale=(2, 1))
+        b.torus('ball_filament', (cx, 0, 0), r * 0.98, 0.006, segs=40, tsegs=6, axis='Y')
+    b.torus('ball_spark', (-0.075, 0.020, 0), 0.045, 0.004, segs=24, tsegs=5, axis='Y')   # the sound hole's ring
+    b.box('ball_spark', (-0.150, 0.022, 0), (0.014, 0.010, 0.075))                        # the bridge
+    for x in (-0.02, 0.05):
+        b.box('ball_filament', (x, 0.021, 0), (0.022, 0.008, 0.062))                      # the pickups
+    # the neck, its frets closer toward the body, the head and its pegs
+    b.box('ball_filament', (0.435, 0.006, 0), (0.43, 0.018, 0.044))
+    x = 0.65
+    for k in range(12):
+        x -= 0.0365 * 0.9439 ** k
+        b.box('ball_spark', (x, 0.016, 0), (0.003, 0.004, 0.046))
+    b.box('ball_plasma', (0.71, 0.004, 0.0), (0.12, 0.014, 0.068))
+    b.box('ball_spark', (0.651, 0.014, 0), (0.005, 0.008, 0.048))                         # the nut
+    for k in range(3):
+        for sd in (-1, 1):
+            b.sphere('ball_spark', (0.675 + 0.034 * k, 0.0, sd * 0.043), 0.008, segs=8, rings=5)
+    # six strings, from the bridge to the head
+    for k in range(6):
+        b.box('ball_spark', (0.270, 0.0235, -0.0175 + 0.007 * k), (0.84, 0.0014, 0.0014))
+
+
 def _grapple_part(style, part):
     return lambda b: grapple(b, style, part)
 
@@ -844,6 +873,7 @@ PROPS = [('projectile', ball), ('projectile_shell', shell), ('spawner', spawner)
 PROPS += [('gauntlet_%d_%s' % (k, part), _grapple_part(k, part))
           for k in (4, 5, 6) for part in ('hand', 'cuff', 'f0', 'f1', 'f2', 'f3', 'f4', 'fist', 'rig')]
 PROPS += [('grapple_beam', grapple_beam), ('grapple_flare', grapple_flare)]
+PROPS += [('guitar', guitar)]
 
 
 def main():

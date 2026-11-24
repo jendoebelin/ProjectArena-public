@@ -901,7 +901,37 @@ static void writeState(Writer& w, const Game& g) {
     // (0.3.25, THROW POWER and KNUCKLE RETURNS) as this match plays them, so a player looking ahead throws and punches
     // as the host will. After the last byte 0.3.24 reads in these rooms (the SQUARE, DIAMOND: THE BALL IN THE LEFT PALM;
     // FOUR CORNERS: the host's clock), so older builds stop before it; never in FIREBALL BLITZ
-    if (g.tun.feelRoom()) w.put<uint8_t>((uint8_t)((g.tun.naturalThrowNow() ? 1 : 0) | (g.tun.punchReturnsNow() ? 2 : 0)));
+    // (0.3.26, FULL EFFORT: bits 2 and 3 of the same byte; 0.3.25 reads bits 0 and 1 only, NATURAL and PUNCH: what a
+    // FULL EFFORT host would play with them in it)
+    if (g.tun.feelRoom())
+        w.put<uint8_t>((uint8_t)((g.tun.naturalThrowNow() ? 1 : 0) | (g.tun.punchReturnsNow() ? 2 : 0) | (g.tun.fullThrowNow() ? 4 : 0) |
+                                 (g.tun.fullPunchNow() ? 8 : 0)));
+    // (0.3.26, BOUNCES IN FOUR CORNERS with four players: WALLS, WALL GRIP and BANK ASSIST as they play, and with BANK
+    // ASSIST each ball's turn still to come, as two-player rooms have sent since 0.3.22. After the byte above, the last
+    // 0.3.25 reads in FOUR CORNERS, so older builds stop before it; two players: the two-player rooms' own, above)
+    if (g.np == 4 && g.tun.cornersBounceRoom()) {
+        const int bank = g.tun.bankAssistNow();
+        w.put<uint8_t>((uint8_t)((g.tun.wallsLivelyNow() ? 1 : 0) | (g.tun.wallGripNow() ? 2 : 0) | (bank << 2)));
+        if (bank > 0)
+            for (int p = 0; p < 4; ++p) {
+                const Ball& b = g.pl[p].ball;
+                w.put<uint8_t>(b.bankAimPending ? 1 : 0);
+                for (float v : {b.bankTurn.x, b.bankTurn.y, b.bankTurn.z})   // (ten-thousandths of a radian)
+                    w.put<int16_t>((int16_t)std::max(-32000L, std::min(32000L, std::lround(v * 10000.f))));
+            }
+    }
+    // (0.3.26, AIR GUITAR's guitar for everyone at the arena, the owner 2026-11-24: "send the celebration to guests so
+    // they see the guitar"): which bots hold it (bits 0-3) and how far it has come to their hands (bits 4-7, fifteenths;
+    // the winners' come together). The last byte of every room's snapshot: older builds stop before it, and from an
+    // older host there is none: its bot plays with empty hands, as it did
+    {
+        uint8_t held = 0;
+        float most = 0;
+        for (int p = 0; p < g.np; ++p)
+            if (g.pl[p].isBot && g.pl[p].botProp > 0) { held |= (uint8_t)(1u << p); most = std::max(most, g.pl[p].botProp); }
+        const int step = held ? std::max(1, std::min(15, (int)std::ceil(most * 15.f))) : 0;
+        w.put<uint8_t>((uint8_t)(held | (step << 4)));
+    }
 }
 
 // Events ride at the front of every STATE packet: the last ~0.3 s of events with consecutive ids, so a lost or
@@ -1076,8 +1106,34 @@ static bool readState(Reader& r, Game& g, int localIndex) {
     g.tun.throwPower = g.tun.knuckleReturns = 0;
     if (g.tun.feelRoom() && r.ok && r.e - r.p >= 1) {
         const uint8_t o = r.get<uint8_t>();
-        g.tun.throwPower = o & 1;
-        g.tun.knuckleReturns = (o >> 1) & 1;
+        g.tun.throwPower = (o & 1) ? ((o & 4) ? 2 : 1) : 0;   // (FULL EFFORT: hosts from 0.3.26)
+        g.tun.knuckleReturns = (o & 2) ? ((o & 8) ? 2 : 1) : 0;
+    }
+    // (BOUNCES IN FOUR CORNERS, four players, hosts from 0.3.26, as the match plays them; an older host: STANDARD)
+    if (np == 4 && g.tun.cornersBounceRoom()) {
+        for (int p = 0; p < 4; ++p) { g.pl[p].ball.bankAimPending = false; g.pl[p].ball.bankTurn = {}; }
+        if (r.ok && r.e - r.p >= 1) {
+            const uint8_t o = r.get<uint8_t>();
+            g.tun.wallsLively = (o & 1) != 0;
+            g.tun.wallGrip = (o & 2) != 0;
+            g.tun.bankAssist = (o >> 2) & 3;
+            const float most = 2.4f * 0.017453293f;   // (never more than HIGH's 2.4 degrees)
+            for (int p = 0; p < 4 && g.tun.bankAssist > 0 && r.ok && r.e - r.p >= 7; ++p) {
+                Ball& b = g.pl[p].ball;
+                b.bankAimPending = r.get<uint8_t>() != 0;
+                b.bankTurn.x = r.get<int16_t>() * 0.0001f;
+                b.bankTurn.y = r.get<int16_t>() * 0.0001f;
+                b.bankTurn.z = r.get<int16_t>() * 0.0001f;
+                const float turn = length(b.bankTurn);
+                if (turn > most) b.bankTurn *= most / turn;
+            }
+        }
+    }
+    // (AIR GUITAR's guitar, hosts from 0.3.26: which bots hold it and how far it has come; an older host: none)
+    {
+        uint8_t o = 0;
+        if (r.ok && r.e - r.p >= 1) o = r.get<uint8_t>();
+        for (int p = 0; p < kMaxPlayers; ++p) g.pl[p].botProp = p < np && ((o >> p) & 1) ? (float)(o >> 4) / 15.f : 0.f;
     }
     return r.ok;
 }
@@ -2090,7 +2146,13 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
         double secs = now_ - statStart_;
         char ping[64] = "";
         if (pingN_) std::snprintf(ping, sizeof ping, ", ping %.0f ms (%.0f - %.0f)", pingSum_ / pingN_, pingMin_, pingMax_);
-        if (statRecv_)
+        if (statRecv_ && mode_ == Mode::Client && !inTank(session_))
+            // (waiting or watching: the host sends us 30 of its snapshots a second, not every one it makes, so the gaps in
+            // its numbering aren't losses: the line says how many came and how many it made. 2026-11-23: a viewer's 72.6%
+            // "lost" was mostly snapshots never sent to her)
+            LOGI("net stats: viewer recv %.0f pkt/s (viewers are sent 30), the host's snapshots %.0f a second, late/dup %u%s",
+                 statRecv_ / secs, (statRecv_ + statLost_) / secs, statLate_, ping);
+        else if (statRecv_)
             LOGI("net stats: %s recv %.0f pkt/s, lost %u of %u (%.1f%%), late/dup %u%s", mode_ == Mode::Host ? "host" : "client",
                  statRecv_ / secs, statLost_, statRecv_ + statLost_, 100.0 * statLost_ / std::max(1u, statRecv_ + statLost_), statLate_, ping);
         resetStats();
@@ -2109,11 +2171,14 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             }
         }
         for (SpecMatch& m : matches_) {
-            if (!m.fresh) continue;
-            Reader rs{m.state.data(), m.state.data() + m.state.size()};
-            readState(rs, m.game, -1);
-            m.fresh = false;
-            for (const LanGame& lg : games_) if (lg.ip == m.ip) std::memcpy(m.name, lg.name, sizeof m.name);
+            if (m.fresh) {
+                Reader rs{m.state.data(), m.state.data() + m.state.size()};
+                readState(rs, m.game, -1);
+                m.fresh = false;
+                m.smooth.arrived(m.game, now_);   // (SMOOTH VIEWS WHILE WAITING: spectators too)
+                for (const LanGame& lg : games_) if (lg.ip == m.ip) std::memcpy(m.name, lg.name, sizeof m.name);
+            }
+            m.smooth.apply(m.game, now_);
         }
         matches_.erase(std::remove_if(matches_.begin(), matches_.end(), [&](const SpecMatch& m) { return now_ - m.lastSeen > 4.0; }),
                        matches_.end());
@@ -2311,6 +2376,12 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
             Reader rs{lastState_.data(), lastState_.data() + lastState_.size()};
             readState(rs, g, s);
         }
+        if (s < 0 && !migrating_) {   // SMOOTH VIEWS WHILE WAITING: in the waiting area, the room drawn between snapshots
+            if (gotState) smooth_.arrived(g, now_);
+            smooth_.apply(g, now_);
+        } else {
+            smooth_.reset();
+        }
         g.events.swap(pendingEvents_);
         pendingEvents_.clear();
         if (s >= 0) g.pl[s].in = local;
@@ -2395,6 +2466,14 @@ bool Net::snapshotInto(const Game& g, Game& into, size_t cut) {
     return readState(r, into, -1);
 }
 
+bool Net::slowStateDue(double now, double& last) {
+    const double gap = 1.0 / 30.0;
+    if (now - last < gap) return false;
+    last += gap;
+    if (now - last >= gap) last = now;   // (the first, or after a stall: from now, not a burst to catch up)
+    return true;
+}
+
 void Net::sendState(const Game& g) {
     if (mode_ != Mode::Host) return;
     for (const GameEvent& e : g.events) eventLog_.push_back({nextEventId_++, now_, e});
@@ -2403,9 +2482,10 @@ void Net::sendState(const Game& g) {
     for (const Member& m : members_) anyone |= !m.local;
     if (!anyone) return;
     // full rate (every frame) to the two players in the tank; 30 Hz to the people outside and spectators (bandwidth,
-    // and the relay's per-player rate limit)
-    const bool slow = now_ - lastSlowState_ >= 1.0 / 30.0;
-    if (slow) lastSlowState_ = now_;
+    // and the relay's per-player rate limit). STEADY UPDATES WHILE WAITING (0.3.26): the time steps on by a 30th of a
+    // second, not to the frame that sent, so it is 30 a second at 72, 90 or 120 fps (it was rounded up to whole frames:
+    // 22 to 24 a second); more than one behind (a stall) starts again from now rather than sending a burst
+    const bool slow = slowStateDue(now_, lastSlowState_);
     Writer w; header(w, MSG_STATE, session_, ++seq_); writeEvents(w, eventLog_); writeState(w, g);
     for (const Member& m : members_) {
         if (m.local) continue;

@@ -40,9 +40,9 @@ B. Sideload the APK (developer mode)
 
 Playing
 -------
-  - You start in the lobby, a balcony over the practice court where two bots play. Point at a poster (or touch it)
-    and pull the trigger: PLAY THE BOT, MULTIPLAYER, CUSTOMIZE, SPECTATE, HOW TO PLAY, SETTINGS. Point at the court
-    to play the bot. The side menu's LOBBY brings you back; QUIT GAME is at its bottom.
+  - You start in the lobby, a balcony over the practice court where two bots play, with the main menu in front of
+    you: point at a button and pull the trigger. Point at the court to play the bot. The side menu's LOBBY brings
+    you back; QUIT GAME is at its bottom.
   - Online is on by default: MENU > MULTIPLAYER shows the rooms on the community server, where Quest and PC
     players meet. HOST A ROOM, or JOIN someone's; in the waiting area press JOIN QUEUE (the red button) to play.
   - Grab your ball: hold the trigger and reach for it (or swing through it on the spawner). Throw: swing and let go.
