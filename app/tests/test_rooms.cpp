@@ -1133,6 +1133,38 @@ int main() {
         CHECK(A.net.mode() == Net::Mode::Offline && H.net.mode() == Net::Mode::Offline, "a room where nobody moves closes, for everyone in it");
         for (auto& n : hs) { if (n->net.online()) n->net.goOffline(); n->net.shutdown(); }
     }
+    {   // TRAINING (0.3.27 fix): a lesson longer than the relay's 10 s keeps its session, its result goes, its board answers
+        // (a lesson steps the game itself; until 0.3.27 nothing talked to the relay in one, it let the session go, and the
+        // lesson's leaderboard said NO ANSWER: PICO's store review of 0.3.26, 2026-11-25)
+        std::vector<std::unique_ptr<Node>> ts;
+        ts.emplace_back(new Node("TRAINEE", 0.f));
+        Node& T = *ts[0];
+        uint8_t key[16];
+        for (int i = 0; i < 16; ++i) key[i] = (uint8_t)(0xA0 + i);
+        T.net.setStatsKey(key);
+        T.net.goOnline(server);
+        pump(ts, 1.0);
+        const bool was = T.net.onlineReady();
+        auto lesson = [&](double seconds) {   // the frame's TRAINING branch: the upkeep only
+            const double t0 = (double)std::chrono::steady_clock::now().time_since_epoch().count() * 1e-9;
+            for (;;) {
+                T.net.service(T.game, 1.f / 90.f);
+                std::this_thread::sleep_for(std::chrono::milliseconds(11));
+                if ((double)std::chrono::steady_clock::now().time_since_epoch().count() * 1e-9 - t0 > seconds) break;
+            }
+        };
+        lesson(12.0);   // (longer than the relay's TIMEOUT, 10 s)
+        T.net.submitTraining(1, 30.f, 5, 5);
+        lesson(0.5);
+        T.net.requestBoard(1, 0);
+        lesson(1.0);
+        const Net::Board* bd = T.net.board(1, 0);
+        CHECK(was && T.net.onlineReady() && T.net.mode() == Net::Mode::Offline,
+              "TRAINING: after a 12 s lesson still online, and still offline (the upkeep runs no practice or room)");
+        CHECK(bd && bd->players >= 1 && bd->myPlace >= 1,
+              "TRAINING: the lesson's result reaches the relay and its leaderboard answers on the result card");
+        for (auto& n : ts) { if (n->net.online()) n->net.goOffline(); n->net.shutdown(); }
+    }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

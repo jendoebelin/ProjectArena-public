@@ -209,7 +209,12 @@ public:
     // the local player when we are in slot 0). Client: applies the host's snapshot to `g` and sends `local`.
     // Returns true when the caller should run Game::step (offline, or hosting with someone in the tank).
     // `in`: kMaxPlayers entries (g.np of them used)
-    bool exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt);
+    // `serviceOnly`: only the network's upkeep (packets read, the relay's pings, results and replies), no room or practice
+    bool exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt, bool serviceOnly = false);
+    // TRAINING (a lesson steps the game itself, without exchange): the relay session kept alive, its replies read. Until
+    // 0.3.27 a lesson talked to nobody, the relay let the session go after 10 s, and the lesson's leaderboard (asked for
+    // on its result card) said NO ANSWER (PICO's store review of 0.3.26, 2026-11-25)
+    void service(Game& g, float dt);
     // the room we are in (host or client)
     bool inRoom() const { return mode_ == Mode::Host || mode_ == Mode::Client; }
     const RoomInfo& room() const { return room_; }

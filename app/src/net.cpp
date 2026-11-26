@@ -1625,7 +1625,13 @@ bool Net::takeCameras(char team[17], std::vector<uint8_t>& blob) {
 }
 
 // ------------------------------------------------------------------ per-frame
-bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt) {
+void Net::service(Game& g, float dt) {
+    const PlayerInput none;
+    PlayerInput scratch[kMaxPlayers];
+    exchange(none, scratch, g, dt, true);
+}
+
+bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt, bool serviceOnly) {
     if (kickNow_ && mode_ == Mode::Host) {   // VOTE TO REMOVE passed: out of the room, and not back this session
         if (Member* m = member(kickNow_)) {
             Removed x; x.id = m->id; x.ip = m->ip; std::memcpy(x.name, m->name, 16);
@@ -2159,6 +2165,7 @@ bool Net::exchange(const PlayerInput& local, PlayerInput* in, Game& g, float dt)
     }
     spectators_.erase(std::remove_if(spectators_.begin(), spectators_.end(), [&](const Spectator& sp) { return now_ - sp.seen > 4.0; }),
                       spectators_.end());
+    if (serviceOnly) return false;   // (TRAINING: the upkeep only; the lesson steps the game)
     switch (mode_) {
     case Mode::Spectate: {
         if (now_ - lastSpectatePing_ > 0.2) {   // subscribe to every live host we can hear, saying where we are

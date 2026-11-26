@@ -1903,7 +1903,7 @@ static void updateBuilder(App& a, PlayerInput& in);
 
 // ------------------------------------------------------------------ bug reports
 static const char* kBugCats[6] = {"GAMEPLAY", "MULTIPLAYER", "AVATAR / OUTFIT", "MENUS / TEXT", "GRAPHICS", "OTHER"};
-static const char* kAppVersion = "0.3.26";   // (0.3.20: the Meta competition build)
+static const char* kAppVersion = "0.3.26.1";   // (0.3.20: the Meta competition build)
 // A scrolling texture's offset, kept in [0, 1) (the textures repeat, so it looks the same). The headset's fragment
 // shader works at medium precision (16-bit floats): an offset that grows with the time played lost its fractions after
 // some minutes, and the ball's and fireballs' plasma broke into big square blocks (a tester's report, 2026-11-02).
@@ -11436,6 +11436,7 @@ static void stepFrame(App& a, PlayerInput* in, int L, double t, float dt) {
         roomRulesNotice(a);   // (SIMPLE SETUP, 0.3.26: a room with its own rules says what they are)
         if (a.trainer.active()) {   // TRAINING: the lesson steps the game (and the coach's), paused while its menu is up mid-lesson
             using training::Phase;
+            a.net.service(a.game, dt);   // (the relay session kept alive: the lesson's result goes, its leaderboard answers)
             in[0] = mine;
             const bool mid = a.trainer.phase == Phase::Play || a.trainer.phase == Phase::Countdown;
             const Phase before = a.trainer.phase;
