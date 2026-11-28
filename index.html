@@ -895,6 +895,10 @@ function printBoxes(fem, suit) {
     crest.q = qy(-167.7 * DEG).multiply(qx(-26.5 * DEG)).multiply(qz(10.1 * DEG)); crest.p = [-0.0816, -0.1273, -0.1871]; crest.depth = 0.04;
     back.q = qx(-26.6 * DEG); back.p = [0, -0.1281, 0.1300]; back.size = 0.075; back.depth = 0.04;
   }
+  if (suit === 19) {   // DRAGON SILK QIPAO (0.3.27, astrobleem's patch): the crest on the right breast, off the dragon (main.cpp)
+    crest.q = fem ? qy(153.5 * DEG).multiply(qx(-38.8 * DEG)) : qy(165.0 * DEG).multiply(qx(3.4 * DEG));
+    crest.p = fem ? [0.100, -0.125, -0.1663] : [0.090, -0.150, -0.1492]; crest.depth = 0.06;
+  }
   return [
     { q: back.q, p: back.p, size: [back.size, back.size / 1.5, back.depth] },
     { q: crest.q, p: crest.p, size: [0.055, 0.055 / 1.5, crest.depth] },
@@ -954,7 +958,8 @@ function partsOf(look) {
   // (the masculine FACE 6: always its plain-skinned head; FACIAL HAIR decides)
   add(fk === 'm5' ? 'av_bhead_m5s' : `av_bhead_${fk}`, 'skin', 'FACE');
   if (look.suit === 18 || look.suit === 19 || look.suit === 20) {}   // (the DRESS, QIPAO, POODLE SKIRT: their skirts in the LOWER BODY's place)
-  else if (look.lower >= 1 && look.lower <= 4 && (look.suit === 14 || look.suit === 15)) add(`av_sbottom_${look.suit}_${look.lower}_${b}`, 'skin', 'LOWER BODY');
+  // (VECTOR and NIGHTFORGE: their own shorts; the TUXEDO, 0.3.27: its own lower bodies, kept inside its coat: avatar.h ownLower)
+  else if (look.lower >= 1 && ((look.lower <= 4 && (look.suit === 14 || look.suit === 15)) || (look.lower <= 6 && look.suit === 17))) add(`av_sbottom_${look.suit}_${look.lower}_${b}`, 'skin', 'LOWER BODY');
   else if (look.lower) add(`av_bottom_${look.lower}_${b}`, 'skin', 'LOWER BODY');
   else add(`av_wfade_${b}`, 'skin', 'LOWER BODY');
   if (look.headgear) add(`av_gear_${look.headgear}_${b}`, 'head', 'HEADGEAR');
