@@ -7,6 +7,7 @@
 #include "../src/training.h"
 #include "../src/controls.h"
 #include "../src/flight_sound.h"
+#include "../src/motion_log.h"
 #include <chrono>
 #include <functional>
 #include <string>
@@ -231,6 +232,125 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         bad.body = 0xFF;   // from the network: a face out of range
         avatar::sanitize(bad);
         CHECK(avatar::get(bad, avatar::F_FACE) < avatar::kFaces && avatar::get(bad, avatar::F_BODY) == 1, "a bad face from the network is repaired");
+        // FACE 5 and 6 (0.3.27): the face's third bit in VISOR TINT's top bit
+        AvatarDesc f6;
+        avatar::set(f6, avatar::F_BODY, 1);
+        avatar::set(f6, avatar::F_VISORTINT, 3);
+        avatar::set(f6, avatar::F_FACE, 5);
+        CHECK(avatar::get(f6, avatar::F_FACE) == 5 && avatar::get(f6, avatar::F_VISORTINT) == 3 && avatar::get(f6, avatar::F_BODY) == 1,
+              "FACE 6: face, face shield tint and body type read back separately");
+        avatar::set(f6, avatar::F_VISORTINT, 1);
+        CHECK(avatar::get(f6, avatar::F_FACE) == 5, "FACE 6: changing the tint keeps the face");
+        AvatarDesc f6s = f6;
+        avatar::sanitize(f6s);
+        AvatarDesc f6t;
+        CHECK(std::memcmp(&f6s, &f6, sizeof f6) == 0 && avatar::fromText(avatar::toText(f6), f6t) && std::memcmp(&f6t, &f6, sizeof f6) == 0,
+              "FACE 6: sanitize (network) and avatar.cfg keep it");
+        {   // what 0.3.26 makes of it (its sanitize: the face's 2 bits, a tint out of range to 0)
+            AvatarDesc o = f6;
+            if (o.visorTint >= avatar::fieldCount(avatar::F_VISORTINT)) o.visorTint = 0;
+            const int oldFace = (o.body >> 1) & 3;
+            CHECK(oldFace == 1 && o.visorTint == 0 && (o.body & 1) == 1, "an older build sees FACE 6 as FACE 2, a SMOKE tint, the body type kept");
+        }
+        int faces[avatar::kFaces] = {};
+        bool tintsOk = true;
+        for (uint32_t seed = 1; seed <= 600; ++seed) {
+            const AvatarDesc r = avatar::randomLook(seed);
+            faces[avatar::faceOf(r)]++;
+            tintsOk &= avatar::get(r, avatar::F_VISORTINT) < avatar::fieldCount(avatar::F_VISORTINT);
+        }
+        CHECK(faces[4] > 30 && faces[5] > 30 && tintsOk, "random looks (the bots') wear FACE 5 and 6 too, tints in range");
+        PlayerInput pin;
+        std::vector<avatar::PartDraw> parts;
+        avatar::Rig rig{};
+        AvatarDesc ch;
+        avatar::set(ch, avatar::F_BODY, 0);
+        avatar::set(ch, avatar::F_FACE, 4);
+        ch.suit = 6; ch.lower = 1; ch.headgear = 0; ch.hair = 12;
+        avatar::drawList(rig, pin, ch, parts, false);
+        bool top = false, head = false, shorts = false, hair = false;
+        for (const avatar::PartDraw& p : parts) {
+            top |= !std::strcmp(p.model, "av_top_6_m"); head |= !std::strcmp(p.model, "av_bhead_m4");
+            shorts |= !std::strcmp(p.model, "av_bottom_1_m"); hair |= !std::strcmp(p.model, "av_hair_12_m");
+        }
+        CHECK(top && head && shorts && hair, "FACE 5: its own head, the standard tank top and shorts (its body is a BUILD, for any face)");
+        {   // FACIAL HAIR (0.3.27): in VISOR TINT's bits 3-5, beside the tint (0-2) and FACE's third bit (7)
+            AvatarDesc fh;
+            avatar::set(fh, avatar::F_BODY, 0);
+            avatar::set(fh, avatar::F_FACE, 5);
+            avatar::set(fh, avatar::F_VISORTINT, 4);
+            avatar::set(fh, avatar::F_FACIALHAIR, 4);
+            CHECK(avatar::fieldCount(avatar::F_FACIALHAIR) == 5 && !std::strcmp(avatar::optionName(avatar::F_FACIALHAIR, 4), "LONG BEARD") &&
+                      avatar::get(fh, avatar::F_FACIALHAIR) == 4 && avatar::get(fh, avatar::F_FACE) == 5 && avatar::get(fh, avatar::F_VISORTINT) == 4,
+                  "FACIAL HAIR: LONG BEARD, FACE 6 and the face shield's tint read back separately");
+            avatar::set(fh, avatar::F_VISORTINT, 2);
+            avatar::set(fh, avatar::F_FACE, 1);
+            CHECK(avatar::get(fh, avatar::F_FACIALHAIR) == 4, "FACIAL HAIR: changing the tint or the face keeps it");
+            AvatarDesc fs = fh, ft;
+            avatar::sanitize(fs);
+            CHECK(std::memcmp(&fs, &fh, sizeof fh) == 0 && avatar::fromText(avatar::toText(fh), ft) && std::memcmp(&ft, &fh, sizeof fh) == 0,
+                  "FACIAL HAIR: sanitize (network) and avatar.cfg keep it");
+            AvatarDesc bad;
+            avatar::set(bad, avatar::F_VISORTINT, 1);
+            bad.visorTint = (uint8_t)(bad.visorTint | (7 << avatar::kFacialHairShift));   // (style 7: none such)
+            avatar::sanitize(bad);
+            CHECK(avatar::get(bad, avatar::F_FACIALHAIR) == 0 && avatar::get(bad, avatar::F_VISORTINT) == 1, "FACIAL HAIR: one out of range from the network is NONE, the tint kept");
+            AvatarDesc o = fh;   // what 0.3.26 makes of it: the tint out of range, SMOKE; the mask untouched
+            o.mask = 2;
+            if (o.visorTint >= avatar::fieldCount(avatar::F_VISORTINT)) o.visorTint = 0;
+            CHECK(o.visorTint == 0 && o.mask == 2, "an older build sees a beard's wearer with a SMOKE tint (no beard), the mask kept");
+            std::vector<avatar::PartDraw> fp;
+            avatar::set(fh, avatar::F_FACE, 4);
+            fh.mask = 0;
+            avatar::drawList(rig, pin, fh, fp, false);
+            bool beard = false;
+            for (const avatar::PartDraw& p : fp) beard |= !std::strcmp(p.model, "av_fhair_4_m4") && (p.flags & avatar::PART_SKINNED);
+            fh.mask = 3;
+            fp.clear();
+            avatar::drawList(rig, pin, fh, fp, false);
+            bool under = false;
+            for (const avatar::PartDraw& p : fp) under |= !std::strncmp(p.model, "av_fhair_", 9);
+            CHECK(beard && !under, "FACIAL HAIR: the face's own, skinned as the head; none shows under a mask");
+            {   // FACE 6's masculine head: its painted beard always left off (av_bhead_m5s): FACIAL HAIR decides (the owner,
+                // 2026-11-27: "male face 6 none still has the stubble")
+                auto head = [&](int facial, int mask) {
+                    AvatarDesc h = fh;
+                    avatar::set(h, avatar::F_FACE, 5);
+                    avatar::set(h, avatar::F_FACIALHAIR, facial);
+                    h.mask = (uint8_t)mask;
+                    std::vector<avatar::PartDraw> hp;
+                    avatar::drawList(rig, pin, h, hp, false);
+                    for (const avatar::PartDraw& p : hp) if (!std::strncmp(p.model, "av_bhead_", 9)) return std::string(p.model);
+                    return std::string();
+                };
+                CHECK(head(3, 0) == "av_bhead_m5s" && head(0, 0) == "av_bhead_m5s" && head(3, 2) == "av_bhead_m5s",
+                      "FACE 6 (masculine): its plain-skinned head always, no painted stubble (with facial hair, NONE, or under a mask)");
+            }
+            int bearded = 0, femBeard = 0;
+            for (uint32_t seed = 1; seed <= 600; ++seed) {
+                const AvatarDesc r = avatar::randomLook(seed);
+                if (avatar::facialHairOf(r)) (avatar::bodyType(r) ? femBeard : bearded)++;
+            }
+            CHECK(bearded > 60 && bearded < 160 && femBeard == 0, "random looks (the bots'): about a third of masculine faces with facial hair");
+        }
+        // BUILD 4 and 5 (0.3.27): the characters' bodies, for any face and outfit
+        AvatarDesc bd;
+        avatar::set(bd, avatar::F_BODY, 0);
+        avatar::set(bd, avatar::F_BUILD, 5);
+        const bool lean = !std::strcmp(avatar::shownName(bd, avatar::F_BUILD), "LEAN");
+        avatar::set(bd, avatar::F_BODY, 1);
+        const bool soft = !std::strcmp(avatar::shownName(bd, avatar::F_BUILD), "SOFT");
+        avatar::set(bd, avatar::F_BUILD, 4);
+        const bool strong = !std::strcmp(avatar::shownName(bd, avatar::F_BUILD), "STRONG");
+        const avatar::Build b4 = avatar::buildOf(4), b1 = avatar::buildOf(1);
+        CHECK(avatar::fieldCount(avatar::F_BUILD) == 6 && lean && soft && strong && b4.width == b1.width && b4.depth == b1.depth && b4.arm == b1.arm,
+              "BUILD 5 and 6: STRONG and LEAN (feminine: SOFT), at the standard scale (their shape from av_build_*.grd)");
+        AvatarDesc bs = bd;
+        avatar::sanitize(bs);
+        CHECK(bs.build == 4 && (bd.build >= 4 ? 0 : bd.build) == 0, "BUILD 5 kept on the network; an older build sees SLIM");
+        int builds[6] = {};
+        for (uint32_t seed = 1; seed <= 900; ++seed) builds[avatar::randomLook(seed).build]++;
+        CHECK(builds[4] > 40 && builds[5] > 40, "random looks (the bots') have the new builds too");
     }
     {
         std::printf("[avatar: NATION in spare bits, the team kit, the ends' colours]\n");
@@ -365,6 +485,76 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         avatar::sideColors(usa, usa, sc);
         auto apart = [&]() { float s2 = 0; for (int k = 0; k < 3; ++k) s2 += (sc[0][k] - sc[1][k]) * (sc[0][k] - sc[1][k]); return std::sqrt(s2); };
         CHECK(apart() > 0.5f, "the same country at both ends: two different colours");
+        // SIDE COLOR (0.3.27): home keeps its own; away, too alike, its country's alternative or home's natural opposite
+        {
+            const avatar::Nation* U = avatar::nation(usa);
+            CHECK(sc[0][0] == U->team[0][0] && sc[0][2] == U->team[0][2], "the same country: home keeps the country's first colour");
+            int can = 0;
+            for (int n = 1; n <= avatar::nationCount(); ++n) if (!std::strcmp(avatar::nation(n)->code, "CAN")) can = n;
+            avatar::sideColors(can, can, sc);
+            CHECK(apart() > 0.5f && sc[1][1] > 0.9f, "CANADA at both ends (its two glows both red): away its own alternative, white");
+            AvatarDesc red, red2, none;
+            avatar::set(red, avatar::F_SIDECOLOR, 1);   // RED
+            avatar::set(red2, avatar::F_SIDECOLOR, 1);
+            avatar::sideColors(avatar::rawNationOf(red), avatar::rawNationOf(red2), sc);
+            CHECK(sc[0][0] > 0.9f && sc[0][1] < 0.1f && sc[1][0] < 0.1f && sc[1][1] > 0.9f && sc[1][2] > 0.9f,
+                  "SIDE COLOR: two REDs, home red, away its natural opposite (cyan), no second choice");
+            avatar::sideColors(avatar::rawNationOf(none), avatar::rawNationOf(red), sc);
+            CHECK(sc[0][2] == 1.0f && sc[1][0] > 0.9f && sc[1][1] < 0.1f, "SIDE COLOR: RED against a standard home: red, home blue");
+            // the encoding: no country with it; avatar.cfg keeps it; a country isn't cleared by sidecolor=0; older: none
+            AvatarDesc rt;
+            CHECK(avatar::sideColorOf(red) == 1 && avatar::nationOf(red) == 0 && avatar::fromText(avatar::toText(red), rt) &&
+                  avatar::sideColorOf(rt) == 1, "SIDE COLOR: no country with it, and avatar.cfg keeps it");
+            AvatarDesc ctry;
+            avatar::set(ctry, avatar::F_NATION, usa);
+            AvatarDesc ct2;
+            CHECK(avatar::fromText(avatar::toText(ctry), ct2) && avatar::nationOf(ct2) == usa && avatar::sideColorOf(ct2) == 0,
+                  "a country through avatar.cfg: kept (its sidecolor=0 doesn't clear it)");
+            const int old = (avatar::rawNationOf(red) > 220) ? 0 : 1;   // (an older version: a country past its list is none)
+            CHECK(old == 0, "SIDE COLOR: an older version reads no country (its blue and orange)");
+            // leaving a country: the look as it was, its colours its own, no country, no flags
+            AvatarDesc mine = ctry;
+            avatar::setOwnKit(mine, true);
+            const AvatarDesc u = avatar::uniform(mine), left = avatar::leaveCountry(mine);
+            CHECK(avatar::nationOf(left) == 0 && !avatar::ownKit(left) && left.primary == u.primary && left.secondary == u.secondary &&
+                  left.suit == mine.suit, "leaving a country for custom: the look as it was, no country");
+        }
+    }
+    {
+        std::printf("[motion log]\n");   // MOTION LOG (motion_log.h): what the headset writes, the PC's replay reads back
+        PlayerInput in;
+        in.headTracked = true;
+        in.head = {Quat::axisAngle({0, 1, 0}, 0.7f), {0.31f, 1.62f, -2.05f}};
+        in.hand[1].tracked = true;
+        in.hand[1].grip = {Quat::axisAngle({1, 0, 0}, -0.8f), {0.52f, 0.98f, -2.21f}};
+        in.hand[1].trigger = 0.5f;
+        AvatarDesc look;
+        avatar::set(look, avatar::F_BUILD, 4);
+        AvatarDesc look2 = look;
+        avatar::set(look2, avatar::F_BODY, 1);
+        const char* fn = "motion_log_test.csv";
+        if (FILE* f = std::fopen(fn, "w")) {
+            std::fprintf(f, "%s\n# take, 0.3.27, %s\n%s\n%s\n", motionlog::kHeader, motionlog::lookText(look).c_str(),
+                         motionlog::line(0.0, in).c_str(), motionlog::line(0.0139, in).c_str());
+            std::fprintf(f, "# look, %s\n%s\n# take, 0.3.27, %s\n%s\n", motionlog::lookText(look2).c_str(),
+                         motionlog::line(0.0278, in).c_str(), motionlog::lookText(look).c_str(), motionlog::line(0.0, in).c_str());
+            std::fclose(f);
+        }
+        const std::vector<motionlog::Take> tk = motionlog::load(fn);
+        std::remove(fn);
+        CHECK(tk.size() == 2 && tk[0].frames.size() == 3 && tk[1].frames.size() == 1 && tk[0].version == "0.3.27",
+              "motion log: two takes, their frames");
+        if (tk.size() == 2 && tk[0].frames.size() == 3) {
+            const PlayerInput& b = tk[0].frames[1].in;
+            CHECK(std::fabs(tk[0].frames[1].t - 0.0139) < 1e-6 && length(b.head.p - in.head.p) < 1e-3f &&
+                      std::fabs(b.head.q.y - in.head.q.y) < 1e-4f && !b.hand[0].tracked && b.hand[1].tracked &&
+                      length(b.hand[1].grip.p - in.hand[1].grip.p) < 1e-3f && std::fabs(b.hand[1].grip.q.x - in.hand[1].grip.q.x) < 1e-4f &&
+                      std::fabs(b.hand[1].trigger - 0.5f) < 0.01f,
+                  "motion log: a frame read back as written");
+            CHECK(tk[0].frames[0].in.avatar.build == 4 && avatar::bodyType(tk[0].frames[1].in.avatar) == 0 &&
+                      avatar::bodyType(tk[0].frames[2].in.avatar) == 1 && avatar::bodyType(tk[1].frames[0].in.avatar) == 0,
+                  "motion log: each frame's look (a take's, then a look line's)");
+        }
     }
     {
         std::printf("[avatar: hair under headgear, swinging parts]\n");
@@ -395,7 +585,7 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
         for (int face = 0; face < avatar::kFaces; ++face) {   // the BANDANA's tails: one part per body, for every face
             AvatarDesc d;
             d.mask = 4;
-            d.body = (uint8_t)(face << 1);   // (masculine; the face in bits 1-2)
+            avatar::set(d, avatar::F_FACE, face);   // (masculine; FACE 5, 6: a bit in the tint)
             std::vector<avatar::PartDraw> list;
             avatar::drawList(avatar::solveRig(in, d), in, d, list);
             int n = 0;
@@ -448,7 +638,7 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
                       drawn, "RONIN KABUTO is headgear 9, drawn on both bodies (games before 0.3.22 read it as NONE)");
         }
         {   // PELURU (PR #30, 0.3.22): SUIT 17 TUXEDO and 18 LAYERED DRESS, HEADGEAR 10 SOMBRERO, MASK 6 SUGAR SKULL
-            CHECK(avatar::fieldCount(avatar::F_SUIT) == 19 && !std::strcmp(avatar::optionName(avatar::F_SUIT, 17), "PELURU TUXEDO") &&
+            CHECK(avatar::fieldCount(avatar::F_SUIT) >= 19 && !std::strcmp(avatar::optionName(avatar::F_SUIT, 17), "PELURU TUXEDO") &&
                       !std::strcmp(avatar::optionName(avatar::F_SUIT, 18), "PELURU LAYERED DRESS") &&
                       avatar::fieldCount(avatar::F_HEADGEAR) == 11 && !std::strcmp(avatar::optionName(avatar::F_HEADGEAR, 10), "SOMBRERO") &&
                       avatar::fieldCount(avatar::F_MASK) == 7 && !std::strcmp(avatar::optionName(avatar::F_MASK, 6), "SUGAR SKULL"),
@@ -481,7 +671,7 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
                 tux &= has(list, top) == 1 && has(list, shorts) == 1 && !has(list, ears) && avatar::swishKind(d) == -1;
                 for (int face = 0; face < avatar::kFaces; ++face) {   // the hat on the body, the mask fitted to each face
                     d.headgear = 10; d.mask = 6;
-                    d.body = (uint8_t)(body | (face << 1));
+                    avatar::set(d, avatar::F_BODY, body); avatar::set(d, avatar::F_FACE, face);   // (FACE 5, 6: a bit in the tint)
                     list.clear();
                     avatar::drawList(avatar::solveRig(in, d), in, d, list);
                     char gear[24], mask[24];
@@ -496,6 +686,55 @@ static void avatarTests(const std::vector<CollisionTri>& tris) {
             CHECK(dress, "PELURU LAYERED DRESS: its skirt takes the LOWER BODY's place and sways; its earrings swing as hair");
             CHECK(tux, "PELURU TUXEDO: over the LOWER BODY, no earrings");
             CHECK(worn, "the SOMBRERO on both bodies, the SUGAR SKULL fitted to every face");
+        }
+        {   // 0.3.27: SUIT 19 DRAGON SILK QIPAO, 20 CHERRY POODLE SKIRT (the owner's outfit kits): dresses, their skirts in the
+            // LOWER BODY's place; the poodle skirt sways (its .swish), the fitted qipao doesn't; older versions: GRID RUNNER
+            bool ok = avatar::fieldCount(avatar::F_SUIT) == 21 && !std::strcmp(avatar::optionName(avatar::F_SUIT, 19), "DRAGON SILK QIPAO") &&
+                      !std::strcmp(avatar::optionName(avatar::F_SUIT, 20), "CHERRY POODLE SKIRT");
+            for (int body = 0; body < 2; ++body)
+                for (int suit : {19, 20}) {
+                    AvatarDesc d;
+                    d.suit = (uint8_t)suit; d.lower = 3; d.body = (uint8_t)body;
+                    avatar::sanitize(d);
+                    std::vector<avatar::PartDraw> list;
+                    avatar::drawList(avatar::solveRig(in, d), in, d, list);
+                    char top[24];
+                    std::snprintf(top, sizeof top, "av_top_%d_%c", suit, body ? 'f' : 'm');
+                    int tops = 0, under = 0, ears = 0;
+                    for (const avatar::PartDraw& p : list) {
+                        tops += !std::strcmp(p.model, top) && (p.flags & avatar::PART_SKINNED);
+                        under += !std::strncmp(p.model, "av_bottom_", 10) || !std::strncmp(p.model, "av_wfade_", 9);
+                        ears += !std::strncmp(p.model, "av_top_18e_", 11);
+                    }
+                    ok &= d.suit == suit && avatar::fullDress(suit) && tops == 1 && under == 0 && ears == 0 &&
+                          avatar::swishKind(d) == (suit == 20 ? 2 : -1);
+                    AvatarDesc o = d;   // (a 0.3.26 game: a suit out of its range is GRID RUNNER)
+                    if (o.suit >= 19) o.suit = 0;
+                    ok &= o.suit == 0;
+                }
+            CHECK(ok, "SUIT 19 DRAGON SILK QIPAO and 20 CHERRY POODLE SKIRT: dresses, no lower body under them, the poodle skirt sways");
+            // under a COUNTRY KIT of MY OUTFIT, their country versions (the flag's colours, tools/build_country_kits.py);
+            // with the TEAM JERSEY the jersey; with no country, as made
+            bool kits = true;
+            for (int suit : {19, 20}) {
+                auto top = [&](bool country, bool mine) {
+                    AvatarDesc d;
+                    d.suit = (uint8_t)suit; d.body = 1;
+                    if (country) avatar::set(d, avatar::F_NATION, 7);
+                    if (mine) d.pattern = (uint8_t)(d.pattern | avatar::kOwnKitBit);
+                    avatar::sanitize(d);
+                    std::vector<avatar::PartDraw> list;
+                    avatar::drawList(avatar::solveRig(in, d), in, d, list);
+                    for (const avatar::PartDraw& p : list)
+                        if (!std::strncmp(p.model, "av_top_", 7)) return std::string(p.model);
+                    return std::string();
+                };
+                char own[24], kit[24];
+                std::snprintf(own, sizeof own, "av_top_%d_f", suit);
+                std::snprintf(kit, sizeof kit, "av_top_%dc_f", suit);
+                kits &= top(false, false) == own && top(true, true) == kit && top(true, false) != own && top(true, false) != kit;
+            }
+            CHECK(kits, "QIPAO and POODLE SKIRT: in the flag's colours under a COUNTRY KIT of MY OUTFIT, as made without a country");
         }
         {   // the full sets as presets (the owner, 2026-11-19), after the fourteen there were (bots and pictures use those)
             struct Set { const char* name; int suit, headgear, mask; };
@@ -893,15 +1132,68 @@ static void botTests(const std::vector<CollisionTri>& tris) {
         // (0.3.26, the owner in the asset viewer: held up, 10 cm at the top of its reach, it looked like the arms-up poses)
         CHECK(roofLo > -0.15f && roofHi > 0.2f && roofHi - roofLo > 0.15f && open == 2,
               "the match won: RAISE THE ROOF (open hands pushed up from its head, over and over)");
+        g.pl[1].botWinKind = 3;   // THE ROPE (0.3.27; the owner's and astrobleem's own turn of the rope, a jump a turn)
+        {
+            hold(1.5f, []() {});   // (its hands to it, the rope out)
+            Vec3 pts[Game::kRopePts], touch, slide;
+            float floor = 0, show = 0, handLo = 9.f, handHi = -9.f, fwdLo = 9.f, fwdHi = -9.f, endGap = 0, jumpLo = 9.f, jumpHi = -9.f;
+            float under = 9.f;   // (the rope's lowest)
+            int touches = 0, wings = 0;
+            bool was = false, ropeAll = true;
+            const Vec3 fwd = g.botFacing(1).rotate({0, 0, -1});
+            avatar::RigState ropeRig;   // (its arms as they're drawn: NO WINGS, the owner's video from the far end)
+            hold(2.11f, [&]() {   // (two turns)
+                const PlayerState& s = g.pl[1];
+                avatar::stepRig(ropeRig, s.in, s.in.avatar, 1000.0 + g.now, 1000.0 + g.now);
+                const avatar::Rig rr = avatar::solveRig(s.in, s.in.avatar, &ropeRig);
+                const Quat riq = rr.torso.q.conj();
+                for (int k = 0; k < 2; ++k) {
+                    const Vec3 S = riq.rotate(rr.upper[k].a - rr.torso.p), E = riq.rotate(rr.upper[k].b - rr.torso.p),
+                               Wl = riq.rotate(rr.fore[k].b - rr.torso.p);
+                    if (S.y - Wl.y > 0.20f && S.y - E.y < 0.05f) ++wings;
+                }
+                const bool has = g.botRopeShape(1, s.in, pts, floor, touch, slide, show);
+                ropeAll &= has;
+                if (!has) return;
+                const Vec3 m = (s.in.hand[0].grip.p + s.in.hand[1].grip.p) * 0.5f - s.in.head.p;
+                handLo = std::min(handLo, m.y); handHi = std::max(handHi, m.y);
+                fwdLo = std::min(fwdLo, dot(m, fwd)); fwdHi = std::max(fwdHi, dot(m, fwd));
+                endGap = std::max({endGap, length(pts[0] - s.in.hand[0].grip.p), length(pts[Game::kRopePts - 1] - s.in.hand[1].grip.p)});
+                jumpLo = std::min(jumpLo, s.in.head.p.y); jumpHi = std::max(jumpHi, s.in.head.p.y);
+                for (const Vec3& q : pts) under = std::min(under, q.y);
+                if (floor > 0.f && !was) ++touches;
+                was = floor > 0.f;
+            });
+            std::printf("       THE ROPE: its hands circle %.2f m up and down and %.2f m front to back; it jumps %.2f m; the rope "
+                        "on the floor %d times in two turns (never through it: lowest %.3f m), its ends %.3f m from the fists\n",
+                        handHi - handLo, fwdHi - fwdLo, jumpHi - jumpLo, touches, under, endGap);
+            CHECK(ropeAll && show > 0.95f && handHi - handLo > 0.3f && fwdHi - fwdLo > 0.35f && jumpHi - jumpLo > 0.08f,
+                  "the match won: THE ROPE (a rope in its hands, big circles from the shoulders, a jump a turn)");
+            CHECK(touches == 2 && under >= 0.f && endGap < 0.12f, "THE ROPE: the rope comes down on the floor once a turn, never through it");
+            std::printf("       THE ROPE: its elbows up by its shoulders with its hands low: %d frames in two turns\n", wings);
+            CHECK(wings == 0, "THE ROPE: no wings (its elbows never lift up by its shoulders while its hands are low)");
+            CHECK(!g.botRopeShape(0, g.pl[0].in, pts, floor, touch, slide, show), "... and none for a player");
+        }
         int winKinds = 0;   // (each win chooses: by the moment it comes)
-        for (int k = 0; k < 9; ++k) {
+        for (int k = 0; k < 12; ++k) {
             g.match = MatchState::InProgress;
             hold(0.29f + 0.07f * k, []() {});
             g.match = MatchState::MatchSummary; g.matchWinner = 1;
             hold(1.f / 72, []() {});
-            winKinds |= 1 << std::max(0, std::min(2, g.pl[1].botWinKind));
+            winKinds |= 1 << std::max(0, std::min(3, g.pl[1].botWinKind));
         }
-        CHECK(((winKinds & 1) + ((winKinds >> 1) & 1) + ((winKinds >> 2) & 1)) >= 2, "matches won: its victory poses vary");
+        CHECK(((winKinds & 1) + ((winKinds >> 1) & 1) + ((winKinds >> 2) & 1) + ((winKinds >> 3) & 1)) >= 2, "matches won: its victory poses vary");
+        g.tun.botWinForce = 3;   // BOT WINS (developer mode, the owner 2026-11-27: "add the setting to always pick it")
+        bool allRope = true;
+        for (int k = 0; k < 6; ++k) {
+            g.match = MatchState::InProgress;
+            hold(0.29f + 0.07f * k, []() {});
+            g.match = MatchState::MatchSummary; g.matchWinner = 1;
+            hold(1.f / 72, []() {});
+            allRope &= g.pl[1].botWinKind == 3;
+        }
+        g.tun.botWinForce = -1;
+        CHECK(allRope, "BOT WINS: THE ROPE (developer): every match won, THE ROPE");
         g.match = MatchState::MatchSummary; g.matchWinner = 0;   // (lost: nothing to celebrate)
         g.pl[1].botStance = STANCE_RELAXED;
         hold(1.5f, [&]() { raised = std::max(g.pl[1].in.hand[0].grip.p.y, g.pl[1].in.hand[1].grip.p.y) - g.pl[1].in.head.p.y; });
@@ -930,9 +1222,10 @@ static void botTests(const std::vector<CollisionTri>& tris) {
                         m.name, throws, points, rebounds, scored, strikes, blocks, punches, slowest * 1000);
             char msg[112];
             // (never hit, until it attacked with every shape, 2026-10-30: its curves and banks come back slower, so in
-            // Basic it is without its ball, its shield, for longer; three strikes on it make a big fast ball)
-            std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: 1200 hard throws, hit 4 times at most", m.name);
-            CHECK(throws == 1200 && points <= 4, msg);
+            // Basic it is without its ball, its shield, for longer; three strikes on it make a big fast ball. STRIKE BY
+            // TOUCH, 2026-11-26: Basic's strikes on it 59 -> 137, a bigger, faster ball sooner, its hits 4 -> 9)
+            std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: 1200 hard throws, hit 10 times at most", m.name);
+            CHECK(throws == 1200 && points <= 10, msg);
             std::snprintf(msg, sizeof msg, "UNBEATABLE, %s: none of its own blocks comes back into it", m.name);
             CHECK(rebounds == 0, msg);
         }
@@ -1961,7 +2254,114 @@ int main(int argc, char** argv) {
             }
         return 0;
     }
+    if (const char* m = std::getenv("PA_BLOCK_MEASURE")) {   // how the bots block (0.3.27; the owner, 2026-11-27: "they need to
+        // pivot and reach"): UNBEATABLE attacking PRO, ALL-STAR and UNBEATABLE defenders, PA_BLOCK_MEASURE=seeds x 2 minutes,
+        // Basic and Advanced. At each block: how far the arm reaches (wrist to shoulder, of the most it reaches), how far
+        // the body has moved from where it stands, how far it has turned; and over the matches blocks, hits, strikes
+        const int seeds = std::max(1, std::atoi(m));
+        std::printf("[measure: the bots' blocks, %d seeds x 2 minutes]\n", seeds);
+        for (int adv = 0; adv < 2; ++adv)
+            for (int def : {2, 3, kBotLevels - 1}) {
+                int blocks = 0, hits = 0, strikes = 0, full = 0, still = 0, planned = 0;
+                double ext = 0, moved = 0, turn = 0;
+                for (int k = 0; k < seeds; ++k) {
+                    Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
+                    g.tun.botLevel = kBotLevels - 1; g.tun.botIdle = false; g.reset(true);
+                    g.pl[0].isBot = true; g.pl[0].botLevel = def;
+                    g.rngSeed(0x85EBCA6Bu * (uint32_t)(k + 1) + 17u * (uint32_t)def + 1000u * (uint32_t)adv);
+                    PlayerInput in[2] = {{}, {}};
+                    for (int i = 0; i < 72 * 120; ++i) {
+                        PlayerInput tmp[2] = {in[0], in[1]};
+                        g.step(1.f / 72, tmp);
+                        for (const GameEvent& e : g.events) {
+                            hits += e.type == EventType::HitPlayer && e.player == 0;
+                            strikes += e.type == EventType::Strike && e.player == 0 && e.ball == 1;
+                            if ((e.type == EventType::ShieldBlock || e.type == EventType::KnuckleBlock) && e.player == 0 && e.hand >= 0) {
+                                const PlayerState& s = g.pl[0];
+                                const Pose grip{s.botHandQ[e.hand], s.botHand[e.hand]};
+                                const float x = length(g.botWrist(e.hand, grip) - g.botShoulder(0, e.hand)) / g.tun.botArm;
+                                ++blocks; ext += x; full += x > 0.9f;
+                                const Vec3 b{s.botBody.x, 0, s.botBody.z};
+                                moved += length(b); still += length(b) < 0.05f;
+                                for (const PlayerState::BotRead& rd : s.botRead)
+                                    if (rd.hand == e.hand && (rd.plan == BOT_SHIELD || rd.plan == BOT_KNUCKLE)) { ++planned; break; }
+                                turn += std::fabs(s.botTurn) * 57.2958f;   // (its shoulders' turn as drawn)
+                            }
+                        }
+                    }
+                }
+                std::printf("       %s, UNBEATABLE attacking %s: %d blocks (arm %.0f%% of its reach on average, %.0f%% of them past "
+                            "90%%; the body %.0f cm moved, %.0f%% of them standing still; turned %.0f deg), %d hits, %d strikes\n",
+                            adv ? "Advanced" : "Basic", botSkill(def).name, blocks, 100.0 * ext / std::max(1, blocks),
+                            100.0 * full / std::max(1, blocks), 100.0 * moved / std::max(1, blocks), 100.0 * still / std::max(1, blocks),
+                            turn / std::max(1, blocks), hits, strikes);
+                std::printf("         (%d of the blocks planned, the rest a hand in its guard where the ball came)\n", planned);
+            }
+        return 0;
+    }
+    if (const char* m = std::getenv("PA_STRIKE_MEASURE")) {   // the hunting bots' strikes (0.3.27, STRIKE BY TOUCH): CHAMPION
+        // and UNBEATABLE attacking a defending bot (ALL-STAR, which doesn't hunt, and UNBEATABLE), PA_STRIKE_MEASURE=seeds x
+        // 2 minutes each; nothing else runs. Strikes on the defender per strike throw (under 3 strikes held), and hits
+        const int seeds = std::max(1, std::atoi(m));
+        std::printf("[measure: strikes by the hunting bots against a defending bot, %d seeds x 2 minutes]\n", seeds);
+        for (int adv = 0; adv < 2; ++adv)
+            for (int att : {kBotLevels - 2, kBotLevels - 1})
+                for (int def : {3, kBotLevels - 1}) {
+                    int tries = 0, strikes = 0, hits = 0, back = 0;
+                    for (int k = 0; k < seeds; ++k) {
+                        Game g; g.setArena(tris); g.tun.advanced = adv; g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
+                        g.tun.botLevel = att; g.tun.botIdle = false; g.reset(true);
+                        g.pl[0].isBot = true; g.pl[0].botLevel = def;
+                        g.rngSeed(0x9E3779B9u * (uint32_t)(k + 1) + 31u * (uint32_t)(att * 8 + def));
+                        PlayerInput in[2] = {{}, {}};
+                        for (int i = 0; i < 72 * 120; ++i) {
+                            const int held = g.strikesHeld(1);
+                            PlayerInput tmp[2] = {in[0], in[1]};
+                            g.step(1.f / 72, tmp);
+                            for (const GameEvent& e : g.events) {
+                                if (e.type == EventType::Throw && e.player == 1 && held < 3 && g.pl[1].botIntent == 0) ++tries;
+                                if (e.type == EventType::Strike && e.player == 0 && e.ball == 1) ++strikes;
+                                if (e.type == EventType::Strike && e.player == 1 && e.ball == 0) ++back;
+                                hits += e.type == EventType::HitPlayer && e.player == 0;
+                            }
+                        }
+                    }
+                    std::printf("       %s, %s attacking %s: %d strikes from %d strike throws (%.1f%%), %d hits; the defender's strikes %d\n",
+                                adv ? "Advanced" : "Basic", botSkill(att).name, botSkill(def).name, strikes, tries,
+                                100.0 * strikes / std::max(1, tries), hits, back);
+                }
+        return 0;
+    }
 
+    {   // PIVOT AND REACH (0.3.27): a bot turns into the balls it blocks (drawn: its head and chest), its rules' facing
+        // never (turned by the rules, four AMATEUR bots in FOUR CORNERS scored nothing)
+        std::printf("[pivot and reach]\n");
+        Game g; g.setArena(tris); g.tun.basicMatchTime = 0; g.tun.meetTime = 0;
+        g.tun.botLevel = kBotLevels - 1; g.tun.botIdle = false; g.reset(true);
+        g.pl[0].isBot = true;
+        g.rngSeed(0x2545F491u);
+        PlayerInput in[2] = {{}, {}};
+        int blocks = 0, turned = 0;
+        float most = 0, ruleTurn = 0;
+        for (int i = 0; i < 72 * 60; ++i) {
+            PlayerInput tmp[2] = {in[0], in[1]};
+            g.step(1.f / 72, tmp);
+            for (int p = 0; p < 2; ++p) {   // (its rules' facing: as it faces the court, never the drawn turn)
+                const Vec3 f = g.botFacing(p).rotate({0, 0, -1}), u = g.botFacingAt(p, 0.f).rotate({0, 0, -1});
+                ruleTurn = std::max(ruleTurn, std::fabs(std::atan2(f.x * u.z - f.z * u.x, f.x * u.x + f.z * u.z)));
+                most = std::max(most, std::fabs(g.pl[p].botTurn));
+            }
+            for (const GameEvent& e : g.events)
+                if ((e.type == EventType::ShieldBlock || e.type == EventType::KnuckleBlock) && e.player >= 0 && e.player < 2) {
+                    ++blocks;
+                    turned += std::fabs(g.pl[e.player].botTurn) > 0.12f;
+                }
+        }
+        std::printf("       two UNBEATABLE bots, 1 min: %d blocks, %d of them turned 7 degrees or more into it; the most %.0f degrees\n",
+                    blocks, turned, most * 57.3f);
+        CHECK(blocks > 10 && turned * 2 > blocks && most <= 0.53f, "PIVOT AND REACH: the bots turn into most balls they block, 30 degrees at most");
+        CHECK(ruleTurn < 1e-3f, "PIVOT AND REACH: the turn is drawn only: the rules' facing never turns");
+    }
     {
         std::printf("[match start]\n");
         Game g; g.setArena(tris); g.reset(true);
@@ -2677,21 +3077,30 @@ int main(int argc, char** argv) {
         std::printf("       (a throw 8 deg off, turned: OFF %.2f, LOW %.2f, MEDIUM %.2f, HIGH %.2f deg)\n", turned[0], turned[1], turned[2], turned[3]);
         CHECK(turned[0] < 0.01f && std::fabs(turned[1] - 1.5f) < 0.1f && std::fabs(turned[2] - 3.f) < 0.1f && std::fabs(turned[3] - 4.5f) < 0.1f,
               "AIM ASSIST: a throw is turned OFF 0, LOW 1.5, MEDIUM 3, HIGH 4.5 deg toward its target");
-        // a ball through the ring 0.6 m and 0.8 m from its centre: a strike or not, by the ring's size
-        auto strikeAt = [&](int zone, float off) {
+        // a ball through the ring off its centre: a strike or not, by the ring's size; any part of the ball inside counts
+        // (STRIKE BY TOUCH, 0.3.27: its middle up to its 10 cm radius past the edge), a 0.3.26 player in it: its middle
+        auto strikeAt = [&](int zone, float off, int version = Tunables::kVerAll, float scale = 1.f) {
             PlayerInput in[2]; Game g = makeGame(tris, in);
             g.tun.strikeZone = zone;
+            g.tun.matchVersion = version;
             in[0].head.p.z = -1.5f; g.pl[0].in.head.p.z = -1.5f;   // (out of the way)
             Ball& b = g.pl[1].ball;
             const Vec3 at = g.strikeZoneCenter(0) + Vec3{0, 0, off};
             fireOpponentBall(g, at + normalize(at - (g.tun.start[1] + Vec3{-0.6f, 1.6f, 0})) * 0.5f);
+            b.scale = scale;
+            if (scale > 1.f) g.pl[0].strikesAgainst = 13;   // (and kept that size: 13 strikes earned, 2.45x)
             std::vector<GameEvent> log;
             run(g, in, 2.0f, &log);
-            (void)b;
             return hasEvent(log, EventType::Strike, 0);
         };
-        const bool s06 = strikeAt(0, 0.6f), r06 = strikeAt(1, 0.6f), r08 = strikeAt(1, 0.8f), l08 = strikeAt(2, 0.8f);
-        CHECK(!s06 && r06 && !r08 && l08, "STRIKE ZONE: 60 cm out a strike in REGULATION, not SMALL (50 cm); 80 cm one in LARGE (90 cm), not REGULATION");
+        // (touch: the ball's radius, 10 cm, and 10 cm more beyond it: SMALL 70, REGULATION 90, LARGE 110)
+        const bool s065 = strikeAt(0, 0.65f), s075 = strikeAt(0, 0.75f), r085 = strikeAt(1, 0.85f), r095 = strikeAt(1, 0.95f),
+                   l105 = strikeAt(2, 1.05f), old075 = strikeAt(1, 0.75f, 3026), old065 = strikeAt(1, 0.65f, 3026);
+        CHECK(s065 && !s075 && r085 && !r095 && l105,
+              "STRIKE ZONE, BY TOUCH, 10 cm to spare: the ball's middle 65 cm out a strike in SMALL (50 cm), 75 not; 85 in REGULATION (70), 95 not; 105 in LARGE (90)");
+        CHECK(old065 && !old075, "STRIKE ZONE: with a 0.3.26 player in the match, the ball's middle inside it, as their game counts");
+        CHECK(strikeAt(1, 1.00f, Tunables::kVerAll, 2.45f) && !strikeAt(1, 1.10f, Tunables::kVerAll, 2.45f),
+              "STRIKE ZONE, BY TOUCH: a grown ball (2.45x, 24.5 cm) by its own size and 10 cm: its middle 100 cm out a strike, 110 not");
         // BALL GROWTH: the ball at 4 strikes (regulation: twice its size)
         float grown[4] = {};
         for (int k = 0; k < 4; ++k) { Game g; g.tun.ballGrowth = k; grown[k] = g.strikeScale(4); }
@@ -2844,6 +3253,37 @@ int main(int argc, char** argv) {
                           z.fullThrowNow() && z.fullPunchNow() && z.statsMode() == 2,
                       "FULL EFFORT FAIR MATCHES: a 0.3.25 player: NATURAL and PUNCH; older: REGULATION; a custom match in the stats");
             }
+            {   // FULL EFFORT'S STEPS (0.3.27, the player: the throw "a little too far", the punch "a touch more"): FIRM, MAX EFFORT
+                Game h = g;
+                h.tun.matchVersion = Tunables::kVerAll; h.tun.throwPower = 2;
+                const float full5 = h.throwSpeedFromHandSpeed(5.f, 0);
+                h.tun.throwPower = 3;
+                const float firm5 = h.throwSpeedFromHandSpeed(5.f, 0);
+                const float firmTop = h.throwSpeedFromHandSpeed(
+                    h.tun.minInputSpeed + (h.tun.maxInputSpeed - h.tun.minInputSpeed) * h.tun.firmThrowEffort, 0);
+                h.tun.matchVersion = 3026;
+                const float firm26 = h.throwSpeedFromHandSpeed(5.f, 0);
+                std::printf("       (FIRM: a hand at 5 m/s throws %.1f m/s (FULL EFFORT %.1f, NATURAL %.1f); top speed at %.2f times the hand)\n",
+                            firm5, full5, nat5, h.tun.firmThrowEffort);
+                CHECK(firm5 > full5 + 0.3f && firm5 < nat5 - 0.3f && std::fabs(firmTop - h.tun.projectileMaxSpeed) < 1e-3f &&
+                          std::fabs(firm26 - full5) < 1e-4f,
+                      "THROW POWER: FIRM: between NATURAL and FULL EFFORT, top speed at 1.3 times; with a 0.3.26 player, FULL EFFORT");
+                const float fullStill = ret(2, 0, 10), fullHit = ret(2, 3, 10);
+                const float maxStill = ret(3, 0, 10), maxHit = ret(3, 3, 10);
+                Game k26 = g; k26.tun.knuckleReturns = 3; k26.tun.matchVersion = 3026;
+                Ball b26; b26.vel = {-10, 0, 0};
+                const float max26 = k26.deflectVelocity(b26, {1, 0, 0}, {3, 0, 0}, true, 0.f).x;
+                std::printf("       (MAX EFFORT on a knuckle guard, a ball at 10 m/s: still %.2f (FULL EFFORT %.2f), punched at 3 m/s %.2f (%.2f))\n",
+                            maxStill, fullStill, maxHit, fullHit);
+                CHECK(std::fabs(maxStill - 4.5f / 1.7f) < 1e-3f && maxHit < fullHit - 0.2f && std::fabs(max26 - fullHit) < 1e-4f,
+                      "KNUCKLE RETURNS: MAX EFFORT: a still fist 2.6 m/s of 10 back, a punch does less than FULL EFFORT's; with a 0.3.26 player, FULL EFFORT");
+                Tunables x; x.throwPower = 3; x.knuckleReturns = 3; x.matchVersion = 3026;
+                Tunables z = x; z.matchVersion = Tunables::kVerAll;
+                Tunables d; d.throwPower = 2; d.knuckleReturns = 2;
+                CHECK(x.fullThrowNow() && !x.firmThrowNow() && x.fullPunchNow() && !x.maxPunchNow() && z.firmThrowNow() && z.maxPunchNow() &&
+                          !d.firmThrowNow() && !d.maxPunchNow() && Tunables().throwPower == 0 && Tunables().knuckleReturns == 0,
+                      "FULL EFFORT'S STEPS FAIR MATCHES: a 0.3.26 player: FULL EFFORT; the defaults as they were (REGULATION)");
+            }
             // FAIR MATCHES, the rooms, the stats
             Tunables f; f.throwPower = 1;
             const int natMode = f.statsMode();
@@ -2893,6 +3333,170 @@ int main(int argc, char** argv) {
             // (0.10 x 9.5 = 0.95): 8.66 - 0.95 along, 4.5 out: 8.93 m/s; spin 0.95 x 5 / (2 x 0.1) = 23.8 rad/s)
             CHECK(std::fabs(s2 - 8.93f) < 0.03f && std::fabs(w2 - 23.75f) < 0.6f && d2 > 30.f,
                   "WALL GRIP: the wall grips the ball as a solid sphere: 8.93 m/s kept, spinning 23.8 rad/s, a little steeper out");
+            {   // CLASSIC BOUNCES (0.3.27): the reference game's bounce and curve
+                // (a 30 degree bank at 10 m/s, no gutter: the speed into the wall 5 -> 4.5, along it 8.66 kept: 9.76 m/s, out at 27.5)
+                auto classic = [&](bool on, int version, const Vec3& spin, float& speed, float& outDeg, float& spinAfter, float& spinBefore) {
+                    PlayerInput in[2]; Game g = makeGame(tris, in);
+                    g.tun.wallsClassic = on; g.tun.matchVersion = version; g.tun.gutter = 0;
+                    const float a = deg2rad(30.f);
+                    g.serve(0, g.tun.start[0] + Vec3{3.f, 1.3f, 0}, Vec3{std::cos(a), 0, std::sin(a)}, 10.f, spin, false);
+                    speed = outDeg = spinAfter = spinBefore = -1.f;
+                    for (int i = 0; i < 72 * 2; ++i) {
+                        spinBefore = length(g.pl[0].ball.spin);
+                        stepCopy(g, in);
+                        const Ball& b = g.pl[0].ball;
+                        if (hasEvent(g.events, EventType::Bounce, 0)) {
+                            speed = length(b.vel); outDeg = rad2deg(std::atan2(-b.vel.z, b.vel.x)); spinAfter = length(b.spin);
+                            break;
+                        }
+                    }
+                };
+                float c0, d0, w0, wb0, c1, d1, w1, wb1, c2, d2, w2, wb2, c3, d3, w3, wb3;
+                classic(true, Tunables::kVerAll, {}, c0, d0, w0, wb0);
+                classic(true, Tunables::kVerAll, {0, 10.f, 0}, c1, d1, w1, wb1);
+                classic(false, Tunables::kVerAll, {0, 10.f, 0}, c2, d2, w2, wb2);
+                classic(true, 3026, {}, c3, d3, w3, wb3);
+                std::printf("       (CLASSIC, a 30 degree bank at 10 m/s: %.2f m/s out at %.1f deg; with 10 rad/s of spin %.2f at %.1f, "
+                            "spin %.1f -> %.1f (STANDARD %.1f -> %.1f); with a 0.3.26 player %.2f)\n", c0, d0, c1, d1, wb1, w1, wb2, w2, c3);
+                CHECK(std::fabs(c0 - 9.760f) < 0.02f && std::fabs(d0 - 27.46f) < 0.5f,
+                      "CLASSIC: only the speed into the wall is cut (90%), the speed along it kept: 9.76 m/s of 10, out at 27.5 degrees");
+                CHECK(c1 > 9.f && c1 < 10.f && std::fabs(d1 - d0) > 1.f && std::fabs(w1 - 10.f) < 0.01f && std::fabs(wb1 - 10.f) < 0.01f &&
+                          wb2 < 9.9f && w2 < wb2,
+                      "CLASSIC: spin turns the bounce; the spin never fades, in flight or at the wall (STANDARD: it does)");
+                CHECK(std::fabs(c3 - 9.f) < 0.02f, "CLASSIC FAIR MATCHES: a 0.3.26 player in the match: STANDARD");
+                // CURVE ASSIST: a curving throw at the other player, sideways spin enough to miss them; with it, nearer
+                auto curve = [&](bool on, bool advanced, float& nearest) {
+                    PlayerInput in[2]; Game g = makeGame(tris, in, advanced);
+                    g.tun.curveAssist = on; g.tun.matchVersion = Tunables::kVerAll; g.tun.gutter = 0;
+                    const Vec3 from = g.tun.start[0] + Vec3{0.6f, 1.4f, 0}, target = g.chestPoint(1);
+                    g.serve(0, from, normalize(target - from), 12.f, {0, 20.f, 0});
+                    nearest = 1e9f;
+                    for (int i = 0; i < 72 * 2 && g.pl[0].ball.state == BallState::Flying; ++i) {
+                        nearest = std::min(nearest, length(g.pl[0].ball.pos - g.chestPoint(1)));
+                        stepCopy(g, in);
+                    }
+                };
+                float off, onB, onA;
+                curve(false, false, off); curve(true, false, onB); curve(true, true, onA);
+                std::printf("       (a curving throw, 20 rad/s sideways at 12 m/s: nearest the chest %.2f m; CURVE ASSIST Basic %.2f, Advanced %.2f)\n",
+                            off, onB, onA);
+                Tunables ct; ct.curveAssist = true;
+                Tunables ct26 = ct; ct26.matchVersion = 3026;
+                Tunables cl; cl.wallsClassic = true; cl.wallGrip = true; cl.wallsLively = true;
+                CHECK(onB < off - 0.2f && onA <= off + 1e-3f && onB <= onA + 1e-3f,
+                      "CURVE ASSIST: a curve at the other player bends more their way (Basic's 30 degrees and 35% more than Advanced's 5 and 10%)");
+                CHECK(ct.curveAssistNow() && !ct26.curveAssistNow() && ct.statsMode() == 2 && cl.wallsClassicNow() && !cl.wallGripNow() &&
+                          !cl.wallsLivelyNow() && cl.statsMode() == 2 && !Tunables().wallsClassicNow() && !Tunables().curveAssistNow(),
+                      "CLASSIC and CURVE ASSIST: off by default, custom in the stats; CLASSIC plays without LIVELY or WALL GRIP; a 0.3.26 player: neither");
+                // AIM OFF WALLS (0.3.27): a bank off the side wall aimed a little wide of the other player, and a throw a little
+                // wide of them straight; AIM ASSIST (Basic, MEDIUM: 3 degrees) as today, and with AIM OFF WALLS
+                auto aimed = [&](bool on, int version, bool bank, float errDeg, float& nearest, Vec3& vel0, double* ms) {
+                    PlayerInput in[2]; Game g = makeGame(tris, in);
+                    g.tun.aimOffWalls = on; g.tun.matchVersion = version; g.tun.gutter = 0;
+                    const Vec3 from = g.tun.start[0] + Vec3{0.6f, 1.4f, 0};
+                    Vec3 target = g.chestPoint(1);
+                    if (bank) target.z = 2.f * (2.5f - g.ballRadius(0)) - target.z;   // (its image across the wall at z = +2.5)
+                    const Vec3 d = Quat::axisAngle(Vec3{0, 1, 0}, deg2rad(errDeg)).rotate(normalize(target - from));
+                    const auto t0 = std::chrono::steady_clock::now();
+                    g.serve(0, from, d, 10.f, {});
+                    if (ms) *ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                    vel0 = g.pl[0].ball.vel;
+                    nearest = 1e9f;
+                    for (int i = 0; i < 72 * 3 && g.pl[0].ball.state == BallState::Flying; ++i) {
+                        nearest = std::min(nearest, length(g.pl[0].ball.pos - g.chestPoint(1)));
+                        stepCopy(g, in);
+                    }
+                };
+                float bOff, bOn, b26, sOff, sOn;
+                Vec3 vbOff, vbOn, vb26, vsOff, vsOn;
+                double msOn = 0;
+                aimed(false, Tunables::kVerAll, true, 2.5f, bOff, vbOff, nullptr);
+                aimed(true, Tunables::kVerAll, true, 2.5f, bOn, vbOn, &msOn);
+                for (int i = 0; i < 4; ++i) {   // (the quickest of five: the time it takes, not the first run's warm-up)
+                    double m; float n; Vec3 v;
+                    aimed(true, Tunables::kVerAll, true, 2.5f, n, v, &m);
+                    msOn = std::min(msOn, m);
+                }
+                aimed(true, 3026, true, 2.5f, b26, vb26, nullptr);
+                aimed(false, Tunables::kVerAll, false, 2.f, sOff, vsOff, nullptr);
+                aimed(true, Tunables::kVerAll, false, 2.f, sOn, vsOn, nullptr);
+                std::printf("       (a bank off the side wall 2.5 degrees wide at 10 m/s: nearest the chest %.2f m; AIM OFF WALLS %.2f, "
+                            "%.1f ms to choose on this computer; a straight throw 2 degrees wide: %.2f, %.2f)\n", bOff, bOn, msOn, sOff, sOn);
+                CHECK(bOn < bOff - 0.2f && bOn < 0.3f,
+                      "AIM OFF WALLS: a bank aimed a little wide is helped to land (AIM ASSIST alone pulls it toward the straight line)");
+                CHECK(length(vsOn - vsOff) < 1e-4f && length(vb26 - vbOff) < 1e-4f,
+                      "AIM OFF WALLS: a straight throw turned as before; with a 0.3.26 player in the match, today's AIM ASSIST");
+                Tunables aw; aw.aimOffWalls = true;
+                Tunables aw26 = aw; aw26.matchVersion = 3026;
+                CHECK(aw.aimOffWallsNow() && !aw26.aimOffWallsNow() && aw.statsMode() == 2 && !Tunables().aimOffWallsNow(),
+                      "AIM OFF WALLS: off by default, custom in the stats; a 0.3.26 player: off");
+            }
+            {   // THE GUTTER (0.3.27): its facets, and a low ball into the foot of a side wall
+                bool shape = true;
+                for (int kind : {ARENA_CLASSIC, ARENA_DIAMOND}) {
+                    const std::vector<GutterStrip> st = gutterStrips(kind, 0.25f);
+                    size_t mains = 0;
+                    for (size_t i = 0; i < st.size(); ++i) {
+                        shape = shape && std::fabs(length(st[i].n) - 1.f) < 1e-4f && std::fabs(dot(st[i].n, st[i].b - st[i].a)) < 1e-4f;
+                        if (i % 7 != 6) shape = shape && length(st[i].b - st[i + 1].a) < 1e-4f;   // (each facet meets the next)
+                        if (!(st[i].tags & TAG_FOUL)) ++mains;
+                    }
+                    shape = shape && mains == (kind == ARENA_CLASSIC ? 28u : 28u) && st.size() == (kind == ARENA_CLASSIC ? 84u : 28u);
+                }
+                // (FOUR CORNERS: the floor and ceiling of each wall's side-wall strips, not the back walls: two players,
+                // the strips not at x beyond 7.1 (6 of 8 a wall); four, nor at z beyond it either (4 of 8))
+                const std::vector<GutterStrip> c2 = gutterStrips(ARENA_CORNERS, 0.12f), c4 = gutterStrips(ARENA_FOURCORNERS, 0.12f);
+                bool along = true;
+                for (const GutterStrip& s : c4) {
+                    const Vec3 m = (s.a + s.b) * 0.5f + s.dir * (0.5f * (s.x0 + s.x1));
+                    along = along && std::fabs(m.x) < exparena::kBackX && std::fabs(m.z) < exparena::kBackX && std::fabs(s.dir.y) < 1e-5f;
+                }
+                shape = shape && c2.size() == 4u * 6u * 2u * 7u && c4.size() == 4u * 4u * 2u * 7u && along;
+                const std::vector<GutterStrip> sq = gutterStrips(ARENA_CLASSIC, 0.25f);
+                // (the first cove: the floor to the wall at z = -2.5, its ends on the two)
+                shape = shape && std::fabs(sq[0].a.y) < 1e-4f && std::fabs(sq[6].b.z + 2.5f) < 1e-4f && sq[3].n.y > 0.69f && sq[3].n.z > 0.69f;
+                CHECK(shape && gutterStrips(ARENA_OCTAGON, 0.25f).empty() && gutterStrips(ARENA_CLASSIC, 0.f).empty(),
+                      "THE GUTTER: 7 facets a cove, each meeting the next, its ends on the floor (or ceiling) and the wall; the SQUARE's foul zones their own");
+                // a ball 15 cm over the floor, 60 degrees into the side wall at 10 m/s
+                auto low = [&](int level, int version, float& upDeg, float& speed) {
+                    PlayerInput in[2]; Game g = makeGame(tris, in);
+                    g.tun.gutter = level; g.tun.matchVersion = version;
+                    g.useArena(ARENA_CLASSIC, tris);
+                    const float a = deg2rad(60.f);
+                    g.serve(0, Vec3{-2.f, 0.15f, 0}, Vec3{std::cos(a), 0, std::sin(a)}, 10.f, {}, false);
+                    upDeg = speed = -1.f;
+                    for (int i = 0; i < 72 * 2; ++i) {
+                        stepCopy(g, in);
+                        const Ball& b = g.pl[0].ball;
+                        if (hasEvent(g.events, EventType::Bounce, 0)) {
+                            upDeg = rad2deg(std::asin(clampf(b.vel.y / std::max(1e-3f, length(b.vel)), -1.f, 1.f)));
+                            speed = length(b.vel);
+                            break;
+                        }
+                    }
+                    return g.arenaGutter;
+                };
+                float u0, s0g, u1, s1g, u2, s2g, u3, s3g, uOld, sOld;
+                const int made0 = low(0, Tunables::kVerAll, u0, s0g), made1 = low(1, Tunables::kVerAll, u1, s1g), made2 = low(2, Tunables::kVerAll, u2, s2g);
+                const int made3 = low(3, Tunables::kVerAll, u3, s3g), madeOld = low(2, 3026, uOld, sOld);
+                std::printf("       (a ball 15 cm up, 60 degrees into the side wall: no gutter, out at %.1f degrees up; 12 CM %.1f; 25 CM %.1f; 40 CM %.1f; "
+                            "with a 0.3.26 player %.1f)\n", u0, u1, u2, u3, uOld);
+                CHECK(made0 == 0 && made1 == 1 && made2 == 2 && made3 == 3 && madeOld == 0 && std::fabs(u0) < 1.f && u2 > 10.f && u3 > 10.f &&
+                          std::fabs(uOld) < 1.f && s2g > 5.f,
+                      "THE GUTTER: a low ball into the foot of the wall is kicked up off it (none: straight back); a 0.3.26 player: none");
+                Tunables t; t.gutter = 2;
+                Tunables t26 = t; t26.matchVersion = 3026;
+                Tunables cr = t; cr.experimental = true; cr.expRoom = ROOM_CORNERS;
+                Tunables dm = t; dm.experimental = true; dm.expRoom = ROOM_DIAMOND;
+                Tunables bz = t; bz.experimental = true; bz.expRoom = ROOM_BLITZ;
+                Tunables off; off.gutter = 0;
+                Tunables std26; std26.matchVersion = 3026;
+                CHECK(t.gutterNow() == 2 && t26.gutterNow() == 0 && cr.gutterNow() == 2 && dm.gutterNow() == 2 && bz.gutterNow() == 0 &&
+                          t.statsMode() == 2 && off.statsMode() == 2 && Tunables().gutterNow() == 1 && Tunables().statsMode() == 0 &&
+                          std26.statsMode() == 0,
+                      "THE GUTTER: 12 CM the standard, on by default (another size or none: custom); the SQUARE, DIAMOND and FOUR CORNERS; "
+                      "a 0.3.26 player: none, still a standard match");
+            }
             CHECK(std::fabs(s3 - 9.f) < 0.02f && w3 < 0.01f, "BOUNCES FAIR MATCHES: a player on 0.3.21 in the match: STANDARD, for both");
             // BANK ASSIST: a bank set to cross the other player's plane half a metre wide of their chest
             auto banked = [&](int level, int version, float& closest, float& turnDeg) {
@@ -3382,6 +3986,64 @@ int main(int argc, char** argv) {
         run(g, in, 0.4f, &log);
         CHECK(hasEvent(log, EventType::Caught, 0) && g.pl[0].ball.state == BallState::Held, "trigger + catcher catches own ball");
     }
+    {   // HANDS (the competition build, the owner's test 2026-11-15; dev 0.3.27, hands players only): a ball just thrown
+        // isn't caught straight back on hands; with a controller, as ever
+        std::printf("[on hands, a ball just thrown isn't caught straight back]\n");
+        bool early[2], later = false;
+        for (int onHands = 0; onHands < 2; ++onHands) {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.pl[0].onHands = onHands != 0;
+            const Vec3 c = g.catcherPoint(0, 0);   // (the other hand, closed, right where the ball goes)
+            in[0].hand[0].trigger = 1;
+            g.serve(0, c + Vec3{-0.05f, 0, 0}, {1, 0, 0}, 0.4f, {}, false);
+            std::vector<GameEvent> log;
+            run(g, in, 0.3f, &log);
+            early[onHands] = hasEvent(log, EventType::Caught, 0);
+            if (!onHands) continue;
+            Ball& b = g.pl[0].ball;   // (a moment later, back by that hand: caught as ever)
+            b.state = BallState::Flying; b.pos = g.catcherPoint(0, 0) + Vec3{0.3f, 0, 0}; b.vel = {-1, 0, 0}; b.speedLimit = 1;
+            log.clear();
+            run(g, in, 0.5f, &log);
+            later = hasEvent(log, EventType::Caught, 0);
+        }
+        CHECK(early[0] && !early[1] && later, "on hands: not caught in the first 0.4 s after the throw, caught after; a controller: as ever");
+    }
+    {   // HANDS: a player on hands reaches a little further for their ball coming back (owner and a player, 2026-11-15)
+        std::printf("[on hands, a ball coming back is caught a little further out]\n");
+        bool got[2];
+        for (int onHands = 0; onHands < 2; ++onHands) {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.pl[0].onHands = onHands != 0;
+            in[0].hand[1].trigger = 1;
+            Ball& b = g.pl[0].ball;   // (passing 0.30 m from the catcher, just outside a controller's reach)
+            b.state = BallState::Flying; b.instigator = 0;
+            b.pos = g.catcherPoint(0, 1) + Vec3{1.0f, 0, g.tun.catchHalfHeight + g.ballRadius(0) + 0.03f}; b.vel = {-4, 0, 0}; b.speedLimit = 4;
+            std::vector<GameEvent> log;
+            run(g, in, 0.5f, &log);
+            got[onHands] = hasEvent(log, EventType::Caught, 0);
+        }
+        CHECK(!got[0] && got[1], "3 cm past a controller's reach: missed with a controller, caught on hands");
+    }
+    {   // HANDS: a hand lost behind you holds its last place; on hands the throw is measured only from frames it was seen
+        std::printf("[on hands, a throw measured only from frames the hand was seen]\n");
+        float speed[2];
+        for (int onHands = 0; onHands < 2; ++onHands) {
+            PlayerInput in[2]; Game g = makeGame(tris, in);
+            g.pl[0].onHands = onHands != 0;
+            const Pose start = in[0].hand[1].grip;
+            in[0].hand[1].tracked = false;   // (out of view behind the shoulder: its last place, for a while)
+            in[0].hand[1].grip.p = start.p + Vec3{-0.6f, 0.2f, 0};
+            run(g, in, 0.25f);
+            in[0].hand[1].tracked = true;    // (back in view in front, moving forward at 5 m/s)
+            Vec3 at = start.p + Vec3{0.3f, 0, 0};
+            for (int i = 0; i < 4; ++i) { in[0].hand[1].grip.p = at; run(g, in, 1.f / 72); at = at + Vec3{5.f / 72, 0, 0}; }
+            speed[onHands] = length(g.handVelocity(0, 1, g.now));
+        }
+        char msg[160];
+        std::snprintf(msg, sizeof msg, "on hands, the hand's own speed (%.1f m/s), not the jump from where it was lost; a controller, as ever (%.1f)",
+                      speed[1], speed[0]);
+        CHECK(std::fabs(speed[1] - 5.f) < 0.6f && std::fabs(speed[0] - speed[1]) > 0.3f, msg);
+    }
     {
         std::printf("[own ball: the slow return can hit its owner]\n");
         PlayerInput in[2]; Game g = makeGame(tris, in);
@@ -3412,7 +4074,12 @@ int main(int argc, char** argv) {
         std::printf("  scale at 0/1/4/10/24/42 strikes: %.2f %.2f %.2f %.2f %.2f %.2f\n", g.strikeScale(0), g.strikeScale(1),
                     g.strikeScale(4), g.strikeScale(10), g.strikeScale(24), g.strikeScale(42));
         CHECK(monotonic && g.strikeScale(1) > g.strikeScale(0) && g.strikeScale(10) > g.strikeScale(4), "size steps up per strike");
-        CHECK(g.strikeScale(42) <= g.tun.maxBallScale + 1e-4f, "size capped at maxBallScale");
+        CHECK(g.strikeScale(42) <= g.tun.maxBallScaleNow() + 1e-4f && std::fabs(g.strikeScale(42) - 2.75f) < 1e-4f,
+              "size capped: 2.75x at 42 strikes (0.3.27)");
+        {
+            Game o = g; o.tun.matchVersion = 3026;
+            CHECK(std::fabs(o.strikeScale(42) - 3.f) < 1e-4f, "size capped: a 0.3.26 player in the match, 3x as their game grows it");
+        }
         for (int i = 0; i < 60; ++i) g.addStrike(0, {});
         CHECK(g.pl[0].strikesAgainst == 42, "strike count stops at MaxStrikes 42");
         float s42 = g.throwSpeedFromHandSpeed(6.5f, 1);
@@ -3939,6 +4606,7 @@ int main(int argc, char** argv) {
             PlayerInput in[2] = {standing(g, 0), {}};
             bool thrownCurved = false;
             int throwsCold = 0, atCold = 0, throwsHot = 0, atHot = 0, strikes = 0, onSide = 0, sides[2] = {0, 0}, hits = 0;
+            float outSum = 0;   // (how far out from the ring's middle its strikes cross)
             for (int i = 0; i < 72 * 240; ++i) {
                 in[0].buttonA = g.match == MatchState::MatchSummary || g.match == MatchState::RoundSummary;
                 const int held = g.strikesHeld(1);
@@ -3955,6 +4623,7 @@ int main(int argc, char** argv) {
                         const float side = e.pos.z - g.strikeZoneCenter(0).z;
                         onSide += side * g.pl[1].botStrikeSide < 0;   // (the side it meant: flipped for the next one as it threw)
                         sides[side > 0] += 1;
+                        outSum += std::fabs(side);
                         ++strikes;
                     }
                     hits += e.type == EventType::HitPlayer && e.player == 0;
@@ -3966,9 +4635,13 @@ int main(int argc, char** argv) {
                 }
             }
             const char* mode = adv ? "Advanced" : "Basic";
-            std::printf("       %s: %d throws under 3 strikes (%d at the player), %d at 3 (%d at the player); %d strikes (%d / %d each side, %d where it meant), %d hits\n",
-                        mode, throwsCold, atCold, throwsHot, atHot, strikes, sides[0], sides[1], onSide, hits);
+            std::printf("       %s: %d throws under 3 strikes (%d at the player), %d at 3 (%d at the player); %d strikes (%d / %d each side, %d where it meant, %.2f m out on average), %d hits\n",
+                        mode, throwsCold, atCold, throwsHot, atHot, strikes, sides[0], sides[1], onSide, outSum / std::max(1, strikes), hits);
             char msg[112];
+            // (STRIKE BY TOUCH: toward the edge of what counts, as far from the body as it can, 0.68 m with a new ball;
+            // 0.42 m before, the owner's option 1, 2026-11-27)
+            std::snprintf(msg, sizeof msg, "%s: its strikes cross out toward the ring's edge (more than 0.55 m from its middle)", mode);
+            CHECK(strikes > 6 && outSum / strikes > 0.55f, msg);
             if (!adv) {
                 std::snprintf(msg, sizeof msg, "%s: under 3 strikes it goes for strikes, about one throw in seven at the player", mode);
                 CHECK(throwsCold > 20 && atCold * 20 >= throwsCold && atCold * 4 <= throwsCold && strikes * 2 >= throwsCold - atCold, msg);
@@ -3978,10 +4651,14 @@ int main(int argc, char** argv) {
                 CHECK(throwsHot > 5 && atHot * 10 >= throwsHot * 7 && hits > 5, msg);
             } else {   // (BOT STYLES, 2026-11-17: ADVANCED's duellist, first to 4 points, goes at you more, and at once when
                        // you have no shield; its strikes still alternate)
-                std::snprintf(msg, sizeof msg, "%s (the duellist): under 3 strikes a quarter to three quarters of its throws at the player", mode);
-                CHECK(throwsCold > 20 && atCold * 4 >= throwsCold && atCold * 4 <= throwsCold * 3, msg);
+                // (a fifth, not a quarter, since STRIKE BY TOUCH's 10 cm to spare, 2026-11-26: its own strikes land
+                // sooner, so fewer throws come before its third; measured 9 of 37 at the player)
+                std::snprintf(msg, sizeof msg, "%s (the duellist): under 3 strikes a fifth to three quarters of its throws at the player", mode);
+                CHECK(throwsCold > 20 && atCold * 5 >= throwsCold && atCold * 4 <= throwsCold * 3, msg);
+                // (four in five where it meant, not nine in ten, since its strikes aim at the edge of what counts,
+                // 2026-11-27: a bank off the far wall now and then comes through the ring's other side; measured 17 of 20)
                 std::snprintf(msg, sizeof msg, "%s: its strikes go left and right of the ring in turn", mode);
-                CHECK(strikes > 6 && onSide * 10 >= strikes * 9 && sides[0] * 4 >= strikes && sides[1] * 4 >= strikes, msg);
+                CHECK(strikes > 6 && onSide * 5 >= strikes * 4 && sides[0] * 4 >= strikes && sides[1] * 4 >= strikes, msg);
                 std::snprintf(msg, sizeof msg, "%s: holding 3 strikes, nearly every throw is at the player, and it hits", mode);
                 CHECK(atHot * 10 >= throwsHot * 7 && hits > 10, msg);
             }
@@ -4133,6 +4810,125 @@ int main(int argc, char** argv) {
         std::printf("       (hands brought in to the chest and the belly, 3 mm a step: an elbow moved at most %.0f mm a step)\n", jump * 1000);
         CHECK(jump < 0.03f, "brought in a few millimetres at a time, the elbows never jump");
     }
+    {   // ELBOWS OUT, BEHIND (the owner and astrobleem jumping rope in the builder, 2026-11-27, their MOTION LOG replayed):
+        // swung back behind the hip, a hand's elbow went in behind the back toward the spine and then snapped 30 cm out
+        // in a frame, once every turn. A turn like theirs (from the side a loop 60 cm round, a hand's width behind the
+        // head at its middle, 32 cm out; a jump a turn), 90 frames a second: the elbows move as the hands do
+        std::printf("[elbows through a rope's turn]\n");
+        avatar::RigTuning& T = avatar::rigTuning();
+        auto turn = [&](bool fixes, int body, float& step, float& inward, float& depth, int& inRun, int& wings) {
+            const avatar::RigTuning keep = T;
+            if (!fixes) { T.elbowHang = 0.f; T.elbowBehind = 0.f; T.clearInCost = 1.5f; T.elbowSwing = 0.f; T.clearCap = 0.f; }
+            AvatarDesc d;
+            d.body = (uint8_t)body;
+            avatar::RigState st;
+            Vec3 prev[2];
+            step = inward = depth = 0.f;
+            inRun = wings = 0;
+            int run[2] = {0, 0};
+            for (int f = 0; f < 90 * 4; ++f) {
+                const float t = f / 90.f, ph = 2.f * kPi * 1.05f * t;
+                PlayerInput in;
+                in.headTracked = true;
+                in.head = {Quat{}, {0, 1.62f + 0.06f * std::fabs(std::sin(ph)), 0}};
+                for (int k = 0; k < 2; ++k) {
+                    const float side = k ? 1.f : -1.f;
+                    in.hand[k].tracked = true;
+                    in.hand[k].grip = {Quat::axisAngle({0, 1, 0}, deg2rad(-side * 10.f)) * Quat::axisAngle({1, 0, 0}, deg2rad(-40.f + 30.f * std::sin(ph))),
+                                       in.head.p + Vec3{side * (0.32f + 0.08f * std::sin(ph)), -0.38f + 0.30f * std::sin(ph), 0.07f - 0.30f * std::cos(ph)}};
+                }
+                in.avatar = d;
+                avatar::stepRig(st, in, d, 1000.0 + t, 1000.0 + t);
+                const avatar::Rig r = avatar::solveRig(in, d, &st);
+                const Quat iq = r.torso.q.conj();
+                for (int k = 0; k < 2; ++k) {
+                    const float side = k ? 1.f : -1.f;
+                    if (f > 90) {   // (after a second: ARM SIZING settled)
+                        step = std::max(step, length(r.upper[k].b - prev[k]));
+                        const Vec3 S = iq.rotate(r.upper[k].a - r.torso.p), E = iq.rotate(r.upper[k].b - r.torso.p);
+                        inward = std::max(inward, (S.x - E.x) * side);
+                        const float dk = avatar::armInBody(r, d, k);
+                        depth = std::max(depth, dk);
+                        run[k] = dk > 0.03f ? run[k] + 1 : 0;   // (in the body: for how many frames on end)
+                        inRun = std::max(inRun, run[k]);
+                        const Vec3 Wl = iq.rotate(r.fore[k].b - r.torso.p);
+                        if (S.y - Wl.y > 0.20f && S.y - E.y < 0.05f) ++wings;   // (the hand low, the elbow up by the shoulder)
+                    }
+                    prev[k] = r.upper[k].b;
+                }
+            }
+            T = keep;
+        };
+        bool smooth = true, outside = true, reproduced = false;   // (reproduced: on either body)
+        for (int body = 0; body < 2; ++body) {
+            float s0, i0, d0, s1, i1, d1;
+            int r0, r1, w0, w1;
+            turn(false, body, s0, i0, d0, r0, w0);
+            turn(true, body, s1, i1, d1, r1, w1);
+            std::printf("       (body %d: an elbow's largest move in a frame %.0f mm, before %.0f; in the body at most %.0f mm, for %d frames "
+                        "on end, before %.0f, %d; its elbow up by its shoulder with the hand low %d frames, before %d)\n", body, s1 * 1000, s0 * 1000,
+                        d1 * 1000, r1, d0 * 1000, r0, w1, w0);
+            if (s1 > 0.06f) smooth = false;
+            // (NO WINGS, 2026-11-27: an elbow swings the short way round, through the back for a moment, rather than
+            // over the top: in the body no more than 0.15 s on end, and fewer wings than before; THE ROPE's own bot, the
+            // one the owner watched, has none: its test)
+            if (r1 > 13 || w1 >= w0) outside = false;
+            if (s0 >= 0.08f || i0 >= 0.05f) reproduced = true;
+        }
+        {   // INSIDE OUT (the owner, 2026-11-27, slow arm circles in the builder's mirror: "at a specific point in the
+            // rotation the elbows flip inside out"): circles out and up to the sides and down past the hips, a little
+            // behind, the controllers held level, 90 frames a second: the upper arm never turns over in a frame
+            auto circles = [&](bool fixed, float& upperTurn, float& twistTurn) {
+                const avatar::RigTuning keep = T;
+                if (!fixed) T.insideOut = false;
+                AvatarDesc d;
+                d.body = 1;
+                avatar::RigState st;
+                Vec3 prevF[2];
+                float prevT[2] = {0, 0};
+                upperTurn = twistTurn = 0.f;
+                for (int f = 0; f < 90 * 6; ++f) {
+                    const float t = f / 90.f, ph = 2.f * kPi * t / 1.5f;
+                    PlayerInput in;
+                    in.headTracked = true;
+                    in.head = {Quat{}, {0, 1.45f, 0}};
+                    for (int k = 0; k < 2; ++k) {
+                        const float side = k ? 1.f : -1.f;
+                        in.hand[k].tracked = true;
+                        in.hand[k].grip = {Quat::axisAngle({0, 1, 0}, deg2rad(-side * 20.f)) * Quat::axisAngle({1, 0, 0}, deg2rad(-10.f + 15.f * std::sin(ph))),
+                                           {side * (0.32f + 0.14f * std::cos(ph)), 1.45f - 0.44f + 0.21f * std::cos(ph), 0.10f + 0.12f * std::sin(ph)}};
+                    }
+                    in.avatar = d;
+                    avatar::stepRig(st, in, d, 1000.0 + t, 1000.0 + t);
+                    const avatar::Rig r = avatar::solveRig(in, d, &st);
+                    for (int k = 0; k < 2; ++k) {
+                        const Vec3 ya = normalize(r.upper[k].a - r.upper[k].b);
+                        Vec3 fr = r.upper[k].front - ya * dot(r.upper[k].front, ya);
+                        fr = normalize(fr);
+                        const float tw = r.twist[(2 + k) * 4 + 3];
+                        if (f > 90) {
+                            upperTurn = std::max(upperTurn, rad2deg(std::acos(clampf(dot(fr, prevF[k]), -1.f, 1.f))));
+                            const float dtw = std::remainder(tw - prevT[k], 2.f * kPi);   // (the shorter way round)
+                            twistTurn = std::max(twistTurn, rad2deg(std::fabs(dtw)));
+                        }
+                        prevF[k] = fr;
+                        prevT[k] = tw;
+                    }
+                }
+                T = keep;
+            };
+            float u0, t0, u1, t1;
+            circles(false, u0, t0);
+            circles(true, u1, t1);
+            std::printf("       (slow arm circles: the upper arm turned at most %.0f deg in a frame, before %.0f; the forearm's twist %.0f, "
+                        "before %.0f)\n", u1, u0, t1, t0);
+            CHECK(u0 > 30.f && u1 < 20.f && t1 < 30.f,
+                  "INSIDE OUT: through slow arm circles the elbow's crease keeps to its side (the upper arm turned over before)");
+        }
+        CHECK(reproduced, "the rope's turn as it was: an elbow snapped or went in behind the back (the test sees it)");
+        CHECK(smooth, "through a rope's turn, the elbows move with the hands: never 6 cm in a frame");
+        CHECK(outside, "and fewer wings (an elbow up by the shoulder with the hand low), through the body only for a moment");
+    }
     {   // THE REACH (astrobleem's PR #25 and issue #24; ARM SIZING, the owner's go 2026-11-17)
         std::printf("[the reach]\n");
         struct HandPose { Vec3 p; float pitch, yaw; };
@@ -4211,6 +5007,77 @@ int main(int argc, char** argv) {
             std::printf("       (a hand thrown out to the far reach: the torso at most %.0f deg/s; after 1.5 s %.0f mm short, the moment's posture %.0f)\n",
                         fastest, gapEnd * 1000, target.reachGap[1] * 1000);
             CHECK(fastest <= 121.f, "the torso follows smoothly, never faster than 120 degrees a second");
+        }
+        // the chest's follow-through (issue #31's patch; slightly livelier, 2026-11-27: "slightly ... dont be obscene"): a
+        // feminine TANK TOP, up 12 cm in 0.1 s and still; it moves, never past 8 mm, rebounds a little, settles, and the same
+        // at 72 and 90 frames a second
+        {
+            auto run = [&](double hz, float& peak, float& rebound, float& after1s) {
+                AvatarDesc d;
+                avatar::RigState st;
+                peak = rebound = after1s = 0;
+                std::vector<float> ys;
+                for (int i = 0; i < int(2.0 * hz); ++i) {
+                    const double t = i / hz;
+                    PlayerInput in = make(1, ready[0], ready[1], d);
+                    in.avatar.suit = 6;
+                    const float up = t < 0.2 ? 0.f : t < 0.3 ? 0.12f * float((t - 0.2) / 0.1) : 0.12f;   // (up 12 cm, then still)
+                    in.head.p.y += up;
+                    for (int h = 0; h < 2; ++h) in.hand[h].grip.p.y += up;
+                    avatar::stepRig(st, in, in.avatar, t, t, true);
+                    const float m = length(st.chest.offset);
+                    peak = std::max(peak, m);
+                    if (t >= 0.36) ys.push_back(st.chest.offset.y);   // (its swing as it stops, then the rebound: the spring's own)
+                    if (t > 1.3) after1s = std::max(after1s, m);
+                }
+                size_t at = 0;
+                for (size_t k = 0; k < ys.size(); ++k) if (std::fabs(ys[k]) > std::fabs(ys[at])) at = k;
+                for (size_t k = at; k < ys.size(); ++k) if (ys[k] * ys[at] < 0) rebound = std::max(rebound, std::fabs(ys[k]));
+            };
+            float p90, r90, s90, p72, r72, s72;
+            run(90, p90, r90, s90);
+            run(72, p72, r72, s72);
+            std::printf("       (the chest, up 12 cm and still: %.1f mm at most, its rebound %.1f mm, %.2f mm a second after; at 72 a second %.1f / %.1f)\n",
+                        p90 * 1000, r90 * 1000, s90 * 1000, p72 * 1000, r72 * 1000);
+            CHECK(p90 >= 0.002f && p90 <= 0.0081f && r90 <= 0.35f * p90 && s90 < 0.0003f && std::fabs(p90 - p72) < 0.0015f,
+                  "the chest's follow-through: it moves, at most 8 mm, a small rebound, settled within a second, the same at 72 and 90");
+        }
+        // FACIAL HAIR's swing (2026-11-27, the owner: "the beards will need some wave they can't be still and stiff"): a
+        // masculine LONG BEARD, the head swung 20 cm sideways in 0.15 s and still: the beard lags, swings back a few times,
+        // never past 25 mm, then only its own slow sway (under 4 mm); none without facial hair or under a mask
+        {
+            auto run = [&](double hz, int style, int mask, float& peak, float& waves, float& late) {
+                AvatarDesc d, look;   // (make() puts its own look in d)
+                avatar::set(look, avatar::F_FACIALHAIR, style);
+                look.mask = (uint8_t)mask;
+                avatar::RigState st;
+                peak = late = 0;
+                waves = 0;
+                float last = 0;
+                for (int i = 0; i < int(4.0 * hz); ++i) {
+                    const double t = i / hz;
+                    PlayerInput in = make(0, ready[0], ready[1], d);
+                    in.avatar = look;
+                    const float side = t < 0.3 ? 0.f : t < 0.45 ? 0.20f * float((t - 0.3) / 0.15) : 0.20f;
+                    in.head.p.x += side;
+                    for (int h = 0; h < 2; ++h) in.hand[h].grip.p.x += side;
+                    avatar::stepRig(st, in, in.avatar, t, t, true);
+                    const float x = st.beard.offset.x;
+                    peak = std::max(peak, length(st.beard.out));
+                    if (t > 0.45 && x * last < 0) waves += 1;   // (each swing back through the middle)
+                    if (t > 0.45) last = x;
+                    if (t > 3.0) late = std::max(late, length(st.beard.out));
+                }
+            };
+            float p90, w90, l90, p72, w72, l72, pNone, wNone, lNone, pMask, wMask, lMask;
+            run(90, 4, 0, p90, w90, l90);
+            run(72, 4, 0, p72, w72, l72);
+            run(90, 0, 0, pNone, wNone, lNone);
+            run(90, 4, 3, pMask, wMask, lMask);
+            std::printf("       (a long beard, the head 20 cm sideways and still: %.1f mm at most, %.0f swings back, %.1f mm after 3 s; at 72 a second %.1f mm)\n",
+                        p90 * 1000, w90, l90 * 1000, p72 * 1000);
+            CHECK(p90 >= 0.008f && p90 <= 0.0255f && w90 >= 2 && l90 < 0.0045f && std::fabs(p90 - p72) < 0.003f && pNone == 0 && pMask == 0,
+                  "FACIAL HAIR swings: it lags the head, a few swings back, at most 25 mm, then only its slow sway; none without it or under a mask");
         }
         // ARM SIZING: reaching again and again a little past the arm closes the gap; within reach, the arms stay
         {
@@ -4357,18 +5224,21 @@ int main(int argc, char** argv) {
                 if (std::fabs(wOn - dRoll) > 6.f) wristTurns = false;
             }
             // the hand turned all the way round, 2 degrees a step: what the shader undoes follows the turn within a wrist's
-            // reach (120 degrees either way from thumbs up), and never jumps (past 135 it fades out: at 180 the turn's side
-            // is a guess)
+            // reach (105 degrees either way from thumbs up; a real wrist turns about 90), and never jumps (past 135 it
+            // fades out, quickly: at 180 the turn's side is a guess). (INSIDE OUT, 2026-11-27: the upper arm's front is
+            // the forearm's way, without the forward nudge that turned it over, so it turns as the elbow swings round
+            // with the hand's turn, and the forearm's twist against it is a little more than the hand's: on the
+            // masculine body, held out like this and turned 110 degrees, the fade begins. 120 to 105, 15 to 17)
             float last = 0;
             for (int i = 0; i <= 360; i += 2) {
                 const avatar::Rig r = avatar::solveRig(held(body, -180.f + (float)i, d), d);
                 const float undo = rad2deg(r.twist[(2 + 1) * 4 + 3]);
                 if (i > 0) worstJump = std::max(worstJump, std::fabs(undo - last));
-                if (i > 0 && std::fabs(-180.f + (float)i) <= 120.f) worstWrist = std::max(worstWrist, std::fabs(undo - last));
+                if (i > 0 && std::fabs(-180.f + (float)i) <= 105.f) worstWrist = std::max(worstWrist, std::fabs(undo - last));
                 last = undo;
             }
         }
-        smooth = worstJump < 15.f && worstWrist < 3.f;
+        smooth = worstJump < 17.f && worstWrist < 3.f;
         std::printf("       (the skin near the elbow turned at most %.1f deg with the hand turned 50; the undone turn moves at most %.1f deg a 2 deg step within a wrist's turn, %.1f past it)\n",
                     worstElbow, worstWrist, worstJump);
         CHECK(restNone, "FOREARM TWIST: arms at rest are untwisted");
@@ -4387,10 +5257,10 @@ int main(int argc, char** argv) {
             d.lower = 4;
             kinds &= avatar::swishKind(d) == -1;
             CHECK(kinds, "SKIRTS: the tennis skirt and the kilt sway, nothing else does");
-            const float maxOff[2] = {0.065f, 0.05f}, maxTw[2] = {0.23f, 0.17f};
+            const float maxOff[3] = {0.065f, 0.05f, 0.17f}, maxTw[3] = {0.23f, 0.17f, 0.55f};
             bool trails = true, bounded = true, settles = true, lags = true, fresh = true;
-            float most = 0, after = 1;
-            for (int kind = 0; kind < 2; ++kind) {
+            float most = 0, after = 1, mostKind[3] = {0, 0, 0}, twirl[3] = {0, 0, 0};
+            for (int kind = 0; kind < 3; ++kind) {
                 avatar::Swish s;
                 double t = 0;
                 float x = 0, yaw = 0;
@@ -4401,10 +5271,11 @@ int main(int argc, char** argv) {
                     avatar::stepSwish(s, kind, x, 0, yaw, t);
                     if (std::hypot(s.x, s.z) > maxOff[kind] + 1e-5f || !std::isfinite(s.x)) bounded = false;
                     most = std::max(most, std::hypot(s.x, s.z));
+                    mostKind[kind] = std::max(mostKind[kind], std::hypot(s.x, s.z));
                 }
                 if (s.x > -0.01f) trails = false;
-                // stopped: back to rest within 1.5 s
-                for (int i = 0; i < 135; ++i) { t += 1.0 / 90; avatar::stepSwish(s, kind, x, 0, yaw, t); }
+                // stopped: back to rest within 1.5 s (the circle skirt, slower and swinging back, within 2.5 s)
+                for (int i = 0; i < (kind == 2 ? 225 : 135); ++i) { t += 1.0 / 90; avatar::stepSwish(s, kind, x, 0, yaw, t); }
                 after = std::max(after == 1 ? 0.f : after, std::hypot(s.x, s.z));
                 if (std::hypot(s.x, s.z) > 0.002f) settles = false;
                 // a quick turn to the left (yaw growing): the skirt lags, turned the other way, never past its limit
@@ -4415,6 +5286,7 @@ int main(int argc, char** argv) {
                     least = std::min(least, s.twist);
                     if (std::fabs(s.twist) > maxTw[kind] + 1e-5f) bounded = false;
                 }
+                twirl[kind] = -least;
                 if (least > -0.05f) lags = false;
                 // a jump (a teleport, a respawn): afresh, at rest
                 t += 1.0 / 90;
@@ -4422,6 +5294,10 @@ int main(int argc, char** argv) {
                 if (s.x != 0 || s.z != 0 || s.twist != 0) fresh = false;
             }
             std::printf("       (a sidestep swings the hem out %.0f mm at most; stopped, %.1f mm left after 1.5 s)\n", most * 1000, after * 1000);
+            std::printf("       (the sidestep: tennis %.0f mm, kilt %.0f, poodle %.0f; a quick turn's twirl: %.2f, %.2f, %.2f rad)\n",
+                        mostKind[0] * 1000, mostKind[1] * 1000, mostKind[2] * 1000, twirl[0], twirl[1], twirl[2]);
+            CHECK(mostKind[2] > 1.8f * mostKind[0] && twirl[2] > 1.8f * twirl[0],
+                  "SKIRTS: the poodle skirt, a circle skirt, swings and twirls much further than the tennis skirt");
             CHECK(trails, "SKIRTS: stepping sideways, the hem trails the way it came");
             CHECK(bounded, "SKIRTS: never further than the skirt's limits (out, twist)");
             CHECK(settles, "SKIRTS: stopped, the skirt settles back to rest");

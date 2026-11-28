@@ -233,5 +233,11 @@
   "title": "Project Arena 0.3.26 is out",
   "color": "#5ec8ff",
   "text": "- **Simple setup**: a room's page opens on a few big buttons and START. CUSTOM SETTINGS still has everything, now with **MY SAVES** (three slots per room type).\n- **FULL EFFORT**: a harder step for THROW POWER and KNUCKLE RETURNS, as asked for.\n- **BOUNCES in FOUR CORNERS**.\n- **Livelier bots**: they taunt you when you stall and celebrate when they score. Lose a match to one and you may get an air guitar solo.\n- **Views while waiting**: press A to watch from other spots while you wait your turn.\n- **HAND POSITION** in SETTINGS > CONTROLLERS, to line your in-game hands up with your real ones.\n- Smoother watching from the waiting area and as a spectator, and a few fixes.\n- **PICO owners**: there is now a build for PICO 4, 4 Pro and 4 Ultra on GitHub and SideQuest, to install by hand. Same game, same online rooms as Quest and PC. It's our first PICO release, so tell us how it runs.\n\nFull notes are on GitHub. 0.3.14 to 0.3.26 play together online; from December 2, versions before 0.3.20 stop playing online.\n\n**Quest:** update from your Library\n**PC VR:** https://github.com/jendoebelin/ProjectArena-public/releases/latest\n**PICO:** https://github.com/jendoebelin/ProjectArena-public/releases/latest (ProjectArena-0.3.26-pico.apk), or SideQuest"
+ },
+ {
+  "channel": "announcements",
+  "title": "Project Arena 0.3.26.1 is out",
+  "color": "#5ec8ff",
+  "text": "- **TRAINING's leaderboards fixed**: finishing a lesson and opening its leaderboard said NO ANSWER. Your result now reaches the server as soon as you finish, and the leaderboard answers right there.\n- **PICO**: RESOLUTION 2X and 2.25X in SETTINGS > GRAPHICS AND VIEW, as a test.\n\nNothing else changes. 0.3.14 to 0.3.26.1 play together online; from December 2, versions before 0.3.20 stop playing online.\n\n**Quest:** update from your Library\n**PC VR:** https://github.com/jendoebelin/ProjectArena-public/releases/latest\n**PICO:** https://github.com/jendoebelin/ProjectArena-public/releases/latest (ProjectArena-0.3.26.1-pico.apk), or SideQuest"
  }
 ]

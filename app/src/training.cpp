@@ -347,6 +347,9 @@ void lessonOptions(Tunables& t, const Tunables& own, bool custom) {
     t.ballGrowth = o.ballGrowth; t.shieldSize = o.shieldSize;
     t.wallsLively = o.wallsLively; t.wallGrip = o.wallGrip; t.bankAssist = o.bankAssist;   // (BOUNCES, 0.3.22)
     t.throwPower = o.throwPower; t.knuckleReturns = o.knuckleReturns;   // (THROW POWER, KNUCKLE RETURNS, 0.3.25)
+    t.gutter = 0;   // (THE GUTTER, 0.3.27: not in the lessons)
+    t.wallsClassic = o.wallsClassic; t.curveAssist = o.curveAssist;   // (CLASSIC, CURVE ASSIST, 0.3.27: MY OPTIONS)
+    t.aimOffWalls = o.aimOffWalls;   // (AIM OFF WALLS, 0.3.27: MY OPTIONS)
 }
 
 void Trainer::setRules(Game& g, bool atFar) const {

@@ -2,6 +2,7 @@
 // English text are in docs/game_text_en.txt.
 #include "game.h"
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 
 static const Vec3 kUp{0, 1, 0};
@@ -19,6 +20,8 @@ Pose Game::handPose(int p, int h) const {
 }
 Vec3 Game::launcherPoint(int p, int h) const { return handPose(p, h).transform(tun.launcherOffset); }
 Vec3 Game::catcherPoint(int p, int h) const { return handPose(p, h).transform(tun.catcherOffset); }
+// how far from the catcher a ball is caught: its half height and the ball's size (HANDS: further on hands)
+float Game::catchReach(int p) const { return tun.catchHalfHeight * (pl[p].onHands ? tun.handsReach : 1.f) + ballRadius(p); }
 Vec3 Game::knucklePoint(int p, int h) const { return knucklePose(p, h).p; }
 Pose Game::knucklePose(int p, int h) const {
     Vec3 o = tun.knuckleOffsetNow();
@@ -96,7 +99,7 @@ Vec3 Game::deflectVelocity(Ball& b, const Vec3& n, const Vec3& vs, bool punch, f
     // counting more; a shield's block as ever)
     const bool punchFeel = punch && tun.punchReturnsNow();
     const bool fullPunch = punchFeel && tun.fullPunchNow();   // (FULL EFFORT, 0.3.26: PUNCH's numbers over fullEffort)
-    const float e = fullPunch ? tun.punchRestitution / tun.fullEffort : punchFeel ? tun.punchRestitution : tun.deflectRestitution;
+    const float e = fullPunch ? tun.punchRestitution / tun.punchEffortNow() : punchFeel ? tun.punchRestitution : tun.deflectRestitution;
     if (contactRadius > 0.f) {   // (WALL GRIP: the guard grips it; its spin as the contact leaves it)
         out = bounceWithFriction(b, n, vs, contactRadius, e, tun.knuckleFriction, tun.maxSpin);
     } else {
@@ -108,7 +111,7 @@ Vec3 Game::deflectVelocity(Ball& b, const Vec3& n, const Vec3& vs, bool punch, f
     }
     if (punchFeel) {
         const float into = dot(vs, n);   // (the fist driven out through the ball: its speed that way)
-        if (into > 0.f) out += n * ((fullPunch ? tun.punchGain / tun.fullEffort : tun.punchGain) * into);
+        if (into > 0.f) out += n * ((fullPunch ? tun.punchGain / tun.punchEffortNow() : tun.punchGain) * into);   // (MAX EFFORT, 0.3.27)
     }
     return out;
 }
@@ -252,9 +255,9 @@ float Game::throwSpeedFromHandSpeed(float s, int thrower) const {
     float t = clampf((s - tun.minInputSpeed) / std::max(1e-3f, tun.maxInputSpeed - tun.minInputSpeed), 0.f, 1.f);
     // (THROW POWER: NATURAL, 0.3.25: a person's throw on a curve, light throws slow; a bot's arm is its level, as ever)
     if (tun.naturalThrowNow() && thrower >= 0 && thrower < kMaxPlayers && !pl[thrower].isBot) {
-        // (FULL EFFORT, 0.3.26: top speed only from fullEffort times the hand speed)
+        // (FULL EFFORT, 0.3.26: top speed only from fullEffort times the hand speed; FIRM, 0.3.27: firmThrowEffort)
         if (tun.fullThrowNow())
-            t = clampf((s - tun.minInputSpeed) / std::max(1e-3f, (tun.maxInputSpeed - tun.minInputSpeed) * tun.fullEffort), 0.f, 1.f);
+            t = clampf((s - tun.minInputSpeed) / std::max(1e-3f, (tun.maxInputSpeed - tun.minInputSpeed) * tun.throwEffortNow()), 0.f, 1.f);
         t = std::pow(t, tun.throwCurve);
     }
     int strikes = strikesHeld(thrower);
@@ -266,9 +269,18 @@ Vec3 Game::handVelocity(int p, int h, float t) const {
     const HandState& hs = pl[p].hands[h];
     if (hs.histN < 2) return {};
     int newest = (hs.histHead + 63) & 63;
-    int oldest = newest;
+    int oldest = newest, seen = 1;
+    const bool hands = pl[p].onHands;
     for (int i = 1; i < hs.histN; ++i) {
         int k = (newest - i + 64) & 63;
+        // (HANDS: only from samples where the hand was seen, once there are enough of them: on hands, one lost behind the
+        // back holds its last place, and the jump back to the real hand made a throw out of view a drop or a wild throw;
+        // with too few seen since (a hand just back in view), from before the gap too: 2 samples read as standing
+        // still; owner's tests, 2026-11-15. Controllers: every sample, as ever)
+        if (hands) {
+            if (!hs.histSeen[k]) { if (seen >= 4) break; }
+            else ++seen;
+        }
         oldest = k;
         // (counted back from the newest sample, not from `t`: a player's samples online are timed by their headset
         // and run a fixed delay behind the host's clock, which cut the window short and made throws faster, owner's
@@ -400,12 +412,30 @@ bool Game::meetLit(int p, int h) const {
 }
 void Game::useArena(int kind, const std::vector<CollisionTri>& classic) {
     using namespace exparena;
-    if (arenaKind != kind) {   // (the collision only when it changes: callers may ask every frame)
-        const bool wasOct = arenaKind == ARENA_OCTAGON;
-        setArena(kind == ARENA_CORNERS ? collision() : kind == ARENA_FOURCORNERS ? collision(true)
-                 : kind == ARENA_DIAMOND ? diamondCollision(tun.solidPlatforms) : kind == ARENA_OCTAGON ? std::vector<CollisionTri>{} : classic);
+    const int gut = kind != ARENA_OCTAGON ? tun.gutterNow() : 0;   // (THE GUTTER, 0.3.27)
+    if (arenaKind != kind || arenaGutter != gut) {   // (the collision only when it changes: callers may ask every frame)
+        const bool wasOct = arenaKind == ARENA_OCTAGON, sameKind = arenaKind == kind;
+        std::vector<CollisionTri> tris = kind == ARENA_CORNERS ? collision() : kind == ARENA_FOURCORNERS ? collision(true)
+                 : kind == ARENA_DIAMOND ? diamondCollision(tun.solidPlatforms) : kind == ARENA_OCTAGON ? std::vector<CollisionTri>{} : classic;
+        // (THE GUTTER: its facets as strips a metre long, two triangles each, facing into the room)
+        for (const GutterStrip& s : gutterStrips(kind, Tunables::gutterRadiusOf(gut))) {
+            const int seg = std::max(1, (int)std::ceil((s.x1 - s.x0) - 1e-3f));
+            for (int i = 0; i < seg; ++i) {
+                const float x0 = s.x0 + (s.x1 - s.x0) * i / seg, x1 = s.x0 + (s.x1 - s.x0) * (i + 1) / seg;
+                const Vec3 p[4] = {s.a + s.dir * x0, s.b + s.dir * x0, s.b + s.dir * x1, s.a + s.dir * x1};
+                for (int k = 0; k < 2; ++k) {
+                    CollisionTri t;
+                    t.a = p[0]; t.b = p[1 + k]; t.c = p[2 + k];
+                    if (dot(cross(t.b - t.a, t.c - t.a), s.n) < 0) std::swap(t.b, t.c);
+                    t.n = s.n; t.tags = s.tags;
+                    tris.push_back(t);
+                }
+            }
+        }
+        setArena(tris);
         arenaKind = kind;
-        if (wasOct || kind == ARENA_OCTAGON) {   // (FIREBALL BLITZ moves the players; everywhere else they stand where they always did)
+        arenaGutter = gut;
+        if (!sameKind && (wasOct || kind == ARENA_OCTAGON)) {   // (FIREBALL BLITZ moves the players; everywhere else they stand where they always did; THE GUTTER alone: they stay)
             const Tunables def;
             for (int p = 0; p < kMaxPlayers; ++p) { tun.start[p] = def.start[p]; tun.spawner[p] = def.spawner[p]; }
             uint32_t bots = 0;
@@ -451,17 +481,23 @@ void Game::spawnBall(int p) {
 
 float Game::strikeScale(int n) const {
     int early = std::min(n, tun.fullScaleSteps), late = std::max(0, n - tun.fullScaleSteps);
-    const float full = std::min(tun.maxBallScale, 1.f + tun.scaleIncreasePerStrike * early + tun.lateScaleIncreasePerStrike * late);
+    const float full = std::min(tun.maxBallScaleNow(), 1.f + tun.scaleIncreasePerStrike * early + tun.lateScaleIncreasePerStrike * late);
     return 1.f + (full - 1.f) * tun.growthShare();   // (BALL GROWTH: that share of the regulation growth)
 }
 
 void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist) {
     Ball& b = pl[p].ball;
+    // (CURVE ASSIST, 0.3.27: a person's throw with spin, before AIM ASSIST, as the reference game's)
+    if (assist && !octagon() && tun.curveAssistNow() && p < np && !pl[p].isBot && aimAt[p].empty())
+        spin = curveAssistSpin(p, b.pos, normalize(dir), speed, spin);
     if (assist && !octagon()) {   // (FIREBALL BLITZ: none; a fireball's drop is part of the aim)
-        const Vec3 to = assistDir(p, b.pos, dir);
+        const Vec3 raw = dir, to = assistDir(p, b.pos, dir);
         const float deg = tun.aimAssistDeg();   // (AIM ASSIST: the rules' own, Basic MEDIUM and Advanced LOW, or the room's)
         const float ang = std::acos(clampf(dot(dir, to), -1.f, 1.f));
         if (ang > 1e-4f) dir = normalize(lerp(dir, to, std::min(1.f, deg2rad(deg) / ang)));
+        // (AIM OFF WALLS, 0.3.27: a person's throw, its bounces counted; TRAINING's targets as ever)
+        if (deg > 0.f && tun.aimOffWallsNow() && p < np && !pl[p].isBot && aimAt[p].empty())
+            dir = aimOffWallsDir(p, b.pos, raw, dir, speed, spin);
     }
     // (BANK ASSIST, BOUNCES: a player's own throw at the other player may have a bank's last leg turned; not the bots',
     // nor TRAINING's throws at its targets)
@@ -479,6 +515,7 @@ void Game::launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist) {
     b.rechargePending = true;      // "To recharge your ball, you must throw it past your foul line"
     b.bounces = 0;
     b.timer = 0;
+    b.catchFrom = now + tun.recatchDelay;   // (HANDS: not caught straight back on hands)
     b.fouled = b.homing = false;
     b.hitWaitAt = b.blockWaitAt = -1;
     b.progX = b.pos.x; b.progZ = b.pos.z; b.progT = 0;
@@ -693,10 +730,146 @@ static void advanceFlight(Ball& b, const Tunables& tun, float h) {
         b.bankTurn *= (left - turn) / left;
     }
     if (length2(b.spin) > 1e-4f) {
-        b.vel += cross(b.spin, b.vel) * (tun.magnusFactor * h);
-        b.vel = normalize(b.vel) * b.speedLimit;
-        b.spin *= std::exp(-tun.spinDecayPerSecond * h);
+        if (tun.wallsClassicNow()) {   // (CLASSIC, 0.3.27: the reference's curve, stronger the faster it flies; the spin kept)
+            const float sp = length(b.vel), w = length(b.spin);
+            const float side = sp > 1e-4f ? 1.f - std::fabs(dot(b.spin / w, b.vel / sp)) : 0.f;
+            b.vel += cross(b.spin, b.vel) * (tun.classicMagnus * sp * side * h);
+            b.vel = normalize(b.vel) * b.speedLimit;
+        } else {
+            b.vel += cross(b.spin, b.vel) * (tun.magnusFactor * h);
+            b.vel = normalize(b.vel) * b.speedLimit;
+            b.spin *= std::exp(-tun.spinDecayPerSecond * h);
+        }
     }
+}
+
+// CURVE ASSIST (0.3.27): the throw flown (the game's own flight, 1/60 s steps, up to 5 s) with its spin and with it
+// turned about the throw by -1, -1/2, +1/2 and +1 of curveAssistDeg, each at its rate and that times 1 -/+ curveAssistPct;
+// it stops at the first surface or past the target's plane. The spin whose flight passes nearest the target is kept
+// (its own on a tie): so a curve meant for them bends a little more their way, as the reference game's did
+Vec3 Game::curveAssistSpin(int p, const Vec3& from, const Vec3& dir, float speed, const Vec3& spin) const {
+    if (length(spin) < 1.f) return spin;
+    const int q = aimTarget(p, from, dir);
+    if (q < 0 || q >= np || q == p) return spin;
+    const Vec3 target = chestPoint(q);
+    Vec3 flat{target.x - from.x, 0, target.z - from.z};
+    if (length2(flat) < 1e-4f) return spin;
+    flat = normalize(flat);
+    const float deg = tun.advanced ? tun.curveAssistDegAdvanced : tun.curveAssistDegBasic;
+    const float pct = tun.advanced ? tun.curveAssistPctAdvanced : tun.curveAssistPctBasic;
+    const float r = ballRadius(p), step = 1.f / 60.f;
+    auto miss = [&](const Vec3& s) {
+        Ball f;
+        f.state = BallState::Flying;
+        f.pos = from;
+        f.vel = dir * std::max(speed, tun.minSpeed);
+        f.speedLimit = length(f.vel);
+        f.spin = s;
+        float best = length(target - from);
+        for (float t = 0; t < 5.f; t += step) {
+            advanceFlight(f, tun, step);
+            const Vec3 next = f.pos + f.vel * step, seg = next - f.pos;
+            const float l2 = length2(seg), u = l2 > 1e-9f ? clampf(dot(target - f.pos, seg) / l2, 0.f, 1.f) : 0.f;
+            best = std::min(best, length(f.pos + seg * u - target));
+            Vec3 hp, hn;
+            uint32_t tags;
+            if (dot(next - target, flat) > 0.f || sweepArena(f.pos, next, r, hp, hn, tags)) break;
+            f.pos = next;
+        }
+        return best;
+    };
+    Vec3 best = spin;
+    float bestMiss = miss(spin);
+    for (int i = -2; i <= 2; ++i)
+        for (int j = -1; j <= 1; ++j) {
+            if (i == 0 && j == 0) continue;
+            Vec3 s = Quat::axisAngle(dir, deg2rad(deg * 0.5f * i)).rotate(spin) * (1.f + pct * j);
+            const float sl = length(s);
+            if (sl > tun.maxSpin) s *= tun.maxSpin / sl;
+            const float m = miss(s);
+            if (m < bestMiss - 1e-3f) { bestMiss = m; best = s; }
+        }
+    return best;
+}
+
+// AIM OFF WALLS (0.3.27): the throw flown on a copy of the game (everyone out of the way, as trialFlight), in the
+// game's own flight and bounces, aimOffWallsStep steps for up to aimOffWallsHorizon, through aimOffWallsBounces bounces at
+// most, until it stops flying, fouls or heads home. Tried: today's turn (`straight`) first, the throw as thrown, then
+// rings of 8 directions around it at the whole and half of AIM ASSIST's angle, then 8 at a quarter around the best so
+// far (none beyond the whole angle from the throw). Kept: the one whose path passes nearest a rival's chest, by 2 cm or
+// more (today's turn on a tie). So a bank aimed near them is helped to land, and a throw that would hit them is as before
+Vec3 Game::aimOffWallsDir(int p, const Vec3& from, const Vec3& raw, const Vec3& straight, float speed, const Vec3& spin) const {
+    const float cone = deg2rad(tun.aimAssistDeg());
+    if (cone <= 0.f) return straight;
+    Vec3 targets[kMaxPlayers];
+    int nt = 0;
+    for (int q = 0; q < np; ++q)
+        if (q != p && rivals(p, q)) targets[nt++] = chestPoint(q);
+    if (nt == 0) return straight;
+    const auto t0 = std::chrono::steady_clock::now();
+    Game g = *this;
+    for (int q = 0; q < np; ++q) {   // (everyone out of the way: the nearest pass measured, not a hit)
+        g.pl[q].in.head.p = {0, -50, 0};
+        g.pl[q].in.headTracked = false;
+        for (HandState& hs : g.pl[q].hands) hs.shieldUp = hs.knuckleUp = false;
+    }
+    g.tun.flightSubstep = tun.aimOffWallsSubstep;   // (its tries in longer steps: a few cm off, a third of the time)
+    const Ball keep = pl[p].ball;
+    const float step = std::max(1.f / 240.f, tun.aimOffWallsStep);
+    auto miss = [&](const Vec3& d) {
+        g.pl[p].ball = keep;
+        g.pl[p].ball.pos = from;
+        g.now = now;
+        g.events.clear();
+        g.launch(p, -1, d, speed, spin, false);
+        const Ball& f = g.pl[p].ball;
+        float best = 1e9f;
+        auto pass = [&](const Vec3& a, const Vec3& b) {   // (the segment's nearest point to each chest)
+            const Vec3 seg = b - a;
+            const float l2 = length2(seg);
+            for (int i = 0; i < nt; ++i) {
+                const float u = l2 > 1e-9f ? clampf(dot(targets[i] - a, seg) / l2, 0.f, 1.f) : 0.f;
+                best = std::min(best, length(a + seg * u - targets[i]));
+            }
+        };
+        pass(f.pos, f.pos);
+        for (float t = 0; t < tun.aimOffWallsHorizon && best > 0.02f; t += step) {
+            const Vec3 was = f.pos;
+            g.now += step;
+            g.events.clear();
+            g.stepBall(p, step);
+            pass(was, f.pos);
+            if (f.state != BallState::Flying || f.fouled || f.homing || f.bounces > tun.aimOffWallsBounces) break;
+            float now_ = 1e9f;   // (past its nearest by a metre and a half: on its way out, done)
+            for (int i = 0; i < nt; ++i) now_ = std::min(now_, length(f.pos - targets[i]));
+            if (now_ > best + 1.5f) break;
+        }
+        return best;
+    };
+    Vec3 bestDir = straight;
+    float bestMiss = miss(straight);
+    auto tryDir = [&](const Vec3& d) {
+        if (std::acos(clampf(dot(d, raw), -1.f, 1.f)) > cone + 1e-4f) return;
+        const float m = miss(d);
+        if (m < bestMiss - 0.02f) { bestMiss = m; bestDir = d; }
+    };
+    // (a ring of 8 around `c`, `a` radians from it)
+    auto ring = [&](const Vec3& c, float a) {
+        Vec3 u = cross(c, Vec3{0, 1, 0});
+        if (length2(u) < 1e-6f) u = cross(c, Vec3{1, 0, 0});
+        u = normalize(u);
+        const Vec3 v = cross(u, c);
+        for (int k = 0; k < 8; ++k) {
+            const float t = k * 0.7853982f;
+            tryDir(normalize(c * std::cos(a) + (u * std::cos(t) + v * std::sin(t)) * std::sin(a)));
+        }
+    };
+    if (length(raw - straight) > 1e-5f) tryDir(raw);
+    ring(raw, cone);
+    ring(raw, cone * 0.5f);
+    ring(bestDir, cone * 0.25f);
+    aimOffWallsMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    return bestDir;
 }
 
 // BANK ASSIST (BOUNCES, 0.3.22; from pull request #26): at a bounce of a player's own throw, the leg after it is
@@ -910,7 +1083,7 @@ void Game::stepBall(int p, float dt, int ignoredPlayer) {
         b.speedLimit = tun.foulReturnSpeed;
     }
     const float r = ballRadius(p);
-    const int sub = std::max(1, int(std::ceil(length(b.vel) * dt / 0.02f)));
+    const int sub = std::max(1, int(std::ceil(length(b.vel) * dt / std::max(0.005f, tun.flightSubstep))));   // (2 cm; AIM OFF WALLS' tries longer)
     const float h = dt / sub;
     for (int i = 0; i < sub; ++i) {
         advanceFlight(b, tun, h);   // (BANK ASSIST's turn, then the Magnus curve from spin)
@@ -943,15 +1116,30 @@ void Game::stepBall(int p, float dt, int ignoredPlayer) {
         for (int vi = 0; vi < np; ++vi) {
         const int victim = np == 2 ? 1 - b.instigator : vi;
         if (np == 2 ? vi > 0 : !rivals(b.instigator, victim)) continue;
-        if (b.state == BallState::Flying) {   // strike: the ball crosses the victim's strike-zone ring inside its radius
+        {   // strike: a flying ball crosses the victim's strike-zone ring inside its radius
             // (a step that ends on the ring's plane counts, and the next, starting there, doesn't: once; pull request #26)
             auto crossesPlane = [](float a0, float a1) { return (a0 < 0.f && a1 >= 0.f) || (a0 > 0.f && a1 <= 0.f); };
             Vec3 c = strikeZoneCenter(victim);
+            const bool flying = b.state == BallState::Flying;
+            auto note = [&](const Vec3& x, float dist, float reach) {   // (for the log)
+                const bool counted = flying && dist < reach && match == MatchState::InProgress &&
+                                     pl[victim].strikesAgainst < tun.maxStrikes;
+                if (zoneCrosses.size() < 16) zoneCrosses.push_back({p, victim, int(b.state), dist, reach, b.scale, x, counted});
+            };
+            // (STRIKE BY TOUCH: any part of the ball as it is, grown too, so its middle up to its own radius past the
+            // zone's edge. For an hour on 2026-11-26 a grown ball was judged as a regulation one, against snowballing;
+            // a player's grown ball then crossed the zone plainly and scored nothing, and the owner: "he feels like it
+            // should count where it was hitting and that is a user experience that holds true")
+            // (and 10 cm more: from the far end a ball passing just outside the zone's edge looks as if it touched, the
+            // zone a flat disc behind the player; the log showed misses 5-11 cm out, the owner: "yes add it")
+            const float strikeReach = tun.strikeRadius() + (tun.strikeTouchNow() ? ballRadius(p) + tun.strikeGrace : 0.f);
             if (np == 2) {
                 if (crossesPlane(from.x - c.x, to.x - c.x)) {
                     float t = (c.x - from.x) / (to.x - from.x);
                     Vec3 x = from + (to - from) * t;
-                    if (length(Vec3{0, x.y - c.y, x.z - c.z}) < tun.strikeRadius()) addStrike(victim, x, p);   // (STRIKE ZONE)
+                    const float dist = length(Vec3{0, x.y - c.y, x.z - c.z});
+                    note(x, dist, strikeReach);
+                    if (flying && dist < strikeReach) addStrike(victim, x, p);   // (STRIKE ZONE)
                 }
             } else {   // (the ring faces its player's facing)
                 const Vec3 f = facing(victim);
@@ -959,7 +1147,9 @@ void Game::stepBall(int p, float dt, int ignoredPlayer) {
                 if (crossesPlane(a0, a1)) {
                     const Vec3 x = from + (to - from) * (a0 / (a0 - a1));
                     const Vec3 off = x - c;
-                    if (length(off - f * dot(off, f)) < tun.strikeRadius()) addStrike(victim, x, p, b.instigator);
+                    const float dist = length(off - f * dot(off, f));
+                    note(x, dist, strikeReach);
+                    if (flying && dist < strikeReach) addStrike(victim, x, p, b.instigator);
                 }
             }
         }
@@ -1016,7 +1206,7 @@ void Game::stepBall(int p, float dt, int ignoredPlayer) {
                 // (the other player's ball you blocked or punched: only your end's floor counts, owner 2026-10-30; its walls
                 // and ceiling are walls)
                 const bool deflectedIn = b.instigator != p;
-                if ((tags & TAG_FOUL) && own && !returning && (!deflectedIn || hn.y > 0.7f)) {
+                if ((tags & TAG_FOUL) && own && !returning && (!deflectedIn || (hn.y > 0.7f && !(tags & TAG_GUTTER)))) {   // (THE GUTTER: a wall)
                     // a foul. Deflecting the opponent's ball into your own foul zone gives them a strike.
                     // The original dissolved the ball; here (owner, 2026-10-21) it stays in the arena: a ball that never
                     // crossed its owner's foul line springs straight back to its float position; one that did bounces on,
@@ -1107,8 +1297,21 @@ void Game::stepBall(int p, float dt, int ignoredPlayer) {
                 // sideways motion and spin traded: it leaves spinning, and curves). STANDARD: the mirror, the original's
                 // spin kick, and the whole speed cut to elasticity. (A side wall: the classic court's by its facing, the
                 // rooms built here by their tag)
-                const bool sideWall = arenaKind <= ARENA_CLASSIC ? std::fabs(hn.z) > 0.9f : (tags & TAG_SIDE_WALL) != 0;
+                const bool sideWall = (tags & TAG_GUTTER) ||   // (THE GUTTER, 0.3.27: as the side wall it joins)
+                                      (arenaKind <= ARENA_CLASSIC ? std::fabs(hn.z) > 0.9f : (tags & TAG_SIDE_WALL) != 0);
                 const bool lively = sideWall && tun.wallsLivelyNow();   // (its rooms: Tunables::bouncesNow)
+                if (!returning && tun.bouncesChangeSpeed && tun.wallsClassicNow()) {
+                    // (CLASSIC, 0.3.27: the speed into the surface cut to elasticity, the speed along it kept, and that the
+                    // ball's speed; then the spin's push across the surface turns it, its speed as it is; the spin kept)
+                    Vec3 v = b.vel - hn * ((1.f + tun.elasticity) * dot(b.vel, hn));
+                    b.speedLimit = std::max(tun.minSpeed, length(v));
+                    const float w = length(b.spin);
+                    if (w > 1e-4f) {
+                        const Vec3 axis = b.spin / w;
+                        v += cross(axis, hn) * (tun.classicSpinBounce * w * (1.f - std::fabs(dot(axis, hn))));
+                    }
+                    b.vel = normalize(v) * b.speedLimit;
+                } else
                 if (!returning && tun.bouncesChangeSpeed && (gripsNow() || lively)) {
                     const float e = lively ? tun.sideWallElasticity : tun.elasticity;
                     Vec3 v;
@@ -1469,17 +1672,17 @@ void Game::stepPlayer(int p, float dt) {
                     launch(p, h, normalize(v), throwSpeedFromHandSpeed(sp, p), peakAngVel(p, h, now));
                 }
             } else if (grabbable(b) &&
-                       ((pressed && length(launcherPoint(p, h) - b.pos) < 0.25f) ||
-                        (hi.trigger > 0.5f && inReach(p, h, b.pos, tun.catchHalfHeight + ballRadius(p))))) {
+                       ((pressed && length(launcherPoint(p, h) - b.pos) < 0.25f * (s.onHands ? tun.handsReach : 1.f)) ||
+                        (hi.trigger > 0.5f && inReach(p, h, b.pos, catchReach(p))))) {
                 // off the spawner: a trigger press at the ball, or a swing through it with the trigger already held
                 b.state = BallState::Held; b.heldHand = h; b.vel = {};
                 emit(EventType::Grab, p, h, b.pos);
             } else if (hi.trigger > 0.5f && (b.state == BallState::Flying || b.state == BallState::Returning) &&
+                       (!s.onHands || now >= b.catchFrom) &&   // (HANDS: not straight back)
                        // (your own ball, whoever touched it last: owner, 2026-11-11, a player found a ball in their
                        // colour that the other player had blocked floating beside them, and it couldn't be caught)
-                       (inReach(p, h, b.pos, tun.catchHalfHeight + ballRadius(p)) ||
-                        sawBallNear(p, catcherPoint(p, h), tun.catchHalfHeight + ballRadius(p)) ||
-                        (tun.fistReachNow() && sawBallNear(p, fistPoint(p, h), tun.catchHalfHeight + ballRadius(p))))) {
+                       (inReach(p, h, b.pos, catchReach(p)) || sawBallNear(p, catcherPoint(p, h), catchReach(p)) ||
+                        (tun.fistReachNow() && sawBallNear(p, fistPoint(p, h), catchReach(p))))) {
                 // catch your own ball ("You can't catch your opponent's ball!")
                 b.state = BallState::Held; b.heldHand = h; b.vel = {}; b.spin = {};
                 b.hitWaitAt = -1;   // (CATCHES ONLINE: a catch that came while the hit waited wins)
@@ -1569,6 +1772,11 @@ Quat Game::botFacing(int p) const {
     const PlayerState& s = pl[p];
     return s.isBot && s.botFaceSet ? s.botFace : s.in.head.q;   // (BOT IDLE MOTION: not its glances)
 }
+// its facing turned by `turn` about up from its rules' own (PIVOT AND REACH), its bow left out: where its shoulders go
+Quat Game::botFacingAt(int p, float turn) const {
+    const float a = p < 2 && !octagon() ? deg2rad(p == 0 ? -90.f : 90.f) : std::atan2(-facing(p).x, -facing(p).z);
+    return Quat::axisAngle(kUp, a + turn);
+}
 Vec3 Game::botShoulder(int p, int h) const {
     const Pose& hd = pl[p].in.head;   // (the bot's head stays level, facing the court)
     const Vec3 o = tun.botShoulder;
@@ -1614,10 +1822,12 @@ void Game::lookAhead(int L, float lead, float dt) {
             const HandInput& hi = me.in.hand[h];
             if (!hi.tracked) continue;
             const bool pressed = hi.trigger > 0.55f && ahead.prevTrig[h] <= 0.55f;
-            const float reach = tun.catchHalfHeight + ballRadius(L);
+            const float reach = catchReach(L);
             const bool grab = grabbable(mb) &&
-                              ((pressed && length(launcherPoint(L, h) - mb.pos) < 0.25f) || (hi.trigger > 0.5f && inReach(L, h, mb.pos, reach)));
-            const bool caught = hi.trigger > 0.5f && flying(mb) && inReach(L, h, drawn, reach);   // (your own ball, always)
+                              ((pressed && length(launcherPoint(L, h) - mb.pos) < 0.25f * (me.onHands ? tun.handsReach : 1.f)) ||
+                               (hi.trigger > 0.5f && inReach(L, h, mb.pos, reach)));
+            const bool caught = hi.trigger > 0.5f && flying(mb) && (!me.onHands || now >= mb.catchFrom) &&
+                                inReach(L, h, drawn, reach);   // (your own ball, always; HANDS: not straight back)
             if (grab || caught) { ahead.held = true; ahead.heldHand = h; ahead.heldAt = now; }
         }
     }
@@ -1919,6 +2129,7 @@ void Game::recordHand(int p, int h) {
     hs.angHist[hs.histHead] = hi.angVel;
     hs.gripHist[hs.histHead] = hi.grip;
     hs.histT[hs.histHead] = t;
+    hs.histSeen[hs.histHead] = hi.tracked;   // (HANDS)
     hs.histHead = (hs.histHead + 1) & 63;
     hs.histN = std::min(64, hs.histN + 1);
 }
@@ -1982,14 +2193,14 @@ Pose Game::botBlockGrip(int p, int h, int plan, const BallPathPt& x) const {
     return {gq, x.pos - gq.rotate(tun.catcherOffset)};
 }
 
-int Game::botTry(int p, int k, int owner, int plan, int h, const Pose& grip, const Vec3& body, int tuck) const {
+int Game::botTry(int p, int k, int owner, int plan, int h, const Pose& grip, const Vec3& body, int tuck, float turn) const {
     if (botTriesLeft <= 0) { botTriesOut = true; return -1; }   // (none left this step: not known yet)
     --botTriesLeft;
     Game g = *this;
     g.botFrozen = true;
     PlayerState& s = g.pl[p];
     PlayerState::BotRead& r = s.botRead[k];
-    r.plan = plan; r.hand = h; r.grip = grip.p; r.gripQ = grip.q; r.body = body; r.tuck = tuck;
+    r.plan = plan; r.hand = h; r.grip = grip.p; r.gripQ = grip.q; r.body = body; r.tuck = tuck; r.turn = turn;
     const BallPath& path = pl[p].botRead[k].path;   // (the read stays here: copies don't carry it)
     const Vec3 stand = tun.start[p] + Vec3{0, 1.62f, 0};
     Ball& b = g.pl[owner].ball;
@@ -2155,7 +2366,7 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
     }
     // (and its head steady: it stops bobbing while it watches)
     const Vec3 head = (match == MatchState::Meet ? Vec3{p == 0 ? -tun.meetSpot : tun.meetSpot, 1.62f, 0} : tun.start[p] + Vec3{0, 1.62f, 0}) + still;
-    r.plan = BOT_NONE; r.hand = -1; r.hitT = -1; r.tuck = -1;
+    r.plan = BOT_NONE; r.hand = -1; r.hitT = -1; r.tuck = -1; r.turn = 0;
     float strikeT = -1;
     // the stretches of the read still to come that pass anywhere near where its body can be (within its reach of
     // steps, leans and ducks): only those can touch it. (The whole stretch between two points read: a fast ball moves
@@ -2181,13 +2392,78 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
         ~Again() { if (out && r.plan == BOT_NONE) r.again = true; }
     } again_{r, botTriesOut};
     // a tryout, or how it went the last time (a plan carried on over steps goes on from where it was)
-    auto tryOut = [&](uint32_t key, int plan, int h, const Pose& g, const Vec3& body, int tuck) {
+    auto tryOut = [&](uint32_t key, int plan, int h, const Pose& g, const Vec3& body, int tuck, float turn = 0.f) {
         for (const auto& c : r.tried) if (c.first == key) return (int)c.second;
-        const int v = botTry(p, k, owner, plan, h, g, body, tuck);
+        const int v = botTry(p, k, owner, plan, h, g, body, tuck, turn);
         if (v >= 0) r.tried.push_back({key, (int8_t)v});
         return v;
     };
     const Pose none{};
+    // how far the ball's path stays from a body standing at offset o: below zero, it touches (a dodge's measure, and a
+    // block's lean's)
+    const Vec3 stand = tun.start[p] + Vec3{0, 1.62f, 0};
+    auto gap = [&](const Vec3& o) {
+        const Vec3 hd = stand + o, a = hd - Vec3{0, tun.torsoTop, 0};
+        Vec3 b2 = hd - Vec3{0, tun.torsoBottom, 0};
+        if (b2.y < 0.3f) b2.y = 0.3f;
+        float g = 9.f;
+        for (int i : near) {
+            const Vec3 &x0 = r.path[i - 1].pos, &x1 = r.path[i].pos;
+            g = std::min(g, std::min(segSegDist(x0, x1, hd, hd) - tun.headRadius, segSegDist(x0, x1, a, b2) - tun.torsoRadius) - br);
+        }
+        return g;
+    };
+    // PIVOT AND REACH (0.3.27; the owner, 2026-11-27: the bots' blocks were "unnatural stances ... sometimes they reach
+    // their arms out and sometimes moves the whole body and torso ... they need to pivot and reach"). A block was the
+    // arm alone, the body held where it stood, square to the court. Now its chest turns toward where it blocks (up to
+    // 30 degrees; drawn, as its glance is: its rules' reach as it was), it sinks into a low ball, and its body leans
+    // toward the ball so the arm reaches about three quarters of its length: the lean and the sink only as far as it
+    // gets there in time and the body stays as clear of the ball's way as it stood (tried out as it will be done)
+    struct Posture { Vec3 body; float turn; };
+    auto posture = [&](int h, const Pose& g, float t) {
+        Posture best{still, 0.f};
+        const Vec3 w = botWrist(h, g), o = tun.botShoulder;
+        const float target = 0.72f * tun.botArm;
+        auto shoulderAt = [&](const Vec3& body, float turn) {   // (its rules' shoulder: the turn is drawn, not counted)
+            (void)turn;
+            const Quat f = botFacingAt(p, 0.f);
+            return stand + body + f.rotate({h == 1 ? o.x : -o.x, 0, o.z}) + Vec3{0, o.y, 0};
+        };
+        // the turn: its chest toward where it blocks, most of the way, 30 degrees at most
+        const Quat fq = botFacingAt(p, 0.f);
+        {
+            const Vec3 loc = fq.conj().rotate(w - (stand + still));
+            if (loc.x * loc.x + loc.z * loc.z > 1e-4f) best.turn = clampf(0.8f * std::atan2(-loc.x, -loc.z), -0.52f, 0.52f);
+        }
+        // a low ball: it sinks into it (bent knees), its shoulder brought down toward a hand below its hip, 25 cm at most
+        Vec3 sink{0, 0, 0};
+        {
+            const float below = shoulderAt(still, best.turn).y - w.y - 0.35f;
+            if (below > 0) sink.y = -std::min(0.25f, 0.6f * below);
+        }
+        const Vec3 d = w - shoulderAt(still + sink, best.turn);
+        const float l = length(d);
+        // the lean: along the way to the wrist, by what the arm can't comfortably reach (with the sink), at most 25 cm,
+        // never up, a little forward at most; then less, until it's there in time and no nearer the ball's way than it stood
+        Vec3 lean = l > target ? d * ((l - target) / l) : Vec3{0, 0, 0};
+        lean.y = std::min(0.f, lean.y);
+        lean += sink;
+        if (length2(lean) < 1e-6f) return best;
+        const Vec3 fwd = fq.rotate({0, 0, -1});
+        const float ahead = dot(lean, fwd);
+        if (ahead > 0.10f) lean = lean - fwd * (ahead - 0.10f);
+        if (length(lean) > 0.25f) lean = lean * (0.25f / length(lean));
+        const BotSkill& skl = botSkillOf(p);
+        const float clear0 = std::min(gap(still), 0.10f);
+        for (float k = 1.f; k > 0.05f; k -= 0.25f) {
+            const Vec3 body = still + lean * k;
+            if (now + moveTime(length(body - s.botBody), skl.bodySpeed, skl.bodyAccel) + 0.05f > t) continue;
+            if (gap(body) < clear0) continue;
+            best.body = body;
+            break;
+        }
+        return best;
+    };
     // the hand holding its ball, its shield up: unless it blocks with it, the best pull it in to their side as a ball
     // comes (a shield where it happens to be can catch the ball, and send it back into them)
     const int sh = tries && r.mode == 1 && s.ball.state == BallState::Held && s.hands[s.ball.heldHand].shieldUp ? s.ball.heldHand : -1;
@@ -2205,6 +2481,7 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
     // (its defence may take the hand a catch of its own ball has: that catch plans again, the owner 2026-11-17)
     const int busy = other.plan == BOT_SHIELD || other.plan == BOT_KNUCKLE ||
                      (other.plan == BOT_CATCH && (k != 0 || !twoPlayerRoom())) ? other.hand : -1;   // (four players: as they were)
+    bool fixedStill[2] = {false, false};   // (each hand's pick: its tryout worked only as it stands)
     // the point of the path where hand h meets the ball best (in reach, in time, before `until`): nearest its shoulder
     // (tried out: it must take the ball and not send it back into it, nor into its own foul zone unless `need` allows)
     auto pick = [&](int h, int plan, float until, float& dist, int need) {
@@ -2219,10 +2496,18 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
         }
         std::sort(ok.begin(), ok.end());
         for (size_t j = 0; j < ok.size() && j < 6; ++j) {
-            if (plan != BOT_CATCH && tries &&
-                tryOut(uint32_t(plan) << 24 | uint32_t(h) << 20 | uint32_t(ok[j].second), plan, h,
-                       botBlockGrip(p, h, plan, r.path[ok[j].second]), still, -1) < need)
-                continue;
+            if (plan != BOT_CATCH && tries) {   // (as it will block: turned and leaning into it; else as it stands)
+                const Pose g = botBlockGrip(p, h, plan, r.path[ok[j].second]);
+                const Posture pz = posture(h, g, r.path[ok[j].second].t);
+                const uint32_t key = uint32_t(plan) << 24 | uint32_t(h) << 20 | uint32_t(ok[j].second);
+                fixedStill[h] = false;
+                if (tryOut(key | 0x20000000u, plan, h, g, pz.body, -1, pz.turn) < need) {
+                    // (the turn is drawn, not counted: without a lean it was this same block; else as it stands)
+                    if (length2(pz.body - still) < 1e-8f) continue;
+                    if (tryOut(key, plan, h, g, still, -1, pz.turn) < need) continue;
+                    fixedStill[h] = true;
+                }
+            }
             dist = ok[j].first;
             return ok[j].second;
         }
@@ -2231,7 +2516,14 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
     auto take = [&](int h, int plan, int i) {
         const Pose g = botBlockGrip(p, h, plan, r.path[i]);
         r.plan = plan; r.hand = h; r.grip = g.p; r.gripQ = g.q;
-        r.body = still;   // (it holds still for it)
+        // (PIVOT AND REACH: turned and leaning into it, as its tryout had it; a block that only works as it stands held
+        // still for it, still turned; a catch as it was)
+        if (plan != BOT_CATCH) {
+            const Posture pz = posture(h, g, r.path[i].t);
+            r.body = fixedStill[h] ? still : pz.body; r.turn = pz.turn;
+        } else {
+            r.body = still; r.turn = 0;
+        }
         PlayerState::BotRead& o = s.botRead[1 - k];
         if (k == 0 && twoPlayerRoom() && o.plan == BOT_CATCH && o.hand == h) { o.plan = BOT_NONE; o.hand = -1; o.again = true; }   // (its own: again)
     };
@@ -2245,24 +2537,11 @@ void Game::botPlan(int p, int k, const BotSkill& sk) {
     // out of the ball's way: the smallest step, lean or duck that clears it, made in time
     // (tried out: its hands come along, and a shield up must not catch the ball on the way)
     auto dodge = [&](int need) {
-        const Vec3 right = botFacing(p).rotate({1, 0, 0});
-        const Vec3 stand = tun.start[p] + Vec3{0, 1.62f, 0};
+        const Vec3 right = botFacingAt(p, 0.f).rotate({1, 0, 0});
         struct Spot { float cost; Vec3 o; uint32_t key; };
         std::vector<Spot> ok;
-        const Vec3 fwd = botFacing(p).rotate({0, 0, -1});
+        const Vec3 fwd = botFacingAt(p, 0.f).rotate({0, 0, -1});
         const float steps[3] = {0.f, 0.3f, -0.15f};   // (a step forward or back, for a ball coming in on a slant)
-        // (how far the ball's path stays from a body standing at offset o: below zero, it touches)
-        auto gap = [&](const Vec3& o) {
-            const Vec3 hd = stand + o, a = hd - Vec3{0, tun.torsoTop, 0};
-            Vec3 b2 = hd - Vec3{0, tun.torsoBottom, 0};
-            if (b2.y < 0.3f) b2.y = 0.3f;
-            float g = 9.f;
-            for (int i : near) {
-                const Vec3 &x0 = r.path[i - 1].pos, &x1 = r.path[i].pos;
-                g = std::min(g, std::min(segSegDist(x0, x1, hd, hd) - tun.headRadius, segSegDist(x0, x1, a, b2) - tun.torsoRadius) - br);
-            }
-            return g;
-        };
         float bestGap = -9.f;
         Vec3 bestO = still;
         for (int iff = 0; iff < 3; ++iff)
@@ -2353,7 +2632,7 @@ void Game::botChooseIntent(int p, const BotSkill& sk) {
 
 // where it aims a throw of that shape, and its spin; j (0..7) is which of the shape's ways it tries: bit 0 which way
 // it bends (or how high), bit 1 which wall (near or far) or which side of the player, bit 2 how much it bends
-Vec3 Game::botHuntAim(int p, int style, int j, Vec3& spin) {
+Vec3 Game::botHuntAim(int p, int style, int j, Vec3& spin, float aimError) {
     PlayerState& s = pl[p];
     const int opp = botAim(p);
     const Vec3 across = np == 2 ? Vec3{0, 0, 1} : normalize(cross(kUp, facing(opp)));
@@ -2362,7 +2641,18 @@ Vec3 Game::botHuntAim(int p, int style, int j, Vec3& spin) {
     float side;   // the side it goes for: the ring's side for a strike; for the player, either
     if (s.botIntent == 0) {   // a strike: through the ring beside the body, this throw's side
         side = (float)s.botStrikeSide;
-        at = strikeZoneCenter(opp) + across * (side * 0.6f * tun.strikeRadius()) + Vec3{0, (j & 1) ? 0.15f : -0.05f, 0};   // (0.42 m in a regulation ring)
+        const float dy = (j & 1) ? 0.15f : -0.05f;
+        // (0.42 m out in a regulation ring. STRIKE BY TOUCH: out toward the edge of what counts, the ring and the ball's
+        // own size and the grace, less 22 cm and half its aim error: 0.68 m with a new ball. The owner, 2026-11-27, option
+        // 1: the touch rule had made strikes on it much easier, its own aimed as before. Against a defending bot over 10
+        // seeds (test_game PA_STRIKE_MEASURE), UNBEATABLE's strikes in Basic: on ALL-STAR 92 -> 115, on UNBEATABLE 63 -> 85;
+        // Advanced as before (276 -> 274). Margins of 6 and 14 cm: as many in Basic, fewer in Advanced, more throws missing)
+        float out = 0.6f * tun.strikeRadius();
+        if (tun.strikeTouchNow()) {
+            const float r = tun.strikeRadius() + ballRadius(p) + tun.strikeGrace - (0.22f + 0.5f * aimError);
+            out = std::max(out, std::sqrt(std::max(0.f, r * r - dy * dy)));
+        }
+        at = strikeZoneCenter(opp) + across * (side * out) + Vec3{0, dy, 0};
     } else {   // at the player: where they usually stand (one throw in seven), or where they are, at 3 strikes
         side = (j & 2) ? 1.f : -1.f;
         at = strikesHeld(p) >= 3 || !s.botOppSpotSet ? chestPoint(opp) : Vec3{s.botOppSpot.x, chestPoint(opp).y, s.botOppSpot.z};
@@ -2394,7 +2684,7 @@ void Game::botPlanShot(int p, const BotSkill& sk, int hand) {
         Vec3 spin;
         const int style = k < 8 ? s.botStyle : HUNT_STRAIGHT;   // (its shape, eight ways; then straight, if none works)
         const float later = k < 8 ? 0.f : 150.f;
-        const Vec3 aim = botHuntAim(p, style, k & 7, spin);
+        const Vec3 aim = botHuntAim(p, style, k & 7, spin, sk.aimError);
         const Vec3 dir = normalize(aim - rel);
         Game g = *this;
         Ball& gb = g.pl[p].ball;
@@ -2503,6 +2793,145 @@ bool Game::botGuitar(int p, const PlayerInput& in, Mat4& place, float& show) con
     return true;
 }
 
+// THE ROPE (0.3.27): the owner's and astrobleem's turn of the rope, their MOTION LOG averaged (24 keyframes a turn,
+// from the right hand at the front): each hand from the eyes (x right, y up, z forward; fitted to a bot's arms), the
+// grip's forward (-Z) and up (+Y), and the body's lift (m; their jump, 0.6 of it)
+struct RopeKey { float L[3], Lf[3], Lu[3], R[3], Rf[3], Ru[3], lift; };
+static const RopeKey kRopeKeys[24] = {
+    {{-0.429f, -0.327f, 0.168f}, {-0.564f, 0.650f, 0.510f}, {0.528f, 0.758f, -0.383f}, {0.458f, -0.345f, 0.138f}, {0.767f, 0.524f, 0.372f}, {-0.319f, 0.813f, -0.488f}, 0.000f},
+    {{-0.394f, -0.408f, 0.189f}, {-0.418f, 0.420f, 0.805f}, {0.480f, 0.855f, -0.197f}, {0.429f, -0.421f, 0.139f}, {0.727f, 0.292f, 0.621f}, {-0.171f, 0.954f, -0.248f}, 0.001f},
+    {{-0.362f, -0.506f, 0.146f}, {-0.391f, 0.075f, 0.917f}, {0.418f, 0.902f, 0.104f}, {0.392f, -0.504f, 0.108f}, {0.736f, -0.050f, 0.675f}, {0.005f, 0.998f, 0.068f}, 0.022f},
+    {{-0.403f, -0.557f, 0.076f}, {-0.375f, -0.087f, 0.923f}, {0.412f, 0.876f, 0.250f}, {0.416f, -0.556f, 0.054f}, {0.832f, -0.187f, 0.522f}, {0.094f, 0.975f, 0.200f}, 0.049f},
+    {{-0.394f, -0.619f, 0.026f}, {-0.495f, -0.308f, 0.813f}, {0.344f, 0.789f, 0.509f}, {0.418f, -0.614f, -0.008f}, {0.869f, -0.377f, 0.319f}, {0.223f, 0.876f, 0.427f}, 0.071f},
+    {{-0.395f, -0.646f, -0.038f}, {-0.604f, -0.443f, 0.663f}, {0.186f, 0.730f, 0.657f}, {0.421f, -0.640f, -0.064f}, {0.910f, -0.415f, 0.005f}, {0.375f, 0.826f, 0.421f}, 0.093f},
+    {{-0.401f, -0.639f, -0.088f}, {-0.736f, -0.494f, 0.463f}, {0.057f, 0.636f, 0.770f}, {0.433f, -0.625f, -0.115f}, {0.909f, -0.380f, -0.169f}, {0.408f, 0.737f, 0.539f}, 0.088f},
+    {{-0.381f, -0.684f, -0.129f}, {-0.690f, -0.643f, 0.334f}, {-0.075f, 0.522f, 0.850f}, {0.392f, -0.666f, -0.156f}, {0.767f, -0.539f, -0.348f}, {0.641f, 0.626f, 0.443f}, 0.113f},
+    {{-0.400f, -0.659f, -0.185f}, {-0.767f, -0.641f, 0.020f}, {-0.316f, 0.405f, 0.858f}, {0.395f, -0.654f, -0.203f}, {0.694f, -0.432f, -0.576f}, {0.694f, 0.614f, 0.375f}, 0.118f},
+    {{-0.429f, -0.604f, -0.246f}, {-0.662f, -0.490f, -0.567f}, {-0.750f, 0.418f, 0.513f}, {0.372f, -0.631f, -0.267f}, {0.431f, -0.217f, -0.876f}, {0.715f, 0.675f, 0.185f}, 0.097f},
+    {{-0.425f, -0.594f, -0.360f}, {-0.417f, -0.270f, -0.868f}, {-0.846f, 0.464f, 0.262f}, {0.367f, -0.619f, -0.353f}, {0.309f, -0.254f, -0.917f}, {0.851f, 0.504f, 0.147f}, 0.094f},
+    {{-0.481f, -0.524f, -0.377f}, {-0.186f, -0.047f, -0.981f}, {-0.558f, 0.827f, 0.066f}, {0.448f, -0.557f, -0.388f}, {0.127f, 0.136f, -0.983f}, {0.516f, 0.837f, 0.182f}, 0.097f},
+    {{-0.477f, -0.531f, -0.390f}, {-0.218f, 0.023f, -0.976f}, {-0.557f, 0.818f, 0.144f}, {0.552f, -0.501f, -0.404f}, {-0.009f, 0.394f, -0.919f}, {0.381f, 0.851f, 0.361f}, 0.137f},
+    {{-0.534f, -0.487f, -0.325f}, {-0.005f, 0.267f, -0.964f}, {-0.371f, 0.895f, 0.250f}, {0.568f, -0.438f, -0.335f}, {-0.031f, 0.372f, -0.928f}, {0.133f, 0.921f, 0.365f}, 0.131f},
+    {{-0.597f, -0.366f, -0.268f}, {-0.060f, 0.238f, -0.969f}, {-0.062f, 0.968f, 0.241f}, {0.604f, -0.340f, -0.316f}, {-0.023f, 0.344f, -0.939f}, {-0.212f, 0.916f, 0.341f}, 0.098f},
+    {{-0.603f, -0.348f, -0.235f}, {-0.160f, 0.274f, -0.948f}, {0.165f, 0.955f, 0.248f}, {0.616f, -0.312f, -0.259f}, {0.078f, 0.417f, -0.905f}, {-0.323f, 0.870f, 0.373f}, 0.089f},
+    {{-0.608f, -0.304f, -0.183f}, {-0.228f, 0.336f, -0.914f}, {0.385f, 0.893f, 0.233f}, {0.621f, -0.276f, -0.204f}, {0.171f, 0.460f, -0.871f}, {-0.509f, 0.798f, 0.322f}, 0.082f},
+    {{-0.574f, -0.171f, -0.108f}, {-0.268f, 0.481f, -0.835f}, {0.736f, 0.661f, 0.145f}, {0.604f, -0.189f, -0.162f}, {0.226f, 0.572f, -0.789f}, {-0.770f, 0.601f, 0.215f}, 0.055f},
+    {{-0.565f, -0.174f, -0.069f}, {-0.412f, 0.661f, -0.627f}, {0.821f, 0.569f, 0.060f}, {0.590f, -0.194f, -0.123f}, {0.349f, 0.731f, -0.587f}, {-0.825f, 0.536f, 0.177f}, 0.050f},
+    {{-0.523f, -0.139f, 0.003f}, {-0.391f, 0.780f, -0.488f}, {0.913f, 0.398f, -0.096f}, {0.557f, -0.165f, -0.057f}, {0.376f, 0.821f, -0.429f}, {-0.913f, 0.407f, -0.022f}, 0.037f},
+    {{-0.509f, -0.163f, 0.049f}, {-0.469f, 0.783f, -0.408f}, {0.880f, 0.452f, -0.145f}, {0.537f, -0.181f, 0.008f}, {0.433f, 0.835f, -0.339f}, {-0.901f, 0.413f, -0.134f}, 0.032f},
+    {{-0.491f, -0.193f, 0.092f}, {-0.577f, 0.782f, -0.237f}, {0.811f, 0.511f, -0.285f}, {0.520f, -0.223f, 0.057f}, {0.583f, 0.797f, -0.161f}, {-0.797f, 0.522f, -0.303f}, 0.030f},
+    {{-0.457f, -0.220f, 0.141f}, {-0.543f, 0.836f, 0.075f}, {0.732f, 0.515f, -0.445f}, {0.489f, -0.246f, 0.107f}, {0.640f, 0.767f, 0.040f}, {-0.666f, 0.580f, -0.470f}, 0.020f},
+    {{-0.438f, -0.268f, 0.166f}, {-0.503f, 0.795f, 0.341f}, {0.624f, 0.606f, -0.493f}, {0.464f, -0.287f, 0.137f}, {0.697f, 0.675f, 0.243f}, {-0.474f, 0.687f, -0.551f}, 0.010f},
+};
+static const float kRopeMid[2] = {-0.111f, -0.424f};   // (the right hand's loop: its middle, forward and up from the eyes)
+
+namespace {
+constexpr float kRopeRate = 0.95f;    // turns a second (theirs: 0.85 to 1.07)
+constexpr float kRopeReach = 1.25f;   // how far the rope's middle swings out from between the hands (m): onto the floor
+constexpr float kRopeLag = 0.35f;     // (radians) its middle behind the hands as they turn it
+constexpr float kRopeTrail = 0.25f;   // ... and its middle behind its ends
+constexpr float kRopeOnFloor = 0.006f;   // (lying on the floor: this far over it)
+// (its wrists from its own arms, their palms: below; Tunables ropeOwnWrists)
+constexpr float kRopeBend = 0.10f;      // (how round it curves onto the floor, m)
+
+// the turn at u (turns; 0 the right hand at the front), smoothly through the keyframes (Catmull-Rom; the grips'
+// directions blended)
+RopeKey ropeAt(float u) {
+    const int n = (int)(sizeof kRopeKeys / sizeof kRopeKeys[0]);
+    const float x = (u - std::floor(u)) * (float)n;
+    const int i1 = std::min(n - 1, (int)x);
+    const float t = x - (float)i1;
+    const RopeKey& k0 = kRopeKeys[(i1 + n - 1) % n];
+    const RopeKey& k1 = kRopeKeys[i1];
+    const RopeKey& k2 = kRopeKeys[(i1 + 1) % n];
+    const RopeKey& k3 = kRopeKeys[(i1 + 2) % n];
+    auto cr = [t](float a, float b, float c, float d) {
+        return 0.5f * (2.f * b + (c - a) * t + (2.f * a - 5.f * b + 4.f * c - d) * t * t + (3.f * b - a - 3.f * c + d) * t * t * t);
+    };
+    RopeKey r;
+    for (int j = 0; j < 3; ++j) {
+        r.L[j] = cr(k0.L[j], k1.L[j], k2.L[j], k3.L[j]);
+        r.R[j] = cr(k0.R[j], k1.R[j], k2.R[j], k3.R[j]);
+        r.Lf[j] = k1.Lf[j] + (k2.Lf[j] - k1.Lf[j]) * t;
+        r.Lu[j] = k1.Lu[j] + (k2.Lu[j] - k1.Lu[j]) * t;
+        r.Rf[j] = k1.Rf[j] + (k2.Rf[j] - k1.Rf[j]) * t;
+        r.Ru[j] = k1.Ru[j] + (k2.Ru[j] - k1.Ru[j]) * t;
+    }
+    r.lift = std::max(0.f, cr(k0.lift, k1.lift, k2.lift, k3.lift));
+    return r;
+}
+
+// the middle of the hands' loops: forward (f) and up (u) from the eyes, both hands over the turn
+void ropeMid(float& f, float& u) {
+    static float mf = 1e9f, mu = 0.f;
+    if (mf > 1e8f) {
+        const int n = (int)(sizeof kRopeKeys / sizeof kRopeKeys[0]);
+        float a = 0.f, b = 0.f;
+        for (const RopeKey& k : kRopeKeys) { a += (k.L[2] + k.R[2]) * 0.5f; b += (k.L[1] + k.R[1]) * 0.5f; }
+        mu = b / (float)n;
+        mf = a / (float)n;
+    }
+    f = mf;
+    u = mu;
+}
+
+// a grip turned as the keyframe has it: its forward (-Z) and up (+Y), from the eyes (x right, y up, z forward)
+Quat ropeGrip(const float f[3], const float u[3], const Vec3& right, const Vec3& up, const Vec3& fwd) {
+    const Vec3 F = normalize(right * f[0] + up * f[1] + fwd * f[2]);
+    const Vec3 U = right * u[0] + up * u[1] + fwd * u[2];
+    Quat t = fromTo({0, 0, -1}, F);
+    Vec3 to = U - F * dot(U, F);
+    if (length2(to) > 1e-6f) {
+        to = normalize(to);
+        const Vec3 have = t.rotate({0, 1, 0});
+        t = Quat::axisAngle(F, std::atan2(dot(cross(have, to), F), dot(have, to))) * t;
+    }
+    return t;
+}
+}  // namespace
+
+bool Game::botRopeShape(int p, const PlayerInput& in, Vec3* pts, float& floor, Vec3& touch, Vec3& slide, float& show) const {
+    if (p < 0 || p >= np) return false;
+    const PlayerState& s = pl[p];
+    if (!s.isBot || s.botRope < 0.02f || !in.headTracked || !in.hand[0].tracked || !in.hand[1].tracked) return false;
+    const Vec3 fwd = botFacing(p).rotate({0, 0, -1});
+    // (the rope leaves each fist at its little finger: the handle's end, along the grip's -Y)
+    const Vec3 A = in.hand[0].grip.transform({0, -0.075f, 0}), B = in.hand[1].grip.transform({0, -0.075f, 0});
+    // the turn as the hands show it (the same for everyone who sees them): where they are round their loops, 0 at the
+    // front, a quarter at the bottom (a forward rope: down in front, back under the feet, up behind, over the head)
+    float mf, mu;
+    ropeMid(mf, mu);
+    const Vec3 m = (in.hand[0].grip.p + in.hand[1].grip.p) * 0.5f - in.head.p;
+    const float ang = std::atan2(-(m.y - mu), dot(m, fwd) - mf) - kRopeLag;
+    const float reach = kRopeReach * (0.55f + 0.45f * s.botRope);   // (it swings out as it comes to its hands)
+    slide = fwd * -1.f;   // (on the floor it goes back under the feet)
+    floor = 0.f;
+    touch = {};
+    float weight = 0.f;
+    for (int i = 0; i < kRopePts; ++i) {
+        const float u = (float)i / (float)(kRopePts - 1), bow = std::sin(kPi * u);
+        const float a = ang - kRopeTrail * bow;
+        Vec3 P = A + (B - A) * u + (fwd * std::cos(a) - kUp * std::sin(a)) * (reach * std::pow(bow, 0.7f));
+        // (near the floor it curves down onto it, a bend about kRopeBend round; past it, it lies along it, the rest of
+        // its swing sliding it on)
+        const float x = (P.y - kRopeOnFloor) / kRopeBend;
+        if (x < 1.f) {
+            P.y = kRopeOnFloor + kRopeBend * (x <= -1.f ? 0.f : (x + 1.f) * (x + 1.f) * 0.25f);
+            const float under = std::max(0.f, -x * kRopeBend);
+            if (under > 0.f) {
+                P = P + slide * (0.5f * under);
+                floor = std::max(floor, under);
+                touch = touch + P * under;
+                weight += under;
+            }
+        }
+        pts[i] = P;
+    }
+    if (weight > 0.f) touch = touch / weight;
+    show = s.botRope;
+    return true;
+}
+
 void Game::stepBot(int p, float dt) {
     // Practice opponent following the same rules (shield only while holding a charged ball), moving as a person
     // can: a body that steps, leans and ducks, two arms of a person's reach and speed, either hand for everything
@@ -2536,10 +2965,14 @@ void Game::stepBot(int p, float dt) {
     // BOT IDLE MOTION (0.3.26): the match won (its team's), its victory pose until the next match
     const bool wonMatch = tun.botIdle && match == MatchState::MatchSummary && matchWinner >= 0 && team(p) == matchWinner &&
                           !s.coach.on && !botFrozen;
-    if (wonMatch && !s.botWonSeen) s.botWinKind = (int)(momentHash(now, p, 2) % 3u);   // (a new win: which celebration)
+    if (wonMatch && !s.botWonSeen)   // (a new win: which celebration; BOT WINS in developer mode: the one asked for)
+        s.botWinKind = tun.botWinForce >= 0 ? tun.botWinForce % 4 : (int)(momentHash(now, p, 2) % 4u);
     s.botWonSeen = wonMatch;
     // (AIR GUITAR's guitar comes to its hands once they are up to it, and goes with the pose)
     s.botProp = wonMatch && s.botWinKind == 1 ? std::min(1.f, s.botProp + dt * 1.6f) : std::max(0.f, s.botProp - dt * 4.f);
+    // (THE ROPE's rope the same way; its body jumps higher and quicker than a bot steps)
+    const bool roping = wonMatch && s.botWinKind == 3;
+    s.botRope = roping ? std::min(1.f, s.botRope + dt * 1.6f) : std::max(0.f, s.botRope - dt * 4.f);
     const bool ownPose = wonMatch && s.botWinKind == 0;   // (its stance's own: KARATE's is its bow)
     // a bow (KARATE, at the fist bump; and its victory pose): the head down and forward
     s.botBow += ((s.botStance == STANCE_KARATE && ((meet && meetBumped) || ownPose) ? 1.f : 0.f) - s.botBow) * std::min(1.f, dt * 6.f);
@@ -2549,7 +2982,11 @@ void Game::stepBot(int p, float dt) {
         s.botFace = q * Quat::axisAngle({1, 0, 0}, -0.6f * s.botBow);
         s.botFaceSet = true;
         const Vec3 breath{0, 0.006f * s.botIdle * std::sin(now * 1.55f + rhythm), 0};
-        return Pose{s.botFace * s.botLook, stand + s.botBody + bob() + breath + fwd * (0.10f * s.botBow) - Vec3{0, 0.12f * s.botBow, 0}};
+        // (PIVOT AND REACH: its shoulders' turn drawn as its glance is, with its head and chest; its rules' facing, its
+        // reach, throws and catches, as they were: turned by the rules, the four AMATEUR bots in FOUR CORNERS scored
+        // nothing in two minutes)
+        return Pose{q * Quat::axisAngle(kUp, s.botTurn) * Quat::axisAngle({1, 0, 0}, -0.6f * s.botBow) * s.botLook,
+                    stand + s.botBody + bob() + breath + fwd * (0.10f * s.botBow) - Vec3{0, 0.12f * s.botBow, 0}};
     };
     Ball& b = s.ball;
     s.in.headTracked = true;
@@ -2844,6 +3281,27 @@ void Game::stepBot(int p, float dt) {
             for (int h = 0; h < 2; ++h)
                 vp[h] = {armTurn(h, fwd, -0.45f), hp + up * (0.02f + 0.30f * push) + side(h) * 0.30f - fwd * 0.04f};
             bodyWant.y -= 0.05f * (1.f - push);
+        } else if (s.botWinKind == 3) {
+            // THE ROPE (0.3.27; the owner, 2026-11-27: "I want the bot to pull out a jump rope and do some training for
+            // the win animation"; "copy our big circles"): the owner's and astrobleem's own turn of the rope, recorded in
+            // the builder (the MOTION LOG): big circles from the shoulders, the hands down in front, back along the
+            // bottom, up behind and over the top, a jump a turn while the rope goes under. Two winners turn their
+            // ropes out of step
+            const RopeKey k = ropeAt(now * kRopeRate + 0.37f * (float)p);
+            // (the wrists as its own arms have them, the palms turned as theirs were: their grips' angles on a bot's
+            // shorter arms bent its wrists past 60 degrees a sixth of each turn; the owner, 2026-11-27: "the arms part")
+            const Quat gl = ropeGrip(k.Lf, k.Lu, right, up, fwd), gr = ropeGrip(k.Rf, k.Ru, right, up, fwd);
+            // (its hands out wider as they pass behind it, by up to ropeBackOut: an avatar's back is broader than a
+            // person's, its arms went into it there and were swung out of it up to its shoulders, its elbows lifted
+            // like wings once a turn; the owner's video from the far end, 2026-11-27)
+            auto at = [&](const float* P, float sd) {
+                const float b = clampf((-P[2] - 0.15f) / 0.15f, 0.f, 1.f);
+                return hp + right * (P[0] + sd * tun.ropeBackOut * b * b * (3.f - 2.f * b)) + up * P[1] + fwd * P[2];
+            };
+            vp[0] = {tun.ropeOwnWrists ? armTurn(0, gl.rotate({1, 0, 0})) : gl, at(k.L, -1.f)};
+            vp[1] = {tun.ropeOwnWrists ? armTurn(1, gr.rotate({-1, 0, 0})) : gr, at(k.R, 1.f)};
+            for (int h = 0; h < 2; ++h) speed[h] = std::max(speed[h], 6.f);
+            bodyWant = Vec3{0, k.lift, 0};   // (stood up tall, a jump a turn)
         } else switch (s.botStance) {
         case STANCE_BOXER:   // flexing: fists by its ears, elbows out, the wrists curled in
             for (int h = 0; h < 2; ++h)
@@ -2875,6 +3333,7 @@ void Game::stepBot(int p, float dt) {
             if (!handBusy(h)) { want[h] = vp[h]; speed[h] = std::max(speed[h], 2.5f); }
     }
     bool threatened = false;
+    float turnWant = 0.f;
     for (const PlayerState::BotRead* r : reads) {
         // (no throw while a ball comes at it: a wind-up could swing its shield into it. Four players: only an attack that
         // reaches it within a second, or there would always be one on its way and the bot would hardly ever throw)
@@ -2888,6 +3347,27 @@ void Game::stepBot(int p, float dt) {
             want[r->hand].p = r->grip + r->gripQ.rotate({0, 0, -1}) * clampf(off, -0.15f, 0.06f);
         }
         if (r->mode && r->plan != BOT_CATCH && (r == reads[0] || !reads[0]->mode)) bodyWant = r->body;   // (still while it watches; or its dodge)
+        if (r->mode && (r->plan == BOT_SHIELD || r->plan == BOT_KNUCKLE)) turnWant = r->turn;   // (PIVOT AND REACH)
+        // (and a ball coming that it dodges, or leaves to its guard: a dodge turns the shoulder on the ball's side away,
+        // 20 degrees; a ball left to its guard, its chest and guard turned toward it, at most 20 degrees. For the ball
+        // read 1.5 s ahead, passing within 1.5 m)
+        if (r->mode == 1 && (r->plan == BOT_DODGE || r->plan == BOT_NONE) && (r == reads[0] || !reads[0]->mode)) {
+            // (a dodge's side from where its head is going, steady all the way: from where it is, a ball at its face
+            // read a hair to one side, then the other, and swung its chest from one way to the other)
+            const Vec3 from = r->plan == BOT_DODGE ? stand + r->body : s.in.head.p;
+            float best = 2.25f;
+            Vec3 at{0, 0, 0};
+            for (const BallPathPt& x : r->path)
+                if (x.t >= now && x.t < now + 1.5f) {
+                    const float d2 = length2(x.pos - from);
+                    if (d2 < best) { best = d2; at = x.pos; }
+                }
+            if (best < 2.25f) {
+                const Vec3 loc = q.conj().rotate(at - from);
+                const float az = std::atan2(-loc.x, -loc.z);   // (+: on its left)
+                turnWant = r->plan == BOT_DODGE ? (az > 0 ? 0.35f : -0.35f) : clampf(0.6f * az, -0.35f, 0.35f);
+            }
+        }
     }
     if (octagon()) threatened |= botFireDodge(p, sk, right, bodyWant);   // (FIREBALL BLITZ: out of the fireballs' way)
     // while it watches a ball, the hands it isn't using keep their place (from its head, so a dodge carries them):
@@ -2970,7 +3450,7 @@ void Game::stepBot(int p, float dt) {
                     s.botShotDir = botFireAim(p, h, sk, s.botShotSpin);
                 } else if (sk.hunts && s.botShotScore <= 0) {   // (the plan's own aim, straight)
                     Vec3 spin;
-                    s.botShotDir = normalize(botHuntAim(p, HUNT_STRAIGHT, 0, spin) - (botShoulder(p, h) + fwd * 0.45f));
+                    s.botShotDir = normalize(botHuntAim(p, HUNT_STRAIGHT, 0, spin, sk.aimError) - (botShoulder(p, h) + fwd * 0.45f));
                     s.botShotSpin = spin;
                 } else if (!(sk.planShots && s.botShotScore > 0)) {   // at the chest, off the side wall, or curved
                     const Vec3 rel = botShoulder(p, h) + fwd * 0.45f;
@@ -3034,11 +3514,17 @@ void Game::stepBot(int p, float dt) {
         }
     }
     // move: the body (within a person's step, lean and duck), then each hand (never beyond its reach)
-    approach(s.botBody, s.botBodyVel, bodyWant, sk.bodySpeed, sk.bodyAccel, dt);
+    approach(s.botBody, s.botBodyVel, bodyWant, roping ? std::max(sk.bodySpeed, 3.f) : sk.bodySpeed,
+             roping ? std::max(sk.bodyAccel, 40.f) : sk.bodyAccel, dt);
+    {   // its shoulders into a block and back (PIVOT AND REACH): about as quick as its body moves, ROOKIE 1.3 rad a
+        // second, UNBEATABLE 4
+        const float rate = 4.f * sk.bodySpeed / 3.f * dt;
+        s.botTurn += clampf(turnWant - s.botTurn, -rate, rate);
+    }
     {
         const Vec3 R = tun.botBodyRange;
         const float lat = clampf(dot(s.botBody, right), -R.x, R.x), fw = clampf(dot(s.botBody, fwd), -0.15f, R.z);
-        const Vec3 o = right * lat + fwd * fw + Vec3{0, clampf(s.botBody.y, -R.y, 0.05f), 0};
+        const Vec3 o = right * lat + fwd * fw + Vec3{0, clampf(s.botBody.y, -R.y, roping ? 0.25f : 0.05f), 0};
         if (length2(o - s.botBody) > 1e-10f) s.botBodyVel = {};   // (at the edge of where it can go)
         s.botBody = o;
     }
@@ -3065,7 +3551,8 @@ void Game::stepBot(int p, float dt) {
                 else if (pick == 4) at = s.in.head.p + fwd * 6.f + up * 3.f + right * (((seg >> 7) & 1) ? 4.f : -4.f);
             }
         }
-        const Vec3 d = q.conj().rotate(at - s.in.head.p);   // (from the way it faces, not its bow: KARATE's stays a bow)
+        // (from the way it faces, not its bow: KARATE's stays a bow; turned into a block, from there)
+        const Vec3 d = (q * Quat::axisAngle(kUp, s.botTurn)).conj().rotate(at - s.in.head.p);
         const float yaw = clampf(std::atan2(-d.x, -d.z), -0.7f, 0.7f);
         const float pitch = clampf(std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z)), -0.45f, 0.5f);
         // (none for a coach; KARATE's eyes down as it bows)
@@ -3158,7 +3645,7 @@ void Game::stepBot(int p, float dt) {
                 Vec3 spin;
                 // (straight to start with; its shape, curved or off a wall, tried out during the swing: a shot that lands
                 // replaces it, testers 2026-10-30: its slaps were always straight)
-                s.botShotDir = normalize(botHuntAim(p, HUNT_STRAIGHT, 0, spin) - from);
+                s.botShotDir = normalize(botHuntAim(p, HUNT_STRAIGHT, 0, spin, sk.aimError) - from);
                 s.botShotSpin = spin;
                 s.botShotsTried = 0;
                 s.botShotScore = 0.f;
@@ -3531,6 +4018,70 @@ std::vector<CollisionTri> diamondCollision(bool solidPlatforms) {
     }
     return out;
 }
+}
+
+std::vector<GutterStrip> gutterStrips(int kind, float R) {
+    std::vector<GutterStrip> out;
+    if (R <= 0.f || (kind != ARENA_CLASSIC && kind != ARENA_DIAMOND && kind != ARENA_CORNERS && kind != ARENA_FOURCORNERS)) return out;
+    // a cove where two faces meet at P (inward normals n1, n2, at right angles), from x0 to x1: 7 facets tangent to a
+    // circle of radius R round C, each 11.25 degrees on from the last, from the first face's to the second's (the
+    // reference court's 11.4 to 78.6); its ends on the two faces
+    auto cove = [&](const Vec3& P, const Vec3& n1, const Vec3& n2, float x0, float x1, uint32_t tags, Vec3 dir = {1, 0, 0}) {
+        const float step = 0.19634954f;   // (11.25 degrees)
+        const Vec3 C = P + (n1 + n2) * R;
+        const float rv = R / std::cos(0.5f * step);
+        auto corner = [&](float ang) { return C - (n1 * std::cos(ang) + n2 * std::sin(ang)) * rv; };
+        for (int k = 1; k <= 7; ++k) {
+            GutterStrip s;
+            s.a = corner((k - 0.5f) * step); s.b = corner((k + 0.5f) * step);
+            s.n = normalize(n1 * std::cos(k * step) + n2 * std::sin(k * step));
+            s.x0 = x0; s.x1 = x1; s.tags = tags; s.dir = dir;
+            out.push_back(s);
+        }
+    };
+    if (kind == ARENA_CLASSIC) {   // (arena.col: x -/+9.5, the floor y = 0, the ceiling 4, the side walls z = -/+2.5)
+        const float HX = 9.5f, HY = 4.f, HZ = 2.5f;
+        for (int top = 0; top < 2; ++top)
+            for (int s = -1; s <= 1; s += 2) {
+                const Vec3 n1{0, top ? -1.f : 1.f, 0}, n2{0, 0, -(float)s};
+                cove({0, top ? HY : 0.f, s * HZ}, n1, n2, -HX, HX, TAG_ARENA | TAG_GUTTER);
+                // (the foul zones, 4.75 to 9.5 at each end: their slab is 5 cm in from the floor and the side walls, 3 cm
+                // from the ceiling (tools/build_open_assets.py); their own gutter there, so it is met first)
+                for (int e = 0; e < 2; ++e)
+                    cove({0, top ? HY - 0.03f : 0.05f, s * (HZ - 0.05f)}, n1, n2, e ? 4.75f : -HX, e ? HX : -4.75f,
+                         TAG_ARENA | TAG_GUTTER | TAG_FOUL | (e ? TAG_TEAM1 : TAG_TEAM0));
+            }
+    } else if (kind == ARENA_CORNERS || kind == ARENA_FOURCORNERS) {
+        // CORNERS and FOUR CORNERS (exparena::collision): the floor below and the ceiling to each wall, along its side-wall
+        // strips (the back walls in the players' corners stay square), each strip its own length
+        using namespace exparena;
+        const bool four = kind == ARENA_FOURCORNERS;
+        const Vec3 corner[4] = {{-kCorner, 0, 0}, {0, 0, kCorner}, {kCorner, 0, 0}, {0, 0, -kCorner}};
+        const int kSeg = 8;
+        for (int w = 0; w < 4; ++w) {
+            const Vec3 c0 = corner[w], c1 = corner[(w + 1) % 4];
+            const float len = length(c1 - c0), seg = len / kSeg;
+            const Vec3 dir = (c1 - c0) / len, mid0 = (c0 + c1) * 0.5f, in = normalize(Vec3{-mid0.x, 0, -mid0.z});
+            for (int i = 0; i < kSeg; ++i) {
+                const Vec3 mid = lerp(c0, c1, (i + 0.5f) / kSeg);
+                if (std::fabs(mid.x) > kBackX || (four && std::fabs(mid.z) > kBackX)) continue;   // (a back wall)
+                for (int top = 0; top < 2; ++top)
+                    cove(c0 + Vec3{0, top ? kCeiling : kFloor, 0}, {0, top ? -1.f : 1.f, 0}, in, i * seg, (i + 1) * seg,
+                         TAG_ARENA | TAG_GUTTER, dir);
+            }
+        }
+    } else {   // DIAMOND: its four long corners (no foul zone)
+        using namespace exparena;
+        Vec3 v[4];
+        diamondEnd(v);
+        const Vec3 ctr{0, kRollCY, 0};
+        auto inward = [&](int i) {   // (the face from corner i to i + 1: toward the middle, square to it)
+            const Vec3 e = normalize(v[(i + 1) % 4] - v[i]), m = (v[i] + v[(i + 1) % 4]) * 0.5f, toC = ctr - m;
+            return normalize(toC - e * dot(toC, e));
+        };
+        for (int k = 0; k < 4; ++k) cove(v[k], inward((k + 3) % 4), inward(k), -kRollLen, kRollLen, TAG_ARENA | TAG_GUTTER);
+    }
+    return out;
 }
 
 std::vector<CollisionTri> parseCollision(const uint8_t* d, size_t size) {

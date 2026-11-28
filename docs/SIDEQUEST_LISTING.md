@@ -17,18 +17,18 @@ SideQuest installs the GitHub build, so its release doesn't depend on Meta's rev
 - **Screenshots:** `build/store_art/screenshot_1..5.png`, in that order (done 2026-11-08).
 - **Trailer:** the launch trailer, https://www.youtube.com/watch?v=YuG306OO5O0 (public; the alpha video is private
   now, so the old link shows "Video unavailable").
-- **Summary** (unchanged): Project Arena is an open-source VR court sport for Meta Quest and PC VR where players
+- **Summary** (2026-11-24, PICO added): Project Arena is an open-source VR court sport for Meta Quest, PICO and PC VR where players
   throw, curve, and punch energy balls in fast-paced competitive matches.
 - **Search tags** (unchanged): multiplayer, fitness, vr_sports, cross_platform.
 
-## Description (2026-11-08; the earlier text left out the modes added since and ended "currently in active development"; 2026-11-19, live: the SQUARE and DIAMOND lines without Basic, Advanced or EXPERIMENTAL; 2026-11-21, for 0.3.24: FIREBALL BLITZ in teams, the ball heard in flight, NEW BOT, lasting mutes, MY LOOKS, the country kit, twelve camera views, The Crowd's four players and notifications, and no crowd noise in the arena any more)
+## Description (2026-11-08; the earlier text left out the modes added since and ended "currently in active development"; 2026-11-19, live: the SQUARE and DIAMOND lines without Basic, Advanced or EXPERIMENTAL; 2026-11-21, for 0.3.24: FIREBALL BLITZ in teams, the ball heard in flight, NEW BOT, lasting mutes, MY LOOKS, the country kit, twelve camera views, The Crowd's four players and notifications, and no crowd noise in the arena any more; 2026-11-24, for 0.3.26 (the owner: "add PICO and the 0.3.26 features to the description"): PICO beside Quest and PC VR, the livelier bots, views while waiting, JUMP IN, OR SET IT UP YOUR WAY (simple setup, custom settings, FULL EFFORT, bounces in FOUR CORNERS, save slots), the PC spectator's one scoreboard, HAND POSITION, the bots' moves in the asset catalog)
 
 ```
-Project Arena is a free, open-source VR court sport for Meta Quest and PC VR built around fast reactions, physical movement, and competitive play.
+Project Arena is a free, open-source VR court sport for Meta Quest, PICO and PC VR built around fast reactions, physical movement, and competitive play.
 
 Step into a neon glass arena and face another player across the court. Throw energy balls with speed and precision, put curve on your shots, block incoming attacks, punch balls back across the arena, and outplay your opponent through positioning, timing, and reflexes. Every ball that can hurt you can be heard as it flies at you, on your left or your right. It's a real workout: you'll be ducking, leaning and sidestepping from the first point.
 
-Play against bots from ROOKIE to UNBEATABLE, with a new bot of its own look and fighting stance every match, or against other people. Multiplayer works on your local network or online through the community server, with Quest and PC VR players in the same rooms, waiting areas, player queues, voice chat with mutes that last, and spectating.
+Play against bots from ROOKIE to UNBEATABLE, with a new bot of its own look and fighting stance every match, or against other people. The bots feel alive: between shots they breathe, shift their weight and glance at you, they taunt you if you hold your ball too long, and they celebrate their points and wins, one of them on air guitar. Multiplayer works on your local network or online through the community server, with Quest, PICO and PC VR players in the same rooms, waiting areas, player queues, voice chat with mutes that last, and spectating. While you wait your turn, you can watch from your spot, from two raised views outside the glass, or from high above the court.
 
 ## GAME MODES
 
@@ -38,6 +38,17 @@ Play against bots from ROOKIE to UNBEATABLE, with a new bot of its own look and 
 - DIAMOND: the court rolled 45 degrees
 - TRAINING: throwing, blocking and dodging lessons with worldwide leaderboards, and your own bests in the lobby
 - SOUND STUDIO: try the community's sounds, vote on them, or play your own
+
+## JUMP IN, OR SET IT UP YOUR WAY
+
+Every room opens on a simple setup: a few big buttons for the options that matter most, and START. When you want more, CUSTOM SETTINGS has everything:
+
+- Shields, rounds and match length
+- Lively walls, wall grip and bank assist, in the SQUARE, DIAMOND and FOUR CORNERS
+- Throw power and knuckle returns, up to FULL EFFORT, where only a real full swing and a real punch reach top speed
+- Three save slots for each kind of room, so your favourite setups are a press away
+
+When you join someone else's room, the game tells you what is different about its rules.
 
 ## BUILD YOUR PLAYER
 
@@ -87,6 +98,7 @@ The PC version can launch without a VR headset as a dedicated spectator system. 
 - Twelve camera views, three of them following the action (TRACKING, BALL CAM and UNDER FIRE)
 - Automatic camera switching
 - Free camera movement
+- One scoreboard, where you want it: a banner across the top, a corner, or the arena's own jumbotron
 - A separate control window that stays off the broadcast
 
 A dedicated streaming kit is also available for creators using OBS. It includes animated backgrounds, camera guides, transparent spectator-view instructions, VS presentation screens, and win-screen resources.
@@ -118,13 +130,15 @@ Those reactions are reflected back inside the VR arena. Arena lighting flares wi
 
 ## BUILT FOR VR FROM THE GROUND UP
 
-Project Arena runs natively on Meta Quest using OpenXR and OpenGL ES and was built without a traditional game engine.
+Project Arena runs natively on Meta Quest and PICO (PICO 4, 4 Pro and 4 Ultra) using OpenXR and OpenGL ES and was built without a traditional game engine. The PICO version is new: install its APK from here, and tell us how it runs.
 
 The PC version supports VR through SteamVR or Quest Link.
 
+Your hands in the game can be lined up with your real ones: CONTROLLER ANGLE turns them and HAND POSITION moves them, a centimetre at a time.
+
 The project is also fully open source. Players and community members can inspect the code, report bugs, contribute ideas, create artwork, make sounds, design assets, or submit code changes.
 
-Project Arena includes an asset catalog containing models, textures, sounds, downloadable source assets, and templates for people who want to create their own contributions.
+Project Arena includes an asset catalog containing models, textures, sounds, the bots' moves, downloadable source assets, and templates for people who want to create their own contributions.
 
 ## FREE, AND STILL GROWING
 

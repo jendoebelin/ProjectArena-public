@@ -858,9 +858,11 @@ static void writeState(Writer& w, const Game& g) {
     if (g.np == 2) w.put<uint8_t>((uint8_t)(g.tun.ballFeel & BALL_FEEL_ALL));   // (0.3.21: BALL FEEL, BALL_* bits)
     // (0.3.22, BOUNCES: WALLS, WALL GRIP and BANK ASSIST as they play; with BANK ASSIST, each ball's turn still to come,
     // so a player looking ahead turns it as the host will)
-    if (g.np == 2) {
+    if (g.np == 2) {   // (0.3.27: bit 4 CLASSIC, bit 5 CURVE ASSIST, bit 6 AIM OFF WALLS; older builds read bits 0 to 3)
         const int bank = g.tun.bankAssistNow();
-        w.put<uint8_t>((uint8_t)((g.tun.wallsLivelyNow() ? 1 : 0) | (g.tun.wallGripNow() ? 2 : 0) | (bank << 2)));
+        w.put<uint8_t>((uint8_t)((g.tun.wallsLivelyNow() ? 1 : 0) | (g.tun.wallGripNow() ? 2 : 0) | (bank << 2) |
+                                 (g.tun.wallsClassicNow() ? 16 : 0) | (g.tun.curveAssistNow() ? 32 : 0) |
+                                 (g.tun.aimOffWallsNow() ? 64 : 0)));
         if (bank > 0)
             for (int p = 0; p < 2; ++p) {
                 const Ball& b = g.pl[p].ball;
@@ -905,13 +907,15 @@ static void writeState(Writer& w, const Game& g) {
     // FULL EFFORT host would play with them in it)
     if (g.tun.feelRoom())
         w.put<uint8_t>((uint8_t)((g.tun.naturalThrowNow() ? 1 : 0) | (g.tun.punchReturnsNow() ? 2 : 0) | (g.tun.fullThrowNow() ? 4 : 0) |
-                                 (g.tun.fullPunchNow() ? 8 : 0)));
+                                 (g.tun.fullPunchNow() ? 8 : 0) | (g.tun.firmThrowNow() ? 16 : 0) | (g.tun.maxPunchNow() ? 32 : 0)));
     // (0.3.26, BOUNCES IN FOUR CORNERS with four players: WALLS, WALL GRIP and BANK ASSIST as they play, and with BANK
     // ASSIST each ball's turn still to come, as two-player rooms have sent since 0.3.22. After the byte above, the last
     // 0.3.25 reads in FOUR CORNERS, so older builds stop before it; two players: the two-player rooms' own, above)
     if (g.np == 4 && g.tun.cornersBounceRoom()) {
         const int bank = g.tun.bankAssistNow();
-        w.put<uint8_t>((uint8_t)((g.tun.wallsLivelyNow() ? 1 : 0) | (g.tun.wallGripNow() ? 2 : 0) | (bank << 2)));
+        w.put<uint8_t>((uint8_t)((g.tun.wallsLivelyNow() ? 1 : 0) | (g.tun.wallGripNow() ? 2 : 0) | (bank << 2) |
+                                 (g.tun.wallsClassicNow() ? 16 : 0) | (g.tun.curveAssistNow() ? 32 : 0) |
+                                 (g.tun.aimOffWallsNow() ? 64 : 0)));
         if (bank > 0)
             for (int p = 0; p < 4; ++p) {
                 const Ball& b = g.pl[p].ball;
@@ -929,6 +933,19 @@ static void writeState(Writer& w, const Game& g) {
         float most = 0;
         for (int p = 0; p < g.np; ++p)
             if (g.pl[p].isBot && g.pl[p].botProp > 0) { held |= (uint8_t)(1u << p); most = std::max(most, g.pl[p].botProp); }
+        const int step = held ? std::max(1, std::min(15, (int)std::ceil(most * 15.f))) : 0;
+        w.put<uint8_t>((uint8_t)(held | (step << 4)));
+    }
+    // (0.3.27, THE GUTTER as this match plays it: 0 none, 1 to 3 its size; after the guitar's byte, so 0.3.26 stops
+    // before it, and with a 0.3.26 player in the match it is 0 anyway)
+    w.put<uint8_t>((uint8_t)g.tun.gutterNow());
+    // (0.3.27, THE ROPE's rope, as the guitar's byte: which bots turn one (bits 0-3) and how far it has come to their
+    // hands (bits 4-7, fifteenths). After THE GUTTER's: older builds stop before it; an older host: none)
+    {
+        uint8_t held = 0;
+        float most = 0;
+        for (int p = 0; p < g.np; ++p)
+            if (g.pl[p].isBot && g.pl[p].botRope > 0) { held |= (uint8_t)(1u << p); most = std::max(most, g.pl[p].botRope); }
         const int step = held ? std::max(1, std::min(15, (int)std::ceil(most * 15.f))) : 0;
         w.put<uint8_t>((uint8_t)(held | (step << 4)));
     }
@@ -1046,11 +1063,15 @@ static bool readState(Reader& r, Game& g, int localIndex) {
     // keeps its own: only how the ball looks and feels)
     if (np == 2 && r.ok && r.e - r.p >= 1) g.tun.ballFeel = r.get<uint8_t>() & BALL_FEEL_ALL;
     g.tun.wallsLively = g.tun.wallGrip = false; g.tun.bankAssist = 0;   // (BOUNCES, hosts from 0.3.22; older: STANDARD)
+    g.tun.wallsClassic = g.tun.curveAssist = g.tun.aimOffWalls = false;   // (CLASSIC, CURVE ASSIST, AIM OFF WALLS: hosts from 0.3.27)
     if (np == 2 && r.ok && r.e - r.p >= 1) {
         const uint8_t o = r.get<uint8_t>();
         g.tun.wallsLively = (o & 1) != 0;
         g.tun.wallGrip = (o & 2) != 0;
         g.tun.bankAssist = (o >> 2) & 3;
+        g.tun.wallsClassic = (o & 16) != 0;
+        g.tun.curveAssist = (o & 32) != 0;
+        g.tun.aimOffWalls = (o & 64) != 0;
     }
     for (int p = 0; p < np && p < 2; ++p) {   // (BANK ASSIST: each ball's turn still to come, the host's)
         Ball& b = g.pl[p].ball;
@@ -1106,8 +1127,8 @@ static bool readState(Reader& r, Game& g, int localIndex) {
     g.tun.throwPower = g.tun.knuckleReturns = 0;
     if (g.tun.feelRoom() && r.ok && r.e - r.p >= 1) {
         const uint8_t o = r.get<uint8_t>();
-        g.tun.throwPower = (o & 1) ? ((o & 4) ? 2 : 1) : 0;   // (FULL EFFORT: hosts from 0.3.26)
-        g.tun.knuckleReturns = (o & 2) ? ((o & 8) ? 2 : 1) : 0;
+        g.tun.throwPower = (o & 1) ? ((o & 16) ? 3 : (o & 4) ? 2 : 1) : 0;   // (FULL EFFORT: hosts from 0.3.26; FIRM, 0.3.27)
+        g.tun.knuckleReturns = (o & 2) ? ((o & 32) ? 3 : (o & 8) ? 2 : 1) : 0;   // (MAX EFFORT, 0.3.27)
     }
     // (BOUNCES IN FOUR CORNERS, four players, hosts from 0.3.26, as the match plays them; an older host: STANDARD)
     if (np == 4 && g.tun.cornersBounceRoom()) {
@@ -1117,6 +1138,9 @@ static bool readState(Reader& r, Game& g, int localIndex) {
             g.tun.wallsLively = (o & 1) != 0;
             g.tun.wallGrip = (o & 2) != 0;
             g.tun.bankAssist = (o >> 2) & 3;
+            g.tun.wallsClassic = (o & 16) != 0;   // (0.3.27)
+            g.tun.curveAssist = (o & 32) != 0;
+            g.tun.aimOffWalls = (o & 64) != 0;
             const float most = 2.4f * 0.017453293f;   // (never more than HIGH's 2.4 degrees)
             for (int p = 0; p < 4 && g.tun.bankAssist > 0 && r.ok && r.e - r.p >= 7; ++p) {
                 Ball& b = g.pl[p].ball;
@@ -1134,6 +1158,14 @@ static bool readState(Reader& r, Game& g, int localIndex) {
         uint8_t o = 0;
         if (r.ok && r.e - r.p >= 1) o = r.get<uint8_t>();
         for (int p = 0; p < kMaxPlayers; ++p) g.pl[p].botProp = p < np && ((o >> p) & 1) ? (float)(o >> 4) / 15.f : 0.f;
+    }
+    // (THE GUTTER, hosts from 0.3.27, as the match plays it; an older host: none)
+    g.tun.gutter = 0;
+    if (r.ok && r.e - r.p >= 1) g.tun.gutter = std::min<int>(3, r.get<uint8_t>());
+    {   // (THE ROPE's rope, hosts from 0.3.27; an older host: none)
+        uint8_t o = 0;
+        if (r.ok && r.e - r.p >= 1) o = r.get<uint8_t>();
+        for (int p = 0; p < kMaxPlayers; ++p) g.pl[p].botRope = p < np && ((o >> p) & 1) ? (float)(o >> 4) / 15.f : 0.f;
     }
     return r.ok;
 }

@@ -34,7 +34,9 @@ Who writes what in app/assets_open (today no file has two writers):
   tools/gen_open_audio.py    audio/ (only with --audio)
   not run from here          tex/room_pictures (make_room_pictures.py: needs the PC app built),
                              tex/flag_* (gen_flags.py), tex/fx_* (gen_crowd_fx.py), vr_splash.png (gen_splash.py),
-                             contributed models (import_glb.py), tutorials/ (make_tutorial.py)
+                             contributed models (import_glb.py), tutorials/ (make_tutorial.py), the four characters
+                             (contrib/character, 0.3.27: av_bhead_m4/m5/f4/f5, av_hair_11-14_*, tex/sable_*, rowan_*,
+                             tessa_*; copied in), BUILD 4 and 5's av_build_*.grd (tools/bake_build_shapes.py)
 """
 import math
 import os
@@ -617,6 +619,9 @@ def write_hair_rig(base, groups, head, spec):
     def weights(pos, uv1):
         fv, uv = freedom(pos)
         mv = membership(uv, dirs)
+        if mv.shape[1] == 1:   # (one chain: a second column of nothing. Without it the one chain's weight went into both
+            mv = np.concatenate([mv, np.zeros_like(mv)], 1)   # slots, 1 + fv in all, the BANDANA's point and TOP KNOT's
+            #                                                   knot drawn up to twice their size; fixed 2026-11-27)
         top = np.argsort(-mv, axis=1)[:, :2]
         m2 = np.take_along_axis(mv, top, 1)
         m2 /= m2.sum(1, keepdims=True)

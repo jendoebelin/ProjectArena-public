@@ -67,6 +67,8 @@ struct DrawParams {
     // THE REACH: the body bending at the waist: bone 0 (the torso) is `pelvis` below the waist, bones[0] above it, blended
     // over the waist by the bind-space height (avatar.h kWaistLow / kWaistHigh); null: the torso one piece
     const Mat4* pelvis = nullptr;
+    Vec3 chestMotion{};   // bind-space display offset, for the current flexible feminine tops and attached pulses
+    Vec3 beardMotion{};   // FACIAL HAIR's (bind space; each vertex by its UV1.x share)
     const float* twist = nullptr;   // FOREARM TWIST: 8 vec4 (avatar::Rig::twist); null: none
     // TENNIS SKIRT / KILT: the swing (x, z, twist, lift: avatar::Swish) and the garment's shape (its .swish file)
     const float* swish = nullptr;
@@ -81,11 +83,22 @@ struct DrawParams {
     Mat4 decal[2];
     GLuint decalTex = 0;
     bool distant = false;   // the model's lighter triangles if it has them (Model::vaoLod: an avatar far away)
+    // the floor's mirrored court (FLOOR REFLECTIONS, 0.3.27): x how deep under the floor it fades (m: half as bright
+    // at 0.83 x, nearly gone at 2 x), y how much is left looking straight down (1 at a grazing look across the floor); 0: none
+    float reflFade[2] = {0, 0};
+    // BUILD's own bodies (0.3.27): every vertex moved, before skinning, by this 3D grid over the rest pose (0: none)
+    GLuint shapeTex = 0;
+    float shapeMin[3] = {0, 0, 0}, shapeInv[3] = {0, 0, 0};
 };
 
 class Renderer {
 public:
     uint64_t trisDrawn = 0;   // triangles submitted through draw() (the game logs it per frame: performance checks)
+    // DrawParams::reflFade for every draw() that has none of its own (the players in the floor: drawn by the avatar's
+    // own code, which makes its own DrawParams); 0 0 after
+    float reflFadeAll[2] = {0, 0};
+    // a BUILD's grid (<name>.grd, tools/bake_build_shapes.py) as a 3D texture; its box's corner and 1 / size; 0 if missing
+    GLuint loadShapeGrid(const char* name, float mn[3], float inv[3]);
     bool init();
     bool loadModel(const char* name, Model& out);
     // pass 0 = opaque, pass 1 = blended
@@ -98,8 +111,19 @@ public:
     void drawSphere(const Vec3& c, float r, const float rgba[4], bool additive);
     void drawBox(const Mat4& model, const float rgba[4], bool additive);
     void drawText(const std::string& s, const Pose& pose, float height, const float rgba[4]);   // 7-segment HUD text
+    // UI BATCH (0.3.27): flat panels and lines of text collected between uiBegin and uiEnd, then drawn in two draws: the
+    // panels in the order given, then the text over them, each in its own colour. (The avatar builder's two panels were
+    // some 200 draws an eye, panels and text taking turns, each line of text a fresh buffer; on a Quest 3 their drawing
+    // took 13-14 ms of a frame's CPU and held the builder to 63-70 frames a second, 2026-11-27.) As drawPanel and drawText
+    // draw them, but for the order: the text after every panel of the batch, so a panel given after a line of text
+    // doesn't cover it
+    void uiBegin();
+    void uiQuad(const Mat4& model, const float rgba[4]);
+    void uiText(const std::string& s, const Pose& pose, float height, const float rgba[4]);
+    void uiEnd();
     void drawQuad(const Mat4& model, const float rgba[4], bool additive);
     void drawPanel(const Mat4& model, const float rgba[4]);   // unlit, alpha-blended UI quad
+    void drawDisc(const Mat4& model, const float rgba[4]);    // ... a disc of radius 1 in XY, facing +Z (both sides)
     // unlit and solid (rgb; drawn in the opaque pass, 0): it hides what is behind it from the graphics chip, which then
     // doesn't draw it (the lobby balcony's floor, 2026-11-21: the start screen over its budget)
     void drawPanelSolid(const Mat4& model, const float rgb[3]);
@@ -132,6 +156,7 @@ public:
 
     // GRAPHICS (0.3.22). COLOR GRADING: the filmic grade at the end of every surface's shading, from the next beginEye
     void setGrade(bool on) { grade_ = on; }
+    void setGradeK(float exposure, float saturation) { gradeExp_ = exposure; gradeSat_ = saturation; }   // (its strengths)
     // THE CUTAWAY (the PC spectator's preset cameras, 2026-11-19): until set again with n = 0, what the main shader draws
     // within w of any of n planes (n.xyz, d: the points where dot(n, p) = d; up to 4) is left out, where (y - y0) * sign
     // > 0 (sign -1: below y0, the floor's mirror image); roof (null: none): its height, footprint and shape (as uRoof in
@@ -152,7 +177,7 @@ public:
     // edges (vignette: how much at the corners). Leaves `dst` bound, the viewport the frame's
     void darken(GLuint col, GLuint depth, int w, int h, GLuint dst, float px, float py, float nearZ, float farZ, float ao, float vignette);
 
-    Model sphere, box, quad, cylinder;   // cylinder: radius 1, from y = -1 up to its top at y = 0 (the experimental platforms)
+    Model sphere, box, quad, cylinder, disc;   // cylinder: radius 1, from y = -1 up to its top at y = 0 (the experimental platforms)
 
 private:
     GLuint loadTexture(const std::string& rel, bool srgb);
@@ -161,7 +186,9 @@ private:
     bool sidesOn_ = false;
     float side_[2][3] = {{0.1f, 0.7f, 1.0f}, {1.0f, 0.4f, 0.1f}};
     GLint dMVP_ = -1, dModel_ = -1, dDepthVP_ = -1, dDepthView_ = -1, dNearFar_ = -1, dLayer_ = -1, dTex_ = -1, dCol_ = -1;
-    GLint uUVOff_ = -1, uErode_ = -1, uRim_ = -1, uPattern_ = -1, uPatCol_ = -1, uPatGlow_ = -1;
+    GLint uShape_ = -1, uShapeMin_ = -1, uShapeInv_ = -1;
+    GLint uChestMotion_ = -1, uBeardMotion_ = -1;
+    GLint uUVOff_ = -1, uErode_ = -1, uRefl_ = -1, uRim_ = -1, uPattern_ = -1, uPatCol_ = -1, uPatGlow_ = -1;
     GLint uSkinned_ = -1, uBones_ = -1, uBend_ = -1, uPelvis_ = -1, uTwist_ = -1, uTw_ = -1, uSwish_ = -1, uSw_ = -1, uSwC_ = -1, uSwP_ = -1, uDesign_ = -1, uDesCol_ = -1, uDesGlow_ = -1;
     GLint uChar_ = -1, uCloth_ = -1, uTuck_ = -1, uTuckC_ = -1, uDecals_ = -1, uDecalM_ = -1;
     GLuint fabricTex_ = 0;   // open_fabric: the knit for MAT_CLOTH
@@ -171,6 +198,13 @@ private:
     GLuint ribbonVao_ = 0, ribbonVbo_ = 0;
     GLuint textVao_ = 0, textVbo_ = 0, textIbo_ = 0;   // drawText: a line's glyphs in one draw (2026-11-21)
     GLint uVColFade_ = -1;
+    GLint uVColTint_ = -1;   // (UI BATCH: each vertex its own colour)
+    struct UiVert { float p[3], nrm[3], uv0[2], uv1[2]; uint8_t c[4]; };
+    std::vector<UiVert> uiQuads_, uiText_;
+    bool uiOn_ = false;
+    GLuint uiVao_ = 0, uiVbo_ = 0, uiIbo_ = 0, whiteTex_ = 0;
+    size_t uiCap_ = 0;   // (quads the index buffer covers)
+    void uiGlyphs(std::vector<UiVert>& out, const std::string& s, const Mat4& m, float height, const float rgba[4]);
     float team0_[4] = {0.1f, 0.7f, 1, 1}, team1_[4] = {1, 0.4f, 0.1f, 1};
     std::map<std::string, GLuint> texCache_;
     void buildPrimitive(Model& m, const std::vector<float>& v, const std::vector<uint32_t>& idx);
@@ -187,5 +221,21 @@ private:
     int aoW_ = 0, aoH_ = 0;
     GLuint linear_ = 0, nearest_ = 0;
     bool grade_ = false, lodOff_ = false;
-    GLint uGrade_ = -1, uCutN_ = -1, uCut_ = -1, uCutY_ = -1, uRoof_ = -1;
+    float gradeExp_ = 1.35f, gradeSat_ = 1.12f;
+    GLint uGradeK_ = -1, uGrade_ = -1, uCutN_ = -1, uCut_ = -1, uCutY_ = -1, uRoof_ = -1;
+    // the main program's uniforms as last set (0.3.27): a value set again as it already is doesn't go to GL. Each draw
+    // set some fifty, nearly all unchanged (a panel's quad as many as an avatar's part), and with the avatar builder's
+    // two hundred draws an eye a Quest 3 ran it at 60 frames a second (2026-11-27). Every write to these uniforms goes
+    // through su*(); matrices, which change from draw to draw, go to GL as they are
+    struct UVal { int n = 0; bool isInt = false; float f[4] = {0, 0, 0, 0}; int i = 0; };
+    static constexpr int kUCache = 256;
+    UVal ucache_[kUCache];
+    void su1i(GLint l, int v);
+    void suf(GLint l, int n, const float* v);
+    void su1f(GLint l, float a) { suf(l, 1, &a); }
+    void su2f(GLint l, float a, float b) { const float v[2] = {a, b}; suf(l, 2, v); }
+    void su3f(GLint l, float a, float b, float c) { const float v[3] = {a, b, c}; suf(l, 3, v); }
+    void su4f(GLint l, float a, float b, float c, float d) { const float v[4] = {a, b, c, d}; suf(l, 4, v); }
+    void su3fv(GLint l, const float* v) { suf(l, 3, v); }
+    void su4fv(GLint l, const float* v) { suf(l, 4, v); }
 };

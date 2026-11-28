@@ -18,6 +18,8 @@ uniform mat4 uMVP;
 uniform mat4 uModel;
 uniform int uSkinned;
 uniform mat4 uBones[9];
+uniform vec2 uChestMotion;  // upper-body follow-through, metres up and back
+uniform vec3 uBeardMotion;  // FACIAL HAIR's swing (bind space): each vertex by its UV1.x
 uniform int uBend;          // THE REACH: bending at the waist: bone 0 is uPelvis below it, uBones[0] above (bind-space height)
 uniform mat4 uPelvis;
 uniform int uTwist;         // FOREARM TWIST (PR #25): the forearm's skin turned back toward the elbow (avatar.h Rig::twist)
@@ -34,6 +36,10 @@ uniform vec3 uTuckC;
 uniform sampler2D uTuckTex;
 uniform highp int uDecals;  // prints on the garment (DrawParams::decal): its bind-space position in each box
 uniform mat4 uDecalM[2];
+uniform int uShape;         // BUILD's own bodies (0.3.27): the rest pose moved by a 3D grid (DrawParams::shapeTex)
+uniform highp sampler3D uShapeTex;
+uniform vec3 uShapeMin;
+uniform vec3 uShapeInv;
 out vec3 vDec0;
 out vec3 vDec1;
 out vec2 vDecN;
@@ -51,6 +57,10 @@ float swishRadius(float y, float th) {   // the body's radius at this height and
     float ra = mix(texelFetch(uSwTex, ivec2(i, lo), 0).r, texelFetch(uSwTex, ivec2(j, lo), 0).r, f);
     float rb = mix(texelFetch(uSwTex, ivec2(i, hi), 0).r, texelFetch(uSwTex, ivec2(j, hi), 0).r, f);
     return mix(ra, rb, fy - float(lo));
+}
+vec2 chestEdge(float v, float lo, float hi) {
+    float t = clamp((v - lo) / (hi - lo), 0.0, 1.0);
+    return vec2(t * t * (3.0 - 2.0 * t), 6.0 * t * (1.0 - t) / (hi - lo));
 }
 void main() {
     vec4 p = vec4(aPos, 1.0);
@@ -83,6 +93,30 @@ void main() {
         vDec1 = (uDecalM[1] * p).xyz;
         vDecN = vec2((mat3(uDecalM[0]) * aNrm).z, (mat3(uDecalM[1]) * aNrm).z);
     }
+    if (uChestMotion != vec2(0.0)) {
+        // Same bind-space envelope on the top, exposed skin and any animated
+        // piping. It ends before the shoulders, collar, waist and back.
+        vec2 side = chestEdge(abs(aPos.x), 0.095, 0.145);
+        vec2 low = chestEdge(aPos.y, -0.270, -0.195), high = chestEdge(aPos.y, -0.150, -0.095);
+        vec2 back = chestEdge(aPos.z, -0.125, -0.068);
+        vec3 w = vec3(1.0 - side.x, low.x * (1.0 - high.x), 1.0 - back.x);
+        vec3 g = vec3(-side.y * sign(aPos.x) * w.y * w.z,
+                      (low.y * (1.0 - high.x) - low.x * high.y) * w.x * w.z,
+                      -back.y * w.x * w.y);
+        vec3 d = vec3(0.0, uChestMotion);
+        p.xyz += d * (w.x * w.y * w.z);
+        // Inverse transpose of this local displacement, before the normal is skinned.
+        nrm -= g * (dot(d, nrm) / (1.0 + dot(g, d)));
+    }
+    if (uBeardMotion != vec3(0.0)) {   // (FACIAL HAIR: its share of the swing)
+        // (where it lies on the skin, UV1.y 1, it slides along the face but never into it: its edges are 0.6 mm off the
+        // skin and the swing a few millimetres, the skin showed through in patches as the head moved; the owner's
+        // headset, 2026-11-27. LONG BEARD's hanging part, 0, swings free)
+        vec3 bm = uBeardMotion * aUV1.x;
+        if (aUV1.y > 0.5) bm -= aNrm * min(0.0, dot(bm, aNrm));
+        p.xyz += bm;
+    }
+    if (uShape == 1) p.xyz += textureLod(uShapeTex, (aPos - uShapeMin) * uShapeInv, 0.0).xyz;   // (after the print's place)
     if (uSkinned == 1) {   // linear blend skinning over the avatar's 9 bones (avatar.h BONE_*)
         mat4 B[4];
         B[0] = uBones[int(aBone.x)]; B[1] = uBones[int(aBone.y)]; B[2] = uBones[int(aBone.z)]; B[3] = uBones[int(aBone.w)];
@@ -159,6 +193,7 @@ uniform vec4 uTeam1;
 uniform vec3 uEye;
 uniform vec3 uLightDir;
 uniform int uVColFade;
+uniform int uVColTint;   // (UI BATCH: the vertex's colour on its texel)
 uniform vec2 uUVOff;
 uniform float uErode;
 uniform vec4 uRim;
@@ -208,6 +243,7 @@ void shade() {
     if (!gl_FrontFacing) n = -n;
     vec4 base = uTint;
     if (uHasDiffuse == 1) base *= texture(uDiffuse, vUV);
+    if (uVColTint == 1) base *= vCol;
     if (uShader == 5) {
         vec3 v = normalize(uEye - vW);
         vec3 r = reflect(-v, n);
@@ -306,6 +342,11 @@ void shade() {
 // frame. Glows (additive) get the saturation only: the curve is for a whole surface, not light added on top. Menus,
 // text and screens (unlit) stay as they are
 uniform float uGrade;
+uniform vec2 uGradeK;   // (exposure, saturation)
+// FLOOR REFLECTIONS (0.3.27, the owner: the court under the floor "breaks my immersion"): the mirrored court fades
+// the deeper it is under the floor (a glossy floor shows what stands on it, not the roof) and looking down (a floor
+// reflects most at a grazing look); x the depth scale (m), y what is left looking straight down; x 0: as it was
+uniform vec2 uRefl;
 // THE CUTAWAY (Renderer::setCut): the walls between a preset camera and the court left out, their floor edge kept
 uniform int uCutN;
 uniform vec4 uCut[4];
@@ -325,14 +366,20 @@ void main() {
         }
     }
     shade();
+    if (uRefl.x > 0.0) {
+        float d = max(-vW.y, 0.0) / uRefl.x;
+        float down = abs(normalize(vW - uEye).y);
+        float k = exp(-d * d) * mix(1.0, uRefl.y, down * down);
+        oColor *= k;
+    }
     if (uGrade > 0.5 && uShader != 3) {
         vec3 c = max(oColor.rgb, vec3(0.0));
         if (uShader != 2) {
-            vec3 x = c * 1.35;
+            vec3 x = c * uGradeK.x;
             c = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
         }
         float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
-        oColor.rgb = max(vec3(y) + (c - vec3(y)) * 1.12, vec3(0.0));
+        oColor.rgb = max(vec3(y) + (c - vec3(y)) * uGradeK.y, vec3(0.0));
     }
 }
 )";
@@ -406,6 +453,39 @@ GLuint Renderer::loadTexture(const std::string& rel, bool srgb) {
         LOGW("missing texture %s", file.c_str());
     }
     texCache_[key] = t;
+    return t;
+}
+
+// BUILD's own bodies (0.3.27): <name>.grd, a 3D grid of movements over the rest pose (tools/bake_build_shapes.py:
+// 'SGRD', nx ny nz, min[3], max[3], then half floats x y z, x fastest), as an RGB16F 3D texture sampled before skinning
+GLuint Renderer::loadShapeGrid(const char* name, float mn[3], float inv[3]) {
+    std::vector<uint8_t> d;
+    if (!assetRead(std::string(name) + ".grd", d) || d.size() < 40 || std::memcmp(d.data(), "SGRD", 4) != 0) return 0;
+    uint32_t n[3];
+    float lo[3], hi[3];
+    std::memcpy(n, d.data() + 4, 12);
+    std::memcpy(lo, d.data() + 16, 12);
+    std::memcpy(hi, d.data() + 28, 12);
+    if (!n[0] || !n[1] || !n[2] || d.size() < 40 + size_t(n[0]) * n[1] * n[2] * 6) return 0;
+    // (the box's corners are the first and last cells' middles: texture coordinates from half a cell in)
+    for (int k = 0; k < 3; ++k) {
+        const float cell = n[k] > 1 ? (hi[k] - lo[k]) / float(n[k] - 1) : 1.f;
+        mn[k] = lo[k] - 0.5f * cell;
+        inv[k] = 1.f / (cell * float(n[k]));
+    }
+    GLuint t = 0;
+    glGenTextures(1, &t);
+    glBindTexture(GL_TEXTURE_3D, t);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB16F, n[0], n[1], n[2], 0, GL_RGB, GL_HALF_FLOAT, d.data() + 40);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_3D, 0);
+    LOGI("build shape %s %ux%ux%u (gl %u)", name, n[0], n[1], n[2], t);
     return t;
 }
 
@@ -585,6 +665,7 @@ bool Renderer::init() {
     glAttachShader(prog_, compile(GL_VERTEX_SHADER, kVS));
     glAttachShader(prog_, compile(GL_FRAGMENT_SHADER, kFS));
     glLinkProgram(prog_);
+    for (UVal& u : ucache_) u = UVal();   // (a new program: nothing known set)
     GLint ok = 0;
     glGetProgramiv(prog_, GL_LINK_STATUS, &ok);
     if (!ok) {
@@ -607,6 +688,7 @@ bool Renderer::init() {
     uLightDir_ = glGetUniformLocation(prog_, "uLightDir");
     g_uUVRect = glGetUniformLocation(prog_, "uUVRect");
     uGrade_ = glGetUniformLocation(prog_, "uGrade");
+    uGradeK_ = glGetUniformLocation(prog_, "uGradeK");
     uCutN_ = glGetUniformLocation(prog_, "uCutN");
     uCut_ = glGetUniformLocation(prog_, "uCut");
     uCutY_ = glGetUniformLocation(prog_, "uCutY");
@@ -618,8 +700,13 @@ bool Renderer::init() {
     aoW_ = aoH_ = 0;
     linear_ = nearest_ = 0;
     uVColFade_ = glGetUniformLocation(prog_, "uVColFade");
+    uVColTint_ = glGetUniformLocation(prog_, "uVColTint");
     uUVOff_ = glGetUniformLocation(prog_, "uUVOff");
     uErode_ = glGetUniformLocation(prog_, "uErode");
+    uRefl_ = glGetUniformLocation(prog_, "uRefl");
+    uShape_ = glGetUniformLocation(prog_, "uShape");
+    uShapeMin_ = glGetUniformLocation(prog_, "uShapeMin");
+    uShapeInv_ = glGetUniformLocation(prog_, "uShapeInv");
     uRim_ = glGetUniformLocation(prog_, "uRim");
     uPattern_ = glGetUniformLocation(prog_, "uPattern");
     uPatCol_ = glGetUniformLocation(prog_, "uPatCol");
@@ -634,6 +721,8 @@ bool Renderer::init() {
     uPelvis_ = glGetUniformLocation(prog_, "uPelvis");
     uTwist_ = glGetUniformLocation(prog_, "uTwist");
     uTw_ = glGetUniformLocation(prog_, "uTw");
+    uChestMotion_ = glGetUniformLocation(prog_, "uChestMotion");
+    uBeardMotion_ = glGetUniformLocation(prog_, "uBeardMotion");
     uSwish_ = glGetUniformLocation(prog_, "uSwish");
     uSw_ = glGetUniformLocation(prog_, "uSw");
     uSwC_ = glGetUniformLocation(prog_, "uSwC");
@@ -642,7 +731,8 @@ bool Renderer::init() {
     uDesCol_ = glGetUniformLocation(prog_, "uDesCol");
     uDesGlow_ = glGetUniformLocation(prog_, "uDesGlow");
     glUseProgram(prog_);
-    glUniform1i(uVColFade_, 0);
+    su1i(uVColFade_, 0);
+    su1i(uVColTint_, 0);
     glUseProgram(prog_);
     glUniform1i(glGetUniformLocation(prog_, "uDiffuse"), 0);
     glUniform1i(glGetUniformLocation(prog_, "uMask"), 1);
@@ -651,12 +741,13 @@ bool Renderer::init() {
     glUniform1i(glGetUniformLocation(prog_, "uTuckTex"), 4);
     glUniform1i(glGetUniformLocation(prog_, "uDecalTex"), 5);
     glUniform1i(glGetUniformLocation(prog_, "uSwTex"), 6);
-    glUniform1i(uDecals_, 0);
-    glUniform1i(uTuck_, 0);
+    glUniform1i(glGetUniformLocation(prog_, "uShapeTex"), 7);
+    su1i(uDecals_, 0);
+    su1i(uTuck_, 0);
     uChar_ = glGetUniformLocation(prog_, "uChar");
     uCloth_ = glGetUniformLocation(prog_, "uCloth");
-    glUniform1i(uPattern_, 0);
-    glUniform4f(g_uUVRect, 1, 1, 0, 0);
+    su1i(uPattern_, 0);
+    su4f(g_uUVRect, 1, 1, 0, 0);
 
     // UV sphere
     {
@@ -724,6 +815,18 @@ bool Renderer::init() {
                                 0.5f, 0.5f, 0, 0, 0, 1, 1, 0,   -0.5f, 0.5f, 0, 0, 0, 1, 0, 0};
         buildPrimitive(quad, v, {0, 1, 2, 0, 2, 3});
     }
+    // disc of radius 1 in the XY plane, facing +Z (the strike zones' frosted glass)
+    {
+        const int S = 64;
+        std::vector<float> v = {0, 0, 0, 0, 0, 1, 0.5f, 0.5f};
+        std::vector<uint32_t> idx;
+        for (int j = 0; j <= S; ++j) {
+            const float ph = 2 * kPi * j / S, x = std::cos(ph), y = std::sin(ph);
+            v.insert(v.end(), {x, y, 0, 0, 0, 1, 0.5f + 0.5f * x, 0.5f - 0.5f * y});
+        }
+        for (int j = 0; j < S; ++j) idx.insert(idx.end(), {0u, uint32_t(1 + j), uint32_t(2 + j)});
+        buildPrimitive(disc, v, idx);
+    }
     // font atlas: 59 glyphs * 6 px wide, 8 px tall
     {
         const int W = 59 * 6, H = 8;
@@ -754,6 +857,30 @@ bool Renderer::init() {
     return true;
 }
 
+void Renderer::su1i(GLint l, int v) {
+    if (l < 0) return;
+    if (l < kUCache) {
+        UVal& u = ucache_[l];
+        if (u.n == 1 && u.isInt && u.i == v) return;
+        u.n = 1; u.isInt = true; u.i = v;
+    }
+    glUniform1i(l, v);
+}
+
+void Renderer::suf(GLint l, int n, const float* v) {
+    if (l < 0) return;
+    if (l < kUCache) {
+        UVal& u = ucache_[l];
+        if (u.n == n && !u.isInt && std::memcmp(u.f, v, sizeof(float) * n) == 0) return;   // (bit for bit)
+        u.n = n; u.isInt = false;
+        std::memcpy(u.f, v, sizeof(float) * n);
+    }
+    if (n == 1) glUniform1f(l, v[0]);
+    else if (n == 2) glUniform2f(l, v[0], v[1]);
+    else if (n == 3) glUniform3f(l, v[0], v[1], v[2]);
+    else glUniform4f(l, v[0], v[1], v[2], v[3]);
+}
+
 void Renderer::beginEye(const Mat4& view, const Mat4& proj, const Vec3& eye) {
     view_ = view; proj_ = proj; viewProj_ = proj * view; eye_ = eye;
     glUseProgram(prog_);
@@ -763,6 +890,7 @@ void Renderer::beginEye(const Mat4& view, const Mat4& proj, const Vec3& eye) {
     glUniform4fv(uTeam0_, 1, team0_);
     glUniform4fv(uTeam1_, 1, team1_);
     glUniform1f(uGrade_, grade_ ? 1.f : 0.f);
+    glUniform2f(uGradeK_, gradeExp_, gradeSat_);
 }
 
 void Renderer::setCut(int n, const float (*planes)[4], float y0, float sign, float w, const float* roof) {
@@ -791,29 +919,31 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
     glUniformMatrix4fv(uMVP_, 1, GL_FALSE, mvp.m);
     glUniformMatrix4fv(uModel_, 1, GL_FALSE, model.m);
     const bool skin = m.skinned && dp.bones;
-    glUniform1i(uSkinned_, skin ? 1 : 0);
+    su1i(uSkinned_, skin ? 1 : 0);
     if (skin) glUniformMatrix4fv(uBones_, 9, GL_FALSE, dp.bones[0].m);
-    glUniform1i(uBend_, skin && dp.pelvis ? 1 : 0);
+    su1i(uBend_, skin && dp.pelvis ? 1 : 0);
     if (skin && dp.pelvis) glUniformMatrix4fv(uPelvis_, 1, GL_FALSE, dp.pelvis->m);
-    glUniform1i(uTwist_, skin && dp.twist ? 1 : 0);
+    su2f(uChestMotion_, skin ? dp.chestMotion.y : 0.f, skin ? dp.chestMotion.z : 0.f);
+    su3f(uBeardMotion_, skin ? dp.beardMotion.x : 0.f, skin ? dp.beardMotion.y : 0.f, skin ? dp.beardMotion.z : 0.f);
+    su1i(uTwist_, skin && dp.twist ? 1 : 0);
     if (skin && dp.twist) glUniform4fv(uTw_, 8, dp.twist);
     const bool swish = skin && dp.swish && dp.swishShape && dp.swishShape->tex;
-    glUniform1i(uSwish_, swish ? 1 : 0);
+    su1i(uSwish_, swish ? 1 : 0);
     if (swish) {
-        glUniform4fv(uSw_, 1, dp.swish);
-        glUniform4fv(uSwC_, 1, dp.swishShape->c);
-        glUniform4fv(uSwP_, 1, dp.swishShape->p);
+        su4fv(uSw_, dp.swish);
+        su4fv(uSwC_, dp.swishShape->c);
+        su4fv(uSwP_, dp.swishShape->p);
         glActiveTexture(GL_TEXTURE6); glBindTexture(GL_TEXTURE_2D, dp.swishShape->tex);
     }
     const int decals = dp.decalTex ? std::max(0, std::min(2, dp.decals)) : 0;
-    glUniform1i(uDecals_, decals);
+    su1i(uDecals_, decals);
     if (decals) {
         glUniformMatrix4fv(uDecalM_, 2, GL_FALSE, dp.decal[0].m);
         glActiveTexture(GL_TEXTURE5); glBindTexture(GL_TEXTURE_2D, dp.decalTex);
     }
-    glUniform1i(uTuck_, dp.tuck ? 1 : 0);
+    su1i(uTuck_, dp.tuck ? 1 : 0);
     if (dp.tuck) {
-        glUniform3fv(uTuckC_, 1, dp.tuckC);
+        su3fv(uTuckC_, dp.tuckC);
         glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_2D, dp.tuck);
     }
     const bool lodNow = dp.distant && m.vaoLod && m.lodSections.size() == m.sections.size() && !lodOff_;   // (FAR AWAY)
@@ -846,31 +976,39 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
             if (sh == SH_TRANSLUCENT) tint[3] *= dp.glowMul;
         }
         const bool pat = dp.channels && dp.pattern && (mt.flags & MAT_PATTERN) && sh == SH_LIT;
-        glUniform1i(uPattern_, pat ? 1 : 0);
+        su1i(uPattern_, pat ? 1 : 0);
         const bool design = dp.channels && (mt.flags & MAT_DESIGN) && mt.mask && sh == SH_LIT;
-        glUniform1i(uDesign_, design ? 1 : 0);
+        su1i(uDesign_, design ? 1 : 0);
         const bool chr = dp.rim[3] > 0 && sh == SH_LIT;   // avatar parts (players carry the team rim light)
         const bool cloth = chr && (mt.flags & MAT_CLOTH) && fabricTex_;
-        glUniform1i(uChar_, chr ? 1 : 0);
-        glUniform1i(uCloth_, cloth ? 1 : 0);
+        su1i(uChar_, chr ? 1 : 0);
+        su1i(uCloth_, cloth ? 1 : 0);
         if (cloth) { glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, fabricTex_); }
-        if (design) { glUniform4fv(uDesCol_, 1, dp.channels[2]); glUniform4fv(uDesGlow_, 1, dp.channels[3]); }
+        if (design) { su4fv(uDesCol_, dp.channels[2]); su4fv(uDesGlow_, dp.channels[3]); }
         if (pat) {
             float pc[4] = {mt.tint[0] * dp.tintMul[0] * dp.channels[2][0], mt.tint[1] * dp.tintMul[1] * dp.channels[2][1],
                            mt.tint[2] * dp.tintMul[2] * dp.channels[2][2], 1};
-            glUniform4fv(uPatCol_, 1, pc);
-            glUniform4fv(uPatGlow_, 1, dp.channels[3]);
+            su4fv(uPatCol_, pc);
+            su4fv(uPatGlow_, dp.channels[3]);
             glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, dp.pattern);
         }
-        glUniform4fv(uRim_, 1, dp.rim);
-        glUniform1i(uShader_, int(sh));
-        glUniform2f(uUVOff_, dp.uvOff[0], dp.uvOff[1]);
-        glUniform1f(uErode_, dp.erode);
-        glUniform4fv(uTint_, 1, tint);
-        glUniform4fv(uEmissive_, 1, em);
-        glUniform1i(uUV_, int(mt.uv));
-        glUniform1i(uHasDiffuse_, mt.diffuse ? 1 : 0);
-        glUniform1i(uHasMask_, mt.mask ? 1 : 0);
+        su4fv(uRim_, dp.rim);
+        su1i(uShader_, int(sh));
+        su2f(uUVOff_, dp.uvOff[0], dp.uvOff[1]);
+        su1f(uErode_, dp.erode);
+        su1i(uShape_, dp.shapeTex ? 1 : 0);
+        if (dp.shapeTex) {
+            su3fv(uShapeMin_, dp.shapeMin);
+            su3fv(uShapeInv_, dp.shapeInv);
+            glActiveTexture(GL_TEXTURE7); glBindTexture(GL_TEXTURE_3D, dp.shapeTex);
+        }
+        const float* rf = dp.reflFade[0] > 0.f ? dp.reflFade : reflFadeAll;
+        su2f(uRefl_, rf[0], rf[1]);
+        su4fv(uTint_, tint);
+        su4fv(uEmissive_, em);
+        su1i(uUV_, int(mt.uv));
+        su1i(uHasDiffuse_, mt.diffuse ? 1 : 0);
+        su1i(uHasMask_, mt.mask ? 1 : 0);
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, mt.diffuse ? mt.diffuse : 0);
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, mt.mask ? mt.mask : 0);
         glDrawElements(GL_TRIANGLES, s.count, itype, (void*)(uintptr_t)(s.first * isz));
@@ -879,19 +1017,23 @@ void Renderer::draw(const Model& m, const Mat4& model, const DrawParams& dp, int
     glBindVertexArray(0);
     glFrontFace(GL_CCW);
     glDepthMask(GL_TRUE);
-    glUniform2f(uUVOff_, 0, 0);   // text / ribbons don't go through draw(): leave neutral values behind
-    glUniform1i(uSkinned_, 0);
-    glUniform1i(uBend_, 0);
-    glUniform1i(uTwist_, 0);
-    glUniform1i(uSwish_, 0);
-    glUniform1i(uTuck_, 0);
-    glUniform1i(uDecals_, 0);   // (left on, the next thing drawn another way wore the flag: the fireballs did)
-    glUniform1i(uDesign_, 0);
-    glUniform1i(uChar_, 0);
-    glUniform1i(uCloth_, 0);
-    glUniform1f(uErode_, 0);
-    glUniform1i(uPattern_, 0);
-    glUniform4f(uRim_, 0, 0, 0, 0);
+    su2f(uUVOff_, 0, 0);   // text / ribbons don't go through draw(): leave neutral values behind
+    su1i(uSkinned_, 0);
+    su1i(uBend_, 0);
+    su1i(uTwist_, 0);
+    su1i(uSwish_, 0);
+    su2f(uChestMotion_, 0.f, 0.f);
+    su3f(uBeardMotion_, 0.f, 0.f, 0.f);
+    su1i(uTuck_, 0);
+    su1i(uDecals_, 0);   // (left on, the next thing drawn another way wore the flag: the fireballs did)
+    su1i(uDesign_, 0);
+    su1i(uChar_, 0);
+    su1i(uCloth_, 0);
+    su1f(uErode_, 0);
+    su2f(uRefl_, 0, 0);
+    su1i(uShape_, 0);
+    su1i(uPattern_, 0);
+    su4f(uRim_, 0, 0, 0, 0);
 }
 
 static void setColor(Model& m, const float rgba[4], bool additive) {
@@ -999,6 +1141,15 @@ void Renderer::drawPanel(const Mat4& model, const float rgba[4]) {
     draw(quad, model, dp, 1);
 }
 
+void Renderer::drawDisc(const Mat4& model, const float rgba[4]) {
+    setColor(disc, rgba, false);
+    disc.mats[0].flags = MAT_TWOSIDED;
+    DrawParams dp;
+    dp.forceShader = SH_UNLIT;
+    dp.alphaMul = 0.998f;   // (the blended pass)
+    draw(disc, model, dp, 1);
+}
+
 void Renderer::drawPanelSolid(const Mat4& model, const float rgb[3]) {
     const float rgba[4] = {rgb[0], rgb[1], rgb[2], 1.f};
     setColor(quad, rgba, false);
@@ -1044,14 +1195,14 @@ void Renderer::drawText(const std::string& s, const Pose& pose, float height, co
     const Mat4 mvp = viewProj_ * mm;
     glUniformMatrix4fv(uMVP_, 1, GL_FALSE, mvp.m);
     glUniformMatrix4fv(uModel_, 1, GL_FALSE, mm.m);
-    glUniform1i(uShader_, SH_UNLIT);
-    glUniform4fv(uTint_, 1, rgba);
+    su1i(uShader_, SH_UNLIT);
+    su4fv(uTint_, rgba);
     const float zero[4] = {0, 0, 0, 0};
-    glUniform4fv(uEmissive_, 1, zero);
-    glUniform1i(uUV_, 0);
-    glUniform1i(uHasDiffuse_, 1);
-    glUniform1i(uHasMask_, 0);
-    glUniform4f(g_uUVRect, 1, 1, 0, 0);   // (each vertex has its glyph's own place in the atlas)
+    su4fv(uEmissive_, zero);
+    su1i(uUV_, 0);
+    su1i(uHasDiffuse_, 1);
+    su1i(uHasMask_, 0);
+    su4f(g_uUVRect, 1, 1, 0, 0);   // (each vertex has its glyph's own place in the atlas)
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, g_fontTex);
     glEnable(GL_BLEND);
     blendAlpha();
@@ -1094,6 +1245,141 @@ void Renderer::drawText(const std::string& s, const Pose& pose, float height, co
     glDepthMask(GL_TRUE);
 }
 
+void Renderer::uiGlyphs(std::vector<UiVert>& out, const std::string& s, const Mat4& m, float height, const float rgba[4]) {
+    // (drawText's glyphs, placed in the world here, each vertex the line's colour)
+    const float cw = height * 6.f / 8.f, total = cw * s.size();
+    uint8_t c[4];
+    for (int k = 0; k < 4; ++k) c[k] = (uint8_t)std::lround(std::min(1.f, std::max(0.f, rgba[k])) * 255.f);
+    const Vec3 n{m.m[8], m.m[9], m.m[10]};
+    for (size_t i = 0; i < s.size(); ++i) {
+        char ch = s[i];
+        if (ch >= 'a' && ch <= 'z') ch -= 32;
+        if (ch == ' ') continue;
+        const bool under = ch == '_';
+        const int g = under ? '-' - 32 : (ch >= 32 && ch <= 'Z') ? ch - 32 : 0;
+        const float x = -total * 0.5f + cw * (i + 0.5f), y = under ? -height * 0.42f : 0.f;
+        const float u0 = g / 59.f, u1 = (g + 1) / 59.f;
+        const float cx[4] = {-0.5f, 0.5f, 0.5f, -0.5f}, cy[4] = {-0.5f, -0.5f, 0.5f, 0.5f};
+        const float cu[4] = {u0, u1, u1, u0}, cv[4] = {1, 1, 0, 0};
+        for (int k = 0; k < 4; ++k) {
+            UiVert v;
+            const float lx = x + cx[k] * cw, ly = y + cy[k] * height;
+            v.p[0] = m.m[0] * lx + m.m[4] * ly + m.m[12];
+            v.p[1] = m.m[1] * lx + m.m[5] * ly + m.m[13];
+            v.p[2] = m.m[2] * lx + m.m[6] * ly + m.m[14];
+            v.nrm[0] = n.x; v.nrm[1] = n.y; v.nrm[2] = n.z;
+            v.uv0[0] = cu[k]; v.uv0[1] = cv[k];
+            v.uv1[0] = v.uv1[1] = 0;
+            std::memcpy(v.c, c, 4);
+            out.push_back(v);
+        }
+    }
+}
+
+void Renderer::uiBegin() {
+    uiOn_ = true;
+    uiQuads_.clear();
+    uiText_.clear();
+}
+
+void Renderer::uiQuad(const Mat4& model, const float rgba[4]) {
+    if (!uiOn_) { drawPanel(model, rgba); return; }
+    const float a[4] = {rgba[0], rgba[1], rgba[2], rgba[3] * 0.998f};   // (as drawPanel: the blended pass)
+    uint8_t c[4];
+    for (int k = 0; k < 4; ++k) c[k] = (uint8_t)std::lround(std::min(1.f, std::max(0.f, a[k])) * 255.f);
+    const float cx[4] = {-0.5f, 0.5f, 0.5f, -0.5f}, cy[4] = {-0.5f, -0.5f, 0.5f, 0.5f};
+    for (int k = 0; k < 4; ++k) {
+        UiVert v;
+        v.p[0] = model.m[0] * cx[k] + model.m[4] * cy[k] + model.m[12];
+        v.p[1] = model.m[1] * cx[k] + model.m[5] * cy[k] + model.m[13];
+        v.p[2] = model.m[2] * cx[k] + model.m[6] * cy[k] + model.m[14];
+        v.nrm[0] = model.m[8]; v.nrm[1] = model.m[9]; v.nrm[2] = model.m[10];
+        v.uv0[0] = 0.5f; v.uv0[1] = 0.5f;   // (the white texture's one texel)
+        v.uv1[0] = v.uv1[1] = 0;
+        std::memcpy(v.c, c, 4);
+        uiQuads_.push_back(v);
+    }
+}
+
+void Renderer::uiText(const std::string& s, const Pose& pose, float height, const float rgba[4]) {
+    if (!uiOn_) { drawText(s, pose, height, rgba); return; }
+    uiGlyphs(uiText_, s, Mat4::fromPose(pose), height, rgba);
+}
+
+void Renderer::uiEnd() {
+    if (!uiOn_) return;
+    uiOn_ = false;
+    const size_t nq = uiQuads_.size() / 4, nt = uiText_.size() / 4, n = nq + nt;
+    if (!n) return;
+    if (!whiteTex_) {
+        const uint8_t px[4] = {255, 255, 255, 255};
+        glGenTextures(1, &whiteTex_);
+        glBindTexture(GL_TEXTURE_2D, whiteTex_);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+    if (!uiVao_) {
+        glGenVertexArrays(1, &uiVao_);
+        glGenBuffers(1, &uiVbo_);
+        glGenBuffers(1, &uiIbo_);
+        glBindVertexArray(uiVao_);
+        glBindBuffer(GL_ARRAY_BUFFER, uiVbo_);
+        const GLsizei st = sizeof(UiVert);
+        glEnableVertexAttribArray(0); glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, st, (void*)0);
+        glEnableVertexAttribArray(1); glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, st, (void*)12);
+        glEnableVertexAttribArray(2); glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, st, (void*)24);
+        glEnableVertexAttribArray(3); glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, st, (void*)32);
+        glEnableVertexAttribArray(4); glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_TRUE, st, (void*)40);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, uiIbo_);
+        glBindVertexArray(0);
+    }
+    const size_t cap = std::min<size_t>(16383, n);   // (16-bit indices: 16383 quads at most)
+    glBindVertexArray(uiVao_);
+    if (uiCap_ < cap) {   // the quads' indices, two triangles each, for as many as it has held
+        uiCap_ = std::min<size_t>(16383, std::max(cap, uiCap_ * 2));
+        std::vector<uint16_t> idx(uiCap_ * 6);
+        for (size_t g = 0; g < uiCap_; ++g) {
+            const uint16_t b = (uint16_t)(g * 4);
+            const uint16_t q[6] = {b, (uint16_t)(b + 1), (uint16_t)(b + 2), b, (uint16_t)(b + 2), (uint16_t)(b + 3)};
+            std::memcpy(&idx[g * 6], q, sizeof q);
+        }
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size() * 2, idx.data(), GL_STATIC_DRAW);
+    }
+    // one buffer a batch: the panels' quads, then the glyphs
+    glBindBuffer(GL_ARRAY_BUFFER, uiVbo_);
+    glBufferData(GL_ARRAY_BUFFER, n * 4 * sizeof(UiVert), nullptr, GL_STREAM_DRAW);
+    if (nq) glBufferSubData(GL_ARRAY_BUFFER, 0, nq * 4 * sizeof(UiVert), uiQuads_.data());
+    if (nt) glBufferSubData(GL_ARRAY_BUFFER, nq * 4 * sizeof(UiVert), nt * 4 * sizeof(UiVert), uiText_.data());
+    const Mat4 id = Mat4::identity();
+    glUniformMatrix4fv(uMVP_, 1, GL_FALSE, viewProj_.m);
+    glUniformMatrix4fv(uModel_, 1, GL_FALSE, id.m);
+    su1i(uShader_, SH_UNLIT);
+    const float white[4] = {1, 1, 1, 1}, zero[4] = {0, 0, 0, 0};
+    su4fv(uTint_, white);
+    su4fv(uEmissive_, zero);
+    su1i(uUV_, 0);
+    su1i(uHasDiffuse_, 1);
+    su1i(uHasMask_, 0);
+    su4f(g_uUVRect, 1, 1, 0, 0);
+    su1i(uVColTint_, 1);
+    glEnable(GL_BLEND);
+    blendAlpha();
+    glDisable(GL_CULL_FACE);
+    glDepthMask(GL_FALSE);
+    glActiveTexture(GL_TEXTURE0);
+    for (int part = 0; part < 2; ++part) {   // (the panels, then the text over them)
+        const size_t first = part ? nq : 0, count = std::min(part ? nt : nq, cap - std::min(cap, first));
+        if (!count) continue;
+        glBindTexture(GL_TEXTURE_2D, part ? g_fontTex : whiteTex_);
+        glDrawElements(GL_TRIANGLES, (GLsizei)(count * 6), GL_UNSIGNED_SHORT, (void*)(uintptr_t)(first * 6 * 2));
+        trisDrawn += count * 2;
+    }
+    su1i(uVColTint_, 0);
+    glBindVertexArray(0);
+    glDepthMask(GL_TRUE);
+}
+
 void Renderer::drawRibbon(const Vec3* pts, int n, float width, const float rgba[4], bool taper) {
     if (n < 2) return;
     if (!ribbonVao_) {
@@ -1133,23 +1419,23 @@ void Renderer::drawRibbon(const Vec3* pts, int n, float width, const float rgba[
     Mat4 id = Mat4::identity();
     glUniformMatrix4fv(uMVP_, 1, GL_FALSE, viewProj_.m);
     glUniformMatrix4fv(uModel_, 1, GL_FALSE, id.m);
-    glUniform1i(uShader_, SH_UNLIT);
-    glUniform4fv(uTint_, 1, rgba);
+    su1i(uShader_, SH_UNLIT);
+    su4fv(uTint_, rgba);
     float zero[4] = {0, 0, 0, 0};
-    glUniform4fv(uEmissive_, 1, zero);
-    glUniform1i(uUV_, 0);
-    glUniform4f(g_uUVRect, 1, 1, 0, 0);   // uv0.x = 0..1 across the ribbon (feathered edges)
-    glUniform1i(uHasDiffuse_, 0);
-    glUniform1i(uHasMask_, 0);
+    su4fv(uEmissive_, zero);
+    su1i(uUV_, 0);
+    su4f(g_uUVRect, 1, 1, 0, 0);   // uv0.x = 0..1 across the ribbon (feathered edges)
+    su1i(uHasDiffuse_, 0);
+    su1i(uHasMask_, 0);
     glEnable(GL_BLEND);
     blendAdditive();   // additive light
     glDisable(GL_CULL_FACE);
     glDepthMask(GL_FALSE);
-    glUniform1i(uVColFade_, 1);
+    su1i(uVColFade_, 1);
     glBindVertexArray(ribbonVao_);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, n * 2);
     glBindVertexArray(0);
-    glUniform1i(uVColFade_, 0);
+    su1i(uVColFade_, 0);
     glDepthMask(GL_TRUE);
 }
 
@@ -1204,14 +1490,14 @@ void Renderer::drawScreenTexture(GLuint tex, float alpha) {
     glUseProgram(prog_);
     glUniformMatrix4fv(uMVP_, 1, GL_FALSE, m.m);
     glUniformMatrix4fv(uModel_, 1, GL_FALSE, m.m);
-    glUniform1i(uShader_, SH_UNLIT);
+    su1i(uShader_, SH_UNLIT);
     const float tint[4] = {1, 1, 1, alpha}, zero[4] = {0, 0, 0, 0};
-    glUniform4fv(uTint_, 1, tint);
-    glUniform4fv(uEmissive_, 1, zero);
-    glUniform1i(uUV_, 0);
-    glUniform4f(g_uUVRect, 1, -1, 0, 1);   // framebuffer rows run bottom-up
-    glUniform1i(uHasDiffuse_, 1);
-    glUniform1i(uHasMask_, 0);
+    su4fv(uTint_, tint);
+    su4fv(uEmissive_, zero);
+    su1i(uUV_, 0);
+    su4f(g_uUVRect, 1, -1, 0, 1);   // framebuffer rows run bottom-up
+    su1i(uHasDiffuse_, 1);
+    su1i(uHasMask_, 0);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
@@ -1221,7 +1507,7 @@ void Renderer::drawScreenTexture(GLuint tex, float alpha) {
     glBindVertexArray(quad.vao);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
-    glUniform4f(g_uUVRect, 1, 1, 0, 0);
+    su4f(g_uUVRect, 1, 1, 0, 0);
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
 }
@@ -1233,13 +1519,13 @@ void Renderer::fadeToRoom(float k) {
     glUseProgram(prog_);
     glUniformMatrix4fv(uMVP_, 1, GL_FALSE, m.m);
     glUniformMatrix4fv(uModel_, 1, GL_FALSE, m.m);
-    glUniform1i(uShader_, SH_UNLIT);
+    su1i(uShader_, SH_UNLIT);
     const float tint[4] = {0, 0, 0, std::min(1.f, k)}, zero[4] = {0, 0, 0, 0};
-    glUniform4fv(uTint_, 1, tint);
-    glUniform4fv(uEmissive_, 1, zero);
-    glUniform1i(uUV_, 0);
-    glUniform1i(uHasDiffuse_, 0);
-    glUniform1i(uHasMask_, 0);
+    su4fv(uTint_, tint);
+    su4fv(uEmissive_, zero);
+    su1i(uUV_, 0);
+    su1i(uHasDiffuse_, 0);
+    su1i(uHasMask_, 0);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
@@ -1359,11 +1645,11 @@ void Renderer::drawTexturedPanel(const Mat4& model, GLuint tex, const float rgba
     DrawParams dp;
     dp.forceShader = SH_UNLIT;
     dp.alphaMul = 0.998f;
-    if (uv) glUniform4f(g_uUVRect, uv[0], uv[1], uv[2], uv[3]);
-    else if (flipV) glUniform4f(g_uUVRect, 1, -1, 0, 1);   // render targets are bottom-up
-    else glUniform4f(g_uUVRect, 1, 1, 0, 0);
+    if (uv) su4f(g_uUVRect, uv[0], uv[1], uv[2], uv[3]);
+    else if (flipV) su4f(g_uUVRect, 1, -1, 0, 1);   // render targets are bottom-up
+    else su4f(g_uUVRect, 1, 1, 0, 0);
     draw(quad, model, dp, 1);
-    glUniform4f(g_uUVRect, 1, 1, 0, 0);
+    su4f(g_uUVRect, 1, 1, 0, 0);
     quad.mats[0].diffuse = 0;
 }
 

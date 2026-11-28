@@ -69,6 +69,10 @@ P = {
     'holo_t1':        dict(kind='fx', show=_s(T1, 0.55), tex='holo_ring'),
     'hex_t0':         dict(kind='fx', show=_s(T0, 0.40), tex='hex'),
     'hex_t1':         dict(kind='fx', show=_s(T1, 0.40), tex='hex'),
+    # the back walls' own, faint (the owner, 2026-11-26: "a very minimal colored effect ... so that it's obviously part of
+    # the arena walls and not just open")
+    'hex_back_t0':    dict(kind='fx', show=_s(T0, 0.14), tex='hex'),
+    'hex_back_t1':    dict(kind='fx', show=_s(T1, 0.14), tex='hex'),
     'emblem_fx':      dict(kind='fx', show=(0.35, 0.35, 0.35), tex='emblem'),
     'beam':           dict(kind='fx', show=(0.022, 0.026, 0.032), tex='soft_strip'),
     'twinkle_t0':     dict(kind='fx', show=_s(T0, 0.9), tex='twinkle'),

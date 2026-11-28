@@ -193,6 +193,7 @@ int main(int argc, char** argv) {
     win("win_monkey", "MONKEY: jumping, its arms up", STANCE_MONKEY, 0);
     win("win_guitar", "AIR GUITAR: slow, big strokes", STANCE_RELAXED, 1, 5.4f);   // (a bar: two strokes and one from over its head)
     win("win_roof", "RAISE THE ROOF: pushed up from its head", STANCE_RELAXED, 2);
+    const size_t botClips = anims.size();   // the following two are scripted garment demonstrations, not bots
     // THE SKIRTS' SWING on its own
     anims.push_back({"swish_side", "THE SWISH (TENNIS SKIRT, KILT, DRESS)", "Side to side", 1.f, 4.3f, scripted(5.3f, false)});
     anims.push_back({"swish_turn", "THE SWISH (TENNIS SKIRT, KILT, DRESS)", "Turning", 1.f, 3.7f, scripted(4.7f, true)});
@@ -235,7 +236,9 @@ int main(int argc, char** argv) {
                     in.avatar = d;
                     const double now = i / (double)kHz;
                     avatar::stepRig(st, in, d, now);
-                    const avatar::Rig r = avatar::solveRig(in, d, &st);
+                    avatar::Rig r = avatar::solveRig(in, d, &st);
+                    // toAvatar places bot 1 at the origin facing +Z: its right is -X.
+                    if ((size_t)k < botClips) avatar::poseBotHips(r, in, 1, -in.head.p.x);
                     for (int kind = 0; kind < 2; ++kind) avatar::stepSwish(sw[kind], kind, r.torso.p.x, r.torso.p.z, st.torso.x, now);
                     if (i < first || (i - first) % kEvery) continue;
                     ++kept;

@@ -8,7 +8,8 @@
 // collision tag bits (match tools/build_open_assets.py)
 enum : uint32_t { TAG_ARENA = 1, TAG_RETURN = 2, TAG_FOUL = 4, TAG_TEAM0 = 8, TAG_TEAM1 = 16,
                   TAG_TEAM2 = 32, TAG_TEAM3 = 64,   // (2, 3: the FOUR CORNERS players' zones)
-                  TAG_SIDE_WALL = 128 };            // (0.3.22, BOUNCES: DIAMOND's side walls, diamondCollision())
+                  TAG_SIDE_WALL = 128,              // (0.3.22, BOUNCES: DIAMOND's side walls, diamondCollision())
+                  TAG_GUTTER = 256 };               // (0.3.27, THE GUTTER: its facets, gutterStrips())
 // up to four players (FOUR CORNERS, 0.3.12); every other mode is two (slots 0 and 1)
 constexpr int kMaxPlayers = 4;
 // FOUR CORNERS' teams: everyone for themselves; partners in opposite corners (0 with 1, 2 with 3); THE ONE alone
@@ -32,6 +33,12 @@ struct ArenaData {
 // arena.col (tools/build_open_assets.py): "SCOL", the triangle count (u32), then per triangle 9 floats and tags (u32).
 // Empty when the data isn't one (wrong magic, cut short).
 std::vector<CollisionTri> parseCollision(const uint8_t* data, size_t size);
+// THE GUTTER (0.3.27, Tunables::gutter): its facets in an arena (ARENA_CLASSIC, ARENA_DIAMOND, ARENA_CORNERS and
+// ARENA_FOURCORNERS; FIREBALL BLITZ's none: its fireballs fly in fireSub, not the arena's collision), radius
+// `radius`: each a strip along the court from x0 to x1, its edges a and b across it (at x = 0) and its normal into the
+// room. The SQUARE's foul zones get their own, tagged as the zone, 5 cm inside (as the zone's slab); drawn: not those
+struct GutterStrip { Vec3 a, b, n; float x0, x1; uint32_t tags; Vec3 dir{1, 0, 0}; };   // (dir: along it; a, b at 0 along it)
+std::vector<GutterStrip> gutterStrips(int arenaKind, float radius);
 // The EXPERIMENTAL arenas (owner, 2026-10-29), Basic's rules in both:
 // DIAMOND (the owner's drawing, the default): the classic court rolled 45 degrees along its length, as 2017
 // reviews of an earlier VR court game describe a mode ("turns the long rectangular arena 45 degrees, making it more of a diamond shape"; the
@@ -106,7 +113,8 @@ struct Tunables {
                           !maidenNow() && aimAssistNow() == (advanced ? 1 : 2) &&   // (ROOMS AND THEIR OPTIONS)
                           strikeZoneNow() == 1 && ballGrowthNow() == 3 && (!advanced || roundsToWinNow() == 2) &&
                           shieldSizeNow() == 0 && bouncesStandard() &&   // (BOUNCES, 0.3.22)
-                          feelStandard();                                // (THROW POWER, KNUCKLE RETURNS, 0.3.25)
+                          feelStandard() &&                              // (THROW POWER, KNUCKLE RETURNS, 0.3.25)
+                          gutterNow() == gutterStd();                    // (THE GUTTER, 0.3.27: 12 CM the standard)
         return std_ ? 0 : 2;
     }
 
@@ -153,6 +161,15 @@ struct Tunables {
     // ---- throw
     float throwMinHandSpeed = 0.50f;          // ThrowHandler.MinSpeedThreshold = 50 cm/s
     float throwVelocityWindow = 0.15f;        // ThrowHandler.AverageVelocityWindowSizeSeconds
+    // HANDS (the competition build, the owner's test 2026-11-15; on dev 0.3.27 for the Spatial edition's BARE HANDS, the
+    // owner: "bring them in for hands players only"): for a player on hands (PlayerState::onHands) a ball they just
+    // threw can't be caught again this soon, by either hand (on hands a closed hand caught it straight back: the other
+    // hand clenched as you threw, or the throwing hand's fingers still closed after the release). Controllers: as ever
+    float recatchDelay = 0.4f;
+    // HANDS: a player on hands reaches this much further for their ball (the grab off the spawner and the catch; the
+    // plan, docs/PLAN_HANDS.md: the cameras' depth is less exact than a controller's; owner and a player, 2026-11-15:
+    // a ball coming back is hard to catch unless the fist is already made)
+    float handsReach = 1.25f;
     // Launch speed
     //   t = clamp((hand - minInputSpeed) / (maxInputSpeed - minInputSpeed), 0, 1)
     //   speed = lerp(minProjectileThrownSpeed, maxProjectileThrownSpeed + strikes * SpeedIncreasePerStrike, t)
@@ -244,11 +261,12 @@ struct Tunables {
     bool bouncesNow() const {
         return (roomOptionsNow() && matchVersion >= kVerBounces) || (cornersBounceRoom() && matchVersion >= kVerCornerBounces);
     }
-    bool wallsLivelyNow() const { return bouncesNow() && wallsLively; }
-    bool wallGripNow() const { return bouncesNow() && wallGrip; }
+    bool wallsLivelyNow() const { return bouncesNow() && wallsLively && !wallsClassicNow(); }
+    bool wallGripNow() const { return bouncesNow() && wallGrip && !wallsClassicNow(); }   // (CLASSIC, 0.3.27: neither with it)
     int bankAssistNow() const { return bouncesNow() ? std::max(0, std::min(3, bankAssist)) : 0; }
     float bankAssistDeg() const { static const float k[4] = {0.f, 0.8f, 1.6f, 2.4f}; return k[bankAssistNow()]; }
-    bool bouncesStandard() const { return !wallsLivelyNow() && !wallGripNow() && bankAssistNow() == 0; }
+    bool bouncesStandard() const { return !wallsLivelyNow() && !wallGripNow() && bankAssistNow() == 0 && !wallsClassicNow() && !curveAssistNow() &&
+                                         !aimOffWallsNow(); }
     // THROW AND PUNCH FEEL (0.3.25; a player's report, 2026-11-22: a light throw "without any effort" comes out much
     // faster than it should, and a knuckle return depends more on how fast the ball came in than on the punch; the
     // owner: two more of the host's options, on BOUNCES' page; the SQUARE, DIAMOND and FOUR CORNERS (the owner, the same
@@ -278,6 +296,72 @@ struct Tunables {
     bool punchReturnsNow() const { return feelNow() && knuckleReturns >= 1; }
     bool fullThrowNow() const { return naturalThrowNow() && throwPower >= 2 && matchVersion >= kVerFullEffort; }
     bool fullPunchNow() const { return punchReturnsNow() && knuckleReturns >= 2 && matchVersion >= kVerFullEffort; }
+    // FULL EFFORT'S STEPS (0.3.27; the same player, after trying 0.3.26's: "the full effort throw went a little too far
+    // and needs to be scaled back a bit. The knuckle returns could still use a touch more 'effort'"; the owner: options
+    // to dial in, the defaults as they are): 3 for either, beside FULL EFFORT. THROW POWER: FIRM, NATURAL's curve with
+    // top speed at firmThrowEffort times the hand speed (less than FULL EFFORT's). KNUCKLE RETURNS: MAX EFFORT, PUNCH's
+    // numbers over maxPunchEffort (more than FULL EFFORT's: 26% of the incoming speed back, the fist's 0.59 on top).
+    // With a 0.3.26 player in the match they play as FULL EFFORT
+    static constexpr int kVerEffortSteps = 3027;
+    float firmThrowEffort = 1.3f, maxPunchEffort = 1.7f;
+    bool firmThrowNow() const { return fullThrowNow() && throwPower == 3 && matchVersion >= kVerEffortSteps; }
+    bool maxPunchNow() const { return fullPunchNow() && knuckleReturns == 3 && matchVersion >= kVerEffortSteps; }
+    float throwEffortNow() const { return firmThrowNow() ? firmThrowEffort : fullEffort; }
+    float punchEffortNow() const { return maxPunchNow() ? maxPunchEffort : fullEffort; }
+    // THE GUTTER (0.3.27; a player's note, the owner, 2026-11-24: "off in the areas we have sharp edges is just not how it
+    // should be ... the highlighted area is a gutter, this has function in the game and makes some wild angles and
+    // throws"): a curved cove along the room's long edges, where the floor and the ceiling meet the side walls (the
+    // SQUARE; DIAMOND: its four long corners), 7 flat facets 11.25 degrees apart (gutterStrips), so a ball that reaches
+    // it leaves at an angle by where on it it lands. A host's option: 0 OFF, 1 12 CM, 2 25 CM, 3 40 CM (its radius);
+    // 12 CM the standard (the owner, 2026-11-25: "the 12 cm gutter should be on by default as standard across all the
+    // rooms"): on by default, a match with it a standard one in the stats, OFF or another size custom. FOUR CORNERS
+    // (two players or four) too: along its side walls, not the back walls in the players' corners (the reference
+    // court's end walls are square). A gutter hit plays as the wall it joins (WALLS: LIVELY, WALL GRIP), in
+    // a player's own end past the foul line as their foul zone (the zone's own facets, 5 cm inside, as its floor's
+    // slab), and never as floor for a ball blocked into your end. With a 0.3.26 player in the match: none
+    static constexpr int kVerGutter = 3027;
+    int gutter = 1;
+    bool gutterRoom() const { return (roomOptionsNow() || cornersBounceRoom()) && matchVersion >= kVerGutter; }
+    int gutterNow() const { return gutterRoom() ? std::max(0, std::min(3, gutter)) : 0; }
+    int gutterStd() const { return gutterRoom() ? 1 : 0; }   // (the standard: 12 CM where the room and every player has it)
+    // CLASSIC BOUNCES and CURVE ASSIST (0.3.27; the owner, 2026-11-25: "build classic bounces and curve correction"; the
+    // research session's code pass of the reference game, 2026-11-24, the developers' research notes). Both options in
+    // the rooms with BOUNCES, off by default (the owner's rule for feel changes); a 0.3.26 player in the match: neither.
+    // WALLS: CLASSIC, the reference's flight and bounces: every surface cuts only the speed into it, to elasticity (0.9),
+    // the speed along it kept, and that is the ball's new speed; then its spin pushes it sideways, classicSpinBounce
+    // (0.1 m/s) for each rad/s across the surface, which turns it without changing its speed; the spin kept. In flight
+    // its curve is classicMagnus x |v| x (spin x v) x (1 - |axis . v^|) (the reference's 1.5e-5 in cm: about ours at
+    // 10 m/s, twice at 20), the spin never fading. LIVELY and WALL GRIP don't play with it.
+    // CURVE ASSIST: at a person's throw with spin, its axis turned about the throw by up to curveAssistDeg and its rate
+    // scaled by up to curveAssistPct (Basic 30 degrees and 35%, Advanced 5 and 10%: the reference's beginner and pro),
+    // keeping the variant whose flight passes nearest the target (Game::curveAssistSpin); before AIM ASSIST, as there
+    static constexpr int kVerClassic = 3027;
+    bool wallsClassic = false, curveAssist = false;
+    float classicSpinBounce = 0.10f, classicMagnus = 1.5e-3f;
+    float curveAssistDegBasic = 30.f, curveAssistDegAdvanced = 5.f, curveAssistPctBasic = 0.35f, curveAssistPctAdvanced = 0.10f;
+    bool wallsClassicNow() const { return bouncesNow() && wallsClassic && matchVersion >= kVerClassic; }
+    bool curveAssistNow() const { return bouncesNow() && curveAssist && matchVersion >= kVerClassic; }
+    // AIM OFF WALLS (0.3.27; a player, 2026-11-24: AIM ASSIST "not behaving the way I'd expect coming off of surfaces";
+    // the reference game's own, found by the research session's code pass): at a person's throw, AIM ASSIST flies the
+    // throw and directions around it, within AIM ASSIST's own angle (aimAssistDeg), bounces and all, and keeps the one
+    // whose path passes nearest a rival's chest (Game::aimOffWallsDir). A bank they were aiming near is helped to land;
+    // a throw headed straight at them is turned as before (today's turn is the first tried, kept on a tie). Off by
+    // default (the owner's rule for feel changes); a 0.3.26 player in the match: today's AIM ASSIST
+    bool aimOffWalls = false;
+    float aimOffWallsHorizon = 2.5f, aimOffWallsStep = 1.f / 30.f;   // (each try flown up to 2.5 s, in 1/30 s steps)
+    int aimOffWallsBounces = 2;                                       // (and through two bounces at most)
+    float aimOffWallsSubstep = 0.06f;                                 // (its tries' substep, 6 cm of flight; the game's 2 cm)
+    float flightSubstep = 0.02f;   // (a flying ball's substep: 2 cm of its flight)
+    bool aimOffWallsNow() const { return bouncesNow() && aimOffWalls && matchVersion >= kVerClassic; }
+    // STRIKE BY TOUCH (0.3.27, the owner, 2026-11-26: "any touch counts"; a player hit the zone and got no strike): a
+    // strike when any part of the ball crosses inside the strike zone, not only its middle, a grown ball by its own
+    // size: what the player sees is what counts (until then the middle,
+    // inside strikeRadius(); the reference's own test was never recovered). Every room, every match; a 0.3.26 player
+    // in the match: the middle, as their game counts it
+    static constexpr int kVerStrikeTouch = 3027;
+    float strikeGrace = 0.10f;   // (beyond touching: 10 cm, 2026-11-26)
+    bool strikeTouchNow() const { return matchVersion >= kVerStrikeTouch; }
+    static float gutterRadiusOf(int level) { static const float k[4] = {0.f, 0.12f, 0.25f, 0.40f}; return k[std::max(0, std::min(3, level))]; }
     bool feelStandard() const { return !naturalThrowNow() && !punchReturnsNow(); }
     float sideWallElasticity = 0.97f, bankFriction = 0.10f, knuckleFriction = 0.14f, bankTurnRate = 24.f;
     float shieldScale() const { return 1.f + 0.25f * (float)shieldSizeNow(); }
@@ -292,6 +376,11 @@ struct Tunables {
     // maxBallScale (PORT: 0.25 x 42 would be an 11x ball). The ball grows smoothly into each new step.
     int fullScaleSteps = 4;
     float lateScaleIncreasePerStrike = 0.05f, maxBallScale = 3.0f, scaleGrowRate = 6.0f;
+    // (0.3.27, the owner, 2026-11-26: "cap the size growth so that it can't expand past what our frame rate is geared
+    // towards, i don't want dropped frames at 42 strikes in": 2.75x, the biggest measured on a Quest 3 that evening,
+    // at 90 a second; reached at 19 strikes. A 0.3.26 player in the match: 3x, as their game grows it)
+    float maxBallScaleNew = 2.75f;
+    float maxBallScaleNow() const { return matchVersion >= kVerStrikeTouch ? maxBallScaleNew : maxBallScale; }
     // Your own ball can hit you once it has travelled away and is coming back (PORT, owner request); the point goes
     // to the opponent. selfHitGrace: seconds after a throw / return start / block (owner, 2026-10-27: a ball just blocked
     // could count against the blocker the moment it left the shield) before it can hit its owner.
@@ -417,6 +506,12 @@ struct Tunables {
     // against the avatar rig); its head moves within botBodyRange (sideways, down, toward the court) by stepping,
     // leaning and ducking.
     int botLevel = 2;
+    // BOT WINS (developer mode only, the owner, 2026-11-27: "add the setting to always pick it"): which victory a bot that
+    // wins a match plays (PlayerState::botWinKind; -1: its own choice, by the moment the win comes). Set by the app each
+    // frame from its developer setting; never sent (bots run on the host)
+    int botWinForce = -1;
+    float ropeBackOut = 0.12f;  // THE ROPE: its hands this much wider as they pass behind it (m; pictures: --rope)
+    bool ropeOwnWrists = true;  // THE ROPE: its wrists from its own arms (armTurn), or the players' recorded grips
     // MATCH MY LEVEL (owner, 2026-10-26): instead of botLevel, a level between 0 (ROOKIE) and 5 (UNBEATABLE) that
     // follows the player: up botMatchStep each time the person scores against the bot, down each time the bot scores
     // (close matches: it settles where both score about as often)
@@ -549,6 +644,7 @@ struct Ball {
 
     float speedLimit = 0;
     float timer = 0;
+    float catchFrom = -1;       // HANDS: the game time its thrower, on hands, can catch it again (recatchDelay after the throw)
     int heldHand = -1;
     int instigator = -1;        // who threw / last deflected it (decides scoring and zone rules)
     bool charged = true;        // powers the holder's shield; drained by a block, recharged past the foul line
@@ -589,6 +685,7 @@ struct HandState {
     Vec3 angHist[64];
     Pose gripHist[64];
     float histT[64];
+    bool histSeen[64] = {};     // HANDS: the hand was tracked for that sample (on hands a throw is measured only from those)
     int histN = 0, histHead = 0;
     bool shieldUp = false;
     bool knuckleUp = false;
@@ -597,6 +694,7 @@ struct HandState {
 
 struct PlayerState {
     PlayerInput in;
+    bool onHands = false;   // HANDS (0.3.27): this headset's own player, playing with hands (set by the app; never sent)
     HandState hands[2];
     Ball ball;
     int score = 0;          // points (this round in Advanced)
@@ -628,13 +726,16 @@ struct PlayerState {
     int botScoreSeen = -1;      // its score as last seen (it went up: a point won)
     // (0.3.26, the owner's test: "a little variety"): which celebration, chosen by the moment it comes: a point's
     // (0 fist pump, 1 double pump, 2 a point at them, 3 a clap), a match's (0 its stance's own, 1 AIR GUITAR, 2 RAISE
-    // THE ROOF); botWonSeen: the match won, as last step (a new win chooses)
+    // THE ROOF, 3 THE ROPE); botWonSeen: the match won, as last step (a new win chooses)
     int botCheerKind = 0, botWinKind = 0;
     bool botWonSeen = false;
     float botProp = 0;          // AIR GUITAR's guitar: 0 none .. 1 in its hands (Game::botGuitar; drawn only; the host's
                                 // in the snapshot's last byte, so guests and spectators see it)
+    float botRope = 0;          // THE ROPE's rope: 0 none .. 1 turning (Game::botRopeShape; drawn only; the host's in
+                                // 0.3.27's own byte of the snapshot)
     float botTimer = 0;         // until its next throw
     Vec3 botBody, botBodyVel;   // its head's offset from where it stands (steps, leans, ducks), and that offset's speed
+    float botTurn = 0;          // PIVOT AND REACH (0.3.27): its shoulders' turn into a block (rad, about up; + to its left)
     Vec3 botHand[2], botHandVel[2];   // its grips, moving at a person's speed
     // its hands' turn: as drawn (botHandQ: what the game shows and sends, turned with the arm through a throw, the owner
     // 2026-11-19), and as the rules have it (botPhysQ: catching, launching, holding, the shield and the knuckle guard,
@@ -661,6 +762,7 @@ struct PlayerState {
         float hitT = -1;             // when the ball would reach its body (or, missing it, its own hands where they are)
         Vec3 grip, body;             // the grip (block, catch) it moves to; its body offset (where it stands, or its dodge)
         Quat gripQ;
+        float turn = 0;              // a block's turn of its shoulders (PIVOT AND REACH; rad, + to its left)
     } botRead[2];
     int botThrow = 0;                      // 0 holding, 1 winding up, 2 swinging
     bool botSlap = false;                  // the swing is a slap shot (it goes on whatever comes at it)
@@ -766,7 +868,12 @@ public:
     int aimTarget(int p, const Vec3& from, const Vec3& dir) const;
     // TRAINING: aim assist for p's throws toward the nearest of these points (the targets) instead of a rival
     std::vector<Vec3> aimAt[kMaxPlayers];
-    Vec3 assistDir(int p, const Vec3& from, const Vec3& dir) const;   // where aim assist turns p's ball toward (unit)
+    Vec3 assistDir(int p, const Vec3& from, const Vec3& dir) const;
+    Vec3 curveAssistSpin(int p, const Vec3& from, const Vec3& dir, float speed, const Vec3& spin) const;   // CURVE ASSIST (0.3.27)
+    // AIM OFF WALLS (0.3.27): the direction, within aimAssistDeg of the throw's own `raw`, whose flight passes nearest a
+    // rival's chest; `straight` (today's AIM ASSIST turn) the first tried and kept on a tie
+    Vec3 aimOffWallsDir(int p, const Vec3& from, const Vec3& raw, const Vec3& straight, float speed, const Vec3& spin) const;
+    mutable float aimOffWallsMs = 0.f;   // (its last search's time, for the game's log: what it costs on a headset)   // where aim assist turns p's ball toward (unit)
     // TRAINING (and tests): p's ball thrown from `from` as a hand would (a Throw; aim assist unless !assist)
     void serve(int p, const Vec3& from, const Vec3& dir, float speed, const Vec3& spin, bool assist = true);
     void respawnBall(int p) { spawnBall(p); }
@@ -834,12 +941,18 @@ public:
     // foul line and the out-of-arena box with it
     void useArena(int kind, const std::vector<CollisionTri>& classic);   // ARENA_*
     int arenaKind = -1;   // the collision in use: ARENA_* (-1: set some other way, e.g. tests' setArena)
+    int arenaGutter = 0;  // ... and THE GUTTER in it (0.3.27): tun.gutterNow() when it was made, 0 none
     Vec3 meetRing(int p) const;           // the centre of p's ring at the meeting point
     bool inMeetRing(int p, int h) const;  // that fist's knuckles are inside p's ring
     bool meetLit(int p, int h) const;     // ... and closed: its ring lights up (offered)
     float meetLitT[2] = {-1, -1};         // host: since when each player has had a fist lit in its ring (-1: not)
     Pose shieldLocal(int h) const;           // plate pose in grip space (plate normal = local +Y)
     Vec3 strikeZoneCenter(int p) const;
+    // every ball crossing a strike zone's plane, counted or not, for the log (main.cpp writes and clears them each frame;
+    // a player's report, 2026-11-26: "just hit one that definitely didn't count"): whose ball, whose zone, how far from
+    // its middle, the reach that counts, the ball's state (BallState: 3 flying, 5 returning) and whether it counted
+    struct ZoneCross { int ball, victim, state; float dist, reach, scale; Vec3 at; bool counted; };
+    std::vector<ZoneCross> zoneCrosses;
     Vec3 peakAngVel(int p, int h, float now) const;
     Vec3 recentHandVel(int p, int h, const Vec3& localPoint, float now) const;   // velocity of a grip-local point
     Pose knucklePose(int p, int h) const;
@@ -892,6 +1005,7 @@ public:
     // public for tests; ball: whose ball did it; by: who earns it (four players: their ball grows)
     void addStrike(int againstPlayer, const Vec3& where, int ball = -1, int by = -1);
     Vec3 handVelocity(int p, int h, float now) const;
+    float catchReach(int p) const;
     float ballRadius(int p) const { return tun.projectileRadius * pl[p].ball.scale; }
     float strikeScale(int strikes) const;
     // a ball that raises its shield when held: charged, or any ball with SHIELDS: ALWAYS ON (MAIDEN)
@@ -905,11 +1019,20 @@ public:
     // whether a ball of radius r at pos would touch a body whose head is at `head` (as hitsBody)
     Vec3 botShoulder(int p, int h) const;
     Quat botFacing(int p) const;   // the way a bot faces, as its rules have it (its head's turn, but for its glances)
+    Quat botFacingAt(int p, float turn) const;   // its rules' facing turned by `turn` about up (PIVOT AND REACH), no bow
     // AIR GUITAR's guitar (0.3.26; the owner, 2026-11-24: "manifest an actual guitar"): while bot p plays its win, where
     // its hologram guitar is for the head and hands drawn (`in`): the guitar's own frame (the middle of its body at the
     // origin, the neck along +X, its face -Z) into the world; show: 0 .. 1 as it comes to its hands. False: no guitar.
     // Drawn only. Guests and spectators: PlayerState::botProp comes in the host's snapshot (its last byte)
     bool botGuitar(int p, const PlayerInput& in, Mat4& place, float& show) const;
+    // THE ROPE (0.3.27; the owner, 2026-11-27, a bot's jump-rope win: "copy our big circles"; "the rope on the floor,
+    // could it bend and make subtle sparks as it hits it naturally"): while bot p turns its rope, the rope for the head
+    // and hands drawn (`in`): kRopePts points from the end of its left hand's handle to its right's, laid along the
+    // floor where it reaches it; floor: how far past the floor the rope would have gone (m; 0: clear of it), at
+    // `touch` (the middle of the part on the floor), sliding along `slide`; show 0 .. 1 as it comes to its hands. False:
+    // no rope. Drawn only (the bot's hands and jump are its own, sent as ever); guests: PlayerState::botRope
+    static constexpr int kRopePts = 65;
+    bool botRopeShape(int p, const PlayerInput& in, Vec3* pts, float& floor, Vec3& touch, Vec3& slide, float& show) const;
     Vec3 botWrist(int h, const Pose& grip) const;
     Vec3 botInReach(int p, int h, const Pose& grip) const;   // the grip's position, moved in if the arm can't reach it
     Pose botTuck(int p, int h, const Vec3& head) const;       // hand h pulled in to its side (a shield out of the way)
@@ -945,7 +1068,7 @@ private:
     // while `owner`'s ball flies: the copy's own stepBot carries it out (botFrozen: no new reads or plans there), so it
     // moves exactly as the bot will. 2 nothing comes of it, 1 a strike against it (a block into its own foul zone, or
     // its strike zone), 0 it is hit; -1 not known yet (no tryouts left this step)
-    int botTry(int p, int k, int owner, int plan, int h, const Pose& grip, const Vec3& body, int tuck) const;
+    int botTry(int p, int k, int owner, int plan, int h, const Pose& grip, const Vec3& body, int tuck, float turn = 0) const;
     bool botFrozen = false;
     std::vector<GameEvent> served_;   // throws served since the last step
     float lastDt = 1.f / 72;    // the last step's length (the bot's reads run in the same steps)
@@ -965,7 +1088,7 @@ private:
     bool brawler() const { return tun.botPlay == 0 && twoPlayerRoom(); }
     bool duelist() const { return tun.botPlay == 1 && twoPlayerRoom(); }
     float botHoldTime(const BotSkill& sk);                     // seconds it holds a ball it just took (one draw)
-    Vec3 botHuntAim(int p, int style, int j, Vec3& spin);      // ... and where it aims a throw of that shape (j: which way)
+    Vec3 botHuntAim(int p, int style, int j, Vec3& spin, float aimError = 0.f);   // ... and where it aims a throw of that shape (j: which way)
     BotSkill botSkillOf(int p) const;
     Pose botBlockGrip(int p, int h, int plan, const BallPathPt& at) const;   // the grip that puts the shield / guard / catcher on the ball
     void launch(int p, int h, Vec3 dir, float speed, Vec3 spin, bool assist = true);

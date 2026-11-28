@@ -32,14 +32,16 @@ PROMO_TAGLINE = 'THROW. BLOCK. DODGE.'
 
 # the real screenshots, in the listing's order (file, how it was made)
 SCREENSHOTS = [
-    ('20261104-225212_a.jpg', 'the 1-v-1 rally: the ball coming at you'),
-    # (owner, 2026-11-18: the FIREBALL BLITZ shots showed the flag-on-fireball glitch: replaced)
-    ('blocked_A_39.0.jpg', 'a TRAINING ball coming at your shield'),
-    ('selfie_00558.png', 'a spectator\'s SELFIE: the player behind, shield up'),
-    ('20261104-225212_b.jpg', 'a match in the SQUARE, the score over the far end'),
-    # (owner, 2026-11-07: ball shots are fine; mind how the bot stands, or crop it out. Here the coach stands far
-    # behind the ball; the crop drops the training line at the top)
-    ('blocked_A_18.4.jpg', 'a charged ball in your gauntlet', (180, 140, 1851, 1080)),
+    # 0.3.27's set (the owner, 2026-11-28: "use those five"): the court's frosted strike zones and hex back walls, the
+    # new outfits and facial hair. From the owner's sessions of 2026-11-27 23:20 (Quest) and 2026-11-28 00:48 (the PC
+    # version through the headset's streaming), headset VideoShots. The bot stands at the far end, small and upright
+    # (owner, 2026-11-07: ball shots are fine; mind how the bot stands). The same five, 1280x720, are the public
+    # README's docs/images/play_1-5.jpg. The set before (2026-11-18) is in build/store_art/new_2026-11-18.
+    ('20261128-004816_218.00.png', 'a SQUARE rally: your ball and the bot\'s cross the court'),
+    ('20261128-004816_238.00.png', 'your ball spinning to the far end, the score over it'),
+    ('20261127-232054_055.00.png', 'a charged ball in your gauntlet'),
+    ('20261128-004816_037.00.png', 'the avatar builder: FACE 6, SHORT BEARD'),
+    ('20261128-004816_141.00.png', 'the avatar builder: CHERRY POODLE SKIRT'),
 ]
 
 # the thumbnail's parts at 1280x720 (x0, y0, x1, y1): painted out, then drawn again at full size

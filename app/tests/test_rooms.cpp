@@ -731,18 +731,23 @@ int main() {
                 const Ball& sb = seen.pl[2].ball;
                 CHECK(read && std::fabs(seen.ahead.snapNow - 12.5f) < 1e-3f && std::fabs(sb.spin.y - 3.f) < 0.01f && sb.bounces == 2 && sb.fouled,
                       "four players: the snapshot carries each ball's spin, bounces and foul, and the host's clock (0.3.24)");
-                CHECK(Net::snapshotInto(host, old, 4 * 7 + 4 + 1 + 1 + 1) && old.np == 4 && old.ahead.snapNow < 0 && old.pl[2].ball.spin.y == 0.f &&
+                CHECK(Net::snapshotInto(host, old, 4 * 7 + 4 + 1 + 1 + 1 + 1 + 1) && old.np == 4 && old.ahead.snapNow < 0 && old.pl[2].ball.spin.y == 0.f &&
                       old.tun.palmHold == seen.tun.palmHold, "... a host before 0.3.24 sends none: everything else read as before");
                 // (0.3.25: THROW POWER and KNUCKLE RETURNS, the last byte in FOUR CORNERS; a 0.3.24 host sends none: REGULATION)
                 host.tun.throwPower = 1; host.tun.knuckleReturns = 1;
                 Game feel, feelOld;
                 CHECK(Net::snapshotInto(host, feel) && feel.tun.naturalThrowNow() && feel.tun.punchReturnsNow() &&
-                          Net::snapshotInto(host, feelOld, 1 + 1 + 1) && feelOld.tun.feelStandard() && feelOld.ahead.snapNow >= 0.f,
+                          Net::snapshotInto(host, feelOld, 1 + 1 + 1 + 1 + 1) && feelOld.tun.feelStandard() && feelOld.ahead.snapNow >= 0.f,
                       "FOUR CORNERS: THROW POWER and KNUCKLE RETURNS reach the players (0.3.25); a 0.3.24 host's: REGULATION, the rest as before");
                 host.tun.throwPower = 2; host.tun.knuckleReturns = 2;   // (0.3.26: FULL EFFORT, bits 2 and 3 of that byte)
                 std::unique_ptr<Game> fullP(new Game);
                 CHECK(Net::snapshotInto(host, *fullP) && fullP->tun.fullThrowNow() && fullP->tun.fullPunchNow(),
                       "FULL EFFORT reaches the players (0.3.26); a 0.3.25 player reads NATURAL and PUNCH from the same byte");
+                host.tun.throwPower = 3; host.tun.knuckleReturns = 3;   // (0.3.27: FIRM and MAX EFFORT, bits 4 and 5)
+                std::unique_ptr<Game> stepP(new Game);
+                CHECK(Net::snapshotInto(host, *stepP) && stepP->tun.firmThrowNow() && stepP->tun.maxPunchNow() &&
+                          stepP->tun.throwPower == 3 && stepP->tun.knuckleReturns == 3,
+                      "FIRM and MAX EFFORT reach the players (0.3.27); a 0.3.26 player reads FULL EFFORT from the same byte");
                 host.tun.throwPower = host.tun.knuckleReturns = 0;
                 // (0.3.26: BOUNCES IN FOUR CORNERS, after that byte: the options as they play and each ball's bank turn to come)
                 host.tun.wallsLively = true; host.tun.bankAssist = 2;
@@ -752,7 +757,7 @@ int main() {
                 Game& bncOld = *bncOldP;
                 CHECK(Net::snapshotInto(host, bnc) && bnc.tun.wallsLivelyNow() && !bnc.tun.wallGripNow() && bnc.tun.bankAssistNow() == 2 &&
                           std::fabs(bnc.pl[2].ball.bankTurn.y - 0.02f) < 1e-3f && !bnc.pl[2].ball.bankAimPending &&
-                          Net::snapshotInto(host, bncOld, 1 + 4 * 7 + 1) && bncOld.tun.bouncesStandard() && bncOld.pl[2].ball.bankTurn.y == 0.f &&
+                          Net::snapshotInto(host, bncOld, 1 + 4 * 7 + 1 + 1 + 1) && bncOld.tun.bouncesStandard() && bncOld.pl[2].ball.bankTurn.y == 0.f &&
                           bncOld.tun.feelStandard(),
                       "BOUNCES IN FOUR CORNERS reach the players with each ball's bank turn (0.3.26); a 0.3.25 host's: STANDARD");
                 {   // (0.3.26: AIR GUITAR's guitar, the snapshot's last byte in every room: which bots hold it, how far it has come)
@@ -761,7 +766,7 @@ int main() {
                     host.pl[0].botProp = 1.f;   // (a player's: never sent)
                     std::unique_ptr<Game> gP(new Game), gOldP(new Game), goneP(new Game);
                     gOldP->pl[2].botProp = 1.f;
-                    const bool got = Net::snapshotInto(host, *gP) && Net::snapshotInto(host, *gOldP, 1);
+                    const bool got = Net::snapshotInto(host, *gP) && Net::snapshotInto(host, *gOldP, 1 + 1 + 1);
                     Mat4 gm;
                     float gs = 0;
                     const bool drawn = gP->botGuitar(2, gP->pl[2].in, gm, gs) && !gP->botGuitar(1, gP->pl[1].in, gm, gs) &&
@@ -778,6 +783,18 @@ int main() {
                           "... from its first moment");
                     host.pl[2].botProp = 0.f;
                     CHECK(Net::snapshotInto(host, *goneP) && goneP->pl[2].botProp == 0.f, "... and gone when the bot puts it down");
+                    // (0.3.27: THE ROPE's rope, as the guitar, in a byte of its own after THE GUTTER's: which bots turn
+                    // one, how far it has come; an older host sends none; the guitar's own byte stays the guitar's)
+                    host.pl[2].botRope = 0.5f;
+                    host.pl[0].botRope = 1.f;   // (a player's: never sent)
+                    std::unique_ptr<Game> rP(new Game), rOldP(new Game);
+                    rOldP->pl[2].botRope = 1.f;
+                    CHECK(Net::snapshotInto(host, *rP) && std::fabs(rP->pl[2].botRope - 0.5f) < 0.07f && rP->pl[1].botRope == 0.f &&
+                              rP->pl[0].botRope == 0.f && rP->pl[2].botProp == 0.f && Net::snapshotInto(host, *rOldP, 1) &&
+                              rOldP->pl[2].botRope == 0.f && rOldP->tun.gutter == host.tun.gutterNow(),
+                          "THE ROPE's rope reaches the guests: the bot turning it, as far as it has come, not a guitar; a host before "
+                          "it sends none, THE GUTTER read as before (0.3.27)");
+                    host.pl[2].botRope = host.pl[0].botRope = 0.f;
                     host.pl[1].isBot = host.pl[2].isBot = false;
                     host.pl[0].botProp = 0.f;
                 }
@@ -855,7 +872,7 @@ int main() {
                 const Ball& sf = seen.fire[2][0];
                 CHECK(read && seen.ahead.fireKnown && std::fabs(seen.ahead.snapNow - 31.25f) < 1e-3f && std::fabs(sf.spin.y - 2.f) < 0.01f &&
                       sf.bounces == 1, "FIREBALL BLITZ: the snapshot carries each flying fireball's spin and bounces, and the host's clock (0.3.24)");
-                CHECK(guest(old, 2 + 4 + 1 + 1) && !old.ahead.fireKnown && old.fire[2][0].state == BallState::Flying && old.fire[2][0].spin.y == 0.f,
+                CHECK(guest(old, 2 + 4 + 1 + 1 + 1 + 1) && !old.ahead.fireKnown && old.fire[2][0].state == BallState::Flying && old.fire[2][0].spin.y == 0.f,
                       "... a host before 0.3.24 sends none: the fireballs read as before");
                 const float lead = 0.2f, dt = 1.f / 72;
                 const Vec3 at = sf.pos;
@@ -889,7 +906,7 @@ int main() {
                 const bool t3read = guest(t3, 0);
                 CHECK(t3read && t3.tun.blitzTeams && t3.teamsNow() == TEAMS_3V1 && t3.team(2) == 1 && t3.team(0) == 0 && t3.maxHealth(2) == 15,
                       "FIREBALL BLITZ in teams: the guest plays the host's 3 v 1 (0.3.24)");
-                CHECK(guest(older, 1 + 1) && !older.tun.blitzTeams && older.teamsNow() == TEAMS_FFA && older.team(2) == 2,
+                CHECK(guest(older, 1 + 1 + 1 + 1) && !older.tun.blitzTeams && older.teamsNow() == TEAMS_FFA && older.team(2) == 2,
                       "... a host before 0.3.24 (its TEAMS set to 3 v 1 for FOUR CORNERS): everyone for themselves, as it played");
                 host.tun.matchVersion = Tunables::kVerBlitzTeams - 1;   // (an older player in the room)
                 Game fair;
@@ -1030,6 +1047,19 @@ int main() {
         H.game.tun.wallsLively = H.game.tun.wallGrip = false; H.game.tun.bankAssist = 0;
         H.game.tun.matchVersion = Tunables::kVerAll;
         pump(hs, 0.5);
+        // CLASSIC WALLS and CURVE ASSIST (0.3.27): bits 4 and 5 of the BOUNCES byte
+        H.game.tun.wallsClassic = true; H.game.tun.curveAssist = true;
+        pump(hs, 0.5);
+        CHECK(B.game.tun.wallsClassicNow() && B.game.tun.curveAssistNow() && !B.game.tun.wallGripNow(),
+              "CLASSIC WALLS and CURVE ASSIST: the host's are the players' too (0.3.27)");
+        H.game.tun.wallsClassic = H.game.tun.curveAssist = false;
+        pump(hs, 0.5);
+        // AIM OFF WALLS (0.3.27): bit 6
+        H.game.tun.aimOffWalls = true;
+        pump(hs, 0.5);
+        CHECK(B.game.tun.aimOffWallsNow() && !B.game.tun.curveAssistNow(), "AIM OFF WALLS: the host's is the players' too (0.3.27)");
+        H.game.tun.aimOffWalls = false;
+        pump(hs, 0.5);
         // THROW POWER and KNUCKLE RETURNS (0.3.25): the host's reach the players, so their look-ahead throws and punches as
         // the host will; a player on 0.3.24 in the match: REGULATION
         H.game.tun.throwPower = 1; H.game.tun.knuckleReturns = 1;
@@ -1041,6 +1071,17 @@ int main() {
         CHECK(B.game.tun.throwPower == 0 && B.game.tun.knuckleReturns == 0 && H.game.tun.feelStandard() && H.game.tun.throwPower == 1,
               "... a player on 0.3.24 in the match: REGULATION, for the host too (its choice kept for the next match)");
         H.game.tun.throwPower = H.game.tun.knuckleReturns = 0;
+        H.game.tun.matchVersion = Tunables::kVerAll;
+        pump(hs, 0.5);
+        // THE GUTTER (0.3.27): the host's reaches the players, so their collision has it too; a player on 0.3.26: none
+        H.game.tun.gutter = 2;
+        pump(hs, 0.5);
+        CHECK(B.game.tun.gutter == 2 && B.game.tun.gutterNow() == 2, "THE GUTTER: the host's 25 CM is the players' too");
+        H.game.tun.matchVersion = 3026;
+        pump(hs, 0.5);
+        CHECK(B.game.tun.gutterNow() == 0 && H.game.tun.gutterNow() == 0 && H.game.tun.gutter == 2,
+              "... a player on 0.3.26 in the match: none, for the host too (its choice kept for the next match)");
+        H.game.tun.gutter = 0;
         H.game.tun.matchVersion = Tunables::kVerAll;
         pump(hs, 0.5);
         pump(hs, 2.0);   // (the shot clock has been running a while)

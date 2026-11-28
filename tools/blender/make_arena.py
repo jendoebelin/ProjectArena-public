@@ -126,8 +126,9 @@ def build_court(b):
         x = side * HX
         t = tm(x)
         b.quad('glass_back_' + t, ((x, -HY, 0), (x, HY, 0), (x, HY, H), (x, -HY, H)))
-        b.disc('holo_' + t, (x - side * 0.02, 0, 1.45), 1.35, segs=64, axis='X', flip=side > 0)
-        b.disc('holo_' + t, (x - side * 0.02, 0, 1.45), 1.35, segs=64, axis='X', flip=side < 0)
+        # (no ring on the back wall: the owner, 2026-11-26: rings "should only represent where the strike zones are";
+        # the game draws each player's strike zone where it is)
+        hex_card(b, 'hex_back_' + t, (x - side * 0.006, 0, H / 2), (0, side, 0), (0, 0, 1), 2 * HY - 0.04, H - 0.04)
 
     # ---- neon: the arena's outline
     def zone(x0, x1):
@@ -145,7 +146,7 @@ def build_court(b):
         neon(b, (x, -HY, H), (x, HY, H), tone, r=r, glow=gl)
         if abs(abs(x) - HX) < 0.01:
             neon(b, (x, -HY, 0), (x, HY, 0), tone, r=r, glow=gl)
-    # inner portal outline on the back walls (frames the target)
+    # inner portal outline on the back walls
     for side in (-1, 1):
         x = side * (HX - 0.01)
         t = tm(x)

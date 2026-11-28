@@ -24,9 +24,10 @@ opponent in a neon glass arena. Its own code, art and sound.
   network or through a community server; rooms with a waiting area and a queue, spectating, voice chat
 - **TRAINING:** throwing, blocking and dodging lessons with a coach, and boards of the best times
 - **SOUND STUDIO:** try the community's sounds for any moment in the game, vote on them, or play your own
-- **An avatar builder:** two body types, four faces, suits, shorts and skirts, hair, headgear, face shields, masks,
-  plate gauntlets, patterns and colours; **countries:** a team kit in one of 202 countries' colours, the flag on the
-  back, and that end of the court in its colour
+- **An avatar builder:** two body types, each with six faces and six builds; suits, shorts and skirts, hair, facial
+  hair, headgear, face shields, masks, plate gauntlets, patterns and colours, and a SIDE COLOR for your end and your
+  ball; **countries:** a team kit in one of 202 countries' colours, the flag on the back, and that end of the court
+  in its colour
 - **Statistics:** online matches between two people build each player's career (wins, accuracy, blocks, top speed),
   in MENU > MY STATS (with DELETE MY STATS). What is kept and how it is protected: `docs/PRIVACY.md`,
   `docs/DATA_AND_SECURITY.md`
@@ -38,7 +39,7 @@ opponent in a neon glass arena. Its own code, art and sound.
 | | |
 |---|---|
 | ![A match in the SQUARE, the score over the far end](docs/images/play_2.jpg) | ![The avatar builder's mirror](docs/images/play_3.jpg) |
-| ![TRAINING: the coach's ball coming at your shield](docs/images/play_4.jpg) | ![A TRAINING lesson: blocking with the shield](docs/images/play_5.jpg) |
+| ![The avatar builder: the CHERRY POODLE SKIRT](docs/images/play_4.jpg) | ![A charged ball in your gauntlet](docs/images/play_5.jpg) |
 
 *Pictures from the headset, in real matches.*
 
