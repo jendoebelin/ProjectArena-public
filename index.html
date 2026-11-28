@@ -166,9 +166,12 @@ a { color: var(--link); }
     <section id="pDl"><h2>Download</h2><div id="dlBox"></div></section>
     <section id="pParts"><h2>In view</h2><div class="parts" id="parts"></div></section>
     <section>
-      <p>The models are the game's own files (<code>app/assets_open</code>), read as they ship. Animation, cloth swing,
-        the trails and the arena's moving lights are left out; everything else is drawn the way the game draws it.
-        The AVATAR IDs were renumbered for 0.3.21 (new suits, lower bodies, faces and helmets).</p>
+      <p>The models are the game's own files (<code>app/assets_open</code>), read as they ship. The practice bot's
+        animations and the skirts' swing are under Pose or animation; the ball's trails, the arena's moving lights, what
+        the game draws in code (the C IDs: the gutter, the frosted strike zones) and the facial hair's sway are left out.
+        Everything else is drawn the way the game draws it, BUILD STRONG and LEAN / SOFT shaped by their grids as the game
+        shapes them. The AVATAR IDs were renumbered for 0.3.21 (new suits, lower bodies, faces and helmets); since then
+        new parts take the next IDs.</p>
       <p>Rebuild this page with <code>python -I tools/gen_viewer.py</code>.</p>
     </section>
   </aside>
@@ -202,12 +205,14 @@ const CHANNEL_SHOW = [[0.30, 0.30, 0.32], [0.05, 0.25, 0.95], [0.95, 0.35, 0.05]
   [0.55, 0.20, 0.85], [0.35, 0.18, 0.05], [0.95, 0.85, 0.15]];
 const PATTERNS = ['', 'circuit', 'stripes', 'chevron', 'hex', 'split', 'pixel', 'bands'];
 // (as the game's CUSTOMIZE AVATAR, 0.3.22: the body and country first, then the parts from head to toe)
-const FIELD_ORDER = ['BODY TYPE', 'BUILD', 'COUNTRY', 'HEADGEAR', 'HAIR', 'FACE', 'FACE SHIELD', 'MASK', 'SUIT', 'PATTERN', 'GAUNTLET',
-  'LOWER BODY'];
-const COLOR_FIELDS = [['MAIN COLOR', 'primary'], ['TRIM COLOR', 'secondary'], ['GLOW', 'glow'], ['HAIR COLOR', 'haircolor'],
-  ['SHIELD TINT', 'visortint'], ['SKIN', 'skin']];
+// (0.3.27: FACIAL HAIR under FACE; SIDE COLOR at the top of the colours)
+const FIELD_ORDER = ['BODY TYPE', 'BUILD', 'COUNTRY', 'HEADGEAR', 'HAIR', 'FACE', 'FACIAL HAIR', 'FACE SHIELD', 'MASK', 'SUIT', 'PATTERN',
+  'GAUNTLET', 'LOWER BODY'];
+const COLOR_FIELDS = [['SIDE COLOR', 'sidecolor'], ['MAIN COLOR', 'primary'], ['TRIM COLOR', 'secondary'], ['GLOW', 'glow'],
+  ['HAIR COLOR', 'haircolor'], ['SHIELD TINT', 'visortint'], ['SKIN', 'skin']];
 const KEY = { 'BODY TYPE': 'body', FACE: 'face', SUIT: 'suit', BUILD: 'build', 'LOWER BODY': 'lower', GAUNTLET: 'gauntlet',
-  PATTERN: 'pattern', HAIR: 'hair', HEADGEAR: 'headgear', 'FACE SHIELD': 'visor', MASK: 'mask', COUNTRY: 'nation' };
+  PATTERN: 'pattern', HAIR: 'hair', HEADGEAR: 'headgear', 'FACE SHIELD': 'visor', MASK: 'mask', COUNTRY: 'nation',
+  'FACIAL HAIR': 'facialhair', 'SIDE COLOR': 'sidecolor' };
 
 let D = null;                      // data.json
 const state = { section: 'avatar', look: null, pose: 'ready', team: 0, surface: 0, wire: false, ghost: false, bones: false,
@@ -244,8 +249,9 @@ function rigOfFrame(fr) {
 }
 function blendFrame(a, b, t) {
   const mix = (x, y) => (x && y ? x.map((v, i) => v + (y[i] - v) * t) : (t < 0.5 ? x : y));
+  const num = (x, y) => (x !== undefined && y !== undefined ? x + (y - x) * t : (t < 0.5 ? x : y));
   return { s: mix(a.s, b.s), h: mix(a.h, b.h), g: mix(a.g, b.g), w: mix(a.w, b.w), p: mix(a.p, b.p), t: mix(a.t, b.t),
-    x: mix(a.x, b.x), xs: a.xs !== undefined && b.xs !== undefined ? a.xs + (b.xs - a.xs) * t : (t < 0.5 ? a.xs : b.xs) };
+    x: mix(a.x, b.x), xs: num(a.xs, b.xs), r: mix(a.r, b.r), rs: num(a.rs, b.rs) };
 }
 // a skirt's swing for the page's copy of the shader's (render.cpp uSwish): its shape, and this frame's swing for its kind
 // (0 the tennis skirt and the dress, 1 the kilt), the hem lifted as it swings out (main.cpp); none moving: still, but
@@ -269,7 +275,26 @@ function swRadius(sh, y, th) {   // the body's radius at this height and angle (
   return ra + (rb - ra) * (fy - lo);
 }
 // AIR GUITAR's guitar (0.3.26; Game::botGuitar, main.cpp): a hologram in the avatar's glow colour, where the frame has it
+// THE ROPE's rope (0.3.27; Game::botRopeShape, main.cpp): a cord in the glow colour, a haze round a brighter core, as
+// tubes along the frame's points (every other point of the game's 65); brighter as it comes to the bot's hands
+function placeRope(fr) {
+  if (!live || !live.rope) return;
+  const on = !!(fr && fr.r && fr.r.length >= 6);
+  for (const m of live.rope.meshes) m.visible = on;
+  if (!on) return;
+  const pts = [];
+  for (let i = 0; i + 2 < fr.r.length; i += 3) pts.push(new THREE.Vector3(fr.r[i], fr.r[i + 1], fr.r[i + 2]));
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const k = 0.25 + 0.75 * Math.min(1, Math.max(0, fr.rs ?? 1)), G = live.rope.glow;
+  live.rope.meshes.forEach((m, j) => {
+    m.geometry.dispose();
+    m.geometry = new THREE.TubeGeometry(curve, 64, j ? 0.007 : 0.020, 6, false);
+    const c = j ? G.map((x) => (0.45 + 0.55 * x) * k) : G.map((x) => x * 0.35 * k);
+    m.material.color.setRGB(c[0], c[1], c[2], THREE.LinearSRGBColorSpace);
+  });
+}
 function placeProp(fr) {
+  placeRope(fr);
   if (!live || !live.prop) return;
   live.prop.visible = !!(fr && fr.x);
   if (fr && fr.x) live.prop.matrix.fromArray(m34(fr.x, 0));
@@ -280,11 +305,12 @@ function animStep(now) {
   const A = state.animRun;
   if (!A || !live || now - animLast < 30) return false;
   animLast = now;
-  const n = A.frames.length, f = (((now - A.start) / 1000) * D.anims.fps) % n;
+  // (never before its start: the frame's clock can be a little behind performance.now(), and a negative frame is none)
+  const n = A.frames.length, f = ((Math.max(0, now - A.start) / 1000) * D.anims.fps) % n;
   const i0 = Math.floor(f), fr = blendFrame(A.frames[i0], A.frames[(i0 + 1) % n], f - i0);
   const rig = rigOfFrame(fr);
   for (const p of live.skinned) {
-    const [pos, nrm] = skin(p.M, rig, swingFor(p.model, fr));
+    const [pos, nrm] = skin(p.M, rig, swingFor(p.model, fr), p.off);
     const g = p.mesh.geometry;
     g.attributes.position.array.set(pos); g.attributes.position.needsUpdate = true;
     g.attributes.normal.array.set(nrm); g.attributes.normal.needsUpdate = true;
@@ -617,7 +643,7 @@ function mul4(A, B, out) {   // column-major 4x4: out = A * B
   return out;
 }
 
-function skin(M, rig, sw) {
+function skin(M, rig, sw, off) {   // (off: BUILD 4 and 5's movement of each vertex, shapeOffsets; null: none)
   const nv = M.nv, P = M.pos, N = M.nrm, BI = M.bi, BW = M.bw, UV1 = M.uv1;
   const op = new Float32Array(nv * 3), on = new Float32Array(nv * 3);
   const B = rig.skin.map((a) => Float64Array.from(a));
@@ -644,6 +670,7 @@ function skin(M, rig, sw) {
       const rnx = c * nx0 + sn * nz0, rnz = -sn * nx0 + c * nz0;
       nx0 = rnx; nz0 = rnz;
     }
+    if (off) { px += off[v * 3]; py += off[v * 3 + 1]; pz += off[v * 3 + 2]; }   // (render.cpp uShape: after the swing)
     S.fill(0);
     for (let i = 0; i < 4; i++) {
       twG[i] = 0;
@@ -695,6 +722,56 @@ function skin(M, rig, sw) {
     on[v * 3] = nx; on[v * 3 + 1] = ny; on[v * 3 + 2] = nz;
   }
   return [op, on];
+}
+
+// BUILD 4 and 5 (0.3.27: STRONG and LEAN / SOFT), bodies of their own: every skinned part moved by its body's grid
+// before skinning (render.cpp uShape, loadShapeGrid: 'SGRD', u32 nx ny nz, f32 min[3], max[3], half floats x y z, x
+// fastest; sampled at the bind position as a linear 3D texture clamped to its edge), grid/<file> fetched when worn
+const shapeGrids = {};
+function halfToFloat(h) {
+  const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 31, f = h & 1023;
+  if (e === 0) return s * f * 5.960464477539063e-8;
+  if (e === 31) return f ? NaN : s * Infinity;
+  return s * (1 + f / 1024) * Math.pow(2, e - 15);
+}
+function parseGrid(buf) {
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, true) !== 0x44524753) throw new Error('not a build grid');   // ('SGRD')
+  const n = [dv.getUint32(4, true), dv.getUint32(8, true), dv.getUint32(12, true)];
+  const lo = [0, 1, 2].map((k) => dv.getFloat32(16 + 4 * k, true)), hi = [0, 1, 2].map((k) => dv.getFloat32(28 + 4 * k, true));
+  const cnt = n[0] * n[1] * n[2] * 3, v = new Float32Array(cnt);
+  for (let i = 0; i < cnt; i++) v[i] = halfToFloat(dv.getUint16(40 + 2 * i, true));
+  const cell = [0, 1, 2].map((k) => (n[k] > 1 ? (hi[k] - lo[k]) / (n[k] - 1) : 1));
+  return { n, lo, cell, v };
+}
+async function shapeFor(look) {
+  const key = (look.body ? 'f' : 'm') + look.build;
+  if (look.build < 4 || !D.shapes || !D.shapes[key]) return null;
+  if (!shapeGrids[key]) shapeGrids[key] = fetch(D.shapes[key]).then((r) => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); }).then(parseGrid);
+  return shapeGrids[key];
+}
+function shapeOffsets(M, G) {   // each vertex's movement: the grid at its bind position, trilinear
+  const out = new Float32Array(M.nv * 3), [nx, ny, nz] = G.n, V = G.v;
+  const g = [0, 0, 0], i0 = [0, 0, 0], f = [0, 0, 0];
+  for (let v = 0; v < M.nv; v++) {
+    for (let k = 0; k < 3; k++) {
+      const n = G.n[k];
+      const x = Math.min(n - 1, Math.max(0, (M.pos[v * 3 + k] - G.lo[k]) / G.cell[k]));
+      i0[k] = Math.min(Math.max(n - 2, 0), Math.floor(x));
+      f[k] = n > 1 ? x - i0[k] : 0;
+    }
+    for (let c = 0; c < 3; c++) {
+      let s = 0;
+      for (let dz = 0; dz < 2; dz++) for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+        const w = (dx ? f[0] : 1 - f[0]) * (dy ? f[1] : 1 - f[1]) * (dz ? f[2] : 1 - f[2]);
+        if (!w) continue;
+        const ix = Math.min(nx - 1, i0[0] + dx), iy = Math.min(ny - 1, i0[1] + dy), iz = Math.min(nz - 1, i0[2] + dz);
+        s += w * V[((iz * ny + iy) * nx + ix) * 3 + c];
+      }
+      out[v * 3 + c] = s;
+    }
+  }
+  return out;
 }
 
 // hair under headgear and face shields, kept inside them (render.cpp uTuck; main.cpp hairTuck: the two maps combined)
@@ -778,8 +855,14 @@ function glowOf(c, fallback) {   // a kit colour as a glow (brightest 1)
   const v = c.map(lin), m = Math.max(...v);
   return m < 0.02 ? fallback.slice() : v.map((x) => x / m);
 }
-// the colour of the wearer's end of the court: blue / orange, or the country's (avatar.cpp sideColors, one player)
-function teamColor(look, team) { const N = nationOf(look); return N ? N.team[0].slice() : D.teams[team].slice(); }
+// the colour of the wearer's end of the court: blue / orange, the country's, or (0.3.27) a SIDE COLOR of its own
+// (avatar.cpp sideColors, one player; a SIDE COLOR and a country can't both be on: the game keeps them in one place)
+function teamColor(look, team) {
+  const N = nationOf(look);
+  if (N) return N.team[0].slice();
+  if (look.sidecolor && field('SIDE COLOR')) return optRGB('SIDE COLOR', look.sidecolor);
+  return D.teams[team].slice();
+}
 // with a country, the team kit: the ARENA JERSEY, no pattern, ATHLETIC SHORTS (bike and long shorts and the skirts stay);
 // with COUNTRY KIT = MY OUTFIT (look.kit 1, avatar.cfg kit=1) your own suit, pattern and lower body in its colours
 function uniformLook(look) {
@@ -863,9 +946,12 @@ function partsOf(look) {
     if (!has(model) && /\d$/.test(model) && has(model.replace(/\d$/, ''))) model = model.replace(/\d$/, '');   // (the base head's)
     if (has(model)) out.push(Object.assign({ model, at, field: fieldName }, extra));
   };
-  add(`av_top_${look.suit}_${b}`, 'skin', 'SUIT');
-  add(`av_bhead_${fk}`, 'skin', 'FACE');
-  if (look.suit === 18) {}   // (PELURU LAYERED DRESS: its skirt takes the LOWER BODY's place)
+  // (0.3.27: the QIPAO and the POODLE SKIRT under a COUNTRY KIT of MY OUTFIT: their country versions, in the flag's colours)
+  const kitted = !!nationOf(look) && (look.suit === 19 || look.suit === 20);
+  add(kitted ? `av_top_${look.suit}c_${b}` : `av_top_${look.suit}_${b}`, 'skin', 'SUIT');
+  // (the masculine FACE 6: always its plain-skinned head; FACIAL HAIR decides)
+  add(fk === 'm5' ? 'av_bhead_m5s' : `av_bhead_${fk}`, 'skin', 'FACE');
+  if (look.suit === 18 || look.suit === 19 || look.suit === 20) {}   // (the DRESS, QIPAO, POODLE SKIRT: their skirts in the LOWER BODY's place)
   else if (look.lower >= 1 && look.lower <= 4 && (look.suit === 14 || look.suit === 15)) add(`av_sbottom_${look.suit}_${look.lower}_${b}`, 'skin', 'LOWER BODY');
   else if (look.lower) add(`av_bottom_${look.lower}_${b}`, 'skin', 'LOWER BODY');
   else add(`av_wfade_${b}`, 'skin', 'LOWER BODY');
@@ -876,6 +962,8 @@ function partsOf(look) {
     add(`av_hair_${look.hair}_${b}`, 'head', 'HAIR', { hair: true, neon });
     if (look.hair === 3 || look.hair === 7 || look.hair === 9) add(`av_hair_${look.hair}t_${b}`, 'head', 'HAIR', { hair: true, neon });
   }
+  // FACIAL HAIR (0.3.27): fitted to each face, skinned as the head is, in the hair colour; none under a mask
+  if (look.facialhair && !look.mask) add(`av_fhair_${look.facialhair}_${fk}`, 'skin', 'FACIAL HAIR', { neon });
   if (look.visor) add(`av_visor_${look.visor}_${fk}`, 'head', 'FACE SHIELD');
   if (look.mask) add(`av_mask_${look.mask}_${fk}`, 'head', 'MASK');
   if (look.mask === 4) add(`av_mask_4t_${b}`, 'head', 'MASK', { hair: true });   // (the BANDANA's tails)
@@ -901,7 +989,7 @@ function idFor(fieldName, value) {
 function defaultLook() {
   const p = D.presets[1] || D.presets[0];
   const look = { suit: 0, build: 1, pattern: 0, primary: 0, secondary: 1, glow: 0, hair: 0, haircolor: 0, headgear: 0, visor: 0,
-    visortint: 0, mask: 0, skin: 2, lower: 0, body: 0, gauntlet: 0, face: 0, nation: 0, kit: 0 };
+    visortint: 0, mask: 0, skin: 2, lower: 0, body: 0, gauntlet: 0, face: 0, nation: 0, kit: 0, facialhair: 0, sidecolor: 0 };
   return Object.assign(look, p.look);
 }
 
@@ -994,7 +1082,8 @@ async function showAvatar(keepCamera) {
   const my = ++token;
   const look = uniformLook(state.look);   // (a country: its team kit)
   const N = nationOf(look);
-  const combo = `${look.body ? 1 : 0}${look.build}`;
+  // (BUILD 4 and 5, 0.3.27: STANDARD's rig and animations; their shape is their grid, shapeFor)
+  const combo = `${look.body ? 1 : 0}${look.build >= 4 ? 1 : look.build}`;
   let rig = D.rig[`${combo}_${state.pose}`], run = null;
   if (state.pose.startsWith('anim:')) {   // (0.3.26) an ANIMATION: its frames for this body and build
     let frames;
@@ -1008,9 +1097,11 @@ async function showAvatar(keepCamera) {
   busy(true, 'loading ' + parts.length + ' parts');
   let models;
   let propM = null;   // (an animation with a thing in its hands: AIR GUITAR's guitar)
+  let shape = null;   // (BUILD 4 and 5: the body's grid)
   try {
     models = await Promise.all(parts.map((p) => loadModel(p.model)));
     if (run && run.frames.some((f) => f.x) && D.models.guitar) propM = await loadModel('guitar');
+    shape = await shapeFor(look);
   } catch (e) { return fail(e); }
   if (my !== token) return;
   clear();
@@ -1036,12 +1127,14 @@ async function showAvatar(keepCamera) {
     const M = models[i];
     let mesh;
     if (p.at === 'skin') {
-      const [pos, nrm] = skin(M, rig, swingFor(p.model, run ? run.frames[0] : null));
+      const off = shape ? shapeOffsets(M, shape) : null;
+      const [pos, nrm] = skin(M, rig, swingFor(p.model, run ? run.frames[0] : null), off);
       // (main.cpp: the prints on the jersey or your own top, and its pulses give way to them)
       const jersey = flagTex && (p.model.startsWith('av_top_') || p.model.startsWith('av_tpulse_'));
-      mesh = meshOf(p.model, M, jersey ? Object.assign({}, ctx, { decalTex: flagTex }) : ctx, pos, nrm,
-        jersey ? decalCoords(M, !!look.body, look.suit) : null);
-      live.skinned.push({ mesh, M, model: p.model });
+      let c = jersey ? Object.assign({}, ctx, { decalTex: flagTex }) : ctx;
+      if (p.neon) c = Object.assign({}, c, { emAdd: C[3].map((x) => x * 0.35) });   // (FACIAL HAIR in NEON)
+      mesh = meshOf(p.model, M, c, pos, nrm, jersey ? decalCoords(M, !!look.body, look.suit) : null);
+      live.skinned.push({ mesh, M, model: p.model, off });
     } else if (p.at === 'head') {
       const c = Object.assign({}, ctx);
       if (p.neon) c.emAdd = C[3].map((x) => x * 0.35);
@@ -1075,6 +1168,18 @@ async function showAvatar(keepCamera) {
     root.add(live.prop);
     placeProp(run.frames[0]);
     rows.push({ id: 'P13', file: 'guitar', v: propM.nv, t: propM.idx.length / 3, note: 'AIR GUITAR: a hologram in the glow colour' });
+  }
+  if (run && run.frames.some((f) => f.r)) {   // THE ROPE (0.3.27): its rope, drawn by the game (C14)
+    const mk = () => {
+      const m = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ blending: THREE.AdditiveBlending,
+        transparent: true, depthWrite: false, toneMapped: false }));
+      m.frustumCulled = false;
+      root.add(m);
+      return m;
+    };
+    live.rope = { meshes: [mk(), mk()], glow: C[3].slice() };   // (the haze, then the core; the glow channel as main.cpp has it)
+    placeRope(run.frames[0]);
+    rows.push({ id: 'C14', file: '(drawn by the game)', v: 0, t: 0, note: 'THE ROPE: a cord in the glow colour' });
   }
   if (state.bones && rig.bones) drawBones(rig);   // (an animation's frames carry no bones)
   root.updateMatrixWorld(true);
@@ -1220,6 +1325,7 @@ function buildAvatarPanel() {
     });
     s.addEventListener('change', () => {
       state.look[KEY[fname]] = +s.value;
+      if (fname === 'COUNTRY' && +s.value) state.look.sidecolor = 0;   // (a country: no SIDE COLOR, as in the game)
       $('preset').value = '-1';
       if (fname === 'COUNTRY') syncAvatarPanel();   // (COUNTRY KIT's row, and the rows a country decides)
       state.item = idFor(fname, +s.value) || null;
@@ -1251,11 +1357,16 @@ function buildAvatarPanel() {
     row.append(el('label', {}, fname.charAt(0) + fname.slice(1).toLowerCase()));
     const sw = el('div', { class: 'swatches', role: 'group', 'aria-label': fname.toLowerCase() });
     f.options.forEach((o, i) => {
-      const team = (fname === 'GLOW' && i === 0) || (fname === 'SHIELD TINT' && i === f.options.length - 1) || (fname === 'HAIR COLOR' && i === f.options.length - 1);
+      const team = (fname === 'GLOW' && i === 0) || (fname === 'SHIELD TINT' && i === f.options.length - 1) ||
+        (fname === 'HAIR COLOR' && i === f.options.length - 1) || (fname === 'SIDE COLOR' && i === 0);
       const b = el('button', { type: 'button', class: 'swatch' + (team ? ' team' : ''), title: o.name + (team ? ' (the team colour)' : ''),
         'aria-label': o.name, 'data-k': key, 'data-i': String(i) });
-      b.style.background = css(team ? teamColor(state.look, state.team) : o.rgb);
-      b.addEventListener('click', () => { state.look[key] = i; $('preset').value = '-1'; syncAvatarPanel(); showAvatar(true); });
+      b.style.background = css(team ? teamColor(key === 'sidecolor' ? Object.assign({}, state.look, { sidecolor: 0 }) : state.look, state.team) : o.rgb);
+      b.addEventListener('click', () => {
+        state.look[key] = i;
+        if (key === 'sidecolor' && i) state.look.nation = 0;   // (SIDE COLOR leaves the country, as in the game)
+        $('preset').value = '-1'; syncAvatarPanel(); showAvatar(true);
+      });
       sw.append(b);
     });
     row.append(sw);
@@ -1295,6 +1406,8 @@ function buildAvatarPanel() {
     if (Math.random() < 0.6) L.mask = 0;
     if (Math.random() < 0.4) L.visor = 0;
     if (Math.random() < 0.85) L.nation = 0;   // (a country now and then: its kit covers the suit)
+    if (L.nation || Math.random() < 0.75) L.sidecolor = 0;   // (a SIDE COLOR now and then, never with a country)
+    if (Math.random() < 0.6) L.facialhair = 0;
     state.look = Object.assign(defaultLook(), L);
     state.item = null;
     $('preset').value = '-1';
@@ -1321,7 +1434,9 @@ function syncAvatarPanel() {
   });
   document.querySelectorAll('.swatch').forEach((b) => {
     b.setAttribute('aria-pressed', String(state.look[b.dataset.k] === +b.dataset.i));
-    if (b.classList.contains('team')) b.style.background = css(teamColor(state.look, state.team));
+    if (b.classList.contains('team')) {
+      b.style.background = css(teamColor(b.dataset.k === 'sidecolor' ? Object.assign({}, state.look, { sidecolor: 0 }) : state.look, state.team));
+    }
   });
 }
 
@@ -1406,7 +1521,7 @@ function showDownload() {
     return;
   }
   const a = state.section === 'avatar' && D.avatar.find((x) => x.id === id);
-  const why = a && a.field === 'BUILD' ? 'A build sizes the body: it has no file of its own. The template pack has the bodies.'
+  const why = a && a.field === 'BUILD' ? 'A build sizes the body (STRONG and LEAN / SOFT: shapes it by a grid the game moves every outfit by): it has no model of its own. The template pack has the bodies.'
     : state.section === 'avatar' ? 'Pick a part in the list (its V ID) to download it.'
     : state.section === 'arena' ? 'Pick one layer (A01 to A10) to download it.'
     : state.section === 'code' ? 'Drawn by the game\'s code: there is no file to download.'
