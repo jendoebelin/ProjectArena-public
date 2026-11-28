@@ -683,8 +683,10 @@ function skin(M, rig, sw, off) {   // (off: BUILD 4 and 5's movement of each ver
         for (let k = 0; k < 16; k++) T[k] = pel[k] * (1 - t) + B[0][k] * t;
         Mb = T;
       }
-      if (tw && (b === 5 || b === 6)) {
-        const k = b - 5, e0 = 4 * k, d = 4 * (2 + k), E = 4 * (4 + k), A = 4 * (6 + k);
+      // (the forearms, bones 5 and 6; from 0.3.27 the upper arms too, 3 and 4: their entries 8 vec4 further on, UPPER ARM TWIST)
+      const tk = b >= 5 ? b - 5 : b + 5;
+      if (tw && b >= 3 && b <= 6 && tw.length >= 4 * (7 + tk)) {
+        const k = tk, e0 = 4 * k, d = 4 * (2 + k), E = 4 * (4 + k), A = 4 * (6 + k);
         let s = ((px - tw[e0]) * tw[d] + (py - tw[e0 + 1]) * tw[d + 1] + (pz - tw[e0 + 2]) * tw[d + 2]) * tw[e0 + 3];
         s = Math.min(1, Math.max(0, s));
         const th = -tw[d + 3] * (1 - s * s * (3 - 2 * s));
@@ -710,7 +712,7 @@ function skin(M, rig, sw, off) {   // (off: BUILD 4 and 5's movement of each ver
     if (tw) {
       for (let i = 0; i < 4; i++) {
         if (!twG[i]) continue;
-        const k = BI[v * 4 + i] - 5, A = 4 * (6 + k), E = 4 * (4 + k);
+        const bb = BI[v * 4 + i], k = bb >= 5 ? bb - 5 : bb + 5, A = 4 * (6 + k), E = 4 * (4 + k);
         const ax = tw[A], ay = tw[A + 1], az = tw[A + 2];
         const qx = x - tw[E], qy = y - tw[E + 1], qz = z - tw[E + 2];
         const cx = ay * qz - az * qy, cy = az * qx - ax * qz, cz = ax * qy - ay * qx;
